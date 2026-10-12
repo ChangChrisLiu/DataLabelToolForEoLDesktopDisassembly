@@ -752,6 +752,18 @@ class Db(ConnectionMixin, PoseSegmentMixin, StatusMixin, DeleteMixin,
                 (resolution, R.now_iso(), cid),
             )
 
+    def reopen_conflict(self, cid: int) -> None:
+        """Put a closed conflict back in the open queue, exactly as it was queued.
+
+        The inverse of :meth:`resolve_conflict`: the old and new values and the
+        id never changed, only the status, the resolution and its time.
+        """
+        with self._tx():
+            self.conn.execute(
+                "UPDATE conflict SET status='open', resolution=NULL, resolved_at=NULL "
+                "WHERE id=?", (cid,),
+            )
+
     # -------------------------------------------------------------- relations
 
     def add_relation(self, desktop: int, rel_type: str, target: str, blocker: str,
@@ -790,6 +802,11 @@ class Db(ConnectionMixin, PoseSegmentMixin, StatusMixin, DeleteMixin,
         data = {"desktop": desktop, "view": view, "kind": kind, "payload_json": R.dumps(payload),
                 "inverse_json": R.dumps(inverse), "annotator": annotator, "ts": R.now_iso()}
         return self._insert("op_log", data, desktop=desktop)
+
+    def get_op(self, op_id: int) -> Optional[dict]:
+        """One op-log row by id, payload and inverse decoded; ``None`` when absent."""
+        row = self.conn.execute("SELECT * FROM op_log WHERE id=?", (op_id,)).fetchone()
+        return None if row is None else R.json_row(row, "payload", "inverse")
 
     def ops(self, desktop: int, view: str, limit: int = 100) -> list[dict]:
         """Most recent operations of one (desktop, view), newest first."""

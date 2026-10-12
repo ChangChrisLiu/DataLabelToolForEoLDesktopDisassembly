@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPushButton
 
 from app_scene import (
     close_window,
@@ -184,16 +184,16 @@ def test_a_non_keyframe_suggestion_opens_the_scope_bar_instead_of_a_dialog(windo
 
     window.act_commit()
     assert window.scope_bar.isVisibleTo(window)
-    assert "zorder:above:other" in window.scope_bar_text()
+    assert "「other」" in window.scope_bar_text()
     assert committed == []          # nothing written yet
 
-    window.act_commit()             # Enter accepts the suggestion
-    assert committed == ["zorder:above:other"]
+    window.act_commit()             # Enter: the shape only (task U6)
+    assert committed == [api.SCOPE_KEYFRAME]
     assert not window.scope_bar.isVisibleTo(window)
 
 
 def test_the_scope_bar_alternatives_are_frame_override_and_split(window, monkeypatch):
-    """The two keys beside ``Enter``; the split keeps the suggestion it answers."""
+    """The two keys beside ``Enter``: both write the shape only (task U6)."""
     session = window.session
     instance = first_task_instance(window)
     window.task_card.sigRequestEdit.emit(instance)
@@ -212,7 +212,7 @@ def test_the_scope_bar_alternatives_are_frame_override_and_split(window, monkeyp
     paint(window)
     window.act_commit()
     window.act_commit_split()
-    assert committed == ["split+zorder:above:other"]
+    assert committed == [api.SCOPE_SPLIT]      # no pair: the layering is L's
 
     committed.clear()
     window.task_card.sigRequestEdit.emit(instance)
@@ -970,12 +970,13 @@ def test_a_sidecar_for_another_frame_is_not_offered(qapp, tmp_path):
         close_window(again)
 
 
-def test_the_scope_bar_says_whether_the_shape_is_written_too(window, monkeypatch):
-    """A layering commit that carries painted pixels writes two things, not one.
+def test_the_scope_bar_says_what_enter_and_l_do_in_plain_words(window, monkeypatch):
+    """Task U6: what each key writes, and what it leaves on screen.
 
-    ``zorder:above:B`` with pixels added inside ``B`` re-traces the keyframe as
-    well; ``zorder:below:B`` only reverses the pair.  The bar has to say which
-    of the two the annotator is about to accept.
+    The bar used to say ``建议范围 zorder:above:B（Enter：仅层级 …）`` and the
+    quickstart said "一般 Enter 接受"; on D13 that Enter put the chassis over a
+    screw on forty frames.  Now: which part, what Enter writes (the shape
+    only), what ``L`` would do and what it would hide -- for both directions.
     """
     session = window.session
     instance = first_task_instance(window)
@@ -983,18 +984,23 @@ def test_the_scope_bar_says_whether_the_shape_is_written_too(window, monkeypatch
     paint(window)
     monkeypatch.setattr(session, "suggest_scope", lambda *a, **k: "zorder:above:other")
     window.act_commit()
-    assert "层级 + 形状" in window.scope_bar_text()
+    text = window.scope_bar_text()
+    assert "你画到了「other」占着的像素" in text
+    assert "Enter = 只改形状" in text and "L = 改层级" in text
+    assert "会被" in text and "盖住" in text              # the consequence, said
+    assert "zorder:" not in text                         # no vocabulary on the bar
 
     window.act_clear_edit()
     window.task_card.sigRequestEdit.emit(instance)
     paint(window)
     monkeypatch.setattr(session, "suggest_scope", lambda *a, **k: "zorder:below:other")
     window.act_commit()
-    assert "仅层级" in window.scope_bar_text()
+    text = window.scope_bar_text()
+    assert "你擦掉的是" in text and "不改形状、改层级" in text
 
 
-def test_the_scope_bar_says_what_each_of_the_three_keys_writes(window, monkeypatch):
-    """Three buttons, three different writes: the bar names all three."""
+def test_the_scope_bar_names_every_key_it_has(window, monkeypatch):
+    """Four answers, four different writes: the bar names all of them."""
     session = window.session
     window.task_card.sigRequestEdit.emit(first_task_instance(window))
     paint(window)
@@ -1002,22 +1008,22 @@ def test_the_scope_bar_says_what_each_of_the_three_keys_writes(window, monkeypat
     window.act_commit()
 
     text = window.scope_bar_text()
-    assert "Enter" in text and "Alt+Enter" in text and "Ctrl+K" in text
-    assert "层级 + 形状" in text and "仅本帧" in text and "拆分" in text
+    assert "Enter" in text and "L =" in text and "Alt+Enter" in text and "Ctrl+K" in text
+    assert "只改这一帧" in text and "新版本" in text
+    buttons = [b.text() for b in window.scope_bar.findChildren(QPushButton)]
+    assert "Enter 只改形状" in buttons and "L 改层级" in buttons
 
 
 @pytest.mark.parametrize("key,expected", [
-    ("act_commit", "zorder:above:other"),
-    ("act_commit_split", "split+zorder:above:other"),
+    ("act_commit", api.SCOPE_KEYFRAME),
+    ("act_commit_split", api.SCOPE_SPLIT),
     ("act_commit_override", api.SCOPE_FRAME_OVERRIDE),
 ])
 def test_the_three_answers_to_a_layering_suggestion(window, monkeypatch, key, expected):
-    """``Ctrl+K`` wrote the split pixels and no pair, so the screen did not change.
+    """Enter, Ctrl+K and Alt+Enter on a layering suggestion write no layering (U6).
 
-    The pixels were saved and stayed hidden under ``B``.  A split accepts the
-    suggestion as much as ``Enter`` does -- it only asks for a new version of the
-    shape rather than a re-trace -- so it carries the pair too.  ``Alt+Enter``
-    stays a pure frame override: it makes A visible here by itself.
+    The layering answer is ``L``'s alone, asked and confirmed
+    (:func:`test_the_layering_key_asks_with_the_reach_then_writes`).
     """
     session = window.session
     window.task_card.sigRequestEdit.emit(first_task_instance(window))
@@ -1032,6 +1038,64 @@ def test_the_three_answers_to_a_layering_suggestion(window, monkeypatch, key, ex
 
     assert committed == [expected]
     assert not window.scope_bar.isVisibleTo(window)
+
+
+def test_the_layering_key_asks_with_the_reach_then_writes(window, monkeypatch):
+    """``L``: the reach first, a second ``L`` writes, ``Esc`` takes the question back.
+
+    The U6 addendum: the trial's override reached frames 1-40 and re-checked
+    the confirmed 39 and 40 while the annotator believed they had changed one
+    frame.  ``Enter`` while asked writes nothing -- it is not the answer.
+    """
+    session = window.session
+    window.task_card.sigRequestEdit.emit(first_task_instance(window))
+    paint(window)
+    monkeypatch.setattr(session, "suggest_scope", lambda *a, **k: "zorder:above:other")
+    monkeypatch.setattr(session, "preview", lambda scope, *a, **k: {
+        "steps": list(range(1, 41)), "verified_steps": [39, 40]})
+    committed: list[str] = []
+    monkeypatch.setattr(session, "commit_edit",
+                        lambda scope, *a, **k: committed.append(scope) or {})
+    window.act_commit()
+    suggestion = window.scope_bar_text()
+
+    window.act_commit_layering()                  # asks
+    asked = window.scope_bar_text()
+    assert committed == [] and window.layering_asked()
+    assert ("层级改动作用于整个位姿段：第 1–40 帧，其中已确认的第 39、40 帧会被重新检查"
+            "（可能产生冲突）") in asked and "确定" in asked
+    assert window.guide_plan().now.startswith("现在：提示条写着层级改动")
+    window.act_commit()                           # Enter is not the answer
+    assert committed == [] and "再按 L" in window.status_message()
+
+    window.act_clear_edit()                       # Esc: back to the suggestion
+    assert not window.layering_asked()
+    assert window.scope_bar_text() == suggestion
+    assert session.editing_instance is not None   # the layer is still there
+
+    window.act_commit_layering()
+    window.act_commit_layering()                  # asked, then confirmed
+    assert committed == ["zorder:above:other"]
+    assert not window.scope_bar.isVisibleTo(window)
+
+
+def test_the_layering_key_without_a_suggestion_says_so(window):
+    window.task_card.sigRequestEdit.emit(first_task_instance(window))
+    paint(window)
+    window.act_commit_layering()
+    assert "没有层级建议" in window.status_message()
+
+
+def test_ctrl_k_where_the_version_starts_says_it_did_not_split(window, monkeypatch):
+    """U6 addendum, item 2: the session re-traced, and the window said nothing."""
+    session = window.session
+    window.task_card.sigRequestEdit.emit(first_task_instance(window))
+    paint(window)
+    monkeypatch.setattr(session, "commit_edit", lambda scope, *a, **k: {
+        "scope": api.SCOPE_KEYFRAME, "changed": True, "no_split": True})
+    window.act_commit_split()
+    assert ("这一帧就是这版形状的起点：Ctrl+K 等于重画这一版，没有拆分"
+            in window.status_message())
 
 
 # --------------------------------------------------------------------------- #

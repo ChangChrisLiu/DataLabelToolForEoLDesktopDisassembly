@@ -61,6 +61,24 @@ def _frame_key(step: int, view: str = S.VIEW):
     return FrameKey(S.DESKTOP, step, view)
 
 
+def _standing_conflict(db, tax, key, instance: str, moved_box) -> None:
+    """A real open disagreement about ``instance`` on ``key`` (task U6).
+
+    The confirmed part's pixels are moved on that frame by a frame override and
+    the refresh queues the disagreement.  One written straight into the table
+    about a frozen row that still agrees is closed by the next refresh ("inputs
+    agree again"), so it would not survive the export's ``ensure_fresh``.
+    """
+    from tda.core.masks import encode_rle
+    from tda.core.model import FrameOverride
+    from tda.core.truth import TruthService
+
+    db.set_frame_override(FrameOverride(key, instance, encode_rle(S.rect(moved_box)), None))
+    TruthService(db, tax, cache_dir=None).refresh(key)
+    assert [c["instance"] for c in db.conflicts(S.DESKTOP, key.view, open_only=True)
+            if c["step"] == key.step] == [instance]
+
+
 def _key(record: dict):
     return _frame_key(record["step"], record["view"])
 
@@ -998,10 +1016,7 @@ def test_only_verified_keeps_the_confirmed_records(scene, tmp_path: Path):
 
 def test_the_export_refuses_a_view_with_a_standing_conflict(scene, tmp_path: Path):
     db, tax = scene
-    from tda.core.masks import encode_rle
-
-    db.add_conflict(_frame_key(1), S.PSU, encode_rle(S.rect(S.RECTS[S.PSU])),
-                    encode_rle(S.rect(S.RECTS[S.RAM])), 400)
+    _standing_conflict(db, tax, _frame_key(1), S.PSU, (30, 34, 46, 60))
     with pytest.raises(RuntimeError, match="allow_conflicts"):
         _export(db, tax, tmp_path / "v.jsonl")
     summary = _export(db, tax, tmp_path / "v.jsonl", allow_conflicts=True)
@@ -1013,11 +1028,7 @@ def test_the_export_refuses_a_view_with_a_standing_conflict(scene, tmp_path: Pat
 def test_a_conflict_in_another_view_does_not_refuse_this_one(scene, tmp_path: Path):
     """The refusal belongs to the view being published, not to its neighbours."""
     db, tax = scene
-    from tda.core.masks import encode_rle
-
-    db.add_conflict(_frame_key(4, S.OTHER), S.RAM,
-                    encode_rle(S.rect(S.RECTS[S.RAM])),
-                    encode_rle(S.rect(S.RECTS[S.PSU])), 400)
+    _standing_conflict(db, tax, _frame_key(4, S.OTHER), S.RAM, (24, 30, 40, 52))
     records = _run(db, tax, tmp_path / "v.jsonl")
     assert records
     cross = [r for r in _of(records, "V15")

@@ -541,7 +541,13 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, Assist
 
         It is also "look for the raw data drive again": the bar that says the
         drive is not connected tells the annotator to plug it in and press F5.
+
+        And "load SAM again" when its load failed (task U6): the badge says
+        ``SAM 加载失败：…（F5 重试）``, and one press starts one load -- none
+        while one is running.  That needs no frame, so it happens first and
+        even when the editing layer keeps the frame from being recompiled.
         """
+        retried = self.retry_sam()
         if not self.can_leave_edit():
             return
         found = self.act_recheck_raw_data() and self.raw_root.connected
@@ -570,8 +576,13 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, Assist
         # gates read, narrowed to this frame.
         drive = (f"原始数据盘已找到 / raw data drive found: {self.raw_root.resolved}; "
                  if found else "")
+        if retried:
+            drive = "正在重新加载 SAM / loading SAM again; " + drive
+        closed = int(stats.get("closed", 0) or 0)
+        agreed = (f"{closed} closed (inputs agree again / 输入又一致了), "
+                  if closed else "")
         self.report(f"{drive}step {key.step} recompiled: {stats.get('updated', 0)} rows, "
-                    f"{stats.get('conflicts', 0)} new conflicts, "
+                    f"{agreed}{stats.get('conflicts', 0)} new conflicts, "
                     f"{compat.open_conflicts(self.session, key)} open{retry} — use "
                     f"'python -m tda.cli check' for the whole view")
 

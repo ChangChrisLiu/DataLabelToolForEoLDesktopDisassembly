@@ -286,7 +286,8 @@ class GuideMixin:
             enabled, why = True, ""
             if tool in _SAM_TOOLS and not self.sam_available:
                 enabled = False
-                why = (f"SAM 还没准备好（{self.sam_reason}）：先用画笔 B；"
+                why = (self.sam_refusal() if self.sam_failure_reason() else
+                       f"SAM 还没准备好（{self.sam_reason}）：先用画笔 B；"
                        f"右下角出现 SAM ready 后就能用")
             elif tool == "roi" and facts.layer_dirty:
                 enabled, why = False, "编辑层有未提交的像素：先 Enter 提交或 Esc 放弃"
@@ -456,10 +457,12 @@ class GuideMixin:
             warning_scope=str(warning[0]) if warning is not None else "",
             scope=scope,
             scope_text=self.scope_text(scope),
+            layering_asked=self.layering_asked(),
             ghost=self.showing_draft_ghost(),
             bench=self._label_of(self.bench_instance)[0] if self.bench_instance else None,
             flashing=self.is_flashing(),
             sam_ready=bool(self.sam_available),
+            sam_failed=self.sam_failure_reason(),
             items=items,
             # What the card's pane holds that makes Space refuse (U2d).
             blockers=self.task_card.problem_count() if opened else 0,
@@ -598,7 +601,10 @@ class GuideMixin:
                 return f"{head}— {BANNER_SPLIT if split else BANNER_PIXELS}"
             if facts.layer_pixels:
                 return f"{head}— {BANNER_LOADED_SPLIT if split else BANNER_LOADED}"
-            return f"{head}— {BANNER_EMPTY if self.sam_available else BANNER_EMPTY_NO_SAM}"
+            if self.sam_available:
+                return f"{head}— {BANNER_EMPTY}"
+            # A failed load is not "not ready yet": name the tools that work (U6).
+            return f"{head}— {G.DRAW_NO_SAM if self.sam_failure_reason() else BANNER_EMPTY_NO_SAM}"
         if self.bench_instance:
             label, raw = self._label_of(self.bench_instance)
             head = f"正在框：{label}" + (f"（日志：{raw}）" if raw else " ")

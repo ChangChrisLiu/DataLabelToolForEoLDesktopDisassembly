@@ -26,7 +26,48 @@ __all__ = ["CommitMixin"]
 #: session owns their meaning (:mod:`tda.ui.session_scope`), the window only
 #: needs to know which suggestion is on the bar.
 A_ZORDER_ABOVE = "zorder:above:"
+A_ZORDER_BELOW = "zorder:below:"
 SPLIT_PREFIX = "split+"
+
+#: ``Ctrl+K`` on the frame where the shape in force already starts: the session
+#: re-traces that version instead (``_cannot_split``), and said nothing -- the
+#: D13 annotator believed they had split (task U6).
+NO_SPLIT = "这一帧就是这版形状的起点：Ctrl+K 等于重画这一版，没有拆分"
+#: ``L`` with no layering suggestion on the bar.
+NO_LAYERING = ("L 只用来回答画布下方的层级建议；现在没有层级建议 / L answers a "
+               "layering suggestion, and none is open")
+#: ``Enter`` while the layering question is up: it is not the answer.
+LAYERING_ASKED = ("层级还没改：再按 L（或点「L 确定改层级」）确定，Esc 取消 / press L "
+                  "again to change the layering, Esc to cancel")
+LAYERING_CANCELLED = "层级没改 / the layering was not changed"
+#: The scope bar's layering button, before and while the question is asked.
+LAYER_BUTTON = "L 改层级"
+LAYER_BUTTON_CONFIRM = "L 确定改层级"
+
+
+def is_layering(scope: Optional[str]) -> bool:
+    """Is ``scope`` one of the session's layering answers (with or without a split)?"""
+    body = str(scope or "")
+    if body.startswith(SPLIT_PREFIX):
+        body = body[len(SPLIT_PREFIX):]
+    return body.startswith((A_ZORDER_ABOVE, A_ZORDER_BELOW))
+
+
+def steps_text(steps) -> str:
+    """``[1, 2, ..., 40]`` -> ``1–40``; ``[39, 40]`` -> ``39、40``; runs of three or more joined."""
+    values = sorted({int(s) for s in steps or ()})
+    out: list[str] = []
+    index = 0
+    while index < len(values):
+        end = index
+        while end + 1 < len(values) and values[end + 1] == values[end] + 1:
+            end += 1
+        if end - index >= 2:
+            out.append(f"{values[index]}–{values[end]}")
+        else:
+            out.extend(str(v) for v in values[index:end + 1])
+        index = end + 1
+    return "、".join(out)
 
 
 class CommitMixin:
@@ -59,7 +100,15 @@ class CommitMixin:
             self.accept_roi()
             return
         if self._pending_scope is not None:
-            self._commit(self._pending_scope)
+            if self._layering_asked:
+                # The question on the bar is answered by L; Enter is the key
+                # pressed a hundred times a day, and it changes no layering.
+                self.report(LAYERING_ASKED)
+                return
+            # Task U6: Enter on a layering suggestion commits the shape only.
+            # The layering itself is L's, asked and confirmed.
+            self._commit(api.SCOPE_KEYFRAME if is_layering(self._pending_scope)
+                         else self._pending_scope)
             return
         if getattr(self.session, "editing_instance", None) is not None \
                 and self.session.editing_mask() is not None:
@@ -78,16 +127,18 @@ class CommitMixin:
 
     @S.guard
     def commit_with_suggested_scope(self) -> None:
-        """Commit straight away with whatever the session suggests, no bar.
+        """Commit straight away, no bar: the close dialog's "Save".
 
-        The close dialog's "Save": there is no non-modal conversation left to
-        have, so a layering or split suggestion is written as suggested rather
-        than parked behind a bar nobody will read.
+        There is no non-modal conversation left to have, so the edit is
+        written -- and a layering suggestion is written as what ``Enter`` would
+        write, the shape only (task U6): a layering change needs its own key,
+        and a dialog about closing the window is not where anybody gives it.
         """
         if getattr(self.session, "editing_instance", None) is None:
             return
-        self._pending_scope = None
-        self._commit(self.session.suggest_scope())
+        self._drop_scope_bar()
+        scope = self.session.suggest_scope()
+        self._commit(api.SCOPE_KEYFRAME if is_layering(scope) else scope)
 
     @S.guard
     def act_commit_override(self) -> None:
@@ -98,58 +149,135 @@ class CommitMixin:
 
     @S.guard
     def act_commit_split(self) -> None:
-        """``Ctrl+K``: a new shape version from this step on.
+        """``Ctrl+K``: a new shape version from this step on -- the shape only.
 
-        On an open layering suggestion it is still an *answer to that
-        suggestion*, so the pair goes with it (``split+zorder:above:<B>``): a
-        split that dropped the pair saved the pixels and left them hidden under
-        ``B``, and the screen did not change -- which is the one outcome the
-        annotator can neither see nor explain.  ``Alt+Enter`` is different on
-        purpose: a frame override makes this instance visible here by itself.
+        On an open layering suggestion too (task U6): the layering is ``L``'s,
+        asked and confirmed, and no other key changes it.  The bar says that
+        the pixels painted into the other part stay under it.  On the frame
+        where the version in force already starts there is nothing to split
+        off: the session re-traces that version, and :meth:`_commit` says so.
         """
         if self.refuse_under_shape() or self.refuse_under_ghost():
             return
-        pending = self._pending_scope or ""
-        if pending.startswith(A_ZORDER_ABOVE):
-            self._commit(SPLIT_PREFIX + pending)
-            return
         self._commit(api.SCOPE_SPLIT)
+
+    @S.guard
+    def act_commit_layering(self) -> None:
+        """``L``: change the layering the bar suggests -- asked first, then done.
+
+        Task U6.  The layering answer used to be what plain ``Enter`` did, and
+        on D13/scan one ``Enter`` put the chassis over a screw for frames 1-40
+        and turned two confirmed frames red.  So it has a key of its own, and
+        the first press only *shows what it reaches*: the pose segment's frames
+        and the confirmed ones among them, which will be checked again.  The
+        second press (or the bar's button) writes it; ``Esc`` takes the
+        question back and leaves the suggestion up; ``Enter`` says which key
+        answers.
+        """
+        if self.refuse_under_shape() or self.refuse_under_ghost():
+            return
+        scope = self._pending_scope
+        if not is_layering(scope):
+            self.report(NO_LAYERING)
+            return
+        if not self._layering_asked:
+            self._layering_asked = True
+            self.scope_layer_button.setText(LAYER_BUTTON_CONFIRM)
+            self.scope_bar.show_text(self._reach_question(scope))
+            self.logger.info("layering asked: %s", scope)
+            self.report("层级改动先看范围：画布下方提示条写着影响哪些帧，再按 L 确定，Esc 取消 / "
+                        "check the reach on the bar, then L again")
+            self.refresh_guidance()
+            return
+        self._commit(scope)
+
+    def cancel_layering_question(self) -> bool:
+        """``Esc`` on the layering question: back to the suggestion, nothing written."""
+        if not self._layering_asked or self._pending_scope is None:
+            return False
+        self._layering_asked = False
+        self.scope_layer_button.setText(LAYER_BUTTON)
+        self.scope_bar.show_text(self._suggestion_text(self._pending_scope))
+        self.report(LAYERING_CANCELLED)
+        self.refresh_guidance()
+        return True
+
+    def layering_asked(self) -> bool:
+        """Is the bar asking "确定？" about a layering change right now?"""
+        return bool(self._layering_asked and self._pending_scope is not None)
 
     def scope_bar_text(self) -> str:
         """What the non-modal scope bar is currently saying."""
         return self.scope_bar.label.text()
 
+    def _drop_scope_bar(self) -> None:
+        """No suggestion, no question, no bar."""
+        self._pending_scope = None
+        self._layering_asked = False
+        self.scope_layer_button.setText(LAYER_BUTTON)
+        self.scope_bar.hide()
+
     def _offer_scope(self, scope: str) -> None:
         """Show the suggestion and its alternatives without blocking the canvas."""
         self._pending_scope = scope
-        # A layering statement reaches frames too -- the session answers for a
-        # pair override the same way it answers for pixels -- so the strip says
-        # so for every scope now.
-        counts = compat.preview(self.session, scope)
-        detail = ""
-        if counts:
-            detail = (f"，影响 {len(counts.get('steps', []))} 帧 / 将产生 "
-                      f"{len(counts.get('verified_steps', []))} 个冲突")
-        self.scope_bar.show_text(f"建议范围 {scope}{self._writes(scope)}{detail}")
-        self.report(f"suggested scope: {scope}")
+        self._layering_asked = False
+        self.scope_layer_button.setText(LAYER_BUTTON)
+        self.scope_bar.show_text(self._suggestion_text(scope))
+        self.logger.info("suggested scope: %s", scope)
+        self.report("看画布下方提示条：Enter 只改形状，L 改层级 / read the bar: Enter "
+                    "writes the shape, L changes the layering"
+                    if is_layering(scope) else f"suggested scope: {scope}")
 
-    @staticmethod
-    def _writes(scope: str) -> str:
-        """What each of the bar's three keys will write, for this suggestion.
+    def _pair_labels(self, scope: str) -> tuple[str, str, bool]:
+        """``(edited, other, edited goes above)`` of a layering scope, as names to read."""
+        body = scope[len(SPLIT_PREFIX):] if scope.startswith(SPLIT_PREFIX) else scope
+        above = body.startswith(A_ZORDER_ABOVE)
+        other = body[len(A_ZORDER_ABOVE if above else A_ZORDER_BELOW):]
+        me = str(getattr(self.session, "editing_instance", None) or "")
+        return (self._label_of(me)[0] or me, self._label_of(other)[0] or other, above)
 
-        "Above B" with pixels painted into B re-traces the shape as well -- they
-        are not in it yet -- while the eraser direction only reverses the pair;
-        and the two alternatives beside ``Enter`` write different things again.
-        Three buttons that all read "commit" and do three different things is
-        how ``Ctrl+K`` came to save pixels nobody could see.
+    def _suggestion_text(self, scope: str) -> str:
+        """The bar's sentence: what happened, and what each key would write (U6).
+
+        In plain words, because the bar used to say ``建议范围 zorder:above:B``
+        with "（Enter：仅层级 …）" behind it, and the quickstart said "一般 Enter
+        接受": the D13 annotator pressed Enter and the chassis went over a
+        screw on forty frames.  ``Enter`` now writes the shape only and says
+        what that leaves on screen; ``L`` is the layering, and says what it
+        hides.
         """
-        if not str(scope).startswith("zorder:"):
-            return ""
-        if scope.startswith(A_ZORDER_ABOVE):
-            return ("（Enter：层级 + 形状 / Alt+Enter：仅本帧覆盖 / "
-                    "Ctrl+K：层级 + 拆分新形状）")
-        return ("（Enter：仅层级 / Alt+Enter：仅本帧覆盖 / "
-                "Ctrl+K：仅拆分新形状）")
+        if not is_layering(scope):
+            return f"建议范围 {scope}"
+        me, other, above = self._pair_labels(scope)
+        tail = "。Alt+Enter 只改这一帧；Ctrl+K 从这帧起新版本（只改形状）；Esc 回去改"
+        if above:
+            return (f"你画到了「{other}」占着的像素（它盖在「{me}」上面，画进去的这块现在"
+                    f"看不见）。Enter = 只改形状，「{other}」照样盖着；L = 改层级：把「{me}」"
+                    f"放到「{other}」上面（两者重叠处「{other}」会被「{me}」盖住，整个位姿段"
+                    f"都这样）{tail}")
+        return (f"你擦掉的是「{me}」和「{other}」重叠的地方。Enter = 只改形状（擦掉的不再"
+                f"算「{me}」的）；L = 不改形状、改层级：把「{other}」放到「{me}」上面（重叠处"
+                f"「{me}」会被「{other}」盖住，整个位姿段都这样）{tail}")
+
+    def _reach_question(self, scope: str) -> str:
+        """The question ``L`` asks before it writes anything (U6 addendum, item 1).
+
+        A pair override is per ``(view, pose segment)``: on D13/scan the one
+        made on frame 40 reached frames 1-40, and the confirmed 39 and 40 came
+        back as conflicts while the annotator believed they had changed one
+        frame.  The reach is :meth:`~tda.ui.session_commits.CommitsMixin.preview`'s
+        -- the pair's frames, and the shape's when the gesture carries pixels.
+        """
+        me, other, above = self._pair_labels(scope)
+        upper, lower = (me, other) if above else (other, me)
+        counts = compat.preview(self.session, scope) or {}
+        steps = counts.get("steps") or []
+        verified = counts.get("verified_steps") or []
+        where = f"第 {steps_text(steps)} 帧" if steps else "（算不出影响哪些帧）"
+        frozen = (f"其中已确认的第 {steps_text(verified)} 帧会被重新检查（可能产生冲突）"
+                  if verified else "其中没有已确认的帧")
+        return (f"层级改动作用于整个位姿段：{where}，{frozen}。把「{upper}」放到「{lower}」"
+                f"上面，确定？再按 L（或点「{LAYER_BUTTON_CONFIRM}」）确定，Esc 取消")
 
     def _commit(self, scope: str) -> None:
         """Write the edit, or show why the session will not take it.
@@ -174,8 +302,7 @@ class CommitMixin:
         try:
             result = self.session.commit_edit(scope, extra=extra) or {}
         except ValueError as refused:
-            self._pending_scope = None
-            self.scope_bar.hide()
+            self._drop_scope_bar()
             self.logger.info("refused commit %s %s step %s: %s",
                              instance, scope, key.step, refused)
             self.report_error(f"refused: {refused}")
@@ -184,8 +311,7 @@ class CommitMixin:
                          instance, scope, key.step, pixels,
                          (time.perf_counter() - started) * 1000.0,
                          len(result.get("affected") or []))
-        self._pending_scope = None
-        self.scope_bar.hide()
+        self._drop_scope_bar()
         self.session.clear_edit()
         # One of the three: what any copy of this instance held is in the
         # database now, so even one from an earlier run is stale.
@@ -200,6 +326,14 @@ class CommitMixin:
         # No re_explain() here: committing re-renders the frame, which clears
         # assist_result, so a re-split would run against nothing.  The real one
         # happens at confirm time, where the answer is actually used.
+        if result.get("no_split"):
+            # Ctrl+K where the version in force starts: it re-traced that one
+            # (U6 addendum, item 2) -- and saying nothing let the annotator
+            # believe the frames before this one had their own version now.
+            self.logger.info("split of %s at step %s re-traced the version that "
+                             "starts there", instance, key.step)
+            self.report(NO_SPLIT, hold_ms=6000)
+            return
         self.report(f"committed ({scope}): {result.get('changed', '')}".strip())
 
     def _commit_extra(self, key, instance: str,
@@ -253,6 +387,8 @@ class CommitMixin:
         if self.clear_draft_ghost():
             self.report("草稿已取消 / the draft was dismissed")
             return
+        if self.cancel_layering_question():
+            return          # the question goes; the suggestion and the layer stay (U6)
         if self._pending_warning is not None:
             # The warning is the thing on screen: Esc answers it by taking the
             # annotator back to the layer, not by throwing the layer away.
@@ -278,8 +414,7 @@ class CommitMixin:
             # stay; only this window's own copy goes.
             self.drop_sidecar(key, instance)
             self._offer_restore(key, instance)
-            self._pending_scope = None
-            self.scope_bar.hide()
+            self._drop_scope_bar()
             self.set_sam_instance(None)
             self._sync_editing_layer()
             self.report("edit discarded")

@@ -74,9 +74,12 @@ class TruthCacheMixin:
             return
         held = self._compiled.get(key.step)
         current = held[1] if held is not None and held[0] == self._epoch else None
-        if current is not None and self.db.rows_all_from(key, current.input_hash):
+        if (current is not None and self.db.rows_all_from(key, current.input_hash)
+                and not self.db.open_conflicts_at(key)):
             self._truth_settled()
             return  # the sweeper already brought this frame up to date
+        # (an open conflict next to rows that already carry this hash is one the
+        # inputs have come back from: the refresh below closes it -- U6)
         # one compilation for the whole visit: the refresh hands back the frame
         # it made its decisions from, which is the one the panels are about to
         # ask for -- compiling it twice is what made arriving cost 0.9 s.  A

@@ -95,6 +95,13 @@ AUTO = "auto"
 VERIFIED = "verified"
 NEEDS_REVIEW = "needs_review"
 
+#: The op-log row of a refresh that closed conflicts the inputs no longer
+#: disagree with (task U6), its inverse, why, and who wrote it.
+CLOSE_KIND = "resolve_conflicts"
+REOPEN_KIND = "reopen_conflicts"
+AGREE_AGAIN = "inputs agree again"
+SYSTEM = "system"
+
 
 class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
     """Reads the annotations, compiles frames and owns the ``compiled_mask`` table."""
@@ -157,15 +164,17 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
                 held: Optional[CompiledFrame] = None) -> dict:
         """Bring one frame's truth rows up to date with the current inputs.
 
-        Returns ``{"updated", "conflicts", "standing", "skipped", "problems",
-        "compiled", "stale"}``: rows written (a deleted row counts as
-        written), disagreements this refresh actually **queued**, frozen rows
-        in disagreement whether queued now or already open -- a sweep of fifty
-        frames over one unresolved conflict reported fifty conflicts when it
-        had queued none -- rows left alone, the compiler's
-        problem list, the compilation the whole decision was made from --
-        handed back so that a caller which also needs the frame does not
-        compile it a second time -- and whether the write was abandoned.
+        Returns ``{"updated", "conflicts", "standing", "closed", "skipped",
+        "problems", "compiled", "stale"}``: rows written (a deleted row counts
+        as written), disagreements this refresh actually **queued**, frozen
+        rows in disagreement whether queued now or already open -- a sweep of
+        fifty frames over one unresolved conflict reported fifty conflicts when
+        it had queued none -- open conflicts it **closed** because their frozen
+        row agrees with the inputs again (see :meth:`_close_agreeing`), rows
+        left alone, the compiler's problem list, the compilation the whole
+        decision was made from -- handed back so that a caller which also
+        needs the frame does not compile it a second time -- and whether the
+        write was abandoned.
 
         ``cache`` is :meth:`refresh_range`'s way of reading the step-independent
         inputs once; callers outside this module leave it out.
@@ -198,11 +207,14 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
         """
         inputs = gather(self.db, self.tax, key, cache, self.cache_dir)
         digest = digest_of(inputs, self.compiler_version)
-        if not ignore_digest and self._digest_is_current(key, digest):
+        if (not ignore_digest and self._digest_is_current(key, digest)
+                and not self.db.open_conflicts_at(key)):
             # the rows already describe exactly these inputs: there is nothing
             # to derive and, since nothing moved, nothing a frozen row could
-            # disagree with either
-            result = {"updated": 0, "conflicts": 0, "standing": 0,
+            # disagree with either.  Not with a conflict still open, though: a
+            # current digest next to one means the inputs came back to what
+            # was frozen (U6), and only a compilation can close it
+            result = {"updated": 0, "conflicts": 0, "standing": 0, "closed": 0,
                       "skipped": self.db.compiled_count(key),
                       "problems": [], "compiled": None, "stale": False}
             if want_compiled:
@@ -225,6 +237,7 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
             "updated": 0,
             "conflicts": 0,
             "standing": 0,
+            "closed": 0,
             "skipped": 0,
             "problems": list(compiled.problems),
             "compiled": compiled,
@@ -243,8 +256,10 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
             # nothing to write -- but the rows *do* describe these inputs, and
             # saying so is the whole point: a database that predates the digest
             # table is entirely in this state, and without the stamp no pass
-            # over it is ever cheaper than the first
+            # over it is ever cheaper than the first.  Every frozen row is
+            # this compilation, so no open conflict about one still stands.
             result["skipped"] = len(stored)
+            result["closed"] = self._close_agreeing(key, stored, fresh, set())
             self._stamp(key, digest)
             return result
 
@@ -255,6 +270,7 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
         # order -- moved parts, then departed ones -- as it always was.
         disputed = {b.instance: b for b in frozen_disagreements(
             self.db, key, compiled, overrides, stored)}
+        result["closed"] = self._close_agreeing(key, stored, fresh, set(disputed))
 
         for instance in sorted(fresh):
             compiled_inst = compiled.instances[instance]
@@ -312,6 +328,82 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
         """
         self.db.set_frame_digest(key, digest, self.compiler_version,
                                  self.db.compiled_count(key))
+
+    def _close_agreeing(self, key: FrameKey, stored: dict[str, dict], fresh: set[str],
+                        disputed: set[str]) -> int:
+        """Close the open conflicts this compilation shows are over (task U6).
+
+        A conflict says "the frozen row and the inputs disagree".  When the
+        inputs come back -- an override undone, a shape re-traced to what was
+        confirmed -- the frozen row agrees again and the conflict describes
+        nothing, but nothing used to close it: on D13/scan an override undone a
+        minute after it was made left eighteen conflicts open, frames 39 and 40
+        red and ``Space`` refused, with nothing for anybody to decide.
+
+        Closed here: every open conflict of this frame whose instance has a
+        frozen row, is in the compilation, and is not among the ``disputed``
+        instances (:func:`~tda.core.truth_refusals.frozen_disagreements`, the
+        comparison ``verify_frame`` refuses on).  Each is resolved
+        ``superseded``, and the frame gets **one** ``resolve_conflicts`` op-log
+        row naming them all with the reason :data:`AGREE_AGAIN`; its inverse
+        reopens them (:meth:`reopen_agreed`).  Called inside the refresh's
+        transaction.  Returns how many were closed.
+        """
+        open_here = self.db.open_conflicts_at(key)
+        if not open_here:
+            return 0
+        agree = [(cid, instance) for cid, instance in open_here
+                 if instance in fresh and instance not in disputed
+                 and (stored.get(instance) or {}).get("status") == VERIFIED]
+        if not agree:
+            return 0
+        ids = [int(cid) for cid, _instance in agree]
+        for cid in ids:
+            self.db.resolve_conflict(cid, SUPERSEDED)
+        self.db.log_op(
+            key.desktop, key.view, CLOSE_KIND,
+            {"step": key.step, "conflicts": ids,
+             "instances": sorted({instance for _cid, instance in agree}),
+             "resolution": SUPERSEDED, "reason": AGREE_AGAIN},
+            {"kind": REOPEN_KIND, "step": key.step, "conflicts": ids},
+            SYSTEM,
+        )
+        return len(ids)
+
+    def reopen_agreed(self, op_id: int) -> list[int]:
+        """Undo one ``resolve_conflicts`` row of :meth:`_close_agreeing`: reopen them.
+
+        The conflicts it closed go back to ``open`` exactly as they were queued
+        (same id, same old and new value), the frame's digest is dropped so the
+        next refresh looks at it again, and the reopening is itself logged with
+        the inverse that closes them once more.  A conflict that is open again
+        already is left alone.  Returns the ids reopened.
+
+        Raises :class:`ValueError` for any other op: a human's ``keep_old`` or
+        ``accept_new`` wrote rows and overrides that reopening alone would not
+        take back.
+        """
+        op = self.db.get_op(int(op_id))
+        if op is None or op["kind"] != CLOSE_KIND:
+            raise ValueError(f"op {op_id} is not a {CLOSE_KIND} row of the truth service")
+        inverse = op["inverse"] or {}
+        key = FrameKey(int(op["desktop"]), int(inverse["step"]), str(op["view"]))
+        reopened: list[int] = []
+        with self.db.transaction():
+            for cid in inverse.get("conflicts") or []:
+                found = self.db.get_conflict(int(cid))
+                if found is None or found["status"] == OPEN:
+                    continue
+                self.db.reopen_conflict(int(cid))
+                reopened.append(int(cid))
+            self.db.clear_frame_digest(key)
+            self.db.log_op(
+                key.desktop, key.view, REOPEN_KIND,
+                {"step": key.step, "conflicts": reopened, "undoes": int(op_id)},
+                {"kind": CLOSE_KIND, "step": key.step, "conflicts": reopened},
+                SYSTEM,
+            )
+        return reopened
 
     def refresh_range(self, desktop: int, view: str, steps: Iterable[int],
                       per_step: bool = False, ignore_digest: bool = False) -> dict:

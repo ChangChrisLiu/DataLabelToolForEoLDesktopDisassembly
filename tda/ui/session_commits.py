@@ -385,4 +385,13 @@ class CommitMixin:
             return api.SCOPE_KEYFRAME
         mask = self.layer.mask() if edited is None else edited
         return edit.suggest_scope(self.compiled(), self.layer.instance,
-                                  self.layer.before(), mask)
+                                  self.layer.before(), mask, hosts=self.scope_hosts())
+
+    def scope_hosts(self) -> dict:
+        """``instance -> what it sits on`` for this desktop (task U6).
+
+        :func:`tda.ui.session_scope.hosts_of` over the instance table: the
+        relation pointers, the taxonomy's ``host_class`` and the chassis.  Read
+        per suggestion -- one small table, and the Steps mode can change it.
+        """
+        return edit.hosts_of(self.db.instances(self.desktop), self.tax)

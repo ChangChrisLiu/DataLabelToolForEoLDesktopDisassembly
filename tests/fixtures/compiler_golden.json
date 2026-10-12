@@ -2601,7 +2601,7 @@
   ]
  },
  "28-64x64": {
-  "input_hash": "0d858590d50b39c102353538fb81527eebf567be",
+  "input_hash": "86c3a93a02fb62296818b3067910b23bd944073e",
   "instances": {
    "i00": {
     "amodal": "34a1336c7a779dc3d33875c800addb143185744c",
@@ -2640,10 +2640,10 @@
      64.0
     ],
     "keyframe_id": 382,
-    "occlusion_ratio": 0.0,
+    "occlusion_ratio": 0.094594594595,
     "placement": "in_chassis",
     "visibility": "visible",
-    "visible": "dc4c3695d064c7ad8baae3655223d6654edc0312"
+    "visible": "f474b553f74e60165f4d2d04d5a53ca341d77c01"
    },
    "i03": {
     "amodal": "c009970d07d635785a803c754af16e117d23412a",
@@ -2654,10 +2654,10 @@
      64.0
     ],
     "keyframe_id": 383,
-    "occlusion_ratio": 0.220064724919,
+    "occlusion_ratio": 0.197411003236,
     "placement": "in_chassis",
     "visibility": "visible",
-    "visible": "a2fbe7f71065b7aa922f45f2e0f1057a69b7588b"
+    "visible": "9808596621ce7364a2fa576354bb09eb40819dd6"
    },
    "i04": {
     "amodal": null,
@@ -2686,6 +2686,10 @@
   "layers": {
    "in_chassis": [
     [
+     "i02",
+     "p2"
+    ],
+    [
      "i03",
      "p0"
     ],
@@ -2706,15 +2710,11 @@
      "p0"
     ],
     [
-     "i00",
+     "i02",
      "p0"
     ],
     [
-     "i02",
-     "p2"
-    ],
-    [
-     "i02",
+     "i00",
      "p0"
     ],
     [
@@ -2725,10 +2725,10 @@
   },
   "painted": {
    "in_chassis": [
+    "i02",
     "i03",
     "i00",
-    "i05",
-    "i02"
+    "i05"
    ]
   },
   "problems": [
@@ -2903,7 +2903,7 @@
   ]
  },
  "32-64x64": {
-  "input_hash": "138ee1a8610ce6f0fbb1d47573fe1919df880f47",
+  "input_hash": "25291bd3dd44613696ea4b4324392b3463a37686",
   "instances": {
    "i00": {
     "amodal": "b76b903be90fbf0cf26fd50a2013d693fcb6fba1",
@@ -2950,11 +2950,11 @@
      "p0"
     ],
     [
-     "i02",
+     "i01",
      "p0"
     ],
     [
-     "i01",
+     "i02",
      "p0"
     ]
    ]
@@ -2962,8 +2962,8 @@
   "painted": {
    "in_chassis": [
     "i00",
-    "i02",
-    "i01"
+    "i01",
+    "i02"
    ]
   },
   "problems": [
@@ -4076,7 +4076,7 @@
   ]
  },
  "45-48x96": {
-  "input_hash": "c1f817fb4c508e820ae4d5212813d96590aabe3b",
+  "input_hash": "6a9254e66973b8c5cda58074257eaba58aac568c",
   "instances": {
    "i00": {
     "amodal": "8c029f92882b927b4cf9f93ffa09ad963900d6cc",
@@ -4115,10 +4115,10 @@
      43.0
     ],
     "keyframe_id": 552,
-    "occlusion_ratio": 0.568501920615,
+    "occlusion_ratio": 0.65556978233,
     "placement": "in_chassis",
     "visibility": "occluded_partial",
-    "visible": "7a6731719eeff26e891bb391be5d78cef9c13e65"
+    "visible": "20f2fadcd541d60ffe6ee5499361534dbed91e2a"
    },
    "i03": {
     "amodal": "5b1ea826924772a179c81951cdb6b5c5eb9167e4",
@@ -4138,14 +4138,6 @@
   "layers": {
    "in_chassis": [
     [
-     "i00",
-     "p0"
-    ],
-    [
-     "i03",
-     "p0"
-    ],
-    [
      "i02",
      "p1"
     ],
@@ -4154,8 +4146,16 @@
      "p0"
     ],
     [
+     "i00",
+     "p0"
+    ],
+    [
      "i02",
      "p2"
+    ],
+    [
+     "i03",
+     "p0"
     ],
     [
      "i01",
@@ -4169,9 +4169,9 @@
   },
   "painted": {
    "in_chassis": [
+    "i02",
     "i00",
     "i03",
-    "i02",
     "i01"
    ]
   },
@@ -5496,7 +5496,7 @@
   ]
  },
  "oak-3040x4032": {
-  "input_hash": "df2c9be1d2f63b1dab64ecc668d00bf5584b5e2b",
+  "input_hash": "45ed64fd48c5be167ae2f8bae46ad874e5cb0f17",
   "instances": {
    "board": {
     "amodal": "293f776d1aab98faebe0401e2f5187fc4b86b6a0",
@@ -5567,16 +5567,16 @@
   "layers": {
    "in_chassis": [
     [
+     "board",
+     "main"
+    ],
+    [
      "cover",
      "a"
     ],
     [
      "cover",
      "b"
-    ],
-    [
-     "board",
-     "main"
     ],
     [
      "bracket",
@@ -5586,8 +5586,8 @@
   },
   "painted": {
    "in_chassis": [
-    "cover",
     "board",
+    "cover",
     "bracket"
    ]
   },
@@ -5597,7 +5597,7 @@
   ]
  },
  "scanner-1600x1600": {
-  "input_hash": "66324a24d548843442ab8e47a2df63196e11c076",
+  "input_hash": "6fddbe66984842c8e3947dc09f70b4ba22fb59ae",
   "instances": {
    "board": {
     "amodal": "f7ca50915498375f917ef198f9a0410e1c4d753f",
@@ -5668,16 +5668,16 @@
   "layers": {
    "in_chassis": [
     [
+     "board",
+     "main"
+    ],
+    [
      "cover",
      "a"
     ],
     [
      "cover",
      "b"
-    ],
-    [
-     "board",
-     "main"
     ],
     [
      "bracket",
@@ -5687,8 +5687,8 @@
   },
   "painted": {
    "in_chassis": [
-    "cover",
     "board",
+    "cover",
     "bracket"
    ]
   },

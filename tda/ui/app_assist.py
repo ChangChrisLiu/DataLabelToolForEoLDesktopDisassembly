@@ -7,6 +7,7 @@ annotator activated, and where a prompt box should come from.
 """
 from __future__ import annotations
 
+import re
 import threading
 from typing import Any, Optional
 
@@ -32,14 +33,17 @@ from tda.ui.app_diff import (
     expected_payload,
     heat_rgba,
 )
+from tda.models.load_gate import Turn, heavy
 from tda.ui.app_detect import DetCandidate, DetectMixin, detector_asked
+from tda.ui.guide import DRAW_NO_SAM as G_DRAW_NO_SAM
 from tda.ui.app_roi_worker import RoiProposer
 from tda.ui.class_names import class_zh
 
-__all__ = ["ASSIST_CONFIRM_WAIT", "BOX_REFUSED", "DET_CHIP", "DET_CHIP_RANK",
-           "EDITING_NO_BOX", "NO_ALTERNATE", "PROMPT_ARMED", "PROMPT_ARMED_DET",
-           "PROMPT_CHIP", "PROMPT_CHIP_RANK", "PROMPT_TOO_BIG", "PROMPT_WITHHELD",
-           "AssistMixin", "DiffOffer"]
+__all__ = ["ASSIST_CONFIRM_WAIT", "BOX_REFUSED", "DET_CHIP", "DET_CHIP_NO_SAM",
+           "DET_CHIP_RANK", "EDITING_NO_BOX", "NO_ALTERNATE", "PROMPT_ARMED",
+           "PROMPT_ARMED_DET", "PROMPT_ARMED_DET_NO_SAM", "PROMPT_CHIP",
+           "PROMPT_CHIP_RANK", "PROMPT_TOO_BIG", "PROMPT_WITHHELD", "AssistMixin",
+           "DiffOffer", "short_reason"]
 
 class _SamLoader(QObject):
     """Carries the outcome of the background SAM load onto the GUI thread."""
@@ -105,6 +109,14 @@ EDITING_NO_BOX = (" — 这一帧没有提示框：直接在零件上点 S / no 
 #: The chip of a box the small-part detector armed (task U3): what it is and
 #: who found it.  ``{name}`` is the class's Chinese name (螺丝).
 DET_CHIP = "SAM 提示框（检测器：{name}）"
+#: ... while SAM is not loaded (task U6): the box is still worth showing -- it
+#: is where ``Y`` goes -- but "SAM 提示框" on a box SAM will never see is what
+#: confused the D13 annotator the day SAM's import deadlocked.
+DET_CHIP_NO_SAM = "检测器找到的{name}（SAM 未加载：Y 拖一下就画好）"
+#: The arrival line in the same case.
+PROMPT_ARMED_DET_NO_SAM = ("虚线框是检测器找到的{name}：SAM 没加载，按 Y 在{name}中心按下、拖到"
+                           "边缘松手就画好（或 B 画笔 / P 多边形） / the dashed box is a {cls} "
+                           "the detector found; SAM is not loaded: Y and drag")
 #: ... and after ``Shift+C``: which of how many.
 DET_CHIP_RANK = "SAM 提示框 {rank}/{total}（检测器：{name}）"
 #: The arrival line when the detector armed the box.  Its confidence and dE
@@ -120,6 +132,18 @@ BOX_REFUSED = ("你点在提示框外：这次只用你的点，提示框不用�
 #: ... held against SAM's "+N px" line, which lands a fraction of a second
 #: later and would otherwise wipe the one sentence saying why the box went.
 BOX_REFUSED_HOLD_MS = 4000
+
+
+def short_reason(text: str, limit: int = 48) -> str:
+    """A failure's message in a few words, for the status badge (task U6).
+
+    ``_DeadlockError: deadlock detected by _ModuleLock('torchvision...') at
+    2226949304144`` -> ``_DeadlockError: deadlock detected by _ModuleLock(…``:
+    the exception's name first, a memory address never, and the whole line
+    stays in the log.
+    """
+    cleaned = re.sub(r"\s+at 0x[0-9a-fA-F]+|\s+at \d{6,}", "", str(text)).strip()
+    return cleaned if len(cleaned) <= limit else cleaned[:limit - 1].rstrip() + "…"
 
 
 class DiffOffer:
@@ -197,6 +221,13 @@ class AssistMixin(DetectMixin):
         self._sam_loading = False
         self.sam_available = sam_queue is not None
         self.sam_reason = "" if sam_queue is not None else "not loaded yet"
+        #: Why SAM's last load failed, in a few words; ``""`` while it has not
+        #: failed (task U6).  ``F5`` retries while it is set.
+        self._sam_load_failed = ""
+        #: SAM's import phase goes before the detector's model build (U6): the
+        #: detector waits for this, the SAM loader releases it -- at once when
+        #: a queue was handed in and this window loads no SAM of its own.
+        self._sam_turn = Turn(released=sam_queue is not None)
         self.sam_point = SamPointTool(self.canvas, None, queue=sam_queue, refine=True)
         self.sam_box = SamBoxTool(self.canvas, None, queue=sam_queue)
         #: Why the last prompt failed, until one is armed again.  Empty means
@@ -889,7 +920,7 @@ class AssistMixin(DetectMixin):
         self._withheld_box = None
         self._prompt_rank = 0
         self._rank_one_source = f"det:{top.cls}"
-        self._rank_one_chip = DET_CHIP.format(name=name)
+        self._rank_one_chip = self.det_chip(top.cls)
         self._det_behind = list(ranking.chosen[1:])
         self._arm_prompt_box(top.box, label=self._rank_one_chip,
                              source=self._rank_one_source)
@@ -901,8 +932,29 @@ class AssistMixin(DetectMixin):
             key.desktop, key.view, key.step, ranking.neighbour, top.int_box, top.conf,
             top.change, [c.describe() for c in ranking.chosen],
             [c.describe() for c in ranking.skipped])
-        self.report(PROMPT_ARMED_DET.format(name=name, cls=top.cls))
+        armed = PROMPT_ARMED_DET if self.sam_available else PROMPT_ARMED_DET_NO_SAM
+        self.report(armed.format(name=name, cls=top.cls))
         return True
+
+    def det_chip(self, cls: str) -> str:
+        """The detector box's chip: :data:`DET_CHIP`, or the no-SAM one (task U6)."""
+        name = class_zh(cls)
+        return (DET_CHIP if self.sam_available else DET_CHIP_NO_SAM).format(name=name)
+
+    def refresh_det_chip(self) -> None:
+        """SAM came or went: a detector box on screen at rank 1 gets the right chip.
+
+        Only the chip changes -- not the box, not the rank, not the prompt --
+        because the box is the same box either way; what it is *for* moved.
+        """
+        source = str(self._rank_one_source or "")
+        if not source.startswith("det:"):
+            return
+        self._rank_one_chip = self.det_chip(source.split(":", 1)[1])
+        if (self._prompt_rank == 0 and self._prompt_box is not None
+                and self._prompt_box == self._rank_one):
+            self.canvas.set_rubber_band(self._prompt_box, kind="prompt",
+                                        label=self._rank_one_chip)
 
     def no_box_note(self) -> str:
         """:data:`EDITING_NO_BOX` while the gate's withholding is what is on the frame."""
@@ -1150,6 +1202,8 @@ class AssistMixin(DetectMixin):
         armed one: picking up the brush to tidy a proposal must not make the
         ``2/3`` disappear while ``C`` would still work.
         """
+        if self._sam_load_failed and not self._sam_loading:
+            return f"SAM 加载失败：{self._sam_load_failed}（F5 重试）"
         if not self.sam_available:
             return f"SAM unavailable: {self.sam_reason}"
         if self._sam_failure:
@@ -1189,6 +1243,7 @@ class AssistMixin(DetectMixin):
         if self._tool_name in ("sam_point", "sam_box"):
             self._tool_name = "brush"
             self._attach_tool()
+        self.refresh_det_chip()
         self.update_status()
 
     def set_sam_queue(self, queue: Any, owns: bool = True) -> None:
@@ -1199,31 +1254,45 @@ class AssistMixin(DetectMixin):
         self.sam_reason = ""
         for tool in (self.sam_point, self.sam_box):
             tool.queue = queue
+        self.refresh_det_chip()
         self.update_status()
 
     def start_sam(self) -> None:
-        """Load SAM on a background thread; the first frame must not wait for it."""
+        """Load SAM on a background thread; the first frame must not wait for it.
+
+        The import and the model build run inside
+        :func:`~tda.models.load_gate.heavy` -- the one lock the detector's
+        loader holds too -- and the window's turn is released the moment they
+        are over, whichever way, so the detector builds after SAM (task U6:
+        on 2026-10-12 the two imports deadlocked and SAM was off all day).
+        """
         if self.sam_queue is not None or self._sam_loading:
             return
         self._sam_loading = True
+        self._sam_load_failed = ""
         self.sam_reason = "loading"
         self.logger.info("SAM: loading the checkpoint")
         self.update_status()
         loader = self._sam_loader
         paths = dict(self.paths)
+        turn = self._sam_turn
 
         def load() -> None:
             try:
-                from tda.models import sam_service
+                with heavy("sam"):
+                    from tda.models import sam_service
 
-                # The paths the app was *started* with, not the repo's own
-                # configs/paths.yaml: --paths was being ignored for the weights.
-                checkpoint = sam_service.checkpoint_in(paths)
-                service = (sam_service.SamService(checkpoint=str(checkpoint))
-                           if checkpoint is not None else sam_service.SamService())
-                loader.sigLoaded.emit(sam_service.SamQueue(service))
+                    # The paths the app was *started* with, not the repo's own
+                    # configs/paths.yaml: --paths was being ignored for the weights.
+                    checkpoint = sam_service.checkpoint_in(paths)
+                    service = (sam_service.SamService(checkpoint=str(checkpoint))
+                               if checkpoint is not None else sam_service.SamService())
+                outcome: object = sam_service.SamQueue(service)
             except Exception as exc:  # noqa: BLE001 - the app works without SAM
-                loader.sigLoaded.emit(f"{type(exc).__name__}: {exc}")
+                outcome = f"{type(exc).__name__}: {exc}"
+            finally:
+                turn.release()          # loaded or failed: the detector's turn
+            loader.sigLoaded.emit(outcome)
 
         self._sam_loader_thread = threading.Thread(target=load, name="tda-sam-load",
                                                    daemon=True)
@@ -1235,16 +1304,43 @@ class AssistMixin(DetectMixin):
         self._sam_loading = False
         if isinstance(outcome, str):
             self.logger.info("SAM: unavailable (%s)", outcome)
+            # Said on the badge as a failure with its key, not as "not loaded
+            # yet" for the rest of the session (task U6).
+            self._sam_load_failed = short_reason(outcome)
             self.set_sam_unavailable(outcome)
+            self.report(self.sam_status_text())    # the badge keeps saying it
             return
         if self.closed:
             # Nobody is going to use it: a queue nobody stops keeps a thread and
             # a CUDA context alive for the life of the process.
             outcome.stop()
             return
+        self._sam_load_failed = ""
         self.set_sam_queue(outcome, owns=True)
         self.logger.info("SAM: ready")
         self.report("SAM ready")
+
+    def retry_sam(self) -> bool:
+        """``F5`` after a failed load: one more load, once per press (task U6).
+
+        ``False`` -- and nothing started -- unless the last load failed and no
+        load is running: a press during a load does not start a second one,
+        and a SAM that loaded is not reloaded.
+        """
+        if not self._sam_load_failed or self._sam_loading or self.sam_queue is not None:
+            return False
+        self.logger.info("SAM: retrying the load (F5) after: %s", self._sam_load_failed)
+        self.start_sam()
+        self.report("正在重新加载 SAM… / loading SAM again")
+        return True
+
+    def sam_failure_reason(self) -> str:
+        """Why SAM's last load failed, in a few words; ``""`` unless it did."""
+        return self._sam_load_failed
+
+    def sam_refusal(self) -> str:
+        """What ``S`` / ``X`` -- and their buttons -- say when SAM's load failed."""
+        return f"{G_DRAW_NO_SAM}（SAM 加载失败：{self._sam_load_failed}；F5 重试）"
 
     # -------------------------------------------------------------- actions
     @S.guard
@@ -1300,3 +1396,7 @@ class AssistMixin(DetectMixin):
         self.roi_proposer.shutdown()
         # The detector's thread writes its cache on the way out (task U3).
         self.shutdown_detector()
+        # A detector build still waiting for SAM's turn must not wait for a
+        # window that is gone (U6): released after the worker is stopped, so
+        # it wakes, sees that, and builds nothing.
+        self._sam_turn.release()

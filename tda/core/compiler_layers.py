@@ -10,20 +10,33 @@ which is a total order of the layers it lists, and the
 (spec 3.3 step 5).
 
 :func:`above` answers for one pair, which is all the truth table needs.
-:func:`group_order` sorts a whole group for painting: it treats the overrides
-as hard edges and runs a stable topological sort that always takes the
-available layer with the smallest global index, so the global order survives
-wherever the overrides leave it a choice. Contradictory overrides form a cycle
-that cannot be satisfied at all; those are reported and the group falls back to
-the plain global order.
+:func:`group_order` is the order a whole group is **painted** in, and that is
+the global order and nothing else.  :func:`override_pairs` is what the
+overrides say about the group: the ``(above, below)`` pairs that hold in it,
+which the compiler applies *after* painting, in pixels, to the two instances of
+each pair and to nobody else (:func:`tda.core.compiler.compile_frame`, step 5).
+
+**Why not a reorder** (task U6).  Overrides used to be hard edges of a
+topological sort.  One override against the global order then moved the
+instance past every layer in between: on D13/scan "chassis above
+screw.motherboard.06" put the chassis above the cover, the motherboard, the
+CPU socket lever and four RAM latches as well, their visible masks came out
+empty, and two confirmed frames turned red with eighteen conflicts.  A pair
+override is a statement about one pair, so it now moves exactly the pixels of
+that pair.
+
+Contradictory overrides form a cycle that cannot be satisfied at all; those are
+reported (``zorder_cycle:...``) and the group keeps the plain global order --
+no override of that group is applied.
 """
 from __future__ import annotations
 
-import heapq
-
 from tda.core.model import PairOverride, ZOrderRec
 
-__all__ = ["LayerKey", "above", "group_order"]
+__all__ = ["LayerKey", "above", "group_order", "override_pairs"]
+
+#: One override that holds in a group: ``(above instance, below instance)``.
+Pair = tuple[str, str]
 
 #: one layer of the composite: ``(instance_key, part_name)``
 LayerKey = tuple[str, str]
@@ -141,12 +154,17 @@ def _find_cycles(inst_edges: dict[str, set[str]]) -> list[str]:
 def group_order(
     layers: list[LayerKey], zorder: ZOrderRec, overrides: list[PairOverride]
 ) -> tuple[list[LayerKey], list[str]]:
-    """Order one group's layers bottom-to-top, plus the problems found.
+    """Order one group's layers bottom-to-top for painting, plus the problems found.
 
-    ``layers`` is in append order (sorted instance, then part order), which is
-    what decides the relative position of layers missing from the global order:
-    they all go above the listed ones, in that append order, and each is
-    reported as ``zorder_missing:<instance>/<part>``.
+    The order is the **global** one: ``layers`` sorted by their position in
+    ``zorder.order``.  ``layers`` is in append order (sorted instance, then
+    part order), which is what decides the relative position of layers missing
+    from the global order: they all go above the listed ones, in that append
+    order, and each is reported as ``zorder_missing:<instance>/<part>``.
+
+    ``overrides`` do not move a layer here (see the module docstring); they are
+    only checked for cycles, which are reported after the missing layers, as
+    they always were.  :func:`override_pairs` is the half that applies them.
     """
     problems: list[str] = []
     listed = {tuple(row): idx for idx, row in enumerate(zorder.order)}
@@ -159,47 +177,40 @@ def group_order(
             index[layer] = unlisted
             unlisted += 1
             problems.append(f"zorder_missing:{layer[0]}/{layer[1]}")
-    fallback = sorted(layers, key=lambda lk: index[lk])
+    ordered = sorted(layers, key=lambda lk: index[lk])
+    _pairs, cycles = override_pairs(layers, overrides)
+    return ordered, problems + cycles
 
-    by_instance: dict[str, list[LayerKey]] = {}
-    for layer in layers:
-        by_instance.setdefault(layer[0], []).append(layer)
 
-    edges: set[tuple[LayerKey, LayerKey]] = set()
+def override_pairs(layers: list[LayerKey],
+                   overrides: list[PairOverride]) -> tuple[list[Pair], list[str]]:
+    """The overrides that hold in one group, as ``(above, below)``, and its cycles.
+
+    An override holds in a group when both of its instances have a layer in it
+    (bench and chassis are composited apart, spec 3.3 step 5); one naming an
+    instance with itself says nothing and is dropped.  Duplicates collapse,
+    and the pairs come back sorted, so the answer does not depend on the order
+    the database listed the rows in.
+
+    When the pairs that hold contradict each other -- a cycle, ``A`` above ``B``
+    above ``A`` -- none of them can be honoured and the answer is **no pair at
+    all** together with one ``zorder_cycle:<instances>`` problem per cycle: the
+    group keeps its plain global order, which is what the topological sort fell
+    back to before U6.
+    """
+    present = {layer[0] for layer in layers}
+    pairs: set[Pair] = set()
     inst_edges: dict[str, set[str]] = {}
     for ov in overrides:
         if ov.above == ov.below:
             continue
-        highs, lows = by_instance.get(ov.above), by_instance.get(ov.below)
-        if not highs or not lows:
+        if ov.above not in present or ov.below not in present:
             continue
+        pairs.add((str(ov.above), str(ov.below)))
         inst_edges.setdefault(ov.below, set()).add(ov.above)
-        for low in lows:
-            for high in highs:
-                if low != high:
-                    edges.add((low, high))
-    if not edges:
-        return fallback, problems
-
-    adjacency: dict[LayerKey, set[LayerKey]] = {lk: set() for lk in layers}
-    indegree: dict[LayerKey, int] = {lk: 0 for lk in layers}
-    for low, high in sorted(edges):
-        if high not in adjacency[low]:
-            adjacency[low].add(high)
-            indegree[high] += 1
-
-    heap = [(index[lk], lk) for lk in layers if indegree[lk] == 0]
-    heapq.heapify(heap)
-    ordered: list[LayerKey] = []
-    while heap:
-        _, layer = heapq.heappop(heap)
-        ordered.append(layer)
-        for nxt in sorted(adjacency[layer]):
-            indegree[nxt] -= 1
-            if indegree[nxt] == 0:
-                heapq.heappush(heap, (index[nxt], nxt))
-
-    if len(ordered) != len(layers):  # contradictory overrides
-        problems.extend(_find_cycles(inst_edges))
-        return fallback, problems
-    return ordered, problems
+    if not pairs:
+        return [], []
+    cycles = _find_cycles(inst_edges)
+    if cycles:
+        return [], cycles
+    return sorted(pairs), []
