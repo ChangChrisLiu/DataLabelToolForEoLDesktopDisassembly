@@ -62,7 +62,7 @@ def digest_of(inputs: FrameInputs, compiler_version: str) -> str:
         str((inputs.transform.scale, inputs.transform.theta,
              inputs.transform.tx, inputs.transform.ty)),
         str((inputs.zorder.version, inputs.zorder.order)),
-        str([(p.above, p.below) for p in inputs.overrides]),
+        str([(p.above, p.below) for p in inputs.overrides]) + _pair_semantics(inputs),
         str(_selected(inputs)),
         str(sorted((o.occluder_type, masks.rle_counts(o.rle))
                    for o in inputs.occluders)),
@@ -71,6 +71,24 @@ def digest_of(inputs: FrameInputs, compiler_version: str) -> str:
         compiler_version,
     ]
     return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
+
+
+#: What a pair override *means* entered the digest with task U6: pixels of
+#: the pair, no longer a reorder of the group.  Only where there is an
+#: override, so no other frame's digest moves.
+PAIR_SEMANTICS = "|pairs:pixels"
+
+
+def _pair_semantics(inputs: FrameInputs) -> str:
+    """:data:`PAIR_SEMANTICS` when this frame has pair overrides, else ``""``.
+
+    A digest stamped before U6 on a frame with an override describes rows the
+    *old* rule made, from inputs that have not changed: without the marker a
+    refresh would find the digest current and never recompile them.  The input
+    hash needs no such marker -- wherever the two rules disagree the painted
+    layer order differs, and that is in the hash.
+    """
+    return PAIR_SEMANTICS if inputs.overrides else ""
 
 
 def selected_keyframes(inputs: FrameInputs) -> dict[str, Optional[ShapeKeyframe]]:

@@ -410,6 +410,32 @@ def test_a_full_size_canvas_is_byte_identical_to_the_golden(golden, name: str):
     assert fingerprint(compile_scene(spec)) == golden[name]
 
 
+def test_an_override_changes_nobody_but_the_pair_it_names():
+    """Task U6, over every scene that has pair overrides.
+
+    An instance no override names compiles byte-identically -- mask, ratio,
+    label -- to the same scene with the overrides taken away: a pair override
+    moves pixels between its two instances and nowhere else.  The golden was
+    regenerated for U6 in exactly the five scenes where the topological sort it
+    replaced had moved something (scene ``28-64x64``'s ``i03`` lost pixels to an
+    override about ``i02`` and ``i00``); the forty-one scenes without an
+    override did not move by one byte.
+    """
+    checked = 0
+    for name, spec in all_scenes():
+        if not spec["overrides"]:
+            continue
+        named = {i for o in spec["overrides"] for i in (o.above, o.below)}
+        with_pairs = fingerprint(compile_scene(spec))["instances"]
+        without = fingerprint(compile_scene(dict(spec, overrides=[])))["instances"]
+        for instance, record in with_pairs.items():
+            if instance in named:
+                continue
+            assert record == without[instance], (name, instance)
+            checked += 1
+    assert checked >= 20, f"only {checked} bystanders were checked"
+
+
 def test_every_scene_is_reproduced_from_the_seed():
     """Two generations of the scene list give the same scenes, in order."""
     first = [name for name, _ in scenes()]

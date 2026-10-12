@@ -14,17 +14,25 @@ How the layering works
 Each ``(instance, part)`` pair is one *layer*. Layers are grouped by
 placement: a part lying on the bench never occludes a part inside the chassis
 and vice versa (spec 3.3 step 5), so each group is composited on its own.
-Within a group the layers are sorted bottom-to-top and then painted **top-down
-into a single claim canvas**: every pixel belongs to the first (topmost) layer
-that covers it, which yields all visible masks in one pass over the pixels
-instead of a pairwise subtraction per pair of layers. An instance's visible
-mask is the union of its parts' claims, its amodal mask the union of its parts.
+Within a group the layers are sorted bottom-to-top in the **global** z-order
+and then painted **top-down into a single claim canvas**: every pixel belongs
+to the first (topmost) layer that covers it, which yields all visible masks in
+one pass over the pixels instead of a pairwise subtraction per pair of layers.
+An instance's visible mask is the union of its parts' claims, its amodal mask
+the union of its parts.
 
-The order itself is :mod:`tda.core.compiler_layers`' job -- the global z-order
-with the pairwise overrides as hard constraints -- and the ``visibility``
-label and the ``input_hash`` are :mod:`tda.core.compiler_visibility`'s. Both
-modules exist to keep this one readable; :func:`above` and
-:func:`derive_visibility` are re-exported here.
+Then the pairwise overrides, **in pixels and pairwise only** (task U6): "A
+above B" hands to ``A`` the pixels the painting gave to ``B`` that ``A``'s shape
+also covers, and nothing else moves -- not a layer in between, not a third
+layer painted over both (:func:`_apply_pairs`). They used to be hard edges of a
+topological sort, and one override then lifted an instance over every layer
+between the two: on D13/scan "chassis above screw.motherboard.06" emptied the
+motherboard, the CPU socket lever and four RAM latches.
+
+The order itself is :mod:`tda.core.compiler_layers`' job, and the
+``visibility`` label and the ``input_hash`` are
+:mod:`tda.core.compiler_visibility`'s. Both modules exist to keep this one
+readable; :func:`above` and :func:`derive_visibility` are re-exported here.
 
 Windows: every pixel touched is one a shape could reach
 -------------------------------------------------------
@@ -82,7 +90,7 @@ from typing import Optional
 import numpy as np
 
 from tda.core import masks
-from tda.core.compiler_layers import LayerKey, above, group_order
+from tda.core.compiler_layers import LayerKey, above, group_order, override_pairs
 from tda.core.compiler_visibility import derive_visibility, input_hash, visibility_for
 from tda.core.model import (
     FrameKey,
@@ -201,12 +209,17 @@ class CompiledFrame:
     """Everything the compiler derives for one frame.
 
     ``painted`` is the order the layers were actually composited in, as
-    ``placement -> instance keys, bottom-up``: the global z-order *after* the
-    pairwise overrides have been applied, with each placement group on its own
-    (spec 3.3 step 5). It is what the instance list and the canvas overlay have
-    to follow, since anything else would show an order the pixels contradict.
-    Instances with no mask layer -- a bench box, a missing shape -- appear in no
-    group.
+    ``placement -> instance keys, bottom-up``: the global z-order, with each
+    placement group on its own (spec 3.3 step 5). It is what the instance list
+    and the canvas overlay follow. Instances with no mask layer -- a bench box,
+    a missing shape -- appear in no group.
+
+    ``pairs`` is what the pairwise overrides changed on top of that order, per
+    group: the ``(above, below)`` instance pairs that held there and whose
+    contested pixels were handed to the upper one (task U6). A pair is never a
+    position in ``painted``: it reaches the two instances it names and nobody
+    else, so "is A over B here" is the pair's answer when there is one and the
+    painted order's otherwise.
     """
 
     key: FrameKey
@@ -222,6 +235,9 @@ class CompiledFrame:
     #: is still the one they make (:func:`tda.core.truth_fresh.hash_of_inputs`)
     #: instead of compiling to find out.
     layers: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
+    #: ``placement -> [(above, below), ...]``: the overrides that held (see
+    #: above). Not an ingredient of the hash -- the overrides themselves are.
+    pairs: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------- #
@@ -536,6 +552,61 @@ def _publish(mask: Optional[np.ndarray]) -> None:
         mask.setflags(write=False)
 
 
+def _apply_pairs(pairs: list[tuple[str, str]], bottom_up: list[LayerKey],
+                 visibles: dict[str, np.ndarray], amodals: dict[str, np.ndarray],
+                 windows: dict[str, Optional[Window]]) -> None:
+    """Step 5b: hand each override's contested pixels to its upper instance, in place.
+
+    ``(A, B)`` -- "A above B" -- moves to ``A`` exactly the pixels the global
+    painting gave to ``B`` that ``A``'s shape also covers: ``B.visible ∩
+    A.amodal``.  A pixel a third layer painted over ``B`` was never ``B``'s,
+    so it stays with that layer, and no instance outside the pair gains or
+    loses anything (task U6).
+
+    Several pairs can reach one pixel, and the answer must not depend on the
+    order the rows were stored in:
+
+    * **chains** follow through: ``A`` above ``B`` above ``C`` hands a pixel of
+      all three that ``C`` won to ``B`` and then to ``A`` -- each move is one
+      pair's, so the rounds repeat until nothing moves;
+    * **rivals** -- ``A`` above ``C`` and ``A'`` above ``C`` at a pixel all
+      three cover -- are settled by the global order between ``A`` and ``A'``:
+      the one painted higher takes it first, and the other finds it gone.
+
+    The pairs come from :func:`~tda.core.compiler_layers.override_pairs`,
+    which returns none for a group whose overrides form a cycle, so a pixel can
+    only climb the override graph and the rounds end; the guard is only a
+    guard.  Everything is read and written inside the two instances' windows.
+    """
+    rank: dict[str, int] = {}
+    for index, (instance, _part) in enumerate(bottom_up):
+        rank[instance] = index        # an instance ranks by its topmost layer
+    rivals: dict[str, list[str]] = {}
+    for upper, lower in pairs:
+        rivals.setdefault(lower, []).append(upper)
+    for uppers in rivals.values():
+        uppers.sort(key=lambda inst: -rank.get(inst, -1))
+    lowers = sorted(rivals, key=lambda inst: (rank.get(inst, -1), inst))
+    for _round in range(len(pairs) + 1):
+        moved_any = False
+        for lower in lowers:
+            for upper in rivals[lower]:
+                box = (None if _empty_window(windows.get(lower))
+                       or _empty_window(windows.get(upper))
+                       else _intersect_window(windows[lower], windows[upper]))
+                if box is None:
+                    continue
+                source = _view(visibles[lower], box)
+                moved = source & _view(amodals[upper], box)
+                if not moved.any():
+                    continue
+                source &= ~moved
+                _view(visibles[upper], box)[...] |= moved
+                moved_any = True
+        if not moved_any:
+            return
+
+
 def _instance_order(layers: list[LayerKey]) -> list[str]:
     """The instance keys of a painted layer list, bottom-up, each one once.
 
@@ -744,6 +815,7 @@ def compile_frame(
     # --- step 5: paint each group top-down --------------------------------- #
     visibles = {inst: np.zeros(canvas, dtype=bool, order="F") for inst in amodals}
     painted: dict[str, list[LayerKey]] = {}
+    held: dict[str, list[tuple[str, str]]] = {}
     for group in sorted(groups):
         bottom_up, group_problems = group_order(groups[group], zorder, overrides)
         problems.extend(group_problems)
@@ -757,6 +829,11 @@ def compile_frame(
             taken = _view(claimed, here)
             _view(visibles[layer[0]], here)[...] |= mask & ~taken
             taken |= mask
+        # --- step 5b: the pairwise overrides, in pixels (task U6) ---------- #
+        pairs, _cycles = override_pairs(groups[group], overrides)
+        if pairs:
+            held[group] = pairs
+            _apply_pairs(pairs, bottom_up, visibles, amodals, windows)
 
     # --- step 6: occluders ------------------------------------------------- #
     frame_occluders = [occ for occ in occluders if occ.frame == key]
@@ -883,6 +960,7 @@ def compile_frame(
         instances=compiled,
         painted={group: _instance_order(layers) for group, layers in painted.items()},
         layers={group: list(layers) for group, layers in painted.items()},
+        pairs={group: list(found) for group, found in held.items()},
         problems=problems,
         input_hash=input_hash(
             key=key,
