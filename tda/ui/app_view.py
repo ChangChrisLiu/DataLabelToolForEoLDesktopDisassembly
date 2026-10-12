@@ -99,7 +99,9 @@ class ToolsMixin:
     def act_tool(self, name: str) -> None:
         """Arm one tool; the SAM tools refuse when no model is loaded."""
         if name in ("sam_point", "sam_box") and not self.sam_available:
-            self.report(f"SAM is unavailable: {self.sam_reason}")
+            # A failed load says which tools work and which key retries (U6).
+            self.report(self.sam_refusal() if self.sam_failure_reason()
+                        else f"SAM is unavailable: {self.sam_reason}")
             return
         if (name == "bench_box" and not getattr(self, "bench_instance", None)
                 and not self._selected_bench_instance()):

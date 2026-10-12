@@ -85,6 +85,7 @@ from tda.ui.session_scope import (  # noqa: F401
     SCOPE_ZORDER_ABOVE,
     SCOPE_ZORDER_BELOW,
     ZORDER_HINT_FRAC,
+    hosts_of,
     split_zorder_scope,
     splits_the_shape,
     suggest_scope,
@@ -107,6 +108,7 @@ __all__ = [
     "commit_occluder",
     "commit_pair_override",
     "default_anchor",
+    "hosts_of",
     "preview",
     "preview_pair",
     "refresh_steps",
@@ -238,9 +240,12 @@ def _commit_shape(db: Db, truth: TruthService, key: FrameKey, instance: str,
     before: list[dict] = []
     after: list[dict] = []
 
-    if scope == api.SCOPE_SPLIT and _cannot_split(chosen, key.step, direction):
+    no_split = scope == api.SCOPE_SPLIT and _cannot_split(chosen, key.step, direction)
+    if no_split:
         # there is nothing left to cut off: the keyframe in force already ends
-        # exactly here, so "split" means "re-trace this one" (see _cannot_split)
+        # exactly here, so "split" means "re-trace this one" (see _cannot_split).
+        # The result says so (``no_split``): the window used to stay silent and
+        # the D13 annotator believed a split had been made (task U6).
         scope = api.SCOPE_KEYFRAME
 
     with db.transaction():
@@ -303,7 +308,7 @@ def _commit_shape(db: Db, truth: TruthService, key: FrameKey, instance: str,
     op = Op(kind="commit_keyframe", payload=payload, inverse=inverse)
     return _result(db, truth, key, steps, op,
                    {"keyframe_id": kf.id, "anchor_step": kf.anchor_step, "scope": scope,
-                    "changed": True})
+                    "changed": True, "no_split": bool(no_split)})
 
 
 def _stamp_source(kf: ShapeKeyframe, source: str, draft_id: Optional[int]) -> None:

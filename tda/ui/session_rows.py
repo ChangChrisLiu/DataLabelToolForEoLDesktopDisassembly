@@ -2,11 +2,13 @@
 
 Both answer the same question -- in which order do these instances stack, and
 what is visible of each -- and both have to answer it the way the *compiler*
-did.  The stored z-order is only one of the compiler's inputs: a
-``PairOverride`` can reverse a pair (spec 4.3 改层级) and bench parts are
+did.  The stored z-order is only one of the compiler's inputs: bench parts are
 composited apart from chassis parts (spec 3.3 step 5), so reading the order back
 out of the record would show a stacking the pixels contradict -- and dragging a
-row would look like it did nothing.
+row would look like it did nothing.  A ``PairOverride`` (spec 4.3 改层级) is
+not a position in that order: since task U6 it hands its pair's contested
+pixels to the upper one and nothing else, which the visible masks show
+(:attr:`tda.core.compiler.CompiledFrame.pairs`).
 """
 from __future__ import annotations
 

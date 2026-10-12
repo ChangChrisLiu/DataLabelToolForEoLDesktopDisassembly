@@ -5,26 +5,50 @@ answers it from where the changed pixels landed.  Adding pixels under an
 instance that is painted over this one is a statement about layering, not about
 the silhouette; erasing exactly where another shape lies under this one is the
 same statement the other way round; anything else is the shape itself.
+
+**Never between a part and what it sits on** (task U6).  The D13 trial drew
+the chassis and the screws on its motherboard: painting the chassis's
+silhouette runs under every screw, erasing a screw to redraw it exposes the
+chassis, and both used to come out as "change the layering" -- accepted with
+the ``Enter`` pressed a hundred times a day, it put the chassis over the
+screw.  A part lying (almost) wholly inside the other one's shape, or the other
+one being its host -- its ``parent``, ``mounted_on``, ``fastens`` or
+``socket_host``, the instance of its class's ``host_class``, any of those
+transitively, or the chassis -- is a part sitting on it, and the edit is a
+silhouette edit: :data:`~tda.ui.session_api.SCOPE_KEYFRAME`.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Collection, Mapping, Optional
 
 import numpy as np
 
 from tda.core import masks as _masks
 from tda.core.compiler import CompiledFrame
+from tda.core.model import InstanceRec
 from tda.ui import session_api as api
 
 Box = tuple[int, int, int, int]
 
-__all__ = ["SCOPE_SPLIT_PREFIX", "SCOPE_ZORDER_ABOVE", "SCOPE_ZORDER_BELOW",
-           "ZORDER_HINT_FRAC", "split_zorder_scope", "splits_the_shape",
-           "suggest_scope"]
+__all__ = ["CHASSIS_CLASS", "INSIDE_FRAC", "SCOPE_SPLIT_PREFIX", "SCOPE_ZORDER_ABOVE",
+           "SCOPE_ZORDER_BELOW", "ZORDER_HINT_FRAC", "hosts_of", "split_zorder_scope",
+           "splits_the_shape", "suggest_scope"]
 
 #: How much of the *changed* pixels has to land inside another instance before
 #: the default scope becomes "change the layering" (spec 4.3).
 ZORDER_HINT_FRAC = 0.6
+
+#: How much of a part's shape has to lie inside another's for the part to count
+#: as sitting on it (task U6): "almost wholly" -- a screw on the board, the
+#: board in the chassis -- with room for a re-trace that strays over the edge.
+INSIDE_FRAC = 0.9
+
+#: The class every other part sits in.
+CHASSIS_CLASS = "chassis"
+
+#: The pointers of :class:`~tda.core.model.InstanceRec` that say "this part is
+#: on that one".
+_HOST_POINTERS = ("parent", "mounted_on", "fastens", "socket_host")
 
 #: ``suggest_scope`` answers, and what ``commit_edit`` accepts besides the three
 #: :data:`~tda.ui.session_api.COMMIT_SCOPES`.
@@ -54,8 +78,47 @@ def split_zorder_scope(scope: str) -> Optional[tuple[str, bool]]:
     return None
 
 
+def hosts_of(instances: Mapping[str, InstanceRec],
+             tax=None) -> dict[str, frozenset[str]]:
+    """``instance -> every instance it sits on``, transitively, chassis included.
+
+    Read off the relation pointers (:data:`_HOST_POINTERS`) and, for a part
+    whose ``parent`` is blank, the instances of its class's ``host_class``
+    (``tax`` may be ``None``: then only the pointers count).  The chassis is
+    every other part's host.  A pointer to an instance this desktop does not
+    have, or to the part itself, is ignored; a loop in the pointers ends where
+    it closes.
+    """
+    chassis = {key for key, rec in instances.items() if rec.cls == CHASSIS_CLASS}
+    direct: dict[str, set[str]] = {}
+    for key, rec in instances.items():
+        found = {str(target) for name in _HOST_POINTERS
+                 if (target := getattr(rec, name, None)) and str(target) in instances}
+        if tax is not None and not rec.parent:
+            host_class = tax.host_class(rec.cls)
+            if host_class:
+                found |= {other for other, o in instances.items() if o.cls == host_class}
+        found.discard(key)
+        direct[key] = found
+    out: dict[str, frozenset[str]] = {}
+    for key in instances:
+        seen: set[str] = set()
+        stack = list(direct.get(key, ()))
+        while stack:
+            host = stack.pop()
+            if host in seen or host == key:
+                continue
+            seen.add(host)
+            stack.extend(direct.get(host, ()))
+        if key not in chassis:
+            seen |= chassis
+        out[key] = frozenset(seen)
+    return out
+
+
 def suggest_scope(compiled: CompiledFrame, instance: str, before: np.ndarray,
-                  edited: np.ndarray) -> str:
+                  edited: np.ndarray,
+                  hosts: Optional[Mapping[str, Collection[str]]] = None) -> str:
     """The scope an edit defaults to (spec 4.3, 默认触发).
 
     The question is about the pixels that actually *changed*, never about the
@@ -72,6 +135,15 @@ def suggest_scope(compiled: CompiledFrame, instance: str, before: np.ndarray,
     ``zorder:below:<B>``, because "change the layering" alone does not say which
     way round.  A hint is only given when at least
     :data:`ZORDER_HINT_FRAC` of the changed pixels fall inside ``B``.
+
+    **And never one that hides a part sitting on another** (task U6).  "Above
+    ``B``" is not offered when ``B`` sits on the edited instance -- ``B``'s
+    shape lies at least :data:`INSIDE_FRAC` inside the edited one's (its shape
+    before or after the edit), or the edited instance is one of ``B``'s
+    ``hosts`` (:func:`hosts_of`) -- and "below ``B``" is not offered when the
+    edited instance sits on ``B`` the same way.  The chassis drawn over the
+    screws on its board, and a screw erased to be redrawn over the chassis,
+    are silhouette edits.
 
     **Where it looks.**  The answer is about the pixels that changed, so the
     box those pixels live in is the only part of the canvas that can carry it,
@@ -90,13 +162,78 @@ def suggest_scope(compiled: CompiledFrame, instance: str, before: np.ndarray,
     here, there = _crop(before, window), _crop(edited, window)
     added, erased = there & ~here, here & ~there
 
+    shape = _EditedShape(before, edited, window)
     covering = _partner(compiled, instance, added, window, above=True)
-    if covering is not None:
+    if covering is not None and not _sits_on(compiled, covering, instance,
+                                             instance, shape, hosts):
         return f"zorder:above:{covering}"
     covered = _partner(compiled, instance, erased, window, above=False)
-    if covered is not None:
+    if covered is not None and not _sits_on(compiled, instance, covered,
+                                            instance, shape, hosts):
         return f"zorder:below:{covered}"
     return api.SCOPE_KEYFRAME
+
+
+class _EditedShape:
+    """The edited instance's shape for :func:`_sits_on`: ``before | edited``.
+
+    What it was and what it is being made -- either can be the one the other
+    part sits in.  Its extent is the box of ``before`` joined with the box the
+    edit changed, measured only when a layering partner was found, and once.
+    """
+
+    def __init__(self, before: np.ndarray, edited: np.ndarray, changed: Box) -> None:
+        self.before, self.edited, self.changed = before, edited, changed
+        self._box: Optional[Box] = None
+
+    def box(self) -> Box:
+        if self._box is None:
+            had = _masks.bbox(self.before)
+            self._box = self.changed if had is None else (
+                min(had[0], self.changed[0]), min(had[1], self.changed[1]),
+                max(had[2], self.changed[2]), max(had[3], self.changed[3]))
+        return self._box
+
+    def inside(self, box: Box) -> np.ndarray:
+        return _crop(self.before, box) | _crop(self.edited, box)
+
+
+def _sits_on(compiled: CompiledFrame, part: str, base: str, editing: str,
+             shape: _EditedShape,
+             hosts: Optional[Mapping[str, Collection[str]]]) -> bool:
+    """Does ``part`` sit on ``base``?  One of the two is ``editing``.
+
+    The relations decide first: ``base`` among ``part``'s ``hosts`` is yes,
+    ``part`` among ``base``'s is no -- a part never sits on what sits on it,
+    and the chassis, everybody's host, is never read pixel by pixel.  Without
+    either, the shapes do: ``part``'s lies at least :data:`INSIDE_FRAC` inside
+    ``base``'s.  The edited instance's shape is ``shape``, the other one's its
+    compiled amodal mask, and both are read only inside ``part``'s own box --
+    the screw's, not the board's.
+    """
+    if hosts is not None:
+        if base in (hosts.get(part) or ()):
+            return True
+        if part in (hosts.get(base) or ()):
+            return False
+    other = base if part == editing else part
+    found = compiled.instances.get(other)
+    if found is None or found.amodal is None:
+        return False
+    theirs_box = found.amodal_window
+    if theirs_box is None:
+        theirs_box = (0, 0, found.amodal.shape[1], found.amodal.shape[0])
+    if part == editing:                 # the edited part, inside the other one?
+        box = shape.box()
+        whole = int(np.count_nonzero(shape.inside(box)))
+        meet = _intersect(box, theirs_box)
+        overlap = 0 if meet is None else int(np.count_nonzero(
+            shape.inside(meet) & _crop(found.amodal, meet)))
+    else:                               # the other part, inside the edited one?
+        whole = int(np.count_nonzero(_crop(found.amodal, theirs_box)))
+        overlap = int(np.count_nonzero(_crop(found.amodal, theirs_box)
+                                       & shape.inside(theirs_box)))
+    return whole > 0 and overlap >= INSIDE_FRAC * whole
 
 
 def _canvas_of(compiled: CompiledFrame) -> Optional[tuple]:
@@ -188,8 +325,17 @@ def _partner(compiled: CompiledFrame, instance: str, changed: np.ndarray,
 
 
 def _paints_above(compiled: CompiledFrame, other: str, instance: str) -> Optional[bool]:
-    """Is ``other`` painted over ``instance``? ``None`` when they never meet."""
-    for order in compiled.painted.values():
+    """Is ``other`` painted over ``instance``? ``None`` when they never meet.
+
+    A pair override that held between the two decides (task U6: it is no
+    longer a position in ``painted``); the painted order otherwise.
+    """
+    for group, order in compiled.painted.items():
         if other in order and instance in order:
+            pairs = compiled.pairs.get(group, ())
+            if (other, instance) in pairs:
+                return True
+            if (instance, other) in pairs:
+                return False
             return order.index(other) > order.index(instance)
     return None

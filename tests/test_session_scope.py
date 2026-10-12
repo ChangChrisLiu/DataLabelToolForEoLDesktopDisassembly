@@ -87,13 +87,87 @@ def test_adding_pixels_in_free_space_stays_a_keyframe_edit(two_shapes):
     assert two_shapes.suggest_scope() == api.SCOPE_KEYFRAME
 
 
+CAGE = "drive_cage.01"
+
+
 def test_erasing_the_overlap_suggests_putting_the_other_one_above(session):
+    """Two parts side by side, neither on the other: the eraser asks about layering."""
     session.goto(10)
-    draw(session, CHASSIS, BIG, api.SCOPE_KEYFRAME)
+    assert CAGE not in session.scope_hosts()[COOLER]
+    draw(session, CAGE, BIG, api.SCOPE_KEYFRAME)
     draw(session, COOLER, rect(20, 20, 50, 50), api.SCOPE_KEYFRAME)  # overlaps, on top
     session.begin_edit(COOLER)
     session.set_editing_mask(rect(20, 20, 50, 50) & ~BIG)  # rub out exactly the overlap
-    assert session.suggest_scope() == f"zorder:below:{CHASSIS}"
+    assert session.suggest_scope() == f"zorder:below:{CAGE}"
+
+
+# --------------------------------------------------------------------------- #
+# task U6: never a layering suggestion between a part and what it sits on
+# --------------------------------------------------------------------------- #
+def test_erasing_a_part_where_the_chassis_lies_under_it_is_a_silhouette_edit(session):
+    """The trial's own gesture (16:24:33): screw 06 rubbed out over the chassis.
+
+    It used to suggest ``zorder:below:chassis``; the plain Enter accepted it and
+    the chassis went over everything up to the screw on frames 1-40.
+    """
+    session.goto(10)
+    draw(session, CHASSIS, BIG, api.SCOPE_KEYFRAME)
+    draw(session, COOLER, rect(20, 20, 50, 50), api.SCOPE_KEYFRAME)
+    session.begin_edit(COOLER)
+    session.set_editing_mask(rect(20, 20, 50, 50) & ~BIG)
+    assert session.suggest_scope() == api.SCOPE_KEYFRAME
+
+
+def test_painting_the_chassis_over_a_part_on_it_is_a_silhouette_edit(session):
+    """The task's own reading of it: the chassis row open, painted under a part.
+
+    By the relation (the chassis is every part's host) and by the geometry (the
+    part lies wholly inside the chassis's new shape) alike.
+    """
+    session.goto(10)
+    draw(session, CHASSIS, rect(0, 0, 30, 30), api.SCOPE_KEYFRAME)
+    draw(session, COOLER, SMALL, api.SCOPE_KEYFRAME)          # on top, clear of it
+    session.begin_edit(CHASSIS)
+    grown = rect(0, 0, 64, 64)                                 # under the cooler too
+    session.set_editing_mask(grown)
+    assert session.suggest_scope() == api.SCOPE_KEYFRAME
+    # the shapes alone say so too, with no relations at all
+    compiled = session.compiled()
+    assert edit.suggest_scope(compiled, CHASSIS, session.layer.before(), grown) \
+        == api.SCOPE_KEYFRAME
+
+
+def test_a_part_on_its_host_is_never_hidden_under_it(session):
+    """A RAM latch on the board (``parent``), only half inside the board's shape.
+
+    The geometry alone would not call it "sitting on" the board; the relation
+    does, and painting the board over the latch is the board's silhouette.
+    """
+    from session_scene import BOARD
+
+    latch = "ram_latch.01"
+    assert BOARD in session.scope_hosts()[latch]
+    session.goto(10)
+    draw(session, BOARD, rect(0, 0, 30, 30), api.SCOPE_KEYFRAME)
+    draw(session, latch, rect(24, 24, 36, 36), api.SCOPE_KEYFRAME)  # half off the board
+    session.begin_edit(BOARD)
+    session.set_editing_mask(rect(0, 0, 30, 30) | rect(24, 24, 36, 36))
+    assert session.suggest_scope() == api.SCOPE_KEYFRAME
+    # and without the relation the same edit is a layering question
+    compiled = session.compiled()
+    assert edit.suggest_scope(compiled, BOARD, session.layer.before(),
+                              rect(0, 0, 30, 30) | rect(28, 28, 34, 34)) \
+        == f"zorder:above:{latch}"
+
+
+def test_hosts_follow_the_pointers_transitively_and_end_at_the_chassis(session):
+    from session_scene import BOARD, SCREWS
+
+    hosts = session.scope_hosts()
+    assert CHASSIS in hosts[COOLER] and CHASSIS not in hosts[CHASSIS]
+    assert COOLER in hosts[SCREWS[0]]                       # parent / fastens
+    assert BOARD in hosts["ram_latch.01"]
+    assert set(hosts[COOLER]) <= set(hosts[SCREWS[0]])      # the cooler's hosts too
 
 
 def _reference_suggest_scope(compiled, instance: str, before, edited) -> str:
@@ -131,11 +205,20 @@ def _reference_suggest_scope(compiled, instance: str, before, edited) -> str:
                 best, best_overlap = other, overlap
         return best if best_overlap >= ZORDER_HINT_FRAC * total else None
 
+    shape = before | edited
+
+    def inside(part_mask, base_mask) -> bool:
+        """Task U6: does a part lie (almost) wholly inside the other's shape?"""
+        from tda.ui.session_scope import INSIDE_FRAC
+
+        whole = int(part_mask.sum())
+        return whole > 0 and int((part_mask & base_mask).sum()) >= INSIDE_FRAC * whole
+
     covering = partner(added, above=True)
-    if covering is not None:
+    if covering is not None and not inside(compiled.instances[covering].amodal, shape):
         return f"zorder:above:{covering}"
     covered = partner(erased, above=False)
-    if covered is not None:
+    if covered is not None and not inside(shape, compiled.instances[covered].amodal):
         return f"zorder:below:{covered}"
     return api.SCOPE_KEYFRAME
 
@@ -236,7 +319,12 @@ def test_the_scope_suggestion_reads_only_the_windows_it_has_to(two_shapes, monke
 
     monkeypatch.setattr(session_scope.np, "count_nonzero", counted)
     compiled = two_shapes.compiled()
-    session_scope.suggest_scope(compiled, COOLER, SMALL, SMALL | rect(4, 4, 16, 16))
+    # with the relations, as the session asks (task U6): the chassis is the
+    # cooler's host, so whether it "sits on" the cooler is never read off its
+    # 40 x 40 window
+    hosts = two_shapes.scope_hosts()
+    assert session_scope.suggest_scope(compiled, COOLER, SMALL, SMALL | rect(4, 4, 16, 16),
+                                       hosts=hosts) == f"zorder:above:{CHASSIS}"
 
     assert seen, "the suggestion compared nothing at all"
     assert max(seen) <= 16 * 16, f"a 12x12 stroke read a {max(seen)}-pixel array"
@@ -307,6 +395,7 @@ def test_split_on_the_keyframes_own_anchor_retraces_it_instead(session):
     kfs = session.db.keyframes(DESKTOP, VIEW, COOLER)
     assert len(kfs) == 1  # a split that cannot split is a re-trace
     assert result["scope"] == api.SCOPE_KEYFRAME
+    assert result["no_split"] is True       # ... and says so (U6 addendum, item 2)
     assert np.array_equal(masks.decode_rle(kfs[0].parts[0].rle), cell(2))
     row = session.db.compiled(FrameKey(DESKTOP, 12, VIEW))[COOLER]
     assert np.array_equal(masks.decode_rle(row["visible_rle"]), cell(2))
@@ -329,6 +418,12 @@ def test_a_real_split_outranks_the_keyframe_it_was_cut_from(session):
 # the layer order the compiler actually paints (spec 3.3 step 5)
 # --------------------------------------------------------------------------- #
 def test_instance_rows_follow_the_compiler_not_the_stored_order(session):
+    """A pair override moves the pair's pixels; the painted order stays global (U6).
+
+    It used to lift the upper instance in ``painted`` -- and with it over every
+    layer in between, which is what emptied the D13 motherboard.  The rows
+    follow ``painted``; the pair is reported apart and the pixels show it.
+    """
     session.goto(10)
     draw(session, CHASSIS, BIG, api.SCOPE_KEYFRAME)
     draw(session, COOLER, rect(20, 20, 50, 50), api.SCOPE_KEYFRAME)
@@ -337,11 +432,13 @@ def test_instance_rows_follow_the_compiler_not_the_stored_order(session):
     session.set_editing_mask(rect(40, 40, 50, 50))
     session.commit_edit(f"zorder:below:{CHASSIS}")
 
-    painted = session.compiled().painted["in_chassis"]
-    assert painted.index(CHASSIS) > painted.index(COOLER)  # bottom-up: chassis on top
+    compiled = session.compiled()
+    painted = compiled.painted["in_chassis"]
+    assert painted.index(COOLER) > painted.index(CHASSIS)   # the global order
+    assert compiled.pairs["in_chassis"] == [(CHASSIS, COOLER)]
     rows = [row["key"] for row in session.instance_rows()]
-    assert rows.index(CHASSIS) < rows.index(COOLER)  # rows are top-first
-    # ... and the pixels agree: the chassis now claims the overlap
+    assert rows.index(COOLER) < rows.index(CHASSIS)         # rows are top-first
+    # ... and the pixels show the pair: the chassis claims the overlap
     row = session.db.compiled(FrameKey(DESKTOP, 10, VIEW))[COOLER]
     visible = masks.decode_rle(row["visible_rle"])
     assert not (visible & BIG).any()

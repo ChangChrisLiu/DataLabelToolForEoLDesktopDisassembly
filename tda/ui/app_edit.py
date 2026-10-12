@@ -232,6 +232,9 @@ class EditMixin:
         #: to end (M2); ``None`` when nothing is owed.
         self._roi_fit_pending: Optional[tuple] = None
         self._pending_scope: Optional[str] = None
+        #: ``L`` was pressed once on a layering suggestion and the bar is
+        #: asking whether the reach it shows is meant (task U6).
+        self._layering_asked = False
         self._restore_offer: Optional[dict] = None
         #: The instance an ``add_bench_box`` card item armed the box tool for.
         self.bench_instance: Optional[str] = None
@@ -248,7 +251,11 @@ class EditMixin:
         self.warn_bar.add_button("Esc 回去改", self.act_clear_edit)
 
         self.scope_bar = Bar(self)
-        self.scope_bar.add_button("Enter 接受", self.act_commit)
+        # Task U6: Enter writes the shape only; the layering is L's, and L asks
+        # before it writes (the button's text says which of the two it is).
+        self.scope_bar.add_button("Enter 只改形状", self.act_commit)
+        self.scope_layer_button = self.scope_bar.add_button(
+            "L 改层级", self.act_commit_layering)
         # Its key's path, guard included, and greyed with the palette button's
         # reason: on a part with no shape here it used to reach the session's
         # refusal and say it as an error (U2e).
@@ -336,8 +343,7 @@ class EditMixin:
         this annotator has dismissed it for that segment (see
         :attr:`_roi_dismissed`).
         """
-        self._pending_scope = None
-        self.scope_bar.hide()
+        self._drop_scope_bar()
         self.disarm_bench()
         # A draft ghost is about one instance on one frame.  ``_sync_editing_layer``
         # covers the frames that repaint; this covers the ones that do not,

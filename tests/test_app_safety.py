@@ -840,10 +840,14 @@ def test_sequence_c_the_scope_bar_is_read_then_accepted(window, monkeypatch):
                         lambda scope, *a, **k: committed.append(scope) or {})
     window.act_commit()
     text = window.scope_bar_text()
-    assert "zorder:above:other" in text
-    # a layering statement reaches frames too, and the strip says how many
-    assert "影响 3 帧" in text and "1 个冲突" in text
-    window.act_commit()
+    # plain words (task U6): what Enter writes and what L would hide
+    assert "「other」" in text and "Enter = 只改形状" in text and "L = 改层级" in text
+    # the layering key asks first, with the reach and the confirmed frames
+    window.act_commit_layering()
+    assert committed == []
+    asked = window.scope_bar_text()
+    assert "第 11–13 帧" in asked and "已确认的第 12 帧会被重新检查" in asked
+    window.act_commit_layering()
     assert committed == ["zorder:above:other"]
 
 

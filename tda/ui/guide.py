@@ -120,11 +120,17 @@ class GuideFacts:
     scope: str = ""
     #: That scope in the annotator's words (``它在 机箱 chassis 上面（层级）``).
     scope_text: str = ""
+    #: ``L`` was pressed once: the bar is asking whether the layering change's
+    #: reach is meant (task U6).
+    layering_asked: bool = False
     ghost: bool = False
     #: Label of the part the bench box is armed for, or ``None``.
     bench: Optional[str] = None
     flashing: bool = False
     sam_ready: bool = True
+    #: SAM's load failed (task U6): why, in a few words; ``""`` while it is
+    #: loading or loaded.  The draw step then names the tools that work.
+    sam_failed: str = ""
     items: tuple[CardItem, ...] = ()
     #: How many problems in the task card's pane stop ``Space``: the codes
     #: ``confirm_frame`` refuses on (``tda.core.truth_verify.is_blocking``),
@@ -168,6 +174,8 @@ ROI_WARN = ("机箱范围（ROI）还没确认：画布下方点「确认建议�
 PICK = "在右边任务卡上单击一个零件"
 DRAW = ("画：S 在零件上点一下 / X 拖框；B 画笔补、E 橡皮修边；P 连点填一块；"
         "Y 圆形：拖一下画一颗螺丝")
+#: Step ③ when SAM's load failed (task U6): S and X do nothing, so say what does.
+DRAW_NO_SAM = "SAM 没加载：用 Y 圆形 / B 画笔 / P 多边形"
 #: The filled shapes half drawn (task U5a): the "now" line and step ③.
 POLYGON_NOW = ("现在：多边形已点 {n} 个点 — 沿边接着点；Enter / 双击 / 点回第一个点 填上，"
                "Backspace 删一个点，Esc 取消")
@@ -177,6 +185,8 @@ CIRCLE_DRAW = "圆形：拖到边缘松手"
 DRAW_BENCH = "在台面上拖一个框框住它（台面框 R），松手就存好"
 COMMIT = "Enter 提交（形状从这帧起变了用 Ctrl+K；只这一帧特殊用 Alt+Enter）"
 COMMIT_SPLIT = "Ctrl+K 提交（从这帧起新版本）— 这一条不要按 Enter"
+#: Step ④ while a layering suggestion is on the bar (task U6).
+LAYERING_COMMIT = "层级建议：Enter 只改形状 / L 改层级（先看影响哪些帧，再按 L）"
 CONFIRM = "全部画完：Space 确认整帧，自动退到上一帧"
 #: The same line while the card's pane lists what stops Space (U2d).
 CONFIRM_BLOCKED = "先处理任务卡下面的 {n} 个问题（它们挡住 Space）"
@@ -232,7 +242,7 @@ def _steps(facts: GuideFacts, at: int, *, pick_text: str = "", draw_text: str = 
     texts = [
         None,
         pick_text or PICK,
-        draw_text or DRAW,
+        draw_text or (DRAW_NO_SAM if facts.sam_failed else DRAW),
         commit_text or COMMIT,
         CONFIRM_BLOCKED.format(n=facts.blockers) if facts.blockers else CONFIRM,
     ]
@@ -314,13 +324,21 @@ def _annotate_plan(facts: GuideFacts) -> GuidePlan:
                          _steps(facts, 3, pick_text=f"已选中：{editing}" if editing else "",
                                 commit_text=f"面积提示：再按一次 {key} 仍然提交 / Esc 回去改"),
                          action)
+    if facts.scope and facts.layering_asked:
+        return GuidePlan(PHASE_SCOPE, title,
+                         "现在：提示条写着层级改动会影响哪些帧（已确认的会重新检查）— "
+                         "确定就再按 L，不改层级按 Esc",
+                         _steps(facts, 3, pick_text=f"已选中：{editing}" if editing else "",
+                                commit_text=LAYERING_COMMIT),
+                         "")
     if facts.scope:
         said = facts.scope_text or facts.scope
+        # Task U6: Enter writes the shape; the layering is L's and asks first.
         return GuidePlan(PHASE_SCOPE, title,
-                         f"现在：看画布下方的提示条 — Enter 接受建议（{said}），"
+                         f"现在：看画布下方的提示条 — Enter 只改形状；要改层级（{said}）按 L；"
                          f"Alt+Enter 只改这一帧，Ctrl+K 从这帧起新版本",
                          _steps(facts, 3, pick_text=f"已选中：{editing}" if editing else "",
-                                commit_text="提交范围建议：Enter / Alt+Enter / Ctrl+K"),
+                                commit_text=LAYERING_COMMIT),
                          "commit")
     if facts.roi_editing:
         # Opening a stored ROI to check it is not a proposal to put off: Esc
@@ -372,6 +390,9 @@ def _annotate_plan(facts: GuideFacts) -> GuidePlan:
             now = (f"现在：按 S，在「{editing}」上点一下（或按 X 拖一个框），"
                    f"SAM 会给出形状")
             action = "tool_sam_point"
+        elif facts.sam_failed:
+            now = f"现在：{DRAW_NO_SAM} 画出「{editing}」（F5 重试加载 SAM）"
+            action = "tool_circle"
         else:
             now = f"现在：SAM 还没准备好 — 按 B 用画笔涂出「{editing}」"
             action = "tool_brush"

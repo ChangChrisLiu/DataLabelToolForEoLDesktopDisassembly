@@ -47,6 +47,7 @@ from PySide6.QtCore import QObject, Qt, Signal
 
 from tda.core.model import FrameKey
 from tda.models.det_engine import DetectionEngine, PlanItem
+from tda.models.load_gate import Turn, heavy
 from tda.models.detector import (
     DetectorConfig,
     FrameDets,
@@ -198,9 +199,12 @@ class DetectionWorker(QObject):
     sigState = Signal(object)
     sigIdle = Signal(object)
 
-    def __init__(self, engine: DetectionEngine, parent: Optional[QObject] = None) -> None:
+    def __init__(self, engine: DetectionEngine, parent: Optional[QObject] = None,
+                 after: Optional[Turn] = None) -> None:
         super().__init__(parent)
         self.engine = engine
+        #: SAM's import phase, which the model build waits for (task U6).
+        self._after = after
         self._lock = threading.Condition()
         self._gen = 0
         self._view: Optional[tuple[int, str]] = None
@@ -331,9 +335,32 @@ class DetectionWorker(QObject):
             pass
 
     def _load_model(self) -> None:
-        """The loader thread: build the model, then say whether it is on."""
+        """The loader thread: build the model, then say whether it is on.
+
+        Task U6: the build imports torch, torchvision and the backend's library,
+        and SAM's loader imports the first two at the same time -- on
+        2026-10-12 Python's import locks deadlocked and SAM was off all day.
+        So the build waits for SAM's import phase (``after``, a
+        :class:`~tda.models.load_gate.Turn` the window releases) and then runs
+        inside :func:`~tda.models.load_gate.heavy`, the one lock both loaders
+        hold.  A model already built -- a test's stub, made in ``prepare`` --
+        imports nothing and waits for nobody.
+        """
         try:
-            text = self.engine.load_model()
+            if self.engine.model is None:
+                if self._after is not None and not self._after.released:
+                    started = time.perf_counter()
+                    self._after.wait()
+                    log.info("detector: built after SAM's import phase (waited %.1f s)",
+                             time.perf_counter() - started)
+                with self._lock:
+                    stopped = self._stopped
+                if stopped:
+                    return          # the window closed while SAM was loading
+                with heavy("detector"):
+                    text = self.engine.load_model()
+            else:
+                text = self.engine.load_model()
         except BaseException as exc:  # noqa: BLE001 - off, never a crash
             with self._lock:
                 self._loaded = False
@@ -535,7 +562,10 @@ class DetectMixin:
         if identity is not None:
             kwargs["identity"] = identity
         engine = DetectionEngine(config, Path(root), factory=factory, **kwargs)
-        worker = DetectionWorker(engine, parent=self)
+        # SAM's import phase first (task U6): the window's turn, released by
+        # the SAM loader -- or at once when this window loads no SAM.
+        worker = DetectionWorker(engine, parent=self,
+                                 after=getattr(self, "_sam_turn", None))
         worker.sigFrame.connect(self._on_det_frame)
         worker.sigState.connect(self._on_det_state)
         worker.sigIdle.connect(self._on_det_idle)

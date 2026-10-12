@@ -204,12 +204,20 @@ ACTIONS: tuple[Action, ...] = (
     # -- editing ------------------------------------------------------------
     # Enter and Esc answer a half-drawn P / Y shape first (task U5a).
     Action("commit", ("Return", "Enter"), "act_commit", "Commit edit",
-           "提交编辑（按建议范围；多边形没画完时先填上它）", "edit", (), _ANN, short="提交"),
+           "提交编辑（有层级建议时只改形状，层级用 L；多边形没画完时先填上它）", "edit", (),
+           _ANN, short="提交"),
     Action("commit_override", ("Alt+Return", "Alt+Enter"), "act_commit_override",
            "Commit for this frame only", "只对当前帧生效（帧覆盖）", "edit", (), _ANN,
            short="只改这一帧"),
     Action("commit_split", ("Ctrl+K",), "act_commit_split", "Split keyframe here",
-           "从这一帧起拆分关键帧", "edit", (), _ANN, short="从这帧起新版本"),
+           "从这一帧起拆分关键帧（这一帧就是起点时等于重画这一版）", "edit", (), _ANN,
+           short="从这帧起新版本"),
+    # Task U6: the layering answer is not Enter's any more.  ``L`` for 层 /
+    # layer -- free in every mode (no plain L, no Shift/Ctrl+L anywhere).
+    Action("commit_layering", ("L",), "act_commit_layering",
+           "Change the layering the scope bar suggests (asks, then a second L)",
+           "改层级：回答画布下方的层级建议（先显示影响哪些帧，再按一次 L 确定；Enter 只改形状）",
+           "edit", (), _ANN),
     Action("clear_edit", ("Esc",), "act_clear_edit", "Discard the edit",
            "放弃当前编辑（多边形 / 圆形没画完时只取消它）", "edit", (), _ANN, short="放弃编辑"),
     Action("confirm", ("Space",), "act_confirm", "Confirm the frame",
@@ -265,8 +273,10 @@ ACTIONS: tuple[Action, ...] = (
     # -- session ------------------------------------------------------------
     Action("save", ("Ctrl+S",), "act_save", "Save", "保存（清除未保存标记）",
            "session", (), _ALL),
-    Action("refresh_all", ("F5",), "act_refresh_all", "Recompile this frame",
-           "重新编译当前帧（整视图请用命令行 cli check）", "session", (), _ALL),
+    Action("refresh_all", ("F5",), "act_refresh_all",
+           "Recompile this frame; retry loading SAM when it failed",
+           "重新编译当前帧（整视图请用命令行 cli check）；SAM 加载失败时重试加载", "session",
+           (), _ALL),
     Action("cheat_sheet", ("?", "F12"), "act_cheat_sheet", "Shortcut cheat sheet",
            "快捷键速查表", "session", (), _ALL),
 )
