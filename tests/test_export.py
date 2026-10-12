@@ -647,9 +647,24 @@ def test_the_measurements_match_a_decoded_mask():
 # standing conflicts
 # --------------------------------------------------------------------------- #
 def _queue_conflict(d: Db, step: int = 1) -> int:
-    """One open disagreement about ``step``, the way a re-check would leave it."""
-    return d.add_conflict(FrameKey(DESKTOP, step, VIEW), PSU,
-                          encode_rle(PSU_MASK), encode_rle(SCREW_MASK), 400)
+    """One open disagreement about ``step``, the way a re-check would leave it.
+
+    A real one (task U6): the confirmed psu's pixels on that frame are moved
+    afterwards -- a frame override 25 px to the right -- and the refresh queues
+    the disagreement.  A conflict written straight into the table about a
+    frozen row that still agrees with its inputs is closed by the next refresh
+    ("inputs agree again"), so it would not survive the exports' own
+    ``ensure_fresh``.
+    """
+    from tda.core.truth import TruthService
+
+    key = FrameKey(DESKTOP, step, VIEW)
+    d.set_frame_override(FrameOverride(key, PSU, encode_rle(_rect(10, 30, 30, 50)), None))
+    TruthService(d, load_taxonomy(), cache_dir=None).refresh(key)
+    ids = [c["id"] for c in d.conflicts(DESKTOP, VIEW, open_only=True)
+           if c["step"] == step and c["instance"] == PSU]
+    assert len(ids) == 1, ids
+    return ids[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -754,7 +769,8 @@ def test_open_conflicts_is_the_services_own_question(db, tax):
     assert [c["id"] for c in service.open_conflicts(DESKTOP, VIEW)] == [cid]
     assert service.open_conflicts(DESKTOP, "oak1") == []
     assert service.ensure_fresh(DESKTOP, VIEW)["open_conflicts"] == 1
-    db.resolve_conflict(cid, "accept_new")
+    # settled: keep the frozen value, which pins it as this frame's override
+    service.resolve_conflict(cid, "keep_old", "tester")
     assert service.ensure_fresh(DESKTOP, VIEW)["open_conflicts"] == 0
 
 
