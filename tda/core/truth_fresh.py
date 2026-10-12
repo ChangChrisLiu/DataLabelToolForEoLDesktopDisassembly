@@ -145,11 +145,13 @@ def hash_of_inputs(inputs: FrameInputs, layer_order: dict,
     ``layer_order`` is therefore taken from the compilation being checked
     (:attr:`~tda.core.compiler.CompiledFrame.layers`) rather than derived, and
     that is sound rather than circular: the layer order is a function of
-    ``needs``, ``placements``, the selected keyframes, the z-order and the
-    pairwise overrides, **all of which the hash already covers**. So an equal
-    hash means every one of those matched, and if they matched the layer order
-    could not have differed either; an unequal hash means something moved,
-    which is the answer the caller wanted anyway.
+    ``needs``, ``placements``, the selected keyframes and the z-order, **all of
+    which the hash already covers**. (The pairwise overrides no longer move it
+    at all since task U6 -- they hand pixels between their two instances after
+    painting -- and they are in the hash on their own.) So an equal hash means
+    every one of those matched, and if they matched the layer order could not
+    have differed either; an unequal hash means something moved, which is the
+    answer the caller wanted anyway.
     """
     return input_hash(
         key=inputs.key,
@@ -215,7 +217,9 @@ class FreshMixin:
         **This writes**, so the caller needs the single-user lock (spec 3.5).
         The totals are the two halves added together, and each half is also
         reported on its own under ``rechecked`` and ``refreshed``, so a caller
-        can say which of them found something.
+        can say which of them found something.  ``closed`` is among them: the
+        open conflicts closed because their frozen rows agree with the inputs
+        again (task U6).
 
         ``open_conflicts`` counts the disagreements of this view that nobody has
         settled. They are **not** an error here -- the truth table is as fresh
@@ -243,7 +247,7 @@ class FreshMixin:
             )
             swept = self.refresh_range(desktop, view, steps)
             total["refreshed"] = swept
-            for counter in ("updated", "conflicts", "standing", "skipped"):
+            for counter in ("updated", "conflicts", "standing", "closed", "skipped"):
                 total[counter] = total.get(counter, 0) + swept[counter]
             total["problems"] = list(total.get("problems") or []) + list(swept["problems"])
         left = self.pending_rechecks(desktop, view)

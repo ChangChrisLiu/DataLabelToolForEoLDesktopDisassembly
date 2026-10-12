@@ -37,8 +37,12 @@ def test_the_guide_says_it_in_section_4_and_the_key_table():
     guide = _flat("annotation_guide.md")
     assert "层级只有 `L` 改，其余键只写形状" in guide
     assert "**整个位姿段**" in guide and "不能按帧拆" in guide
-    assert "之间 不出层级建议" in guide or "之间不出层级建议" in guide
-    assert "输入恢复一致就自动关闭" in guide
+    # round 2: every relation the code follows, and the 90 % rule
+    assert "零件与所在零件间不出层级建议" in guide
+    for word in ("`parent`", "`mounted_on`", "`fastens`", "`socket_host`", "宿主类",
+                 "九成以上在对方形状内"):
+        assert word in guide, word
+    assert "输入恢复一致就自动关（`check`、导出报数）" in guide
     assert "SAM 加载失败：原因（F5 重试）" in guide
     action = A.action_named("commit_layering")
     assert action.keys == ("L",) and action.label_zh in guide

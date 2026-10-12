@@ -26,6 +26,8 @@ from tda.ui.guide import DRAW_NO_SAM, PHASE_DRAW_EMPTY
 from test_app_u3 import (
     A_BOX,
     B_BOX,
+    C_BOX,
+    PLAIN_STEPS,
     SCREW_STEP,
     StubModel,
     _window,
@@ -133,11 +135,21 @@ def _bare_window(tmp_path) -> MainWindow:
     return win
 
 
-def _fake_sam(monkeypatch, events: list, fail: int = 0, pause: float = 0.4) -> list:
-    """Replace the SAM service: records when it ran and whether it held the lock."""
+def _fake_sam(monkeypatch, events: list, fail: int = 0, pause: float = 0.4,
+              queues: list | None = None) -> list:
+    """Replace the SAM service: records when it ran and whether it held the lock.
+
+    ``queues`` collects the stub queues the loader builds, so a test can see
+    whether one was stopped.
+    """
     import tda.models.sam_service as sam_service
 
     attempts: list[int] = []
+    built = queues if queues is not None else []
+
+    def make_queue(service):
+        built.append(StubSamQueue())
+        return built[-1]
 
     class _DeadlockError(ImportError):
         pass
@@ -155,7 +167,7 @@ def _fake_sam(monkeypatch, events: list, fail: int = 0, pause: float = 0.4) -> l
                     "functional') at 2226949304144")
 
     monkeypatch.setattr(sam_service, "SamService", FakeService)
-    monkeypatch.setattr(sam_service, "SamQueue", lambda service: StubSamQueue())
+    monkeypatch.setattr(sam_service, "SamQueue", make_queue)
     monkeypatch.setattr(sam_service, "checkpoint_in", lambda paths: None)
     return attempts
 
@@ -275,6 +287,166 @@ def test_the_detector_chip_follows_sam(qapp, tmp_path):
 
         win.set_sam_queue(StubSamQueue(), owns=False)      # SAM arrives
         assert win.canvas.prompt_band() == (fbox(A_BOX), DET_CHIP.format(name="螺丝"))
+        pump(win)
+    finally:
+        close_window(win)
+
+
+# --------------------------------------------------------------------------- #
+# round 2
+# --------------------------------------------------------------------------- #
+def test_a_window_closed_during_sams_load_never_builds_the_detector(
+        qapp, tmp_path, monkeypatch):
+    """Item 1: the detector is stopped before the SAM loader is waited for.
+
+    SAM takes 3 s; the window closes 1.5 s in.  The detector's build was
+    waiting for SAM's turn; it must wake, see the stop and build nothing --
+    neither during the close nor after it -- and the queue SAM finishes
+    building after the close is stopped by the loader itself.
+    """
+    events: list = []
+    queues: list = []
+    _fake_sam(monkeypatch, events, pause=3.0, queues=queues)
+    builds: list[float] = []
+
+    def factory(_config):
+        builds.append(time.perf_counter())
+        time.sleep(2.0)                 # what a real RF-DETR build costs, at least
+        return StubModel({}, identity="stub-u6-close")
+
+    win = _bare_window(tmp_path)
+    loader = None
+    try:
+        win.enable_detector(det_config(tmp_path), factory=factory,
+                            identity="stub-u6-close", cache_root=str(tmp_path / "det"))
+        win.start_sam()
+        loader = win._sam_loader_thread
+        time.sleep(1.5)
+        started = time.perf_counter()
+        close_window(win)
+        closed_in = time.perf_counter() - started
+    finally:
+        if not win.closed:
+            close_window(win)
+    assert closed_in < 2.5, f"the close took {closed_in:.1f} s"    # SAM's rest, no build
+    assert builds == [], "the detector was built during the close"
+    time.sleep(2.5)
+    QApplication.processEvents()
+    assert builds == [], "the detector was built after the close"
+    assert loader is not None and not loader.is_alive()
+    assert queues and all(q.stopped for q in queues), "SAM's late queue was left running"
+
+
+def test_a_window_that_never_starts_sam_has_its_detector_within_seconds(qapp, tmp_path):
+    """Item 2: no ``start_sam`` -> the turn is released by the grace timer, not after 180 s."""
+    win = _bare_window(tmp_path)
+    try:
+        builds: list[float] = []
+
+        def factory(_config):
+            builds.append(time.perf_counter())
+            return StubModel({}, identity="stub-u6-grace")
+
+        started = time.perf_counter()
+        win.enable_detector(det_config(tmp_path), factory=factory, identity="stub-u6-grace",
+                            cache_root=str(tmp_path / "det"))
+        deadline = started + 8.0
+        while win.det_state != "on" and time.perf_counter() < deadline:
+            QApplication.processEvents()
+            time.sleep(0.02)
+        assert win.det_state == "on", "the detector waited for a SAM nobody starts"
+        assert builds and builds[0] - started < 5.0
+        assert win._sam_turn.released and not win.sam_available
+    finally:
+        close_window(win)
+
+
+def test_declining_sam_or_handing_a_queue_in_releases_the_turn_at_once(qapp, tmp_path):
+    """Item 2: ``--no-sam`` (``decline_sam``) and ``set_sam_queue`` say "no SAM of our own"."""
+    win = _bare_window(tmp_path)
+    try:
+        assert not win._sam_turn.released
+        win.decline_sam("--no-sam")
+        assert win._sam_turn.released and "--no-sam" in win.sam_label.text()
+    finally:
+        close_window(win)
+    win = _bare_window(tmp_path / "b")
+    try:
+        assert not win._sam_turn.released
+        win.set_sam_queue(StubSamQueue(), owns=False)
+        assert win._sam_turn.released
+    finally:
+        close_window(win)
+
+
+def test_the_smoke_script_releases_the_turn_in_both_modes():
+    """Item 2: ``scripts/mvp_smoke.py`` declines SAM with ``--no-sam``, else loads it under the lock."""
+    text = (Path(__file__).resolve().parents[1] / "scripts" / "mvp_smoke.py").read_text(
+        encoding="utf-8")
+    assert 'window.decline_sam("--no-sam")' in text
+    assert 'with heavy("sam"):' in text and "window.set_sam_queue(SamQueue(service)" in text
+
+
+def test_every_box_says_sam_is_down_and_comes_back_when_it_loads(qapp, tmp_path):
+    """Item 3: the difference map's chip, its status line, and the Shift+C chips."""
+    from tda.ui.app_assist import (
+        DET_CHIP_RANK,
+        DET_CHIP_RANK_NO_SAM,
+        PROMPT_ARMED,
+        PROMPT_ARMED_NO_SAM,
+        PROMPT_CHIP,
+        PROMPT_CHIP_NO_SAM,
+        PROMPT_CHIP_RANK,
+        PROMPT_CHIP_RANK_NO_SAM,
+    )
+
+    win = _window(tmp_path)
+    try:
+        # the difference map's own box, armed while SAM is down
+        win.set_sam_unavailable("loading")
+        enable(win, tmp_path, {s: [det(A_BOX), det(B_BOX)] for s in range(1, 15)})
+        go(win, PLAIN_STEPS[0])
+        box = win._prompt_box
+        assert box is not None
+        assert win.canvas.prompt_band() == (box, PROMPT_CHIP_NO_SAM)
+        assert win.status_message() == PROMPT_ARMED_NO_SAM and "点 S" not in PROMPT_ARMED_NO_SAM
+        assert "SAM 提示框" not in PROMPT_CHIP_NO_SAM
+        win.set_sam_queue(StubSamQueue(), owns=False)
+        assert win.canvas.prompt_band() == (box, PROMPT_CHIP)
+        go(win, PLAIN_STEPS[1])                 # armed with SAM: today's line
+        assert win.status_message() == PROMPT_ARMED
+
+        # Shift+C's chips: walked with SAM, then SAM goes and comes back
+        from test_app_u3 import _with_diff_offers
+
+        enable(win, tmp_path, {SCREW_STEP: [det(A_BOX), det(B_BOX), det(C_BOX)]})
+        go(win, SCREW_STEP)
+        _with_diff_offers(win)
+        alternates = win.prompt_alternates()
+        total = len(alternates) + 1
+        assert type(alternates[0]).__name__ == "DetCandidate"
+        assert type(alternates[2]).__name__ != "DetCandidate"    # rank 4 is the map's
+        win.act_cycle_prompt_box()
+        rank_two = DET_CHIP_RANK.format(rank=2, total=total, name="螺丝")
+        assert win.canvas.prompt_band() == (fbox(B_BOX), rank_two)
+        win.set_sam_unavailable("the GPU went away")
+        assert win.canvas.prompt_band() == (
+            fbox(B_BOX), DET_CHIP_RANK_NO_SAM.format(rank=2, total=total, name="螺丝"))
+        assert "SAM 提示框" not in win.canvas.prompt_band()[1]
+        win.set_sam_queue(StubSamQueue(), owns=False)
+        assert win.canvas.prompt_band() == (fbox(B_BOX), rank_two)
+        # rank 4 comes from the difference map: the same both ways
+        win.act_cycle_prompt_box()
+        win.act_cycle_prompt_box()
+        here = win._prompt_box
+        rank_four = PROMPT_CHIP_RANK.format(rank=4, total=total)
+        assert here == tuple(float(v) for v in alternates[2].box)
+        assert win.canvas.prompt_band() == (here, rank_four)
+        win.set_sam_unavailable("the GPU went away")
+        assert win.canvas.prompt_band() == (
+            here, PROMPT_CHIP_RANK_NO_SAM.format(rank=4, total=total))
+        win.set_sam_queue(StubSamQueue(), owns=False)
+        assert win.canvas.prompt_band() == (here, rank_four)
         pump(win)
     finally:
         close_window(win)

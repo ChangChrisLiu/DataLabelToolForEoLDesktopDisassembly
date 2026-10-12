@@ -100,6 +100,73 @@ def test_the_closing_is_undoable_and_reopens_the_same_conflicts(scene: Scene):
     assert scene.svc.refresh(scene.key(2))["closed"] == len(ids)
 
 
+def test_reopening_twice_writes_nothing_the_second_time(scene: Scene):
+    """Round 2: the second ``reopen_agreed`` of one op is a no-op -- no op row, no digest drop."""
+    ids = _queue_the_trial(scene)
+    scene.db.delete_pair_override(OVERRIDE)
+    scene.svc.refresh(scene.key(2))
+    op = next(op for op in scene.db.ops(DESKTOP, VIEW, limit=10) if op["kind"] == CLOSE_KIND)
+    assert scene.svc.reopen_agreed(op["id"]) == ids
+
+    key = scene.key(2)
+    scene.svc._stamp(key, "a-digest-that-must-survive")
+    rows = len(scene.db.ops(DESKTOP, VIEW, limit=10_000))
+
+    assert scene.svc.reopen_agreed(op["id"]) == []
+    assert len(scene.db.ops(DESKTOP, VIEW, limit=10_000)) == rows
+    assert scene.db.frame_digest(key)["digest"] == "a-digest-that-must-survive"
+    assert sorted(c["id"] for c in _open(scene)) == ids
+
+
+def test_a_conflict_a_human_settled_since_is_not_reopened(scene: Scene):
+    """Only a supersession is taken back: ``keep_old`` wrote an override with it."""
+    ids = _queue_the_trial(scene)
+    scene.db.delete_pair_override(OVERRIDE)
+    scene.svc.refresh(scene.key(2))
+    op = next(op for op in scene.db.ops(DESKTOP, VIEW, limit=10) if op["kind"] == CLOSE_KIND)
+    scene.svc.reopen_agreed(op["id"])
+    scene.svc.resolve_conflict(ids[0], "keep_old", "lin")    # a human answers one
+
+    assert ids[0] not in scene.svc.reopen_agreed(op["id"])
+    assert scene.db.get_conflict(ids[0])["resolution"] == "keep_old"
+
+
+def test_the_passes_over_a_view_total_the_closed_conflicts(scene: Scene):
+    """Round 2: ``refresh_range`` and ``ensure_fresh`` sum ``closed`` for their callers."""
+    ids = _queue_the_trial(scene)
+    scene.db.delete_pair_override(OVERRIDE)
+    assert scene.svc.refresh_range(DESKTOP, VIEW, [1, 2, 3])["closed"] == len(ids)
+
+    op = next(op for op in scene.db.ops(DESKTOP, VIEW, limit=10) if op["kind"] == CLOSE_KIND)
+    scene.svc.reopen_agreed(op["id"])
+    fresh = scene.svc.ensure_fresh(DESKTOP, VIEW)
+    assert fresh["closed"] == len(ids) and fresh["open_conflicts"] == 0
+
+
+def test_check_and_the_exports_print_how_many_closed(scene: Scene, capsys):
+    from types import SimpleNamespace
+
+    from tda import cli_app
+
+    ids = _queue_the_trial(scene)
+    scene.db.delete_pair_override(OVERRIDE)
+    cli_app._check_one(scene.db, scene.tax, SimpleNamespace(limit=5), DESKTOP, VIEW)
+    out = capsys.readouterr().out
+    assert (f"[check] {len(ids)} conflict(s) closed: the inputs agree with the frozen "
+            f"rows again") in out
+    assert "open conflicts: 0" in out
+
+    op = next(op for op in scene.db.ops(DESKTOP, VIEW, limit=10) if op["kind"] == CLOSE_KIND)
+    scene.svc.reopen_agreed(op["id"])
+    code, _truth = cli_app._export_prologue(
+        SimpleNamespace(refresh=True, allow_conflicts=False), scene.db, [DESKTOP], VIEW,
+        "export-coco")
+    out = capsys.readouterr().out
+    assert code is None, out                                  # nothing left to refuse on
+    assert (f"[export-coco] {len(ids)} conflict(s) closed: the inputs agree with the "
+            f"frozen rows again") in out
+
+
 def test_a_current_digest_does_not_hide_an_open_conflict(scene: Scene):
     """The live DB's state: an agreeing refresh had already stamped the frame."""
     ids = _queue_the_trial(scene)
