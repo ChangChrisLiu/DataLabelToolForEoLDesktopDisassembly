@@ -30,6 +30,12 @@ The rules the table lives by (spec 3.4)
   it with :meth:`TruthService.resolve_conflict`. Nothing is ever silently
   overwritten, and a disagreement already sitting in the open queue is not
   queued twice.
+* **One open conflict per frozen row** (task U7): ``(frame, instance)`` has at
+  most one. A newer disagreement about the same row *replaces* the open one
+  -- closed ``superseded`` with the reason :data:`OVERTAKEN` -- instead of
+  stacking next to it: fourteen small commits of one re-trace used to leave
+  thirteen conflicts open on one frozen row of D13/scan, each about a shape
+  that no longer existed.
 * A verified frame that gains or loses an instance drops back to
   ``needs_review``: the human confirmed a different set of objects than the one
   the inputs now describe.
@@ -59,8 +65,15 @@ from tda.core.truth_fresh import FreshMixin, digest_of
 from tda.core.truth_resolve import ResolveMixin, StaleConflictError
 from tda.core.truth_verify import BLOCKING_PROBLEMS, VerifyMixin, usable
 from tda.core.truth_conflicts import (
+    AGREE_AGAIN,
     BOX_TOL_PX,
+    CLOSE_KIND,
+    DUPLICATE,
     GEOM_BOX,
+    OVERTAKEN,
+    REOPEN_KIND,
+    ROW_GONE,
+    SUPERSEDE_REASONS,
     payload_geometry,
     payload_labels,
     row_values,
@@ -76,7 +89,8 @@ from tda.core.truth_inputs import (
     state_of,
 )
 
-__all__ = ["BLOCKING_PROBLEMS", "BOX_TOL_PX", "BY_HAND", "StaleConflictError", "TruthService"]
+__all__ = ["AGREE_AGAIN", "BLOCKING_PROBLEMS", "BOX_TOL_PX", "BY_HAND", "DUPLICATE",
+           "OVERTAKEN", "ROW_GONE", "StaleConflictError", "TruthService"]
 
 ACCEPT_NEW = "accept_new"
 KEEP_OLD = "keep_old"
@@ -95,16 +109,16 @@ AUTO = "auto"
 VERIFIED = "verified"
 NEEDS_REVIEW = "needs_review"
 
-#: The op-log row of a refresh that closed conflicts the inputs no longer
-#: disagree with (task U6), its inverse, why, and who wrote it.
-CLOSE_KIND = "resolve_conflicts"
-REOPEN_KIND = "reopen_conflicts"
-AGREE_AGAIN = "inputs agree again"
+#: Who writes the service's own op-log rows.  The rows that close conflicts
+#: on its own -- the inputs agree again (U6), a newer disagreement replaced
+#: them (U7) -- are ``CLOSE_KIND`` with one of ``SUPERSEDE_REASONS``
+#: (:mod:`tda.core.truth_conflicts`, where the vocabulary lives so that the
+#: mixins can write the same row).
 SYSTEM = "system"
 #: The per-frame counters of :meth:`TruthService.refresh` that a pass over many
 #: frames sums: :meth:`~TruthService.refresh_range`, the re-check drain and
 #: :meth:`~tda.core.truth_fresh.FreshMixin.ensure_fresh`.
-REFRESH_COUNTERS = ("updated", "conflicts", "standing", "closed", "skipped")
+REFRESH_COUNTERS = ("updated", "conflicts", "standing", "closed", "overtaken", "skipped")
 
 
 class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
@@ -131,9 +145,13 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
 
     # ------------------------------------------------------------------ compile
 
-    def compile(self, key: FrameKey) -> CompiledFrame:
-        """Compile one frame from the database's current state (spec 3.3)."""
-        return self._compile(key)[1]
+    def compile(self, key: FrameKey, cache: Optional[InputCache] = None) -> CompiledFrame:
+        """Compile one frame from the database's current state (spec 3.3).
+
+        ``cache`` is a caller's per-pass :class:`InputCache`, as
+        :meth:`refresh_range` keeps one.
+        """
+        return self._compile(key, cache)[1]
 
     def _compile(
         self, key: FrameKey, cache: Optional[InputCache] = None
@@ -168,13 +186,15 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
                 held: Optional[CompiledFrame] = None) -> dict:
         """Bring one frame's truth rows up to date with the current inputs.
 
-        Returns ``{"updated", "conflicts", "standing", "closed", "skipped",
-        "problems", "compiled", "stale"}``: rows written (a deleted row counts
-        as written), disagreements this refresh actually **queued**, frozen
-        rows in disagreement whether queued now or already open -- a sweep of
-        fifty frames over one unresolved conflict reported fifty conflicts when
-        it had queued none -- open conflicts it **closed** because their frozen
-        row agrees with the inputs again (see :meth:`_close_agreeing`), rows
+        Returns ``{"updated", "conflicts", "standing", "closed", "overtaken",
+        "skipped", "problems", "compiled", "stale"}``: rows written (a deleted
+        row counts as written), disagreements this refresh actually **queued**,
+        frozen rows in disagreement whether queued now or already open -- a
+        sweep of fifty frames over one unresolved conflict reported fifty
+        conflicts when it had queued none -- open conflicts it **closed**
+        because their frozen row agrees with the inputs again (see
+        :meth:`_close_agreeing`), open conflicts a newer disagreement about the
+        same row **overtook** (see :meth:`_queue_conflict`), rows
         left alone, the compiler's problem list, the compilation the whole
         decision was made from -- handed back so that a caller which also
         needs the frame does not compile it a second time -- and whether the
@@ -194,12 +214,15 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
 
         ``held`` is a compilation the caller already has for this frame -- the
         session keeps the one it compiled, or the one the sweeper prefetched.
-        On that path ``want_compiled`` hands it back instead of compiling, but
-        **only when it is still the compilation these inputs make**
-        (:func:`~tda.core.truth_verify.usable`, asked of the inputs just read,
-        as ``verify_frame`` asks it of its ``prepared``); otherwise the frame is
-        compiled. A session's edit epoch is a fact about that session, and
-        another writer moves the inputs without touching it (U2f).
+        On that path ``want_compiled`` hands it back instead of compiling, and
+        on the other it stands in for the compilation the rows are derived
+        from (a bulk ``accept_new`` settles a frame against one compilation and
+        then refreshes it, task U7) -- but **only when it is still the
+        compilation these inputs make** (:func:`~tda.core.truth_verify.usable`,
+        asked of the inputs just read, as ``verify_frame`` asks it of its
+        ``prepared``); otherwise the frame is compiled. A session's edit epoch
+        is a fact about that session, and another writer moves the inputs
+        without touching it (U2f).
 
         ``guard`` is an :meth:`inputs_digest` taken before the compilation, for
         a caller working off the GUI thread. The pixel work happens outside any
@@ -219,7 +242,7 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
             # current digest next to one means the inputs came back to what
             # was frozen (U6), and only a compilation can close it
             result = {"updated": 0, "conflicts": 0, "standing": 0, "closed": 0,
-                      "skipped": self.db.compiled_count(key),
+                      "overtaken": 0, "skipped": self.db.compiled_count(key),
                       "problems": [], "compiled": None, "stale": False}
             if want_compiled:
                 result["compiled"] = (
@@ -228,7 +251,8 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
             return result
         # the inputs are already in hand: gathering them a second time reads the
         # whole keyframe table again, which is most of a batch pass's time
-        compiled = self._compile_inputs(key, inputs)  # no transaction: pixels only
+        compiled = (held if usable(held, key, inputs, self.compiler_version)
+                    else self._compile_inputs(key, inputs))  # no transaction: pixels only
         with self.db.transaction():
             return self._write_refresh(key, compiled, guard, digest,
                                        inputs.frame_overrides)
@@ -242,6 +266,7 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
             "conflicts": 0,
             "standing": 0,
             "closed": 0,
+            "overtaken": 0,
             "skipped": 0,
             "problems": list(compiled.problems),
             "compiled": compiled,
@@ -269,6 +294,7 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
 
         verified_frame = self._frame_is_verified(key, stored)
         queued: Optional[list[dict]] = None
+        overtaken: list[tuple[int, str, str]] = []
         # The one comparison of frozen rows with this compilation, the same one
         # verify_frame refuses on (U2e round 2); queued here in this pass's own
         # order -- moved parts, then departed ones -- as it always was.
@@ -289,7 +315,7 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
                     continue
                 old, new, pixels = found.queue
                 queued, inserted = self._queue_conflict(key, instance, old, new,
-                                                        pixels, queued)
+                                                        pixels, queued, overtaken)
                 result["conflicts"] += int(inserted)
                 result["standing"] += 1
                 continue
@@ -301,13 +327,16 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
             if row["status"] == VERIFIED:
                 old_payload = disputed[instance].queue[0]
                 queued, inserted = self._queue_conflict(
-                    key, instance, old_payload, None, self._payload_area(old_payload), queued
+                    key, instance, old_payload, None, self._payload_area(old_payload), queued,
+                    overtaken,
                 )
                 result["conflicts"] += int(inserted)
                 result["standing"] += 1
             else:
                 self.db.delete_compiled(key, instance)
                 result["updated"] += 1
+        # one op-log row (per reason) for every conflict this pass replaced (U7)
+        result["overtaken"] = self._log_superseded(key, overtaken)
 
         if verified_frame and (fresh - known or known - fresh):
             self.demote_frame(key, self._demotion_reason(fresh, known))
@@ -359,20 +388,47 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
         agree = [(cid, instance) for cid, instance in open_here
                  if instance in fresh and instance not in disputed
                  and (stored.get(instance) or {}).get("status") == VERIFIED]
-        if not agree:
-            return 0
-        ids = [int(cid) for cid, _instance in agree]
-        for cid in ids:
-            self.db.resolve_conflict(cid, SUPERSEDED)
-        self.db.log_op(
-            key.desktop, key.view, CLOSE_KIND,
-            {"step": key.step, "conflicts": ids,
-             "instances": sorted({instance for _cid, instance in agree}),
-             "resolution": SUPERSEDED, "reason": AGREE_AGAIN},
-            {"kind": REOPEN_KIND, "step": key.step, "conflicts": ids},
-            SYSTEM,
-        )
-        return len(ids)
+        for cid, _instance in agree:
+            self.db.resolve_conflict(int(cid), SUPERSEDED)
+        return self._log_superseded(key, agree, AGREE_AGAIN)
+
+    def _log_superseded(self, key: FrameKey, closed: list[tuple],
+                        reason: Optional[str] = None,
+                        asked_by: Optional[str] = None) -> int:
+        """The op-log row for conflicts the service closed on its own -- one per reason.
+
+        ``closed`` holds ``(id, instance)`` -- closed for ``reason`` -- or
+        ``(id, instance, reason)`` of conflicts already resolved ``superseded``
+        in the caller's transaction, all of one frame; each reason is one of
+        :data:`SUPERSEDE_REASONS`.  Every path that supersedes -- a refresh
+        finding the inputs agree again (:meth:`_close_agreeing`), a refresh
+        replacing a conflict by a newer one or dropping a duplicate
+        (:meth:`_queue_conflict`), an ``accept_new`` the inputs had overtaken
+        (:meth:`~tda.core.truth_resolve.ResolveMixin.resolve_conflict`) --
+        writes this same ``resolve_conflicts`` row, by :data:`SYSTEM`, whose
+        inverse names them for :meth:`reopen_agreed`: one row per reason, in
+        the order the reasons first appear.  ``asked_by`` is the human whose
+        request led to it (a late ``accept_new``) and goes into the payload as
+        one more key; the row stays the service's.  Nothing is written for an
+        empty list.  Returns how many conflicts were named.
+        """
+        groups: dict[str, list[tuple[int, str]]] = {}
+        for item in closed:
+            why = item[2] if len(item) > 2 else reason
+            if why not in SUPERSEDE_REASONS:
+                raise ValueError(f"reason must be one of {SUPERSEDE_REASONS}, got {why!r}")
+            groups.setdefault(why, []).append((int(item[0]), str(item[1])))
+        for why, items in groups.items():
+            ids = [cid for cid, _instance in items]
+            payload = {"step": key.step, "conflicts": ids,
+                       "instances": sorted({instance for _cid, instance in items}),
+                       "resolution": SUPERSEDED, "reason": why}
+            if asked_by:
+                payload["asked_by"] = str(asked_by)
+            self.db.log_op(key.desktop, key.view, CLOSE_KIND, payload,
+                           {"kind": REOPEN_KIND, "step": key.step, "conflicts": ids},
+                           SYSTEM)
+        return sum(len(items) for items in groups.values())
 
     def reopen_agreed(self, op_id: int) -> list[int]:
         """Undo one ``resolve_conflicts`` row of :meth:`_close_agreeing`: reopen them.
@@ -383,6 +439,22 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
         the inverse that closes them once more.  A conflict that is open again
         already -- or that was since closed by anything but a supersession, a
         human's answer above all -- is left alone.  Returns the ids reopened.
+
+        **One open conflict per frozen row** (task U7) holds here too:
+
+        * only a row closed with the reason :data:`AGREE_AGAIN` is reopened;
+          any other is **refused** (``ValueError``).  :data:`OVERTAKEN` and
+          :data:`DUPLICATE` closed conflicts whose row has another open
+          conflict standing for it -- reopening would put two on it, one of
+          them about a shape nobody can see any more; the way back to an
+          overtaken value is to move the inputs back (undo the edit), and the
+          next refresh queues it again or closes the newer one.
+          :data:`ROW_GONE` closed a conflict about a row that no longer exists.
+        * the ids are walked newest first, and a row gets **one** conflict
+          back: one agreement that closed a stack of conflicts on one row (a
+          database from before U7) reopens the newest of them only, and a row
+          that has an open conflict now -- the inputs moved again after the
+          agreement -- gets none.
 
         **Idempotent** (U6 round 2): when there is nothing left to reopen --
         the second call on the same op -- nothing is written at all, no op-log
@@ -395,15 +467,25 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
         op = self.db.get_op(int(op_id))
         if op is None or op["kind"] != CLOSE_KIND:
             raise ValueError(f"op {op_id} is not a {CLOSE_KIND} row of the truth service")
+        reason = (op["payload"] or {}).get("reason")
+        if reason != AGREE_AGAIN:
+            raise ValueError(
+                f"op {op_id} closed conflicts because {reason!r}; only a closing because "
+                f"{AGREE_AGAIN!r} is reopened -- the others stand for a row that has its "
+                f"open conflict already, or for none")
         inverse = op["inverse"] or {}
         key = FrameKey(int(op["desktop"]), int(inverse["step"]), str(op["view"]))
+        taken = {instance for _cid, instance in self.db.open_conflicts_at(key)}
         wanted: list[int] = []
-        for cid in inverse.get("conflicts") or []:
-            found = self.db.get_conflict(int(cid))
+        for cid in sorted((int(c) for c in inverse.get("conflicts") or []), reverse=True):
+            found = self.db.get_conflict(cid)
+            instance = "" if found is None else str(found["instance"] or "")
             if (found is None or found["status"] == OPEN
-                    or found.get("resolution") != SUPERSEDED):
+                    or found.get("resolution") != SUPERSEDED or instance in taken):
                 continue
-            wanted.append(int(cid))
+            wanted.append(cid)
+            taken.add(instance)          # one per row: the newest of a stack
+        wanted.sort()
         if not wanted:
             return []
         reopened: list[int] = []
@@ -428,12 +510,13 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
         order the steps were given -- or, with ``per_step``, a dict keyed by
         step, which is what a caller needs to say *where* a missing shape is
         (spec 4.4 queues).  ``closed`` sums the conflicts the steps closed
-        because their frozen rows agree with the inputs again (U6), which
-        ``cli check`` and the exports print.
+        because their frozen rows agree with the inputs again (U6), and
+        ``overtaken`` the ones a newer disagreement replaced (U7); ``cli check``
+        and the exports print both.
         """
         cache = InputCache()
-        total: dict = {"updated": 0, "conflicts": 0, "standing": 0, "closed": 0,
-                       "skipped": 0, "problems": {} if per_step else []}
+        total: dict = {counter: 0 for counter in REFRESH_COUNTERS}
+        total["problems"] = {} if per_step else []
         for step in steps:
             one = self.refresh(FrameKey(desktop, int(step), view), cache,
                                ignore_digest=ignore_digest)
@@ -499,8 +582,8 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
         queued rather than being cleared unchecked.
         """
         cache = InputCache()
-        total: dict = {"updated": 0, "conflicts": 0, "standing": 0, "closed": 0,
-                       "skipped": 0, "problems": []}
+        total: dict = {counter: 0 for counter in REFRESH_COUNTERS}
+        total["problems"] = []
         for step, gen in self.db.recheck_items(desktop, view):
             one = self.refresh(FrameKey(desktop, int(step), view), cache)
             for counter in REFRESH_COUNTERS:
@@ -609,32 +692,66 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
         new_payload: Optional[dict],
         pixels: int,
         queued: Optional[list[dict]],
+        overtaken: Optional[list[tuple[int, str, str]]] = None,
     ) -> tuple[list[dict], bool]:
-        """Queue one frozen-vs-recompiled disagreement, unless it is queued already.
+        """Make this disagreement the one open conflict of ``(step, instance)``.
 
-        Deduplication is on the **open** queue only, keyed by
-        ``(step, instance, new value)``: refreshing the same frame twice must
-        not pile up copies of one disagreement, while a conflict a human already
-        resolved may legitimately be raised again -- the resolution writes the
-        inputs it settled on, so an identical conflict coming back means the
-        inputs moved again.
+        **One open conflict per frozen row** (task U7).  The open queue is
+        looked at for this row only:
+
+        * an open conflict with the **same new value** -- geometry and labels,
+          :meth:`_geom_id` -- is this disagreement already: nothing is
+          inserted, and refreshing the same frame twice piles nothing up;
+        * every open conflict with a **different** new value is about a value
+          the inputs no longer produce.  It is closed ``superseded`` and
+          recorded in ``overtaken`` as ``(id, instance, OVERTAKEN)``, for the
+          caller to log once per refresh (:meth:`_log_superseded`); with no
+          ``overtaken`` list given, that row is written here.  Before U7 each
+          one stayed open next to the newer one: every commit of a re-traced
+          shape queued one more conflict for the same frozen row, thirteen of
+          them on D13/scan frame 41;
+        * a second open conflict with the **same** new value -- only a
+          database from before U7 holds one -- is closed the same way with the
+          reason :data:`DUPLICATE`; the oldest stays.
+
+        A conflict a human already resolved is not in the open queue, so it
+        may legitimately be raised again -- the resolution writes the inputs
+        it settled on, and an identical conflict coming back means the inputs
+        moved again.
 
         Returns ``(the queue it read, whether a row was inserted)``. The queue
-        comes back so one refresh reads it at most once; the flag comes back
-        because a caller that tells the annotator what happened must not say
-        "queued again" about an insert the deduplication suppressed.
+        comes back -- without the conflicts closed here, with the one inserted
+        -- so one refresh reads it at most once; the flag comes back because a
+        caller that tells the annotator what happened must not say "queued
+        again" about an insert the deduplication suppressed.  Called inside the
+        caller's transaction.
         """
         if queued is None:
             queued = self.db.conflicts(key.desktop, key.view, open_only=True)
         wanted = self._geom_id(new_payload)
-        for conflict in queued:
-            if (
-                conflict["step"] == key.step
-                and conflict["instance"] == instance
-                and self._geom_id(conflict["new_rle"]) == wanted
-            ):
-                return queued, False
-        self.db.add_conflict(key, instance, old_payload, new_payload, int(pixels))
+        mine = [c for c in queued
+                if int(c["step"]) == int(key.step) and c["instance"] == instance]
+        same = next((c for c in mine if self._geom_id(c["new_rle"]) == wanted), None)
+        replaced = [c for c in mine if c is not same]
+        if replaced:
+            closed = []
+            for conflict in sorted(replaced, key=lambda c: int(c["id"])):
+                cid = int(conflict["id"])
+                self.db.resolve_conflict(cid, SUPERSEDED)
+                closed.append((cid, instance,
+                               DUPLICATE if self._geom_id(conflict["new_rle"]) == wanted
+                               else OVERTAKEN))
+            gone = {cid for cid, _instance, _why in closed}
+            queued[:] = [c for c in queued if int(c["id"]) not in gone]
+            if overtaken is None:
+                self._log_superseded(key, closed)
+            else:
+                overtaken.extend(closed)
+        if same is not None:
+            return queued, False
+        cid = self.db.add_conflict(key, instance, old_payload, new_payload, int(pixels))
+        queued.append({"id": int(cid), "step": int(key.step), "instance": instance,
+                       "new_rle": new_payload})
         return queued, True
 
     @staticmethod

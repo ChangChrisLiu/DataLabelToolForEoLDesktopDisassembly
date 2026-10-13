@@ -53,6 +53,7 @@ from tda.core.log_identity import CHASSIS_KEY, instance_key
 from tda.core.model import (
     EXTRA_ATTR,
     VIEWS,
+    FrameKey,
     InstanceRec,
     StateEvent,
     is_extra,
@@ -67,7 +68,7 @@ __all__ = [
     "ExtraError", "adopt_patch", "default_parent", "delete_patch", "extra_keys",
     "host_instances", "initial_events", "is_extra", "next_ordinal", "parent_choices",
     "plan_extras", "planned_keys", "recompile_events", "relation_rows",
-    "restamp_graph", "state_choices", "undo_op", "write_batch",
+    "restamp_graph", "state_choices", "undo_op", "verified_frames_gaining", "write_batch",
 ]
 
 #: ``attrs`` provenance keys of an extra instance.
@@ -285,6 +286,64 @@ def plan_extras(
                 old=default, new=state, evidence_view=None, auto=False,
             ))
     return batch
+
+
+def verified_frames_gaining(
+    db: Db,
+    tax: Taxonomy,
+    desktop: int,
+    view: str,
+    records: Iterable[InstanceRec],
+    events: Iterable[StateEvent] = (),
+    *,
+    instances: Optional[dict[str, InstanceRec]] = None,
+    actions: Optional[list] = None,
+) -> list[int]:
+    """The confirmed frames of ``view`` these new parts would appear in (task U7).
+
+    An added part has no action: it is in the picture from step 0 until a
+    state event takes it out -- its host leaving the chassis, the spec-3.3
+    cascade.  Every frame whose flag is ``verified`` and whose compilation the
+    part would join *gains* an instance, and a confirmed frame that gains one
+    goes back to ``needs_review`` (:meth:`tda.core.truth.TruthService.refresh`).
+    On D13/scan four clips demoted the 25 frames 17-41 and nothing said so
+    before; the 添加零件 dialog says it now, from this.
+
+    "Would join" is the compiler's own question: the part needs geometry in
+    that frame's state (:func:`tda.core.states.needs_geom`, with the frame's
+    bench ROI).  ``instances`` / ``actions`` are the step table the parts would
+    be written into (S1's staged one; the database's when left out), and
+    ``events`` the hand-written initial states the batch carries on top of the
+    stored ones.  Pure reads; returns the steps ascending.
+    """
+    from tda.core.states import events_from_actions, initial_overrides, needs_geom, state_at
+    from tda.core.truth_inputs import merge_events, pose_segment_of
+
+    new = {rec.key: rec for rec in records}
+    if not new:
+        return []
+    frozen = [int(row["step"]) for row in db.frames_for(desktop, view)
+              if row.get("review_status") == "verified"]
+    if not frozen:
+        return []
+    table = dict(db.instances(desktop) if instances is None else instances)
+    table.update(new)
+    manual = [e for e in db.events(desktop) if not e.auto] + list(events)
+    derived = events_from_actions(table, db.actions(desktop) if actions is None else actions,
+                                  tax, initial=initial_overrides(manual))
+    # exactly the log truth_inputs.events_of folds (round 2: one implementation)
+    merged = merge_events(derived, manual)
+    out: list[int] = []
+    rois: dict[int, object] = {}
+    for step in frozen:
+        seg = pose_segment_of(db, FrameKey(desktop, step, view))
+        if seg not in rois:
+            rois[seg] = db.bench_roi(desktop, view, seg)
+        needs = needs_geom(table, state_at(table, merged, step, tax), tax,
+                           bench_roi=rois[seg])
+        if any(key in needs for key in new):
+            out.append(step)
+    return sorted(out)
 
 
 def write_batch(db: Db, batch: ExtraBatch, annotator: str) -> int:

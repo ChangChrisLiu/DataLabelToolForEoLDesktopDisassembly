@@ -64,6 +64,7 @@ __all__ = [
     "events_of",
     "frame_hw",
     "gather",
+    "merge_events",
     "infer_hw",
     "instances_of",
     "pose_segment_of",
@@ -293,7 +294,7 @@ def instances_of(
     return cache.instances[desktop]
 
 
-def _merge_events(derived: list[StateEvent], manual: list[StateEvent]) -> list[StateEvent]:
+def merge_events(derived: list[StateEvent], manual: list[StateEvent]) -> list[StateEvent]:
     """Both logs in one chronological list, manual events last within a step.
 
     Sorting is stable and keyed only on ``(step, source)``, so each log keeps
@@ -331,7 +332,7 @@ def events_of(
     manual = [event for event in db.events(desktop) if not event.auto]
     derived = events_from_actions(instances, db.actions(desktop), tax,
                                   initial=initial_overrides(manual))
-    events = _merge_events(derived, manual)
+    events = merge_events(derived, manual)
     if cache is not None:
         cache.events[desktop] = events
     return events

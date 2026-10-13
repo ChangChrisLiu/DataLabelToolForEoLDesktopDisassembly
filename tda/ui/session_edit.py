@@ -67,7 +67,7 @@ from tda.ui.session_ops import (
     chain_for,
     chain_steps,
     default_anchor,
-    is_verified,
+    frozen_among,
     keyframe_state,
     mask_steps,
     new_keyframe,
@@ -133,8 +133,10 @@ def _result(db: Db, truth: TruthService, key: FrameKey, steps: Sequence[int], op
     compiling them now costs the annotator 300 ms per frame at scanner
     resolution and thirty times that on a chassis shape.
 
-    The **verified** frames are different: a frozen row is the one thing the
-    compiler may not overwrite, so a disagreement has to be found and queued.
+    The **frozen** frames are different -- confirmed, or demoted with signed
+    rows still in them (:func:`~tda.ui.session_ops.frozen_among`): a frozen
+    row is the one thing the compiler may not overwrite, so a disagreement has
+    to be found and queued.
     That work is real, so it is handed to the background sweeper through the
     persisted queue rather than skipped.
 
@@ -368,8 +370,10 @@ def preview(db: Db, truth: TruthService, key: FrameKey, instance: str, scope: st
     than written, and no mask is touched, so the answer costs a few state
     lookups.
 
-    Returns ``{"steps", "verified_steps"}``; the second is the subset already
-    confirmed by a human, i.e. the frames that would go to the conflict queue.
+    Returns ``{"steps", "verified_steps"}``; the second is the subset a human
+    has frozen -- the frame confirmed, or any row of it signed
+    (:func:`~tda.ui.session_ops.frozen_among`) -- i.e. the frames that would go
+    to the conflict queue.
     """
     cache = InputCache()
     seg = pose_segment_of(db, key, cache)
@@ -392,11 +396,9 @@ def preview(db: Db, truth: TruthService, key: FrameKey, instance: str, scope: st
             simulated = chain + [target]
         steps = chain_steps(db, truth.tax, key, instance, seg, placement, simulated,
                             target, cache)
-    verified = [
-        step for step in steps
-        if is_verified(db, key.desktop, key.view, step)
-    ]
-    return {"steps": steps, "verified_steps": verified}
+    # frozen, not only flagged: a demoted frame's signed rows conflict too (U7)
+    return {"steps": steps,
+            "verified_steps": frozen_among(db, key.desktop, key.view, steps)}
 
 
 def pair_steps(db: Db, tax, key: FrameKey, one: str, two: str, seg: int,
@@ -426,8 +428,7 @@ def preview_pair(db: Db, truth: TruthService, key: FrameKey, instance: str,
     seg = pose_segment_of(db, key, cache)
     steps = pair_steps(db, truth.tax, key, instance, other, seg, cache)
     return {"steps": steps,
-            "verified_steps": [s for s in steps
-                               if is_verified(db, key.desktop, key.view, s)]}
+            "verified_steps": frozen_among(db, key.desktop, key.view, steps)}
 
 
 def _cannot_split(chosen: Optional[ShapeKeyframe], step: int, direction: str) -> bool:

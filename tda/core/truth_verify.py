@@ -236,13 +236,16 @@ class VerifyMixin:
         to turn the queued re-check into a no-op.
         """
         queued: Optional[list[dict]] = None
+        overtaken: list[tuple[int, str, str]] = []
         with self.db.transaction():
             for blocker in disputed:
                 old, new, pixels = blocker.queue
                 if pixels is None:          # the part left the frame: its whole area
                     pixels = self._payload_area(old)
                 queued, _new = self._queue_conflict(key, blocker.instance, old, new,
-                                                    pixels, queued)
+                                                    pixels, queued, overtaken)
+            # one open conflict per frozen row (U7): what this replaced, logged once
+            self._log_superseded(key, overtaken)
             self.db.clear_frame_digest(key)
 
     def _review_status(self, key: FrameKey) -> Optional[str]:

@@ -26,7 +26,7 @@ editing logic in :mod:`tda.ui.steps_model`; this module is layout and commands.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -141,10 +141,14 @@ class StepTablePanel(QWidget):
         cache_dir: str | Path | None = None,
         parent: QWidget | None = None,
         annotator: str = ANNOTATOR,
+        view_of: Optional[Callable[[], str]] = None,
     ) -> None:
         super().__init__(parent)
         self.db = db
         self.desktop = desktop
+        #: The view the annotator has open: the add-parts dialog says how many
+        #: of its confirmed frames the new parts will demote (task U7).
+        self.view_of = view_of
         self.tax = taxonomy or load_taxonomy()
         self.annotator = str(annotator or ANNOTATOR)
         # No literal path here: the cache directory is configuration, and a
@@ -376,12 +380,26 @@ class StepTablePanel(QWidget):
         Opened with ``open()`` rather than ``exec()``, so it is window-modal
         without blocking -- and returned, so a caller (or a test) can fill it in.
         """
-        dialog = AddPartsDialog(self.data, self, cls=self.last_extra_class)
+        dialog = AddPartsDialog(self.data, self, cls=self.last_extra_class,
+                                demotion=self._demotion())
         dialog.accepted.connect(lambda: self.add_parts(**dialog.values()))
         dialog.finished.connect(dialog.deleteLater)
         self.add_parts_dialog = dialog
         dialog.open()
         return dialog
+
+    def _demotion(self) -> Optional[Callable[[dict], list[int]]]:
+        """"Which confirmed frames of the open view would these parts demote?" (U7)."""
+        view = str(self.view_of() or "") if self.view_of is not None else ""
+        if not view:
+            return None
+
+        def frames(values: dict) -> list[int]:
+            return self.data.frames_demoted_by_extras(
+                self.db, view, values["cls"], values["count"], values.get("parent"),
+                values.get("state"), values.get("attrs"))
+
+        return frames
 
     def _command(self, run, done: str, staged: bool = False) -> None:
         """Run one structural command, then rebuild both tables and the issues.

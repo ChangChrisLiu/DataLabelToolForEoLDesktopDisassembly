@@ -510,9 +510,13 @@ def test_resolve_conflict_reports_a_refusal_without_raising(session):
 
 def test_resolve_conflict_reports_a_superseded_conflict(session):
     cid = _conflicting_frame(session)
-    # the inputs move on before anybody gets to the queued conflict
-    session.goto(12)
+    # the inputs move on before anybody gets to the queued conflict -- from
+    # another frame, before frame 12's re-check has run: since U7 a refresh of
+    # frame 12 itself replaces the conflict at once (one open per frozen row)
+    session.sweeper_enabled = False
+    session.goto(10)
     draw(session, CHASSIS, rect(2, 34, 30, 62), api.SCOPE_KEYFRAME)
+    assert cid in [e["id"] for e in session.queues()[api.QUEUE_CONFLICTS]]
     problems: list[list[str]] = []
     session.sigProblems.connect(problems.append)
 

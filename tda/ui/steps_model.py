@@ -400,6 +400,33 @@ class StepTableData:
         count = max(X.MIN_COUNT, min(X.MAX_COUNT, int(count)))
         return X.planned_keys(self.instances, cls, dict(attrs or {}), count)
 
+    def frames_demoted_by_extras(self, db: Db, view: str, cls: str, count: int = 1,
+                                 parent: Any = DEFAULT_PARENT, state: str | None = None,
+                                 attrs: dict | None = None) -> list[int]:
+        """The confirmed frames of ``view`` that :meth:`add_extras` would demote (U7).
+
+        The batch is planned exactly as :meth:`add_extras` would plan it --
+        nothing is staged -- and asked
+        :func:`tda.core.extra.verified_frames_gaining` against this table, the
+        staged parts and their initial states included.  Empty for anything
+        :meth:`add_extras` would refuse: the dialog says nothing then.
+        """
+        attrs = {k: v for k, v in dict(attrs or {}).items() if v not in (None, "")}
+        if cls not in self.tax.classes:
+            return []
+        if parent is DEFAULT_PARENT:
+            parent = X.default_parent(self.instances, self.tax, cls)
+        try:
+            batch = X.plan_extras(self.instances, self.tax, self.desktop, cls, count,
+                                  parent=parent or None, state=state,
+                                  annotator=self.annotator, attrs=attrs)
+        except X.ExtraError:
+            return []
+        staged = [event for done in self.extras for event in done.events]
+        return X.verified_frames_gaining(db, self.tax, self.desktop, view, batch.records,
+                                         staged + list(batch.events),
+                                         instances=self.instances, actions=self.actions)
+
     def add_extras(
         self,
         cls: str,

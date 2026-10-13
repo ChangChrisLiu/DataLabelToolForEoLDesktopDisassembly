@@ -15,7 +15,10 @@ from tda.core import masks
 from tda.core.db import RESOLUTIONS
 from tda.core.model import FrameKey, FrameOverride, Placement, Visibility
 from tda.core.truth_conflicts import (
+    AGREE_AGAIN,
     GEOM_BOX,
+    OVERTAKEN,
+    ROW_GONE,
     STATE_OWNED_FIELDS,
     disagreement,
     geom_payload,
@@ -27,7 +30,8 @@ from tda.core.truth_conflicts import (
     row_payload,
     row_values,
 )
-from tda.core.truth_inputs import frame_hw
+from tda.core.truth_inputs import frame_hw, gather
+from tda.core.truth_verify import usable
 
 __all__ = ["ACCEPT_NEW", "KEEP_OLD", "OPEN", "SUPERSEDED", "BY_HAND",
            "ResolveMixin", "StaleConflictError"]
@@ -53,10 +57,18 @@ class StaleConflictError(ValueError):
     """
 
 
+#: How a late ``accept_new`` begins its message; the reason in brackets is the
+#: very ``reason`` of the op-log row it writes -- the words a refresh uses when it
+#: closes a conflict on its own (task U7), e.g. "conflict 12 is stale (overtaken
+#: by a newer disagreement): ...".
+STALE_HEAD = "conflict {cid} is stale ({reason})"
+
+
 class ResolveMixin:
     """Conflict resolution, for :class:`~tda.core.truth.TruthService`."""
 
-    def resolve_conflict(self, cid: int, resolution: str, annotator: str) -> None:
+    def resolve_conflict(self, cid: int, resolution: str, annotator: str,
+                         prepared=None, cache=None) -> None:
         """Close one queued disagreement, and make the inputs agree with it.
 
         ``accept_new`` confirms what the inputs say **now**: the frame is
@@ -71,6 +83,29 @@ class ResolveMixin:
         seen, so this conflict is closed as ``superseded``, the disagreement
         against the *current* value is queued in its place and
         :class:`StaleConflictError` is raised for the caller to re-present it.
+
+        That supersession is the service's answer, not the human's, and it is
+        recorded exactly as a refresh records replacing a conflict (task U7):
+        one ``resolve_conflicts`` row by ``system`` with the reason
+        ``overtaken by a newer disagreement`` (or ``inputs agree again`` /
+        ``the frozen row is gone`` when that is what the recompilation found),
+        written by :meth:`~tda.core.truth.TruthService._log_superseded`, plus
+        ``asked_by``: the annotator whose ``N`` led to it.  The
+        re-queue goes through the same one-open-conflict-per-row rule as a
+        refresh, so an older duplicate of the row left by a database from
+        before U7 is closed with it.
+
+        ``prepared`` is a compilation of this frame the caller already has --
+        a bulk accept settles every conflict of one frame against one
+        compilation.  As everywhere else it is used only when it is still what
+        the inputs read here compile to
+        (:func:`~tda.core.truth_verify.usable`); otherwise the frame is
+        compiled.  ``cache`` is that caller's
+        :class:`~tda.core.truth_inputs.InputCache`, as
+        :meth:`~tda.core.truth.TruthService.refresh_range` shares one across a
+        pass: the instance table, the event log and the keyframes are read once
+        for the whole pass instead of once per conflict -- answering the 123
+        conflicts of D13/scan read the keyframe table 175 times, 2.7 of 3.5 s.
 
         ``keep_old`` pins the frame: the frozen value is written back as a
         :class:`~tda.core.model.FrameOverride`, which is what "only this frame"
@@ -99,49 +134,64 @@ class ResolveMixin:
             )
         key = FrameKey(conflict["desktop"], conflict["step"], conflict["view"])
         instance = conflict["instance"]
-        stale: Optional[str] = None
+        stale: Optional[tuple[str, str]] = None
         with self.db.transaction():
+            closed: list[tuple[int, str, str]] = []
             if resolution == ACCEPT_NEW:
-                stale = self._accept_new(key, instance, conflict, annotator)
+                stale = self._accept_new(key, instance, conflict, annotator, closed,
+                                         prepared, cache)
             elif resolution == KEEP_OLD:
                 self._keep_old(key, instance, conflict)
-            settled = SUPERSEDED if stale else resolution
             # whatever was decided, the rows may or may not describe the inputs
             # now (`edited` writes nothing at all), so the frame is left for the
             # next refresh to judge rather than stamped as up to date
             self.db.clear_frame_digest(key)
-            self.db.resolve_conflict(cid, settled)
-            self.db.log_op(
-                key.desktop, key.view, "resolve_conflict",
-                {"step": key.step, "instance": instance, "conflict": int(cid),
-                 "resolution": settled},
-                {"kind": "reopen_conflict", "conflict": int(cid)},
-                annotator,
-            )
+            if stale is not None:
+                # the service's own answer, recorded the way a refresh records
+                # it (U7); the re-queue may already have closed this one
+                if int(cid) not in {done for done, _inst, _why in closed}:
+                    self.db.resolve_conflict(cid, SUPERSEDED)
+                    closed.insert(0, (int(cid), instance, stale[1]))
+                # ... and who asked, as one more key of the same payload
+                self._log_superseded(key, closed, asked_by=annotator)
+            else:
+                self.db.resolve_conflict(cid, resolution)
+                self.db.log_op(
+                    key.desktop, key.view, "resolve_conflict",
+                    {"step": key.step, "instance": instance, "conflict": int(cid),
+                     "resolution": resolution},
+                    {"kind": "reopen_conflict", "conflict": int(cid)},
+                    annotator,
+                )
         if stale:  # raised only once the supersession itself is committed
-            raise StaleConflictError(stale)
+            raise StaleConflictError(stale[0])
 
     def _accept_new(
-        self, key: FrameKey, instance: str, conflict: dict, annotator: str
-    ) -> Optional[str]:
+        self, key: FrameKey, instance: str, conflict: dict, annotator: str,
+        closed: list[tuple[int, str, str]], prepared=None, cache=None,
+    ) -> Optional[tuple[str, str]]:
         """Confirm the current compilation, or report that it overtook the conflict.
 
-        Returns ``None`` when the row was written (or removed), and the message
-        of the :class:`StaleConflictError` the caller must raise otherwise.
+        Returns ``None`` when the row was written (or removed), and otherwise
+        ``(message of the StaleConflictError the caller must raise, reason the
+        conflict is superseded with)``; the conflicts the re-queue closed are
+        added to ``closed``.
         """
-        _, compiled = self._compile(key)
+        inputs = gather(self.db, self.tax, key, cache, self.cache_dir)
+        compiled = (prepared if usable(prepared, key, inputs, self.compiler_version)
+                    else self._compile_inputs(key, inputs))
         compiled_inst = compiled.instances.get(instance)
         queued = payload_row(conflict["new_rle"])
         if compiled_inst is None:
             if conflict["new_rle"] is not None:
-                return self._supersede(key, instance, conflict, None)
+                return self._supersede(key, instance, conflict, None, closed)
             self.db.delete_compiled(key, instance)  # the instance is gone: so is the row
             return None
         if disagreement(queued, compiled_inst) is not None:
-            return self._supersede(key, instance, conflict, compiled_inst)
+            return self._supersede(key, instance, conflict, compiled_inst, closed)
         if not labels_still_hold(payload_labels(conflict["new_rle"]), compiled_inst):
             # the pixels agree but the label moved again after this was queued
-            return self._supersede(key, instance, conflict, compiled_inst)
+            return self._supersede(key, instance, conflict, compiled_inst, closed)
         self._put_row(
             key, instance, row_values(compiled_inst), VERIFIED, compiled.input_hash,
             verified_by=annotator,
@@ -149,15 +199,19 @@ class ResolveMixin:
         return None
 
     def _supersede(
-        self, key: FrameKey, instance: str, conflict: dict, compiled_inst
-    ) -> str:
-        """Queue the disagreement against the current value; returns the message."""
+        self, key: FrameKey, instance: str, conflict: dict, compiled_inst,
+        closed: list[tuple[int, str, str]],
+    ) -> tuple[str, str]:
+        """Queue the disagreement against the current value.
+
+        Returns ``(message, reason)``; whatever the re-queue closed -- this
+        conflict, under the one-open-conflict-per-row rule -- is in ``closed``.
+        """
+        cid = conflict["id"]
         row = self.db.compiled(key).get(instance)
         if row is None:
-            return (
-                f"conflict {conflict['id']} is stale: {instance} has no truth row on "
-                f"step {key.step} any more"
-            )
+            return (f"{STALE_HEAD.format(cid=cid, reason=ROW_GONE)}: {instance} has no "
+                    f"truth row on step {key.step} any more", ROW_GONE)
         labels: list[dict] = []
         if compiled_inst is None:
             diff = self._payload_area(row_payload(row))
@@ -166,26 +220,24 @@ class ResolveMixin:
             labels = label_changes(row, compiled_inst,
                                    self.db.frame_overrides(key).get(instance))
         if diff is None and not labels:
-            return (
-                f"conflict {conflict['id']} is stale: the inputs changed again and now "
-                f"agree with the frozen row of {instance} on step {key.step}"
-            )
+            return (f"{STALE_HEAD.format(cid=cid, reason=AGREE_AGAIN)}: the inputs changed "
+                    f"again and now agree with the frozen row of {instance} on step "
+                    f"{key.step}", AGREE_AGAIN)
         values = None if compiled_inst is None else row_values(compiled_inst)
         new_payload = (
             None if values is None
             else geom_payload(values.visible_rle, values.box, labels)
         )
         _queue, inserted = self._queue_conflict(
-            key, instance, row_payload(row), new_payload, int(diff or 0), None
+            key, instance, row_payload(row), new_payload, int(diff or 0), None, closed
         )
         # The deduplication may have found this exact disagreement already open:
         # saying "queued again" then sends the annotator looking for a second
         # entry that was never written.
         outcome = ("was queued again" if inserted else "is already queued")
-        return (
-            f"conflict {conflict['id']} is stale: the inputs changed after it was queued, "
-            f"so the disagreement about {instance} on step {key.step} {outcome}"
-        )
+        return (f"{STALE_HEAD.format(cid=cid, reason=OVERTAKEN)}: the inputs changed after "
+                f"it was queued, so the disagreement about {instance} on step {key.step} "
+                f"{outcome}", OVERTAKEN)
 
     def _keep_old(self, key: FrameKey, instance: str, conflict: dict) -> None:
         """Pin the frozen value onto this frame so the compiler reproduces it."""

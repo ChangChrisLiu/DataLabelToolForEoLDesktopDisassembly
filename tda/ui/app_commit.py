@@ -19,6 +19,9 @@ from tda.ui import app_priors
 from tda.ui import app_support as S
 from tda.ui import session_api as api
 from tda.ui.class_names import instance_label, visibility_zh
+# the frame-range wording lives with the guide's other sentences now (U7: the
+# add-parts dialog and the bulk accept say ranges too); importable from here
+from tda.ui.guide import steps_text  # noqa: F401
 
 __all__ = ["CommitMixin"]
 
@@ -52,22 +55,6 @@ def is_layering(scope: Optional[str]) -> bool:
         body = body[len(SPLIT_PREFIX):]
     return body.startswith((A_ZORDER_ABOVE, A_ZORDER_BELOW))
 
-
-def steps_text(steps) -> str:
-    """``[1, 2, ..., 40]`` -> ``1–40``; ``[39, 40]`` -> ``39、40``; runs of three or more joined."""
-    values = sorted({int(s) for s in steps or ()})
-    out: list[str] = []
-    index = 0
-    while index < len(values):
-        end = index
-        while end + 1 < len(values) and values[end + 1] == values[end] + 1:
-            end += 1
-        if end - index >= 2:
-            out.append(f"{values[index]}–{values[end]}")
-        else:
-            out.extend(str(v) for v in values[index:end + 1])
-        index = end + 1
-    return "、".join(out)
 
 
 class CommitMixin:

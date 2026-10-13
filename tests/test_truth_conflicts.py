@@ -11,7 +11,8 @@ from tda.core import masks
 from tda.core.db import Db
 from tda.core.model import FrameOverride, InstanceRec, ShapePart, StateEvent, ZOrderRec
 from tda.core.truth import StaleConflictError
-from tda.core.truth_conflicts import payload_labels
+from tda.core.truth_conflicts import (disagreement, geom_payload, payload_labels,
+                                      row_payload, row_values)
 from truth_scenes import (
     BENCH_BOX,
     DESKTOP,
@@ -896,11 +897,24 @@ def test_a_superseded_conflict_says_the_disagreement_was_queued_again(scene: Sce
 
 
 def test_a_disagreement_the_dedup_suppressed_says_it_is_already_queued(scene: Scene):
-    """The same disagreement is open twice over: nothing new was written."""
+    """The same disagreement is open twice over: nothing new was written.
+
+    Since U7 a refresh replaces the older conflict of a row instead of queueing
+    a second one next to it, so this state is only found in a database from
+    before U7 -- built here by hand: the newer disagreement is queued beside
+    the conflict about to be accepted.
+    """
     cid = _conflicting_scene(scene)
     replace_parts(scene, scene.psu_kf, [ShapePart("main", masks.encode_rle(rect(10, 10, 50, 26)))])
-    scene.svc.refresh(scene.key(2))  # queues the new disagreement by itself
+    key = scene.key(2)
+    now = scene.svc.compile(key).instances[PSU]
+    frozen = scene.row(2, PSU)
+    values = row_values(now)
+    scene.db.add_conflict(key, PSU, row_payload(frozen),
+                          geom_payload(values.visible_rle, values.box, []),
+                          int(disagreement(frozen, now) or 0))
     open_before = len(scene.db.conflicts(DESKTOP, open_only=True))
+    assert open_before == 2
 
     with pytest.raises(StaleConflictError) as err:
         scene.svc.resolve_conflict(cid, "accept_new", "lin")

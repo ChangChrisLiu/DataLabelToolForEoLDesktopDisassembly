@@ -141,6 +141,9 @@ class GuideMixin:
         self._edit_facts: tuple = _NO_EDIT
         #: ``(instance, label, raw names)`` of the instance being edited.
         self._edit_label: tuple = (None, "", "")
+        #: The confirmed frames re-tracing that instance's shape would put in
+        #: conflict (task U7), read once when its edit starts.
+        self._edit_reach: tuple[int, ...] = ()
         #: The SAM tool a new shape starts with: the last one chosen, S until
         #: then (ruling U2b-4, round 2).
         self._last_sam_tool = "sam_point"
@@ -356,6 +359,10 @@ class GuideMixin:
         why_conflict = not_review if not review else "先在 Conflicts 队列里选一条冲突"
         states["review_keep_old"] = (bool(conflict), False, why_conflict)
         states["review_accept_new"] = (bool(conflict), False, why_conflict)
+        # Shift+N needs no selection: it lists the view's conflicts (U7)
+        listed = review and facts.open_conflicts > 0
+        states["review_accept_all_new"] = (bool(listed), False,
+                                           not_review if not review else "这个视图没有开放的冲突")
         return states
 
     def _bench_box_usable(self) -> bool:
@@ -470,6 +477,10 @@ class GuideMixin:
             # The polygon or circle in the annotator's hand (U5a).
             shape=self.shape_name(),
             shape_vertices=len(self.polygon.vertices),
+            # U7: the queue's size (Shift+N), and what a re-trace would reach
+            open_conflicts=(self.review.list_for(api.QUEUE_CONFLICTS).count()
+                            if opened else 0),
+            retrace_frozen=self._edit_reach if editing else (),
         )
 
     def _card_kind(self, instance: Optional[str]) -> str:
@@ -652,6 +663,7 @@ class GuideMixin:
         if instance != self._edit_label[0]:
             label, raw = self._label_of(instance)
             self._edit_label = (instance, label, raw)
+            self._edit_reach = self._retrace_frozen(instance)
         changed = facts != self._edit_facts
         self._edit_facts = facts
         if changed and refresh:
@@ -660,6 +672,38 @@ class GuideMixin:
     def layer_facts(self) -> tuple:
         """``(instance, has pixels, uncommitted)`` as the guide last saw them."""
         return self._edit_facts
+
+    def _retrace_frozen(self, instance: Optional[str]) -> tuple[int, ...]:
+        """The confirmed frames a re-trace of ``instance``'s shape here reaches (U7).
+
+        :meth:`~tda.ui.session_commits.CommitsMixin.retrace_reach`, asked once
+        when an edit starts -- a few state lookups and one query -- and empty
+        for a new shape, a session that cannot answer, or any failure: a hint
+        is never worth one.
+
+        Empty on a ✂ row too (round 2): the count is ``Enter``'s reach -- the
+        version in force -- and a ✂ row is committed with ``Ctrl+K``, a new
+        version from this frame on.  Standing on frame 13 with 14 confirmed,
+        the bar said "重画会影响 1 个已确认帧…Shift+N" while the guide said
+        Ctrl+K, whose new version reaches neither frame 14 nor any conflict.
+        """
+        reach = getattr(self.session, "retrace_reach", None)
+        if not instance or not callable(reach):
+            return ()
+        if self._card_kind(instance) == api.KIND_SPLIT_KEYFRAME:
+            return ()
+        try:
+            found = reach(instance)
+        except Exception:  # noqa: BLE001 - a hint is never worth a failure
+            return ()
+        return tuple(int(s) for s in (found or {}).get("frozen") or ())
+
+    def retrace_note(self) -> str:
+        """The status line's clause for a re-trace that reaches confirmed frames (U7)."""
+        if not self._edit_reach:
+            return ""
+        return (f"；重画会影响 {len(self._edit_reach)} 个已确认帧（第 "
+                f"{G.steps_text(self._edit_reach)} 帧），提交后用 Shift+N 一次接受")
 
     # ------------------------------------------ starting a new shape (U2b-4)
     def note_draw_tool(self, name: str) -> None:

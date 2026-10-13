@@ -23,6 +23,7 @@ from tda.ui.commands import edit_editing_mask_op
 
 __all__ = [
     "ADAPTED",
+    "accept_new_bulk",
     "close_session",
     "retry_rechecks",
     "editing_changed_signal",
@@ -218,6 +219,39 @@ def resolve_conflict(session: Any, cid: int, resolution: str) -> tuple[str, str]
         return str(outcome), str(getattr(outcome, "reason", "") or "")
     _note("resolve_conflict", "verdict derived from the raised exception type")
     return RESOLVED, ""
+
+
+def accept_new_bulk(session: Any, instances) -> dict:
+    """``accept_new`` for every open conflict of these instances (``Shift+N``, U7).
+
+    ``{"accepted", "superseded", "refused", "open", ...}`` as
+    :meth:`~tda.ui.session_review.ReviewMixin.accept_new_bulk` answers it.
+
+    Fallback: one :func:`resolve_conflict` per queued conflict of those
+    instances, newest first per row, then the queue is read again for what is
+    still open -- the same answers, without the repeat passes.
+    """
+    wanted = [str(i) for i in instances]
+    if _has(session, "accept_new_bulk"):
+        return dict(session.accept_new_bulk(wanted))
+    _note("accept_new_bulk", "one resolve_conflict per queued conflict, one pass")
+    from tda.ui import session_api as api
+
+    def entries() -> list[dict]:
+        return [e for e in (session.queues() or {}).get(api.QUEUE_CONFLICTS) or []
+                if str(e.get("instance")) in wanted]
+
+    out = {"accepted": 0, "superseded": 0, "refused": 0, "open": 0}
+    seen: set = set()
+    for entry in sorted(entries(), key=lambda e: -int(e.get("id") or 0)):
+        row = (int(entry["step"]), str(entry["instance"]))
+        if row in seen:
+            continue
+        seen.add(row)
+        verdict, _text = resolve_conflict(session, int(entry["id"]), api.RESOLVE_ACCEPT_NEW)
+        out["accepted" if verdict == RESOLVED else verdict] += 1
+    out["open"] = len(entries())
+    return out
 
 
 def set_unexplained(session: Any, step: int, boxes) -> bool:

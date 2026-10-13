@@ -27,7 +27,14 @@ from tda.core.compiler_visibility import visibility_for
 from tda.core.model import FrameOverride, Visibility
 
 __all__ = [
+    "AGREE_AGAIN",
     "BOX_TOL_PX",
+    "CLOSE_KIND",
+    "DUPLICATE",
+    "OVERTAKEN",
+    "REOPEN_KIND",
+    "ROW_GONE",
+    "SUPERSEDE_REASONS",
     "GEOM_BOX",
     "GEOM_MASK",
     "LABELS_KEY",
@@ -49,6 +56,36 @@ __all__ = [
 
 GEOM_MASK = "mask"
 GEOM_BOX = "box"
+
+#: The op-log row of the truth service closing open conflicts on its own, its
+#: inverse, and why (tasks U6 and U7).  Every path that supersedes writes this
+#: one shape -- :meth:`tda.core.truth.TruthService._log_superseded` -- with one
+#: of :data:`SUPERSEDE_REASONS`:
+#:
+#: ``AGREE_AGAIN``
+#:     the frozen row agrees with the inputs again (an override undone, a shape
+#:     re-traced back), so the conflict describes nothing (U6);
+#: ``OVERTAKEN``
+#:     a newer disagreement about the same frozen row replaced it: one open
+#:     conflict per ``(frame, instance)`` (U7).  Also what an ``accept_new``
+#:     the inputs had moved past records;
+#: ``DUPLICATE``
+#:     another open conflict of the same row says exactly the same thing (same
+#:     new value): a stack a database from before U7 can still hold;
+#: ``ROW_GONE``
+#:     ``accept_new`` found no frozen row left to write.
+#:
+#: A row written because a human asked (a late ``accept_new``) carries
+#: ``asked_by`` on top of the same payload; ``annotator`` stays ``system``.
+#: Only an ``AGREE_AGAIN`` row can be reopened
+#: (:meth:`tda.core.truth.TruthService.reopen_agreed`).
+CLOSE_KIND = "resolve_conflicts"
+REOPEN_KIND = "reopen_conflicts"
+AGREE_AGAIN = "inputs agree again"
+OVERTAKEN = "overtaken by a newer disagreement"
+DUPLICATE = "duplicate of an open conflict"
+ROW_GONE = "the frozen row is gone"
+SUPERSEDE_REASONS = (AGREE_AGAIN, OVERTAKEN, DUPLICATE, ROW_GONE)
 
 #: How far a box corner may move before a frozen box row is in conflict.
 BOX_TOL_PX = 2

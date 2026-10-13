@@ -771,7 +771,11 @@ def superseded_conflict(tmp_path: Path) -> tuple:
     draw(session, "chassis", 50)                          # disagrees with it
     session.truth.run_pending_rechecks(DESKTOP, VIEW)
     cid = session.queues()[api.QUEUE_CONFLICTS][0]["id"]
-    draw(session, "chassis", 51)                          # ... and moves on again
+    # ... and moves on again -- from another frame, before step 13 is re-checked:
+    # a refresh of step 13 itself replaces the conflict at once (task U7)
+    session.goto(LAST_STEP - 2, force=True)
+    draw(session, "chassis", 51)
+    assert cid in [c["id"] for c in session.queues()[api.QUEUE_CONFLICTS]]
     return session, cid
 
 

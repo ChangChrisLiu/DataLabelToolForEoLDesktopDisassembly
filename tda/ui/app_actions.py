@@ -235,6 +235,12 @@ ACTIONS: tuple[Action, ...] = (
     Action("review_accept_new", ("N",), "act_resolve", "Conflict: take the edit",
            "冲突：接受新的编辑", "edit", (api.RESOLVE_ACCEPT_NEW,), (MODE_REVIEW,),
            short="采用新的（冲突）"),
+    # Task U7: a deliberate re-trace of a confirmed shape puts every confirmed
+    # frame it reaches in conflict, all with the same answer.
+    Action("review_accept_all_new", ("Shift+N",), "act_accept_all_new",
+           "Conflicts: take every new value (pick the parts, then confirm)",
+           "接受全部新值…（冲突是你刚重画的形状造成的：按零件勾选，一次接受）",
+           "edit", (), (MODE_REVIEW,), short="接受全部新值…"),
     Action("undo", ("Ctrl+Z",), "act_undo", "Undo", "撤销", "edit", (), _ANN,
            short="撤销"),
     Action("redo", ("Ctrl+Y",), "act_redo", "Redo", "重做", "edit", (), _ANN,
@@ -362,7 +368,7 @@ PALETTE_ACTIONS: tuple[str, ...] = (
 #: so no tool and no brush -- only the difference map and the queue's keys.
 PALETTE_REVIEW: tuple[str, ...] = (
     "review_accept", "review_rework", "review_keep_old", "review_accept_new",
-    "toggle_heat",
+    "review_accept_all_new", "toggle_heat",
 )
 
 

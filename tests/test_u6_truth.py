@@ -200,5 +200,9 @@ def test_only_the_conflicts_that_agree_close(scene: Scene):
     still = _open(scene)
     assert {c["instance"] for c in still} == {SCREW}
     assert out["standing"] >= 1
-    closed = [op for op in scene.db.ops(DESKTOP, VIEW, limit=10) if op["kind"] == CLOSE_KIND]
-    assert all(SCREW not in op["payload"]["instances"] for op in closed)
+    agreed = [op for op in scene.db.ops(DESKTOP, VIEW, limit=10)
+              if op["kind"] == CLOSE_KIND and op["payload"]["reason"] == AGREE_AGAIN]
+    assert agreed and all(SCREW not in op["payload"]["instances"] for op in agreed)
+    # U7: the screw's disagreement is a newer one, and it replaced the old one
+    # instead of standing next to it -- one open conflict per frozen row
+    assert len(still) == 1 and out["overtaken"] == 1

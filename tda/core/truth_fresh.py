@@ -219,7 +219,8 @@ class FreshMixin:
         reported on its own under ``rechecked`` and ``refreshed``, so a caller
         can say which of them found something.  ``closed`` is among them: the
         open conflicts closed because their frozen rows agree with the inputs
-        again (task U6).
+        again (task U6) -- and ``overtaken``, the ones a newer disagreement
+        about the same frozen row replaced (task U7).
 
         ``open_conflicts`` counts the disagreements of this view that nobody has
         settled. They are **not** an error here -- the truth table is as fresh
@@ -247,7 +248,8 @@ class FreshMixin:
             )
             swept = self.refresh_range(desktop, view, steps)
             total["refreshed"] = swept
-            for counter in ("updated", "conflicts", "standing", "closed", "skipped"):
+            for counter in ("updated", "conflicts", "standing", "closed", "overtaken",
+                            "skipped"):
                 total[counter] = total.get(counter, 0) + swept[counter]
             total["problems"] = list(total.get("problems") or []) + list(swept["problems"])
         left = self.pending_rechecks(desktop, view)
