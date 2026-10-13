@@ -59,7 +59,7 @@ from tda.core.states import (
     validate_events,
 )
 from tda.core.taxonomy import Taxonomy
-from tda.core.truth_inputs import _merge_events
+from tda.core.truth_inputs import merge_events
 
 __all__ = [
     "OP_ASSERT_STATE",
@@ -180,7 +180,7 @@ def _mine(event: StateEvent, target: str, steps: Iterable[int]) -> bool:
 
 def _held(instances, derived, manual, step: int, target: str, tax: Taxonomy) -> str:
     """The target's state at ``step`` with this manual log on top of the derived one."""
-    return state_at(instances, _merge_events(derived, manual), step, tax)[target].state
+    return state_at(instances, merge_events(derived, manual), step, tax)[target].state
 
 
 def _idle(instances, derived, manual: list[StateEvent], target: str,
@@ -194,7 +194,7 @@ def _idle(instances, derived, manual: list[StateEvent], target: str,
     held = tax.default_state(instances[target].cls)
     idle: set[int] = set()
     mine = {id(e) for e in manual}
-    for event in _merge_events(derived, manual):
+    for event in merge_events(derived, manual):
         if event.target != target or event.attr != ATTR_STATE:
             continue
         if id(event) in mine and event.step > INITIAL_STEP and event.new == held:
@@ -229,7 +229,7 @@ def plan_assertion(db: Db, tax: Taxonomy, desktop: int, target: str, step: int,
     manual = [e for e in db.events(desktop) if not e.auto]
     derived = events_from_actions(instances, db.actions(desktop), tax,
                                   initial=initial_overrides(manual))
-    current = _merge_events(derived, manual)
+    current = merge_events(derived, manual)
     cur = state_at(instances, current, step, tax)[target].state
     restores = None if nxt is None else state_at(instances, current, nxt, tax)[target].state
     if cur == REMOVED:
@@ -275,13 +275,13 @@ def plan_assertion(db: Db, tax: Taxonomy, desktop: int, target: str, step: int,
     after_manual = [e for e in after_manual if id(e) not in now_idle]
     touched |= {e.step for e in dropped}
 
-    found = Counter(validate_events(instances, _merge_events(derived, after_manual), tax))
+    found = Counter(validate_events(instances, merge_events(derived, after_manual), tax))
     new_problems = found - Counter(validate_events(instances, current, tax))
     if new_problems:
         raise StateAssertError(
             "这样改会和步骤表里的动作对不上（" + "；".join(sorted(new_problems)) +
             "）：动作发生在哪一步要在 Steps 模式里改")
-    merged_after = _merge_events(derived, after_manual)
+    merged_after = merge_events(derived, after_manual)
     got = state_at(instances, merged_after, step, tax)[target].state
     back = None if nxt is None else state_at(instances, merged_after, nxt, tax)[target].state
     if got != new_state or back != restores:   # pragma: no cover - an invariant
