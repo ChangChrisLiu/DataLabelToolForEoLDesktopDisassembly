@@ -281,7 +281,7 @@ def test_instance_rows_are_top_first_with_the_fields_the_panel_reads(session):
     rows = session.instance_rows()
     assert rows
     assert set(rows[0]) == {"key", "cls", "state", "placement", "visibility", "z", "hidden",
-                            "vis_override", "has_shape"}
+                            "vis_override", "has_shape", "state_choices"}
     assert [r["z"] for r in rows] == sorted((r["z"] for r in rows), reverse=True)
 
 
