@@ -317,7 +317,7 @@ def verified_frames_gaining(
     stored ones.  Pure reads; returns the steps ascending.
     """
     from tda.core.states import events_from_actions, initial_overrides, needs_geom, state_at
-    from tda.core.truth_inputs import pose_segment_of
+    from tda.core.truth_inputs import merge_events, pose_segment_of
 
     new = {rec.key: rec for rec in records}
     if not new:
@@ -331,10 +331,8 @@ def verified_frames_gaining(
     manual = [e for e in db.events(desktop) if not e.auto] + list(events)
     derived = events_from_actions(table, db.actions(desktop) if actions is None else actions,
                                   tax, initial=initial_overrides(manual))
-    # the order truth_inputs.events_of folds them in: derived first within a step
-    merged = [e for _s, _o, e in sorted(
-        [(e.step, 0, e) for e in derived] + [(e.step, 1, e) for e in manual],
-        key=lambda item: (item[0], item[1]))]
+    # exactly the log truth_inputs.events_of folds (round 2: one implementation)
+    merged = merge_events(derived, manual)
     out: list[int] = []
     rois: dict[int, object] = {}
     for step in frozen:
