@@ -233,3 +233,21 @@ def test_s1_validates_the_merged_log_not_the_stored_row_order(tmp_path):
                                                           (15, "closed", "open")]
     finally:
         db.close()
+
+
+def test_a_change_on_a_duplicate_frame_is_refused(scene):
+    """``dupli`` means "no change": the card asks nothing there, V12 says so."""
+    db, tax = scene
+    steps = db.steps(DESKTOP)
+    for rec in steps:
+        if rec.step == 22:
+            rec.step_type = "dupli"
+    db.replace_steps(DESKTOP, steps, db.actions(DESKTOP))
+    before = rows(db)
+    with pytest.raises(SA.StateAssertError, match="第 22 步在步骤表里是重复帧"):
+        SA.assert_state(db, tax, DESKTOP, LATCH, 21, "closed")     # the restore lands on 22
+    with pytest.raises(SA.StateAssertError, match="第 22 步在步骤表里是重复帧"):
+        SA.assert_state(db, tax, DESKTOP, LATCH, 22, "closed")     # the change itself
+    assert rows(db) == before
+    SA.assert_state(db, tax, DESKTOP, LATCH, 20, "closed")          # 20 and 21 are normal
+    assert manual(db) == [(20, "open", "closed"), (21, "closed", "open")]

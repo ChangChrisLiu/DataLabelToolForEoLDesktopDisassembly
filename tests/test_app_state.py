@@ -115,6 +115,23 @@ def test_t_sets_the_next_state_and_says_what_holds_where(window):
     assert manual(window, CORRECTED) == []
 
 
+def test_a_run_of_frames_is_said_as_one(window):
+    """Walking backwards over a run: the line names the run and where it ends."""
+    goto(window, STEP)
+    window.instances.select_instance(CORRECTED)
+    window.act_cycle_state()
+    goto(window, STEP - 1)
+    window.instances.select_instance(CORRECTED)
+    window.act_cycle_state()
+    assert manual(window, CORRECTED) == [(STEP - 1, "closed", "open"),
+                                         (STEP + 1, "open", "closed")]
+    message = window.status_message()
+    assert ("ram_latch.02 在第 11 步：打开（之前为 关上）；第 11–12 步都是 打开；"
+            "第 13 步起恢复 关上") in message
+    # frame 11 is diffed against 12, where it is open too: nothing to draw here
+    assert SPLIT_NOW not in message
+
+
 def test_t_with_nothing_selected_says_where_to_click(window):
     goto(window, STEP)
     window.instances.table().setCurrentCell(-1, -1)

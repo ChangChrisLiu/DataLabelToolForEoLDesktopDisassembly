@@ -36,7 +36,7 @@ from tda.ui.session_api import SessionRefusal
 from tda.ui.session_ops import settle
 
 __all__ = ["OP_ASSERT_STATE", "StateMixin", "apply_assert_state", "commit_assertion",
-           "gate"]
+           "gate", "run_around"]
 
 IN_CHASSIS = Placement.IN_CHASSIS.value
 
@@ -66,6 +66,31 @@ def gate(instances: dict, state: FrameState, tax, instance: str,
     return list(choices), ""
 
 
+def run_around(db: Db, tax, desktop: int, instance: str,
+               step: int) -> tuple[int, int, Optional[tuple[int, str]]]:
+    """``(first, last, after)``: the run of steps sharing ``step``'s state.
+
+    ``after`` is ``(step, state)`` of the first step past the run, ``None``
+    when the run reaches the end of the table. What the status line says after
+    a change: closed at 20 next to a 21 that already was is "第 20–21 步都是
+    关上；第 22 步起恢复 打开", not "第 21 步起本来就是 关上".
+    """
+    cache = InputCache()
+    table = sorted({int(r.step) for r in db.steps(desktop)})
+    held = {s: state_of(db, tax, desktop, s, cache).get(instance) for s in table}
+    value = held[step].state if held.get(step) is not None else None
+    at = table.index(step)
+    first = last = at
+    while first > 0 and held[table[first - 1]] is not None             and held[table[first - 1]].state == value:
+        first -= 1
+    while last + 1 < len(table) and held[table[last + 1]] is not None             and held[table[last + 1]].state == value:
+        last += 1
+    after = None
+    if last + 1 < len(table) and held[table[last + 1]] is not None:
+        after = (table[last + 1], held[table[last + 1]].state)
+    return table[first], table[last], after
+
+
 def apply_assert_state(db: Db, truth: TruthService, payload: dict,
                        current: Optional[int] = None) -> dict:
     """Both directions of an ``assert_state`` op: write its rows, then settle."""
@@ -80,8 +105,8 @@ def commit_assertion(db: Db, truth: TruthService, key: FrameKey, instance: str,
     """Write "at this frame ``instance`` is ``state``" and log it with its inverse.
 
     Returns what every edit returns (``affected``, ``rechecks``, ``problems``,
-    ``frame``, ``op``) plus ``changed`` and the :class:`StatePatch` as
-    ``patch``. Asserting the state that already holds writes nothing and has
+    ``frame``, ``op``) plus ``changed``, the :class:`StatePatch` as ``patch``
+    and :func:`run_around`'s answer as ``run`` / ``after``. Asserting the state that already holds writes nothing and has
     no op. A refusal of the core is a :class:`SessionRefusal` here, so the
     window shows its sentence instead of a traceback.
     """
@@ -99,7 +124,9 @@ def commit_assertion(db: Db, truth: TruthService, key: FrameKey, instance: str,
         raise SessionRefusal(str(refused)) from refused
     affected = annotatable_steps(db, key.desktop, key.view, patch.reach)
     stats = settle(db, truth, key.desktop, key.view, affected, key.step)
+    first, last, after = run_around(db, truth.tax, key.desktop, instance, key.step)
     return {"changed": True, "patch": patch, "affected": affected,
+            "run": (first, last), "after": after,
             "compiled": stats["compiled"], "rechecks": stats["rechecks"],
             "conflicts": stats["conflicts"], "problems": stats["problems"],
             "frame": stats["frame"], "op": Op(OP_ASSERT_STATE, payload, inverse)}

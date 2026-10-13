@@ -34,20 +34,27 @@ SPLIT_NOW = "这帧的形状要重画：Ctrl+K 从这帧起新版本"
 REFUSED = "改不了状态："
 
 
-def state_note(label: str, patch, split_here: bool) -> str:
+def state_note(label: str, patch, split_here: bool,
+               run: Optional[tuple[int, int]] = None,
+               after: Optional[tuple[int, str]] = None) -> str:
     """The status line after an assertion, in the annotator's words.
 
-    ``内存卡扣 ram_latch.01 在第 21 步：关上（之前为 打开）；第 22 步起恢复 打开`` and,
-    when this frame's card now asks for a new shape version,
+    ``内存卡扣 ram_latch.01 在第 21 步：关上（之前为 打开）；第 22 步起恢复 打开``;
+    ``run`` (the steps now sharing the state) and ``after`` (the first step past
+    them) make a run of frames read as one: ``…；第 20–21 步都是 关上；第 22 步起
+    恢复 打开``.  When this frame's card now asks for a new shape version,
     :data:`SPLIT_NOW`.
     """
     text = (f"{label} 在第 {patch.step} 步：{state_zh(patch.state)}"
             f"（之前为 {state_zh(patch.previous)}）")
-    if patch.next_step is not None and patch.restores is not None:
-        if patch.restores != patch.state:
-            text += f"；第 {patch.next_step} 步起恢复 {state_zh(patch.restores)}"
-        else:
-            text += f"；第 {patch.next_step} 步起本来就是 {state_zh(patch.restores)}"
+    if run is None and patch.next_step is not None and patch.restores is not None:
+        run = (patch.step, patch.step)
+        after = (patch.next_step, patch.restores) if patch.restores != patch.state else None
+    if run is not None and run[0] != run[1]:
+        text += f"；第 {run[0]}–{run[1]} 步都是 {state_zh(patch.state)}"
+    if after is not None:
+        back = "恢复 " if after[1] == patch.previous else ""
+        text += f"；第 {after[0]} 步起{back}{state_zh(after[1])}"
     if split_here:
         text += f"。{SPLIT_NOW}"
     return text + "（Ctrl+Z 撤销）"
@@ -113,7 +120,7 @@ class StateMixin:
             str(row.get("instance")) == str(instance)
             and row.get("kind") == api.KIND_SPLIT_KEYFRAME and not row.get("done")
             for row in self.task_card.rows())
-        note = state_note(label, patch, split_here)
+        note = state_note(label, patch, split_here, result.get("run"), result.get("after"))
         self.update_status()
         self.report(note, hold_ms=6000)
         self.flash_visibility_note(note)

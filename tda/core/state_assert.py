@@ -28,7 +28,10 @@ is local by construction: the state at every other step stays what it was.
 
 Refused, with a sentence an annotator can act on (:class:`StateAssertError`):
 a state the class does not have, ``removed`` (when a part leaves is the step
-table's to say), a part already removed at ``k``, and anything that would make
+table's to say), a part already removed at ``k``, a change landing on a step the
+table types ``dupli`` (a duplicate frame is "no change" by definition: its task
+card asks nothing and V12 exports it as a "nothing changed" negative), and
+anything that would make
 :func:`~tda.core.states.validate_events` find a problem in the merged log it did
 not find before -- a derived event whose ``old`` no longer holds means the
 action itself is on the wrong step, which is a step-table correction.
@@ -45,7 +48,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Iterable, Optional
 
 from tda.core.db import Db
-from tda.core.model import Placement, StateEvent, is_provisional
+from tda.core.model import Placement, StateEvent, StepType, is_provisional
 from tda.core.states import (
     ATTR_STATE,
     INITIAL_STEP,
@@ -254,6 +257,16 @@ def plan_assertion(db: Db, tax: Taxonomy, desktop: int, target: str, step: int,
                     f"{target} 在第 {nxt} 步已经拆下，第 {step} 步的状态接不回去")
             added.append(StateEvent(desktop, nxt, target, ATTR_STATE, held_n, restores,
                                     evidence_view=evidence_view, auto=False))
+    dupli = {int(r.step) for r in db.steps(desktop)
+             if r.dupli or r.step_type == StepType.DUPLI.value}
+    for event in added:
+        if event.step in dupli:
+            # a duplicate frame is "no change" by definition: the task card asks
+            # nothing there and V12 exports it as the negative of "did anything
+            # change?" -- a state moving on it makes both untrue
+            raise StateAssertError(
+                f"第 {event.step} 步在步骤表里是重复帧（dupli，和前一帧一样）：这样改它就和"
+                f"前一帧不一样了。画面确实变了的话，先在 Steps 模式改第 {event.step} 步的类型")
     after_manual = kept + added
     # a manual event this change turned into a no-op goes with it
     was_idle = _idle(instances, derived, manual, target, tax)

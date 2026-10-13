@@ -185,9 +185,22 @@ class Checker:
             for key, rec in self.instances.items()
         }
         removed_at: dict[str, int] = {}
+        pending = sorted((e for e in self.manual if e.step <= step), key=lambda e: e.step)
+
+        def correct(before: int) -> None:
+            # a hand-written event corrects the derived log *of its step*: it
+            # folds after that step's actions and before any later one -- a
+            # re-close at 20 must not undo an open at 14 from step 21 on (U8)
+            while pending and pending[0].step < before:
+                event = pending.pop(0)
+                slot = frame.get(event.target)
+                if slot is not None and event.attr in ("state", "placement"):
+                    slot[event.attr] = event.new
+
         for action in self.actions:
             if action.step > step or action.result != "success":
                 continue
+            correct(action.step)
             effect = self._effect(action.target, action.verb)
             if effect is None:
                 continue
@@ -206,12 +219,7 @@ class Checker:
             slot[attr] = value
             if attr == "state" and value == REMOVED and slot["placement"] == IN_CHASSIS:
                 slot["placement"] = ON_BENCH
-        # a hand-written event corrects the derived log; it never replaces it
-        for event in sorted((e for e in self.manual if e.step <= step),
-                            key=lambda e: e.step):
-            slot = frame.get(event.target)
-            if slot is not None and event.attr in ("state", "placement"):
-                slot[event.attr] = event.new
+        correct(step + 1)       # it never replaces the derived log, only corrects it
         self._cascade(frame, removed_at)
         self._states[step] = frame
         return frame
