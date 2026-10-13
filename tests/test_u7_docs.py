@@ -21,6 +21,15 @@ def test_both_documents_have_the_section():
         assert "添加零件" in text and "需复核" in text, name
         assert "Shift+N" in text, name
         assert "一次画完再提交" in text, name
+        # round 2: a new part's first shape over confirmed frames (the motherboard case)
+        assert "新零件" in text and "第一笔" in text, name
+
+
+def test_the_quickstart_says_what_the_pending_rechecks_mean():
+    quick = _flat("trial_quickstart.md")
+    assert "后台复检中 N 帧" in quick and "再按一次 `Shift+N`" in quick
+    assert "打开视角时也会把所有 确认过的帧在后台再核对一遍" in quick or \
+        "打开视角时也会把所有确认过的帧在后台再核对一遍" in quick
 
 
 def test_the_quickstart_quotes_what_the_app_says():
