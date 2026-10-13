@@ -39,7 +39,7 @@ from tda.core.model import (
 from tda.core.compiler import select_keyframe
 from tda.core.states import needs_geom
 from tda.core.taxonomy import Taxonomy
-from tda.core.truth import VERIFIED, TruthService
+from tda.core.truth import TruthService
 from tda.ui.session_api import SessionRefusal
 from tda.core.truth_inputs import (
     InputCache,
@@ -69,6 +69,7 @@ __all__ = [
     "chain_for",
     "chain_steps",
     "default_anchor",
+    "frozen_among",
     "keyframe_state",
     "new_keyframe",
     "occluder_union",
@@ -109,10 +110,16 @@ def refresh_steps(db: Db, truth: TruthService, desktop: int, view: str,
     return truth.refresh_range(desktop, view, steps, per_step=True)
 
 
-def is_verified(db: Db, desktop: int, view: str, step: int) -> bool:
-    """Has a human frozen this frame? (spec 3.4)"""
-    frame = db.get_frame(FrameKey(desktop, int(step), view)) or {}
-    return frame.get("review_status") == VERIFIED
+def frozen_among(db: Db, desktop: int, view: str, steps: Iterable[int]) -> list[int]:
+    """The frames among ``steps`` a human has frozen (spec 3.4), ascending.
+
+    *Frozen* is :meth:`tda.core.db_recheck.RecheckMixin.frozen_steps`'s notion
+    -- the frame's flag is ``verified`` **or** any of its rows is -- asked in
+    one query.  Not the flag alone: a confirmed frame that gained a part is
+    demoted to ``needs_review`` and still holds every row the annotator signed
+    (task U7).
+    """
+    return db.frozen_steps_in(desktop, view, steps)
 
 
 def settle(db: Db, truth: TruthService, desktop: int, view: str, steps: Iterable[int],
@@ -125,6 +132,12 @@ def settle(db: Db, truth: TruthService, desktop: int, view: str, steps: Iterable
     whoever visits them, and hand the **frozen** ones to the persisted re-check
     queue, because a frozen row is the one thing the compiler may not overwrite
     and a disagreement nobody looks for is a conflict that never gets raised.
+
+    "Frozen" is :func:`frozen_among`'s: a frame demoted to ``needs_review``
+    whose signed rows are still there is re-checked like a confirmed one.
+    Until U7 only the flag was asked, and on D13/scan the 25 frames 添加零件
+    had demoted were never re-checked after a re-trace -- 102 conflicts stayed
+    latent until each frame was visited.
 
     Returns what :func:`refresh_steps` does plus ``rechecks`` (the frames
     queued), ``compiled`` (the ones actually done now) and ``frame`` -- the
@@ -141,7 +154,7 @@ def settle(db: Db, truth: TruthService, desktop: int, view: str, steps: Iterable
             stats[counter] += one[counter]
         stats["problems"][int(step)] = list(one["problems"])
         stats["frame"] = one["compiled"]  # the caller installs it: no second compile
-    deferred = [s for s in wanted if s not in now and is_verified(db, desktop, view, s)]
+    deferred = frozen_among(db, desktop, view, [s for s in wanted if s not in now])
     stats["rechecks"] = truth.queue_rechecks(desktop, view, deferred)
     stats["compiled"] = now
     return stats

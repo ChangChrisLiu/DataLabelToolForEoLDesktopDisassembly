@@ -66,6 +66,32 @@ class RecheckMixin:
         ).fetchall()
         return sorted({int(r["step"]) for r in rows})
 
+    def frozen_steps_in(self, desktop: int, view: str, steps: Iterable[int]) -> list[int]:
+        """The steps among ``steps`` a human has frozen, ascending (task U7).
+
+        :meth:`frozen_steps` narrowed to the frames one edit reaches, in **one**
+        query however many there are: the frame's own ``review_status``, *or*
+        any compiled row a human signed.  The second half is the one that
+        matters: a confirmed frame that gained a part is demoted to
+        ``needs_review`` but keeps every row the annotator signed, and those
+        rows disagree with a re-trace exactly as before.  Asking only the flag
+        -- what the edit path did until U7 -- left 102 such disagreements on
+        D13/scan unqueued, to surface five at a time on each visit.
+        """
+        wanted = sorted({int(s) for s in steps})
+        if not wanted:
+            return []
+        marks = ",".join("?" * len(wanted))
+        rows = self.conn.execute(
+            "SELECT step FROM frame WHERE desktop=? AND view=? AND review_status='verified' "
+            f"AND step IN ({marks}) "
+            "UNION "
+            "SELECT step FROM compiled_mask WHERE desktop=? AND view=? AND status='verified' "
+            f"AND step IN ({marks})",
+            (int(desktop), str(view), *wanted, int(desktop), str(view), *wanted),
+        ).fetchall()
+        return sorted({int(r["step"]) for r in rows})
+
     def queue_rechecks_for_view(self, desktop: int, view: str) -> list[int]:
         """Queue **every frozen frame** of one view; returns the steps queued.
 
