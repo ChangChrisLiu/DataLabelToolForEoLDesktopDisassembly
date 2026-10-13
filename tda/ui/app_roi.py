@@ -912,6 +912,62 @@ class RoiMixin:
         self.resolve_selected(resolution)
 
     @S.guard
+    def act_accept_all_new(self) -> None:
+        """``Shift+N`` in Review: 「接受全部新值…」 (task U7).
+
+        A deliberate re-trace of a confirmed shape puts every confirmed frame
+        it reaches in conflict, all with the same answer.  The dialog lists the
+        view's open conflicts per instance, all ticked; confirming hands the
+        ticked ones to :meth:`accept_all_new`.  Opened with ``open()`` -- modal
+        to the window without blocking -- and kept on
+        :attr:`bulk_accept_dialog`, so a caller (or a test) can answer it.
+        """
+        from tda.ui.panels.bulk_accept import BulkAcceptDialog, group_conflicts
+
+        if not compat.is_open(self.session):
+            self.report("没有打开的视图 / no view is open")
+            return
+        groups = group_conflicts((self.session.queues() or {}).get(api.QUEUE_CONFLICTS) or [])
+        if not groups:
+            self.report("这个视图没有开放的冲突 / no open conflict in this view")
+            return
+        dialog = BulkAcceptDialog(groups, self)
+        dialog.accepted.connect(lambda: self.accept_all_new(dialog.selected_instances()))
+        dialog.finished.connect(dialog.deleteLater)
+        self.bulk_accept_dialog = dialog
+        dialog.open()
+
+    @S.guard
+    def accept_all_new(self, instances) -> Optional[dict]:
+        """``accept_new`` for every open conflict of ``instances``; says how it went.
+
+        The session repeats its passes until none of those rows is open (a
+        conflict the inputs had moved past is superseded, re-queued and then
+        accepted); the sweeper may run meanwhile.  Busy cursor for the
+        duration; the status line ends with "已接受 k 个，仍开放 m 个".
+        """
+        from PySide6.QtWidgets import QApplication
+
+        wanted = [str(i) for i in instances or ()]
+        if not wanted:
+            self.report("没有勾选零件 / nothing ticked")
+            return None
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            result = compat.accept_new_bulk(self.session, wanted)
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.review.refresh()
+        self.review_refreshes += 1
+        accepted, still = int(result.get("accepted", 0)), int(result.get("open", 0))
+        self.logger.info("bulk accept_new %s: %s", ",".join(wanted), result)
+        tail = "（仍开放的在 Conflicts 队列里逐条 K / N）" if still else ""
+        self.report(f"已接受 {accepted} 个，仍开放 {still} 个{tail} / "
+                    f"accepted {accepted}, {still} still open")
+        self.refresh_guidance()
+        return result
+
+    @S.guard
     def on_rework(self, step: int) -> None:
         """``R`` in Review mode: open the frame in Annotate mode to work on it.
 

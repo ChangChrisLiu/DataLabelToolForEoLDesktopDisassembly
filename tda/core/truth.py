@@ -209,12 +209,15 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
 
         ``held`` is a compilation the caller already has for this frame -- the
         session keeps the one it compiled, or the one the sweeper prefetched.
-        On that path ``want_compiled`` hands it back instead of compiling, but
-        **only when it is still the compilation these inputs make**
-        (:func:`~tda.core.truth_verify.usable`, asked of the inputs just read,
-        as ``verify_frame`` asks it of its ``prepared``); otherwise the frame is
-        compiled. A session's edit epoch is a fact about that session, and
-        another writer moves the inputs without touching it (U2f).
+        On that path ``want_compiled`` hands it back instead of compiling, and
+        on the other it stands in for the compilation the rows are derived
+        from (a bulk ``accept_new`` settles a frame against one compilation and
+        then refreshes it, task U7) -- but **only when it is still the
+        compilation these inputs make** (:func:`~tda.core.truth_verify.usable`,
+        asked of the inputs just read, as ``verify_frame`` asks it of its
+        ``prepared``); otherwise the frame is compiled. A session's edit epoch
+        is a fact about that session, and another writer moves the inputs
+        without touching it (U2f).
 
         ``guard`` is an :meth:`inputs_digest` taken before the compilation, for
         a caller working off the GUI thread. The pixel work happens outside any
@@ -243,7 +246,8 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
             return result
         # the inputs are already in hand: gathering them a second time reads the
         # whole keyframe table again, which is most of a batch pass's time
-        compiled = self._compile_inputs(key, inputs)  # no transaction: pixels only
+        compiled = (held if usable(held, key, inputs, self.compiler_version)
+                    else self._compile_inputs(key, inputs))  # no transaction: pixels only
         with self.db.transaction():
             return self._write_refresh(key, compiled, guard, digest,
                                        inputs.frame_overrides)

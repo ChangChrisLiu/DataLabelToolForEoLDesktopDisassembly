@@ -1,0 +1,249 @@
+"""Task U7 in Review and while drawing: ``Shift+N`` (C) and the re-trace warning (E).
+
+On D13/scan a deliberate re-trace of four confirmed clips put 145 conflicts in
+the queue, every one of them answered by ``accept_new``, and ``N`` answered one
+at a time.  ``Shift+N`` lists the view's conflicts per instance and accepts the
+ticked ones through the session -- the path of ``N`` -- until none of those
+rows is open.  And the re-trace now says, before the commit, how many confirmed
+frames it will put in conflict.
+"""
+from __future__ import annotations
+
+import os
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from pathlib import Path
+
+import pytest
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QDialogButtonBox
+
+import app_scene
+import session_scene
+from session_scene import CHASSIS, COOLER, DESKTOP, VIEW, cell, draw, rect, seed_shapes
+from tda.core import masks
+from tda.core.model import FrameKey
+from tda.core.truth_conflicts import row_values
+from tda.ui import app_actions as A
+from tda.ui import guide as G
+from tda.ui import session_api as api
+from tda.ui.app import MainWindow
+from tda.ui.panels.bulk_accept import BulkAcceptDialog, group_conflicts
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture
+def session(qapp, tmp_path: Path):
+    made = session_scene.make_session(tmp_path)
+    yield made
+    made.close(force=True)
+
+
+def _open(session) -> list[dict]:
+    return session.db.conflicts(DESKTOP, VIEW, open_only=True)
+
+
+def _two_confirmed_frames(session) -> None:
+    """Frames 13 and 12 confirmed with every part drawn (anchored at 14)."""
+    session.goto(12)
+    seed_shapes(session, 12)
+    session.goto(13)
+    assert session.confirm_frame() is True        # steps back to 12
+    assert session.current().step == 12
+    assert session.confirm_frame() is True
+
+
+def _retrace(session, mask, step: int = 10) -> dict:
+    session.goto(step)
+    return draw(session, CHASSIS, mask, api.SCOPE_KEYFRAME)
+
+
+# --------------------------------------------------------------------------- #
+# the dialog's model
+# --------------------------------------------------------------------------- #
+def test_conflicts_are_grouped_per_instance_with_counts_and_frame_ranges():
+    queue = ([{"step": s, "instance": "ram_latch.01"} for s in range(17, 42)]
+             + [{"step": s, "instance": "motherboard.01"} for s in range(17, 42)]
+             + [{"step": 41, "instance": "motherboard.01"}]      # a pre-U7 duplicate
+             + [{"step": 40, "instance": "ram_latch.03"}, {"step": 38, "instance": "ram_latch.03"},
+                {"step": 41, "instance": "ram_latch.03"}])
+
+    groups = group_conflicts(queue)
+
+    assert [g.instance for g in groups] == ["motherboard.01", "ram_latch.01", "ram_latch.03"]
+    assert [g.count for g in groups] == [25, 25, 3]
+    assert groups[1].text == "ram_latch.01 ×25（帧 17–41）"
+    assert groups[0].text == "motherboard.01 ×25（帧 17–41）"
+    assert groups[2].text == "ram_latch.03 ×3（帧 38、40、41）"
+    assert group_conflicts([]) == []
+
+
+def test_the_dialog_ticks_every_instance_and_counts_what_is_ticked(qapp):
+    groups = group_conflicts([{"step": s, "instance": i}
+                              for i in ("a.01", "b.01") for s in (3, 4, 5)])
+    dialog = BulkAcceptDialog(groups)
+    ok = dialog.buttons.button(QDialogButtonBox.StandardButton.Ok)
+    assert dialog.selected_instances() == ["a.01", "b.01"]
+    assert dialog.selected_count() == 6 and "6" in ok.text() and ok.isEnabled()
+
+    dialog.item("a.01").setCheckState(Qt.CheckState.Unchecked)
+    assert dialog.selected_instances() == ["b.01"]
+    assert "3" in ok.text()
+    dialog.item("b.01").setCheckState(Qt.CheckState.Unchecked)
+    assert not ok.isEnabled()
+    dialog.deleteLater()
+
+
+# --------------------------------------------------------------------------- #
+# the session's loop
+# --------------------------------------------------------------------------- #
+def test_bulk_accept_closes_stacked_and_stale_conflicts(session):
+    """A pre-U7 stack on one row, and conflicts the inputs moved past: all closed."""
+    session.sweeper_enabled = False                    # deterministic: nothing re-checks
+    _two_confirmed_frames(session)
+    _retrace(session, rect(2, 34, 34, 62))
+    for step in (12, 13):                               # what the sweeper would raise
+        session.truth.refresh(FrameKey(DESKTOP, step, VIEW))
+    assert sorted(c["step"] for c in _open(session)) == [12, 13]
+    first = {c["step"]: c for c in _open(session)}
+    # a stack from before U7 on frame 12's row ...
+    session.db.add_conflict(FrameKey(DESKTOP, 12, VIEW), CHASSIS, first[12]["old_rle"],
+                            masks.encode_rle(rect(2, 30, 30, 62)), 500)
+    # ... and the inputs move on before anybody answers (both now stale)
+    _retrace(session, rect(4, 4, 40, 40))
+    assert len(_open(session)) == 3
+
+    result = session.accept_new_bulk([CHASSIS])
+
+    assert result["open"] == 0 and _open(session) == []
+    assert result["rows"] == 2 and result["superseded"] >= 2 and result["accepted"] == 2
+    assert 2 <= result["rounds"] <= 6
+    # the frozen rows carry what the inputs say now, and nothing stands any more
+    for step in (12, 13):
+        key = FrameKey(DESKTOP, step, VIEW)
+        row = session.db.compiled(key)[CHASSIS]
+        now = row_values(session.truth.compile(key).instances[CHASSIS]).visible_rle
+        assert row["status"] == "verified" and row["verified_by"] == "tester"
+        assert row["visible_rle"]["counts"] == now["counts"]
+    again = session.truth.refresh_range(DESKTOP, VIEW, session.available_steps(),
+                                        ignore_digest=True)
+    assert again["standing"] == 0 and again["conflicts"] == 0
+
+
+def test_bulk_accept_leaves_the_instances_not_ticked(session):
+    session.sweeper_enabled = False
+    _two_confirmed_frames(session)
+    _retrace(session, rect(2, 34, 34, 62))
+    session.goto(10)
+    draw(session, COOLER, cell(40), api.SCOPE_KEYFRAME)
+    session.truth.refresh_range(DESKTOP, VIEW, [12, 13])
+    assert {c["instance"] for c in _open(session)} == {CHASSIS, COOLER}
+
+    result = session.accept_new_bulk([COOLER])
+
+    assert result["open"] == 0
+    assert {c["instance"] for c in _open(session)} == {CHASSIS}
+
+
+def test_bulk_accept_works_with_the_sweeper_running(session):
+    """The sweeper raises the conflicts in the background while the bulk answers them."""
+    _two_confirmed_frames(session)
+    _retrace(session, rect(2, 34, 34, 62))
+    assert session.drain_sweeper(timeout=20.0)
+    assert sorted(c["step"] for c in _open(session)) == [12, 13]
+    _retrace(session, rect(4, 4, 40, 40))      # re-queues 12 and 13 for the sweeper
+
+    result = session.accept_new_bulk()          # the sweeper may be in the middle of them
+
+    assert result["open"] == 0
+    assert session.drain_sweeper(timeout=20.0)
+    assert _open(session) == []
+    again = session.truth.refresh_range(DESKTOP, VIEW, session.available_steps(),
+                                        ignore_digest=True)
+    assert again["standing"] == 0
+
+
+def test_the_guide_names_shift_n():
+    review = G.plan_for(G.GuideFacts(mode="review", open_conflicts=145))
+    assert "Shift+N" in review.now and "145" in review.now
+    assert review.action == "review_accept_all_new"
+    single = G.plan_for(G.GuideFacts(mode="review", open_conflicts=1))
+    assert "Shift+N" not in single.now and "N 采用新的" in single.now
+
+
+# --------------------------------------------------------------------------- #
+# the window
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def window(qapp, tmp_path):
+    session = app_scene.make_session(tmp_path)
+    win = MainWindow(session, app_scene.make_paths(tmp_path), "tester",
+                     sam_queue=app_scene.StubSamQueue())
+    win.resize(900, 700)
+    win.show()
+    QApplication.processEvents()
+    win.set_mode(A.MODE_ANNOTATE)
+    if win.roi_editing:
+        win.act_clear_edit()
+    QApplication.processEvents()
+    yield win
+    app_scene.close_window(win)
+
+
+def _window_conflicts(win) -> None:
+    """Frames 13 and 12 confirmed, then the chassis re-traced at 10: two conflicts."""
+    session = win.session
+    session.sweeper_enabled = False
+    session.goto(12)
+    app_scene.seed_shapes(session, 12)
+    session.goto(13)
+    assert session.confirm_frame() and session.confirm_frame()
+    session.goto(10)
+    win.on_request_edit(CHASSIS)
+    session.set_editing_mask(rect(2, 34, 34, 62))
+    session.commit_edit(api.SCOPE_KEYFRAME)
+    session.clear_edit()
+    session.truth.refresh_range(DESKTOP, VIEW, [12, 13])
+
+
+def test_shift_n_is_a_review_key_only():
+    combo = (Qt.Key.Key_N, Qt.KeyboardModifier.ShiftModifier)
+    assert A.action_for(*combo, A.MODE_REVIEW).name == "review_accept_all_new"
+    assert A.action_for(*combo, A.MODE_ANNOTATE) is None
+    assert A.action_for(Qt.Key.Key_N, Qt.KeyboardModifier.NoModifier,
+                        A.MODE_REVIEW).name == "review_accept_new"
+    assert A.action_named("review_accept_all_new").short == "接受全部新值…"
+
+
+def test_shift_n_opens_the_dialog_and_accepts_what_is_ticked(window):
+    _window_conflicts(window)
+    window.set_mode(A.MODE_REVIEW)
+    window.review.refresh()
+    window.refresh_guidance()
+    assert window.palette.button("review_accept_all_new").isEnabled()
+    assert "Shift+N" in window.guide_plan().now
+
+    window.dispatch(A.action_named("review_accept_all_new"))
+    dialog = window.bulk_accept_dialog
+    assert dialog.isVisible()
+    assert [g.text for g in dialog.groups] == ["chassis ×2（帧 12、13）"]
+    dialog.accept()
+    QApplication.processEvents()
+
+    assert window.status_message().startswith("已接受 2 个，仍开放 0 个")
+    assert _open(window.session) == []
+    assert window.review.list_for(api.QUEUE_CONFLICTS).count() == 0
+    window.refresh_guidance()
+    assert not window.palette.button("review_accept_all_new").isEnabled()
+
+
+def test_shift_n_with_no_conflict_says_so(window):
+    window.set_mode(A.MODE_REVIEW)
+    window.act_accept_all_new()
+    assert "没有开放的冲突" in window.status_message()
+    assert getattr(window, "bulk_accept_dialog", None) is None

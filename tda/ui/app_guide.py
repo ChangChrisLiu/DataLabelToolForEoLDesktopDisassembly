@@ -356,6 +356,10 @@ class GuideMixin:
         why_conflict = not_review if not review else "先在 Conflicts 队列里选一条冲突"
         states["review_keep_old"] = (bool(conflict), False, why_conflict)
         states["review_accept_new"] = (bool(conflict), False, why_conflict)
+        # Shift+N needs no selection: it lists the view's conflicts (U7)
+        listed = review and facts.open_conflicts > 0
+        states["review_accept_all_new"] = (bool(listed), False,
+                                           not_review if not review else "这个视图没有开放的冲突")
         return states
 
     def _bench_box_usable(self) -> bool:
@@ -470,6 +474,9 @@ class GuideMixin:
             # The polygon or circle in the annotator's hand (U5a).
             shape=self.shape_name(),
             shape_vertices=len(self.polygon.vertices),
+            # U7: the queue's size (Shift+N)
+            open_conflicts=(self.review.list_for(api.QUEUE_CONFLICTS).count()
+                            if opened else 0),
         )
 
     def _card_kind(self, instance: Optional[str]) -> str:

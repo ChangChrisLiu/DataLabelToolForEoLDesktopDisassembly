@@ -25,7 +25,7 @@ from tda.ui import session_api as api
 
 __all__ = [
     "CardItem", "DONE", "GuideFacts", "GuidePlan", "NOW", "TODO", "WARN",
-    "PHASES", "plan_for",
+    "PHASES", "plan_for", "steps_text",
 ]
 
 #: Marker states of one line of the numbered list.
@@ -143,6 +143,9 @@ class GuideFacts:
     #: ``""``, and how many vertices the polygon has so far.
     shape: str = ""
     shape_vertices: int = 0
+    #: Open conflicts of the view, as the Review queue lists them (task U7):
+    #: more than one is when ``Shift+N`` is worth naming.
+    open_conflicts: int = 0
 
 
 @dataclass(frozen=True)
@@ -191,6 +194,25 @@ CONFIRM = "全部画完：Space 确认整帧，自动退到上一帧"
 #: The same line while the card's pane lists what stops Space (U2d).
 CONFIRM_BLOCKED = "先处理任务卡下面的 {n} 个问题（它们挡住 Space）"
 NOTHING_TO_DRAW = "这一帧不用画"
+#: Review mode with several conflicts: when the bulk answer is the right one.
+REVIEW_BULK = "这些冲突是你刚重画的形状造成的 → Shift+N 一次接受（共 {n} 个）"
+
+
+def steps_text(steps) -> str:
+    """``[1, 2, ..., 40]`` -> ``1–40``; ``[39, 40]`` -> ``39、40``; runs of three or more joined."""
+    values = sorted({int(s) for s in steps or ()})
+    out: list[str] = []
+    index = 0
+    while index < len(values):
+        end = index
+        while end + 1 < len(values) and values[end + 1] == values[end] + 1:
+            end += 1
+        if end - index >= 2:
+            out.append(f"{values[index]}–{values[end]}")
+        else:
+            out.extend(str(v) for v in values[index:end + 1])
+        index = end + 1
+    return "、".join(out)
 
 
 def _label(item: CardItem) -> str:
@@ -286,9 +308,14 @@ def plan_for(facts: GuideFacts) -> GuidePlan:
                          f"这一帧在 {facts.view} 视角没有图像 — 按 PgDn / PgUp "
                          f"翻到有图像的帧")
     if facts.mode == "review":
-        return GuidePlan(PHASE_REVIEW, "复查 Review",
-                         "复查模式，画布只读：在右侧队列选一条 → Enter 接受这一帧，"
-                         "R 回标注模式返工；冲突：K 保留旧的，N 采用新的")
+        now = ("复查模式，画布只读：在右侧队列选一条 → Enter 接受这一帧，"
+               "R 回标注模式返工；冲突：K 保留旧的，N 采用新的")
+        if facts.open_conflicts > 1:
+            # a re-trace of a confirmed shape: one answer for all of them (U7)
+            return GuidePlan(PHASE_REVIEW, "复查 Review",
+                             f"{now}；{REVIEW_BULK.format(n=facts.open_conflicts)}",
+                             action="review_accept_all_new")
+        return GuidePlan(PHASE_REVIEW, "复查 Review", now)
     if facts.flashing:
         return GuidePlan(PHASE_FLASH, _title(facts),
                          "正在对照另一帧（画布上不是这一帧）— 松开 Tab 回来")

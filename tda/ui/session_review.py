@@ -11,7 +11,10 @@ Split off :mod:`tda.ui.session` for size; the methods are part of
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
+from typing import Iterable, Optional
 
+from tda.core.model import FrameKey
 from tda.core.truth import StaleConflictError
 from tda.core.truth_inputs import instances_of
 from tda.core.truth_refusals import PROBLEM as REFUSED_BY_PROBLEM
@@ -19,11 +22,16 @@ from tda.ui.session_coverage import coverage
 from tda.ui import session_api as api
 from tda.ui import session_edit as edit
 
-__all__ = ["ReviewMixin"]
+__all__ = ["BULK_ROUNDS", "ReviewMixin"]
 
 log = logging.getLogger("tda.session")
 
 MISSING_SHAPE = "missing_shape:"
+#: How many passes :meth:`ReviewMixin.accept_new_bulk` makes over the selected
+#: rows.  A conflict the inputs had moved past is superseded and re-queued by
+#: the truth service, so the next pass accepts its replacement; one pass more
+#: than that is only ever needed while the sweeper is queueing in parallel.
+BULK_ROUNDS = 6
 
 
 class ReviewMixin:
@@ -209,3 +217,91 @@ class ReviewMixin:
             verb = "superseded" if outcome == "superseded" else "not resolved"
             self.sigProblems.emit([f"conflict {cid} {verb}: {reason}"])
         return api.Verdict(outcome, reason)
+
+    def accept_new_bulk(self, instances: Optional[Iterable[str]] = None,
+                        rounds: int = BULK_ROUNDS) -> dict:
+        """``accept_new`` for every open conflict of these instances in this view (U7).
+
+        What ``Shift+N`` does after a deliberate re-trace: on D13/scan one
+        re-trace of four confirmed clips put 145 conflicts in the queue, every
+        one of them answered by ``accept_new``, and ``N`` took one at a time.
+
+        The rows are the ``(frame, instance)`` pairs open when this is called,
+        for ``instances`` (``None``: all of them).  The newest open conflict of
+        each row goes through
+        :meth:`~tda.core.truth.TruthService.resolve_conflict` -- the path of
+        ``N`` -- so the frozen row, the op log and a supersession are exactly
+        what ``N`` writes; then the frame is refreshed, which stamps it, closes
+        an older duplicate of a row a database from before U7 may still hold
+        (its frozen row agrees now), and raises whatever still stands.  A
+        conflict the inputs had moved past is superseded and re-queued by the
+        truth service, and a sweeper running alongside may queue or close
+        conflicts too; so the pass is repeated, re-reading the queue, until
+        none of the selected rows is open or ``rounds`` passes are done.  The
+        panels are told once, at the end.
+
+        Each frame is compiled once per pass and that compilation is handed to
+        every answer about it and to its refresh (``prepared`` / ``held``); the
+        truth service uses it only while it is still what the inputs compile
+        to.
+
+        Returns ``{"accepted", "superseded", "refused", "open", "rounds",
+        "rows"}``: answers that wrote the row, answers the inputs had overtaken
+        (their replacement is accepted by a later pass), answers refused (the
+        conflict was closed meanwhile), selected rows still open at the end,
+        passes made, and how many rows were selected.  Never raises for a
+        single conflict: an ordinary outcome is counted, not thrown.
+        """
+        result = {"accepted": 0, "superseded": 0, "refused": 0, "open": 0,
+                  "rounds": 0, "rows": 0}
+        if not self.is_open:
+            return result
+        wanted = None if instances is None else {str(i) for i in instances}
+
+        def newest_per_row() -> dict[tuple[int, str], dict]:
+            found: dict[tuple[int, str], dict] = {}
+            for conflict in self.db.conflicts(self.desktop, self.view, open_only=True):
+                row = (int(conflict["step"]), str(conflict["instance"]))
+                if wanted is None or row[1] in wanted:
+                    found[row] = conflict          # oldest first: the last one wins
+            return found
+
+        rows = set(newest_per_row())
+        result["rows"] = len(rows)
+        touched: dict[int, object] = {}
+        for _ in range(max(1, int(rounds))):
+            todo = [c for row, c in newest_per_row().items() if row in rows]
+            if not todo:
+                break
+            result["rounds"] += 1
+            by_step: dict[int, list[dict]] = defaultdict(list)
+            for conflict in todo:
+                by_step[int(conflict["step"])].append(conflict)
+            for step in sorted(by_step):
+                key = FrameKey(self.desktop, step, self.view)
+                prepared = self.truth.compile(key)
+                for conflict in by_step[step]:
+                    try:
+                        self.truth.resolve_conflict(int(conflict["id"]), api.RESOLVE_ACCEPT_NEW,
+                                                    self.annotator, prepared=prepared)
+                    except StaleConflictError:
+                        result["superseded"] += 1
+                    except (KeyError, ValueError) as refused:
+                        log.info("bulk accept_new: conflict %s refused: %s",
+                                 conflict["id"], refused)
+                        result["refused"] += 1
+                    else:
+                        result["accepted"] += 1
+                stats = self.truth.refresh(key, want_compiled=True, held=prepared)
+                self.review.problems[step] = list(stats["problems"])
+                touched[step] = stats["compiled"]
+        result["open"] = sum(1 for row in newest_per_row() if row in rows)
+        log.info("bulk accept_new on %s/%s: %s", self.desktop, self.view, result)
+        self._invalidate()
+        here = int(self.current().step)
+        if here in touched:
+            # that refresh just compared this frame's rows with this compilation
+            self._keep_compiled(here, self._epoch, touched[here])
+            self._truth_settled()
+        self._announce()
+        return result
