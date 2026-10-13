@@ -144,9 +144,13 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
 
     # ------------------------------------------------------------------ compile
 
-    def compile(self, key: FrameKey) -> CompiledFrame:
-        """Compile one frame from the database's current state (spec 3.3)."""
-        return self._compile(key)[1]
+    def compile(self, key: FrameKey, cache: Optional[InputCache] = None) -> CompiledFrame:
+        """Compile one frame from the database's current state (spec 3.3).
+
+        ``cache`` is a caller's per-pass :class:`InputCache`, as
+        :meth:`refresh_range` keeps one.
+        """
+        return self._compile(key, cache)[1]
 
     def _compile(
         self, key: FrameKey, cache: Optional[InputCache] = None

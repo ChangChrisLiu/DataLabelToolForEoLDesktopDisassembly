@@ -66,7 +66,7 @@ class ResolveMixin:
     """Conflict resolution, for :class:`~tda.core.truth.TruthService`."""
 
     def resolve_conflict(self, cid: int, resolution: str, annotator: str,
-                         prepared=None) -> None:
+                         prepared=None, cache=None) -> None:
         """Close one queued disagreement, and make the inputs agree with it.
 
         ``accept_new`` confirms what the inputs say **now**: the frame is
@@ -97,7 +97,12 @@ class ResolveMixin:
         compilation.  As everywhere else it is used only when it is still what
         the inputs read here compile to
         (:func:`~tda.core.truth_verify.usable`); otherwise the frame is
-        compiled.
+        compiled.  ``cache`` is that caller's
+        :class:`~tda.core.truth_inputs.InputCache`, as
+        :meth:`~tda.core.truth.TruthService.refresh_range` shares one across a
+        pass: the instance table, the event log and the keyframes are read once
+        for the whole pass instead of once per conflict -- answering the 123
+        conflicts of D13/scan read the keyframe table 175 times, 2.7 of 3.5 s.
 
         ``keep_old`` pins the frame: the frozen value is written back as a
         :class:`~tda.core.model.FrameOverride`, which is what "only this frame"
@@ -131,7 +136,7 @@ class ResolveMixin:
             closed: list[tuple[int, str]] = []
             if resolution == ACCEPT_NEW:
                 stale = self._accept_new(key, instance, conflict, annotator, closed,
-                                         prepared)
+                                         prepared, cache)
             elif resolution == KEEP_OLD:
                 self._keep_old(key, instance, conflict)
             # whatever was decided, the rows may or may not describe the inputs
@@ -159,7 +164,7 @@ class ResolveMixin:
 
     def _accept_new(
         self, key: FrameKey, instance: str, conflict: dict, annotator: str,
-        closed: list[tuple[int, str]], prepared=None,
+        closed: list[tuple[int, str]], prepared=None, cache=None,
     ) -> Optional[tuple[str, str]]:
         """Confirm the current compilation, or report that it overtook the conflict.
 
@@ -168,7 +173,7 @@ class ResolveMixin:
         conflict is superseded with)``; the conflicts the re-queue closed are
         added to ``closed``.
         """
-        inputs = gather(self.db, self.tax, key, cache_dir=self.cache_dir)
+        inputs = gather(self.db, self.tax, key, cache, self.cache_dir)
         compiled = (prepared if usable(prepared, key, inputs, self.compiler_version)
                     else self._compile_inputs(key, inputs))
         compiled_inst = compiled.instances.get(instance)

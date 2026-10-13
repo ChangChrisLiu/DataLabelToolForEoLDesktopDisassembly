@@ -16,7 +16,7 @@ from typing import Iterable, Optional
 
 from tda.core.model import FrameKey
 from tda.core.truth import StaleConflictError
-from tda.core.truth_inputs import instances_of
+from tda.core.truth_inputs import InputCache, instances_of
 from tda.core.truth_refusals import PROBLEM as REFUSED_BY_PROBLEM
 from tda.ui.session_coverage import coverage
 from tda.ui import session_api as api
@@ -243,7 +243,10 @@ class ReviewMixin:
         Each frame is compiled once per pass and that compilation is handed to
         every answer about it and to its refresh (``prepared`` / ``held``); the
         truth service uses it only while it is still what the inputs compile
-        to.
+        to.  One :class:`~tda.core.truth_inputs.InputCache` serves the whole
+        call, as it serves a ``refresh_range``: nothing here writes an input
+        (only truth rows, conflicts and digests), and the window is busy for
+        the duration, so the annotator cannot either.
 
         Returns ``{"accepted", "superseded", "refused", "open", "rounds",
         "rows"}``: answers that wrote the row, answers the inputs had overtaken
@@ -269,6 +272,7 @@ class ReviewMixin:
         rows = set(newest_per_row())
         result["rows"] = len(rows)
         touched: dict[int, object] = {}
+        cache = InputCache()
         for _ in range(max(1, int(rounds))):
             todo = [c for row, c in newest_per_row().items() if row in rows]
             if not todo:
@@ -279,11 +283,12 @@ class ReviewMixin:
                 by_step[int(conflict["step"])].append(conflict)
             for step in sorted(by_step):
                 key = FrameKey(self.desktop, step, self.view)
-                prepared = self.truth.compile(key)
+                prepared = self.truth.compile(key, cache)
                 for conflict in by_step[step]:
                     try:
                         self.truth.resolve_conflict(int(conflict["id"]), api.RESOLVE_ACCEPT_NEW,
-                                                    self.annotator, prepared=prepared)
+                                                    self.annotator, prepared=prepared,
+                                                    cache=cache)
                     except StaleConflictError:
                         result["superseded"] += 1
                     except (KeyError, ValueError) as refused:
@@ -292,7 +297,7 @@ class ReviewMixin:
                         result["refused"] += 1
                     else:
                         result["accepted"] += 1
-                stats = self.truth.refresh(key, want_compiled=True, held=prepared)
+                stats = self.truth.refresh(key, cache, want_compiled=True, held=prepared)
                 self.review.problems[step] = list(stats["problems"])
                 touched[step] = stats["compiled"]
         result["open"] = sum(1 for row in newest_per_row() if row in rows)
