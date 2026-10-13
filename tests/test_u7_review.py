@@ -242,6 +242,33 @@ def _window_conflicts(win) -> None:
     session.truth.refresh_range(DESKTOP, VIEW, [12, 13])
 
 
+def test_the_window_adapter_falls_back_to_one_answer_per_row():
+    """A session without ``accept_new_bulk``: N's call, newest conflict of each row."""
+    from tda.ui import app_compat as compat
+
+    class Old:
+        def __init__(self):
+            self.open = [{"id": 1, "step": 5, "instance": "a"}, {"id": 2, "step": 5, "instance": "a"},
+                         {"id": 3, "step": 6, "instance": "a"}, {"id": 4, "step": 6, "instance": "b"}]
+            self.calls = []
+
+        def queues(self):
+            return {api.QUEUE_CONFLICTS: list(self.open)}
+
+        def resolve_conflict(self, cid, resolution):
+            self.calls.append((cid, resolution))
+            self.open = [c for c in self.open
+                         if (c["step"], c["instance"]) != next(
+                             (e["step"], e["instance"]) for e in self.open if e["id"] == cid)]
+            return api.Verdict("resolved")
+
+    old = Old()
+    out = compat.accept_new_bulk(old, ["a"])
+    assert old.calls == [(3, api.RESOLVE_ACCEPT_NEW), (2, api.RESOLVE_ACCEPT_NEW)]
+    assert out == {"accepted": 2, "superseded": 0, "refused": 0, "open": 0}
+    assert [c["instance"] for c in old.open] == ["b"]
+
+
 def test_shift_n_is_a_review_key_only():
     combo = (Qt.Key.Key_N, Qt.KeyboardModifier.ShiftModifier)
     assert A.action_for(*combo, A.MODE_REVIEW).name == "review_accept_all_new"

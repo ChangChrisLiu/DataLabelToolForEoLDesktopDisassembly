@@ -57,9 +57,11 @@ class StaleConflictError(ValueError):
     """
 
 
-#: The words both supersession paths use for a conflict the inputs moved past
-#: (task U7): a refresh replacing it, and an ``accept_new`` arriving too late.
-STALE_HEAD = "conflict {cid} was overtaken by a newer disagreement"
+#: How a late ``accept_new`` begins its message; the reason in brackets is the
+#: very ``reason`` of the op-log row it writes -- the words a refresh uses when it
+#: closes a conflict on its own (task U7), e.g. "conflict 12 is stale (overtaken
+#: by a newer disagreement): ...".
+STALE_HEAD = "conflict {cid} is stale ({reason})"
 
 
 class ResolveMixin:
@@ -203,11 +205,11 @@ class ResolveMixin:
         Returns ``(message, reason)``; whatever the re-queue closed -- this
         conflict, under the one-open-conflict-per-row rule -- is in ``closed``.
         """
-        head = STALE_HEAD.format(cid=conflict["id"])
+        cid = conflict["id"]
         row = self.db.compiled(key).get(instance)
         if row is None:
-            return (f"{head}: {instance} has no truth row on step {key.step} any more",
-                    ROW_GONE)
+            return (f"{STALE_HEAD.format(cid=cid, reason=ROW_GONE)}: {instance} has no "
+                    f"truth row on step {key.step} any more", ROW_GONE)
         labels: list[dict] = []
         if compiled_inst is None:
             diff = self._payload_area(row_payload(row))
@@ -216,8 +218,9 @@ class ResolveMixin:
             labels = label_changes(row, compiled_inst,
                                    self.db.frame_overrides(key).get(instance))
         if diff is None and not labels:
-            return (f"{head}: the inputs changed again and now agree with the frozen "
-                    f"row of {instance} on step {key.step}", AGREE_AGAIN)
+            return (f"{STALE_HEAD.format(cid=cid, reason=AGREE_AGAIN)}: the inputs changed "
+                    f"again and now agree with the frozen row of {instance} on step "
+                    f"{key.step}", AGREE_AGAIN)
         values = None if compiled_inst is None else row_values(compiled_inst)
         new_payload = (
             None if values is None
@@ -230,8 +233,9 @@ class ResolveMixin:
         # saying "queued again" then sends the annotator looking for a second
         # entry that was never written.
         outcome = ("was queued again" if inserted else "is already queued")
-        return (f"{head}: the inputs changed after it was queued, so the disagreement "
-                f"about {instance} on step {key.step} {outcome}", OVERTAKEN)
+        return (f"{STALE_HEAD.format(cid=cid, reason=OVERTAKEN)}: the inputs changed after "
+                f"it was queued, so the disagreement about {instance} on step {key.step} "
+                f"{outcome}", OVERTAKEN)
 
     def _keep_old(self, key: FrameKey, instance: str, conflict: dict) -> None:
         """Pin the frozen value onto this frame so the compiler reproduces it."""
