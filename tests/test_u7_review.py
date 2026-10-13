@@ -123,6 +123,8 @@ def test_bulk_accept_closes_stacked_and_stale_conflicts(session):
     assert result["open"] == 0 and _open(session) == []
     assert result["rows"] == 2 and result["superseded"] >= 2 and result["accepted"] == 2
     assert 2 <= result["rounds"] <= 6
+    # the sweeper is off: the re-checks the re-traces queued are still owed (round 2)
+    assert result["pending"] == len(session.db.rechecks(DESKTOP, VIEW)) == 2
     # the frozen rows carry what the inputs say now, and nothing stands any more
     for step in (12, 13):
         key = FrameKey(DESKTOP, step, VIEW)
@@ -294,10 +296,33 @@ def test_shift_n_opens_the_dialog_and_accepts_what_is_ticked(window):
     QApplication.processEvents()
 
     assert window.status_message().startswith("已接受 2 个，仍开放 0 个")
+    # frames 12 and 13 are still queued for a re-check (round 2)
+    assert "后台复检中 2 帧" in window.status_message(), window.status_message()
     assert _open(window.session) == []
     assert window.review.list_for(api.QUEUE_CONFLICTS).count() == 0
     window.refresh_guidance()
     assert not window.palette.button("review_accept_all_new").isEnabled()
+
+
+def test_a_split_row_does_not_get_the_retrace_clause(window):
+    """The reviewer's case: frame 14 confirmed, stand on 13 (✂ row), select ram_latch.01."""
+    session = window.session
+    session.sweeper_enabled = False
+    session.goto(14)
+    app_scene.seed_shapes(session, 14)
+    assert session.confirm_frame() is True            # steps back to 13
+    assert session.current().step == 13
+    rows = {r["instance"]: r["kind"] for r in session.task_card()}
+    assert rows.get("ram_latch.01") == api.KIND_SPLIT_KEYFRAME
+    # what Enter would reach does include the confirmed frame 14 ...
+    assert 14 in (session.retrace_reach("ram_latch.01") or {}).get("frozen", [])
+
+    window.on_request_edit("ram_latch.01")
+
+    # ... but the row is committed with Ctrl+K, and nothing says Shift+N
+    assert "重画会影响" not in window.status_message(), window.status_message()
+    plan = window.guide_plan()
+    assert "Ctrl+K" in plan.now and "重画会影响" not in plan.now
 
 
 def test_shift_n_with_no_conflict_says_so(window):

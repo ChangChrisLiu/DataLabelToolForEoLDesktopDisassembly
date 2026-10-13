@@ -680,9 +680,17 @@ class GuideMixin:
         when an edit starts -- a few state lookups and one query -- and empty
         for a new shape, a session that cannot answer, or any failure: a hint
         is never worth one.
+
+        Empty on a ✂ row too (round 2): the count is ``Enter``'s reach -- the
+        version in force -- and a ✂ row is committed with ``Ctrl+K``, a new
+        version from this frame on.  Standing on frame 13 with 14 confirmed,
+        the bar said "重画会影响 1 个已确认帧…Shift+N" while the guide said
+        Ctrl+K, whose new version reaches neither frame 14 nor any conflict.
         """
         reach = getattr(self.session, "retrace_reach", None)
         if not instance or not callable(reach):
+            return ()
+        if self._card_kind(instance) == api.KIND_SPLIT_KEYFRAME:
             return ()
         try:
             found = reach(instance)

@@ -246,17 +246,27 @@ class ReviewMixin:
         to.  One :class:`~tda.core.truth_inputs.InputCache` serves the whole
         call, as it serves a ``refresh_range``: nothing here writes an input
         (only truth rows, conflicts and digests), and the window is busy for
-        the duration, so the annotator cannot either.
+        the duration, so the annotator cannot either.  The one way it can be
+        wrong is a write from **outside** this session between the cache's
+        fill and an answer: the inputs read would be the older ones, and so
+        would the value signed.  The next refresh, which reads uncached, then
+        finds the frozen row disagreeing with the new inputs and raises it as
+        a conflict -- nothing is lost, and the single-user lock (spec 3.5)
+        keeps any other writer out to begin with.
 
         Returns ``{"accepted", "superseded", "refused", "open", "rounds",
-        "rows"}``: answers that wrote the row, answers the inputs had overtaken
-        (their replacement is accepted by a later pass), answers refused (the
-        conflict was closed meanwhile), selected rows still open at the end,
-        passes made, and how many rows were selected.  Never raises for a
-        single conflict: an ordinary outcome is counted, not thrown.
+        "rows", "pending"}``: answers that wrote the row, answers the inputs
+        had overtaken (their replacement is accepted by a later pass), answers
+        refused (the conflict was closed meanwhile), selected rows still open
+        at the end, passes made, how many rows were selected, and how many
+        frames of the view are still queued for a re-check -- each may yet
+        raise a conflict this call could not see (round 2: the reviewer read
+        "仍开放 0 个" while the sweeper was about to raise a hundred).  Never
+        raises for a single conflict: an ordinary outcome is counted, not
+        thrown.
         """
         result = {"accepted": 0, "superseded": 0, "refused": 0, "open": 0,
-                  "rounds": 0, "rows": 0}
+                  "rounds": 0, "rows": 0, "pending": 0}
         if not self.is_open:
             return result
         wanted = None if instances is None else {str(i) for i in instances}
@@ -301,6 +311,7 @@ class ReviewMixin:
                 self.review.problems[step] = list(stats["problems"])
                 touched[step] = stats["compiled"]
         result["open"] = sum(1 for row in newest_per_row() if row in rows)
+        result["pending"] = len(self.db.rechecks(self.desktop, self.view))
         log.info("bulk accept_new on %s/%s: %s", self.desktop, self.view, result)
         self._invalidate()
         here = int(self.current().step)

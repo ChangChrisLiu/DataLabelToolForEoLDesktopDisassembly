@@ -147,6 +147,10 @@ def as_bgr(rgb: Optional[np.ndarray]) -> Optional[np.ndarray]:
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
 
+#: The bulk accept's status clause while frames are still queued for a re-check
+#: (U7 round 2): they may yet raise conflicts that "仍开放 m 个" could not count.
+BULK_PENDING = "后台复检中 {n} 帧（可能还会出现新的冲突）"
+
 class RoiMixin:
     """The chassis rectangle, bench boxes, conflict verdicts, crash recovery."""
 
@@ -960,10 +964,14 @@ class RoiMixin:
         self.review.refresh()
         self.review_refreshes += 1
         accepted, still = int(result.get("accepted", 0)), int(result.get("open", 0))
+        pending = int(result.get("pending", 0) or 0)
         self.logger.info("bulk accept_new %s: %s", ",".join(wanted), result)
         tail = "（仍开放的在 Conflicts 队列里逐条 K / N）" if still else ""
-        self.report(f"已接受 {accepted} 个，仍开放 {still} 个{tail} / "
-                    f"accepted {accepted}, {still} still open")
+        # frames still being re-checked may raise conflicts this did not see
+        busy = f"，{BULK_PENDING.format(n=pending)}" if pending else ""
+        self.report(f"已接受 {accepted} 个，仍开放 {still} 个{busy}{tail} / "
+                    f"accepted {accepted}, {still} still open"
+                    + (f", {pending} frames still being re-checked" if pending else ""))
         self.refresh_guidance()
         return result
 
