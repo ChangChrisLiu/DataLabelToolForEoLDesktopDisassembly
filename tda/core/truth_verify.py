@@ -19,7 +19,7 @@ from typing import Optional
 
 from tda.core.compiler import CompiledFrame
 from tda.core.model import FrameKey, Placement
-from tda.core.truth_conflicts import row_values
+from tda.core.truth_conflicts import OVERTAKEN, row_values
 from tda.core.truth_fresh import digest_of, hash_of_inputs
 from tda.core.truth_inputs import gather
 # The reasons live in one module that the window reads too (task U2e); the
@@ -236,13 +236,16 @@ class VerifyMixin:
         to turn the queued re-check into a no-op.
         """
         queued: Optional[list[dict]] = None
+        overtaken: list[tuple[int, str]] = []
         with self.db.transaction():
             for blocker in disputed:
                 old, new, pixels = blocker.queue
                 if pixels is None:          # the part left the frame: its whole area
                     pixels = self._payload_area(old)
                 queued, _new = self._queue_conflict(key, blocker.instance, old, new,
-                                                    pixels, queued)
+                                                    pixels, queued, overtaken)
+            # one open conflict per frozen row (U7): what this replaced, logged once
+            self._log_superseded(key, overtaken, OVERTAKEN)
             self.db.clear_frame_digest(key)
 
     def _review_status(self, key: FrameKey) -> Optional[str]:
