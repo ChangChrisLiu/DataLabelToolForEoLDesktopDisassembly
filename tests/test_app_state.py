@@ -217,3 +217,25 @@ def test_a_manual_boundary_gets_the_split_banner_a_log_boundary_gets(window, ins
     assert window.canvas.banner_text().endswith(BANNER_SPLIT)
     assert window.palette.button("commit_split").suggested()
     assert not window.palette.button("commit").suggested()
+
+
+def _squash(text: str) -> str:
+    """Whitespace out: the documents wrap their lines anywhere."""
+    return "".join(text.split())
+
+
+def test_the_documents_say_it():
+    repo = Path(__file__).resolve().parents[1]
+    quick = _squash((repo / "docs" / "trial_quickstart.md").read_text(encoding="utf-8"))
+    guide = _squash((repo / "docs" / "annotation_guide.md").read_text(encoding="utf-8"))
+    assert _squash(
+        "画面里的状态和日志不一样（比如卡扣中途又关上了）：选中它，按 `T` 把这帧的状态改过来；"
+        "工具会自动在下一帧恢复原状态，并在任务卡上给出 ✂ 行，用 `Ctrl+K` 画这几帧的形状。"
+        "不要用 `Enter` 重画已确认的形状去表达状态变化。") in quick
+    assert _squash("在第 21 步：关上（之前为 打开）；第 22 步起恢复 打开") in quick
+    assert _squash("按 `T`（或实例表的状态框）改这一帧") in guide
+    assert _squash("**别用 `Enter` 重画已确认的形状**") in guide
+    assert _squash(A.action_named("cycle_state").label_zh) in guide   # the key table
+    spec = _squash((repo / "docs" / "superpowers" / "specs"
+                    / "2026-09-17-teardown-annotator-design.md").read_text(encoding="utf-8"))
+    assert _squash("**v1.8（2026-10-13）**：**按帧断言状态**") in spec
