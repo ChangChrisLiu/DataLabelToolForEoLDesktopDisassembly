@@ -79,11 +79,15 @@ def run_around(db: Db, tax, desktop: int, instance: str,
     table = sorted({int(r.step) for r in db.steps(desktop)})
     held = {s: state_of(db, tax, desktop, s, cache).get(instance) for s in table}
     value = held[step].state if held.get(step) is not None else None
-    at = table.index(step)
-    first = last = at
-    while first > 0 and held[table[first - 1]] is not None             and held[table[first - 1]].state == value:
+
+    def same(index: int) -> bool:
+        found = held[table[index]]
+        return found is not None and found.state == value
+
+    first = last = table.index(step)
+    while first > 0 and same(first - 1):
         first -= 1
-    while last + 1 < len(table) and held[table[last + 1]] is not None             and held[table[last + 1]].state == value:
+    while last + 1 < len(table) and same(last + 1):
         last += 1
     after = None
     if last + 1 < len(table) and held[table[last + 1]] is not None:
@@ -106,9 +110,10 @@ def commit_assertion(db: Db, truth: TruthService, key: FrameKey, instance: str,
 
     Returns what every edit returns (``affected``, ``rechecks``, ``problems``,
     ``frame``, ``op``) plus ``changed``, the :class:`StatePatch` as ``patch``
-    and :func:`run_around`'s answer as ``run`` / ``after``. Asserting the state that already holds writes nothing and has
-    no op. A refusal of the core is a :class:`SessionRefusal` here, so the
-    window shows its sentence instead of a traceback.
+    and :func:`run_around`'s answer as ``run`` / ``after``. Asserting the
+    state that already holds writes nothing and has no op. A refusal of the
+    core is a :class:`SessionRefusal` here, so the window shows its sentence
+    instead of a traceback.
     """
     try:
         with db.transaction():

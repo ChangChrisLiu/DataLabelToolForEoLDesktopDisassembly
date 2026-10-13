@@ -53,7 +53,7 @@ def state_note(label: str, patch, split_here: bool,
     if run is not None and run[0] != run[1]:
         text += f"；第 {run[0]}–{run[1]} 步都是 {state_zh(patch.state)}"
     if after is not None:
-        back = "恢复 " if after[1] == patch.previous else ""
+        back = "恢复 " if after[1] == patch.previous else "是 "
         text += f"；第 {after[0]} 步起{back}{state_zh(after[1])}"
     if split_here:
         text += f"。{SPLIT_NOW}"

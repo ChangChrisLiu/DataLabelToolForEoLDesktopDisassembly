@@ -239,3 +239,22 @@ def test_the_documents_say_it():
     spec = _squash((repo / "docs" / "superpowers" / "specs"
                     / "2026-09-17-teardown-annotator-design.md").read_text(encoding="utf-8"))
     assert _squash("**v1.8（2026-10-13）**：**按帧断言状态**") in spec
+
+
+def test_the_note_names_a_run_and_what_follows_it():
+    from types import SimpleNamespace
+
+    from tda.ui.app_state import state_note
+
+    patch = SimpleNamespace(step=41, state="closed", previous="open", next_step=42,
+                            restores="removed")
+    # the board leaves at 42 and takes the clip with it: nothing is "restored"
+    assert state_note("ram_latch.01", patch, False, (40, 41), (42, "removed")) == (
+        "ram_latch.01 在第 41 步：关上（之前为 打开）；第 40–41 步都是 关上；"
+        "第 42 步起是 拆下（Ctrl+Z 撤销）")
+    # without a run (an older caller): the next step alone
+    patch = SimpleNamespace(step=21, state="closed", previous="open", next_step=22,
+                            restores="open")
+    assert state_note("ram_latch.01", patch, True) == (
+        "ram_latch.01 在第 21 步：关上（之前为 打开）；第 22 步起恢复 打开。"
+        f"{SPLIT_NOW}（Ctrl+Z 撤销）")
