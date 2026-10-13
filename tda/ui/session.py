@@ -195,6 +195,13 @@ class AnnotationSession(CommitMixin, ReviewMixin, TruthCacheMixin, QObject):
         )
         self._reset_working_set()
         self._set_dirty(False)
+        # Every frozen frame without an open conflict is owed a comparison with
+        # its inputs (U7 round 2): a disagreement an older edit never queued --
+        # a demoted frame's signed rows, before U7 -- is raised in the
+        # background now, not five at a time on each visit.  Persisted like
+        # every other request; a current digest makes each one milliseconds.
+        self.db.add_rechecks(self.desktop, self.view,
+                             self.db.frozen_steps_to_recheck(self.desktop, self.view))
         if self.sweeper_enabled:
             self.sweeper.open(self.desktop, self.view)
             # a re-check the last session did not get to is still owed

@@ -102,3 +102,42 @@ def test_the_reach_preview_counts_a_demoted_frame_as_frozen(session):
     reach = session.preview(api.SCOPE_KEYFRAME)
 
     assert 12 in reach["steps"] and reach["verified_steps"] == [12]
+
+
+# --------------------------------------------------------------------------- #
+# round 2 (i): opening a view re-checks its frozen frames
+# --------------------------------------------------------------------------- #
+def test_opening_the_view_rechecks_a_demoted_frame_without_a_visit(session):
+    """A latent disagreement an older edit never queued is raised after the view opens.
+
+    Frame 12 is confirmed and demoted, its signed rows kept; the chassis shape
+    changes under it without anybody queueing a re-check (what an edit before
+    U7 left behind).  Frame 13 has an open conflict already: it was compared,
+    and is not re-queued.
+    """
+    from tda.core import masks
+    from tda.core.model import ShapePart
+
+    session.goto(12)
+    seed_shapes(session, 12)
+    session.goto(13)
+    assert session.confirm_frame() is True and session.confirm_frame() is True
+    session.truth.demote_frame(FrameKey(DESKTOP, 12, VIEW), "the verified frame gained x")
+    planted = session.db.add_conflict(FrameKey(DESKTOP, 13, VIEW), CHASSIS, None, None, 1)
+    chassis = session.db.keyframes(DESKTOP, VIEW, CHASSIS)[0]
+    chassis.parts = [ShapePart("main", masks.encode_rle(rect(2, 34, 34, 62)))]
+    session.db.update_keyframe(chassis)            # no settle: nothing queued
+    assert session.db.rechecks(DESKTOP, VIEW) == []
+    assert _open_at(session, 12) == []
+
+    session.sweeper_enabled = False
+    session.open(DESKTOP, VIEW)
+    assert session.db.rechecks(DESKTOP, VIEW) == [12]     # 13 has its open conflict
+
+    session.sweeper_enabled = True
+    session.open(DESKTOP, VIEW)
+    assert session.drain_sweeper(timeout=20.0)
+    assert [c["instance"] for c in _open_at(session, 12)] == [CHASSIS]
+    assert [c["id"] for c in _open_at(session, 13)] == [planted]   # not re-checked
+    assert session.current().step != 12                             # nobody visited it
+    assert session.db.rechecks(DESKTOP, VIEW) == []

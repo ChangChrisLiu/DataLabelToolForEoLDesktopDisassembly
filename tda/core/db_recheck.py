@@ -92,6 +92,30 @@ class RecheckMixin:
         ).fetchall()
         return sorted({int(r["step"]) for r in rows})
 
+    def frozen_steps_to_recheck(self, desktop: int, view: str) -> list[int]:
+        """Frozen steps of one view with no open conflict: what opening it owes (U7 round 2).
+
+        :meth:`frozen_steps` minus every step that has an open conflict, in
+        **one** query.  A frame with an open conflict has been compared
+        already -- that comparison is what queued the conflict -- and the
+        annotator's answer is what it is waiting for, not another look.  Every
+        other frozen frame may hold a disagreement nobody looked for: before
+        U7 the edit path re-checked only frames whose flag said ``verified``,
+        so a confirmed frame demoted by 添加零件 kept its signed rows and a
+        re-trace's conflicts there were never raised.  Queueing them all is
+        cheap -- a frame whose digest is current costs the sweeper
+        milliseconds -- and idempotent.
+        """
+        rows = self.conn.execute(
+            "SELECT step FROM frame WHERE desktop=? AND view=? AND review_status='verified' "
+            "UNION "
+            "SELECT step FROM compiled_mask WHERE desktop=? AND view=? AND status='verified' "
+            "EXCEPT "
+            "SELECT step FROM conflict WHERE desktop=? AND view=? AND status='open'",
+            (int(desktop), str(view)) * 3,
+        ).fetchall()
+        return sorted({int(r["step"]) for r in rows})
+
     def queue_rechecks_for_view(self, desktop: int, view: str) -> list[int]:
         """Queue **every frozen frame** of one view; returns the steps queued.
 
