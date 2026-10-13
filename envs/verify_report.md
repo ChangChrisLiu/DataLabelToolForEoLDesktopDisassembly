@@ -4,7 +4,7 @@
 - 解释器: `D:\Anaconda\envs\tda\python.exe`
 - Python: `3.11.16 | packaged by Anaconda, Inc. | (main, Aug 27 2026, 14:36:16) [MSC v.1942 64 bit (AMD64)]`
 - 主机: Windows-10-10.0.26200-SP0
-- 测试图: `C:\Users\61908\AppData\Local\Temp\claude\D--DataSet\3f6dd74d-e1dc-46a6-bbc2-2fe9e89c0835\scratchpad\views\scanner_crop_native.png`
+- 测试图: `%USERPROFILE%\AppData\Local\Temp\claude\D--DataSet\<session>\scratchpad\views\scanner_crop_native.png`
 
 ## 1. PyTorch / CUDA
 
@@ -127,15 +127,15 @@
 
 | 路径 | 说明 | 状态 |
 |---|---|---|
-| `C:\Users\61908\AppData\Local\pip\cache` | pip 缓存 | ✅ 不存在 |
-| `C:\Users\61908\AppData\Roaming\Ultralytics` | Ultralytics settings | ✅ 不存在 |
-| `C:\Users\61908\AppData\Local\torch` | torch hub 缓存 | ✅ 不存在 |
-| `C:\Users\61908\.cache\torch` | torch hub 缓存 | ✅ 不存在 |
-| `C:\Users\61908\.cache\huggingface` | HuggingFace 缓存 | ✅ 不存在 |
-| `C:\Users\61908\.triton` | triton 编译缓存 | ✅ 不存在 |
-| `C:\Users\61908\AppData\Local\Temp\torch` | torch 临时 | ✅ 不存在 |
-| `C:\Users\61908\.roboflow` | RF-DETR 权重缓存 | ⚠️ 存在, 0 文件 / 0.0 MB |
-| `C:\Users\61908\AppData\Local\Temp\torchinductor_61908` | inductor 缓存 | ⚠️ 存在, 0 文件 / 0.0 MB |
+| `%USERPROFILE%\AppData\Local\pip\cache` | pip 缓存 | ✅ 不存在 |
+| `%USERPROFILE%\AppData\Roaming\Ultralytics` | Ultralytics settings | ✅ 不存在 |
+| `%USERPROFILE%\AppData\Local\torch` | torch hub 缓存 | ✅ 不存在 |
+| `%USERPROFILE%\.cache\torch` | torch hub 缓存 | ✅ 不存在 |
+| `%USERPROFILE%\.cache\huggingface` | HuggingFace 缓存 | ✅ 不存在 |
+| `%USERPROFILE%\.triton` | triton 编译缓存 | ✅ 不存在 |
+| `%USERPROFILE%\AppData\Local\Temp\torch` | torch 临时 | ✅ 不存在 |
+| `%USERPROFILE%\.roboflow` | RF-DETR 权重缓存 | ⚠️ 存在, 0 文件 / 0.0 MB |
+| `%USERPROFILE%\AppData\Local\Temp\torchinductor_<user>` | inductor 缓存 | ⚠️ 存在, 0 文件 / 0.0 MB |
 
 ## 9. 关键指标汇总 (JSON)
 

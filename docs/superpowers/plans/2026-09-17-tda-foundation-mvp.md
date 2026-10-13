@@ -26,7 +26,7 @@
 
 ## Reference material (read-only inputs)
 
-- Drive log exports (66 desktops): `C:\Users\61908\AppData\Local\Temp\claude\D--DataSet\3f6dd74d-e1dc-46a6-bbc2-2fe9e89c0835\scratchpad\drive_logs\` (`desktop_NN.xlsx/.csv`, `desktop_meta.csv`, `steps_long.csv`, `vocab_target_canon.csv`, `canon_rules.py`). Task 2 copies the xlsx/csv into `D:\DataSet\raw_logs\drive\`.
+- Drive log exports (66 desktops): `<session scratchpad>\drive_logs\` (`desktop_NN.xlsx/.csv`, `desktop_meta.csv`, `steps_long.csv`, `vocab_target_canon.csv`, `canon_rules.py`). Task 2 copies the xlsx/csv into `D:\DataSet\raw_logs\drive\`.
 - OAK survey: same scratchpad `oakd_survey\desktop_survey.csv`, `anomalies.txt`, `listing.tsv`.
 - Label Studio export: `D:\DataSet\raw_logs\labelstudio\humansignal_annotated_projects_export.json` (26 projects; task `data.image` basenames look like `3e99d760-Rs_13_42.png`, `83334756-Front_OAK_13_42.jpg`, `696bb253-33_39.png`; the number pair is `<desktop>_<step>`).
 - Sample images for tests/smoke: scratchpad `views\scanner.png` (900×900 downscale), `views\scanner_crop_native.png` (900×900 native crop), `views\d13_s1_3.png`.

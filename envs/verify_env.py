@@ -45,9 +45,13 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 WEIGHTS.mkdir(parents=True, exist_ok=True)
 REPORT = OUT_DIR / "verify_report.md"
 
+# The same scanner crop the tests ship; override with TDA_VERIFY_IMAGE if needed.
 IMG_900 = Path(
-    r"C:\Users\61908\AppData\Local\Temp\claude\D--DataSet"
-    r"\3f6dd74d-e1dc-46a6-bbc2-2fe9e89c0835\scratchpad\views\scanner_crop_native.png"
+    os.environ.get(
+        "TDA_VERIFY_IMAGE",
+        str(Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "images"
+            / "scanner_crop_native.png"),
+    )
 )
 IMG_1600 = OUT_DIR / "_bench_1600.png"
 
@@ -694,16 +698,17 @@ def section_imports():
 def section_cdrive():
     log("## 8. C 盘残留扫描")
     log()
+    home = Path.home()   # the user's profile, whoever runs this
     targets = [
-        (r"C:\Users\61908\AppData\Local\pip\cache", "pip 缓存"),
-        (r"C:\Users\61908\AppData\Roaming\Ultralytics", "Ultralytics settings"),
-        (r"C:\Users\61908\AppData\Local\torch", "torch hub 缓存"),
-        (r"C:\Users\61908\.cache\torch", "torch hub 缓存"),
-        (r"C:\Users\61908\.cache\huggingface", "HuggingFace 缓存"),
-        (r"C:\Users\61908\.triton", "triton 编译缓存"),
-        (r"C:\Users\61908\AppData\Local\Temp\torch", "torch 临时"),
-        (r"C:\Users\61908\.roboflow", "RF-DETR 权重缓存"),
-        (r"C:\Users\61908\AppData\Local\Temp\torchinductor_61908", "inductor 缓存"),
+        (str(home / "AppData" / "Local" / "pip" / "cache"), "pip 缓存"),
+        (str(home / "AppData" / "Roaming" / "Ultralytics"), "Ultralytics settings"),
+        (str(home / "AppData" / "Local" / "torch"), "torch hub 缓存"),
+        (str(home / ".cache" / "torch"), "torch hub 缓存"),
+        (str(home / ".cache" / "huggingface"), "HuggingFace 缓存"),
+        (str(home / ".triton"), "triton 编译缓存"),
+        (str(home / "AppData" / "Local" / "Temp" / "torch"), "torch 临时"),
+        (str(home / ".roboflow"), "RF-DETR 权重缓存"),
+        (str(home / "AppData" / "Local" / "Temp" / f"torchinductor_{home.name}"), "inductor 缓存"),
     ]
     log("| 路径 | 说明 | 状态 |")
     log("|---|---|---|")

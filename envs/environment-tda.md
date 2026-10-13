@@ -335,15 +335,15 @@ D:\DataSet\
 
 | 位置 | 状态 | 说明 |
 |---|---|---|
-| `C:\Users\61908\AppData\Local\pip\cache` | 已清空并迁走 | 1196 文件 / 3.27 GB → `D:\DataSet\.cache\pip` |
-| `C:\Users\61908\.roboflow\models` | 已迁走，剩空目录 | `rf-detr-seg-preview.pt` → `D:\DataSet\models\rfdetr\`。空目录按「不删除」约束保留 |
-| `C:\Users\61908\AppData\Roaming\Ultralytics` | 从未生成 | `YOLO_CONFIG_DIR` 生效 |
-| `C:\Users\61908\.cache\huggingface`、`.cache\torch`、`.triton` | 从未生成 | `HF_HOME` / `TORCH_HOME` / `XDG_CACHE_HOME` 生效 |
+| `%USERPROFILE%\AppData\Local\pip\cache` | 已清空并迁走 | 1196 文件 / 3.27 GB → `D:\DataSet\.cache\pip` |
+| `%USERPROFILE%\.roboflow\models` | 已迁走，剩空目录 | `rf-detr-seg-preview.pt` → `D:\DataSet\models\rfdetr\`。空目录按「不删除」约束保留 |
+| `%USERPROFILE%\AppData\Roaming\Ultralytics` | 从未生成 | `YOLO_CONFIG_DIR` 生效 |
+| `%USERPROFILE%\.cache\huggingface`、`.cache\torch`、`.triton` | 从未生成 | `HF_HOME` / `TORCH_HOME` / `XDG_CACHE_HOME` 生效 |
 | **`D:\Anaconda\envs\tda`（6.13 GB）** | 在 D 盘 | 环境本体 |
 
 **无法搬到 D 盘的两类**：
 
-1. **测试图片本身** —— `C:\Users\61908\AppData\Local\Temp\claude\…\scratchpad\views\scanner_crop_native.png`
+1. **测试图片本身** —— `%USERPROFILE%\AppData\Local\Temp\claude\…\scratchpad\views\scanner_crop_native.png`
    是会话临时目录，由外部工具管理。正式使用时换成 D 盘上的数据路径即可。
 2. **未 source 激活脚本时的默认缓存** —— 环境变量只在当前 shell 生效。
    如果直接 `conda activate tda` 就跑 pip，缓存会重新在 C 盘生成。
@@ -353,5 +353,5 @@ D:\DataSet\
    D:\Anaconda\envs\tda\python.exe -m pip config set global.cache-dir D:\DataSet\.cache\pip
    ```
 
-   这会写 `C:\Users\61908\AppData\Roaming\pip\pip.ini`，让**所有** pip 调用都用 D 盘缓存。
+   这会写 `%USERPROFILE%\AppData\Roaming\pip\pip.ini`，让**所有** pip 调用都用 D 盘缓存。
    撤销：`pip config unset global.cache-dir`。本次**没有**擅自执行。
