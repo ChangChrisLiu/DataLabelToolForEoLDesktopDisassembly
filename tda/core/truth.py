@@ -101,6 +101,10 @@ CLOSE_KIND = "resolve_conflicts"
 REOPEN_KIND = "reopen_conflicts"
 AGREE_AGAIN = "inputs agree again"
 SYSTEM = "system"
+#: The per-frame counters of :meth:`TruthService.refresh` that a pass over many
+#: frames sums: :meth:`~TruthService.refresh_range`, the re-check drain and
+#: :meth:`~tda.core.truth_fresh.FreshMixin.ensure_fresh`.
+REFRESH_COUNTERS = ("updated", "conflicts", "standing", "closed", "skipped")
 
 
 class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
@@ -377,7 +381,12 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
         (same id, same old and new value), the frame's digest is dropped so the
         next refresh looks at it again, and the reopening is itself logged with
         the inverse that closes them once more.  A conflict that is open again
-        already is left alone.  Returns the ids reopened.
+        already -- or that was since closed by anything but a supersession, a
+        human's answer above all -- is left alone.  Returns the ids reopened.
+
+        **Idempotent** (U6 round 2): when there is nothing left to reopen --
+        the second call on the same op -- nothing is written at all, no op-log
+        row and no dropped digest.
 
         Raises :class:`ValueError` for any other op: a human's ``keep_old`` or
         ``accept_new`` wrote rows and overrides that reopening alone would not
@@ -388,14 +397,20 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
             raise ValueError(f"op {op_id} is not a {CLOSE_KIND} row of the truth service")
         inverse = op["inverse"] or {}
         key = FrameKey(int(op["desktop"]), int(inverse["step"]), str(op["view"]))
+        wanted: list[int] = []
+        for cid in inverse.get("conflicts") or []:
+            found = self.db.get_conflict(int(cid))
+            if (found is None or found["status"] == OPEN
+                    or found.get("resolution") != SUPERSEDED):
+                continue
+            wanted.append(int(cid))
+        if not wanted:
+            return []
         reopened: list[int] = []
         with self.db.transaction():
-            for cid in inverse.get("conflicts") or []:
-                found = self.db.get_conflict(int(cid))
-                if found is None or found["status"] == OPEN:
-                    continue
-                self.db.reopen_conflict(int(cid))
-                reopened.append(int(cid))
+            for cid in wanted:
+                self.db.reopen_conflict(cid)
+                reopened.append(cid)
             self.db.clear_frame_digest(key)
             self.db.log_op(
                 key.desktop, key.view, REOPEN_KIND,
@@ -412,15 +427,17 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
         ``problems`` is the concatenation of the per-step problem lists in the
         order the steps were given -- or, with ``per_step``, a dict keyed by
         step, which is what a caller needs to say *where* a missing shape is
-        (spec 4.4 queues).
+        (spec 4.4 queues).  ``closed`` sums the conflicts the steps closed
+        because their frozen rows agree with the inputs again (U6), which
+        ``cli check`` and the exports print.
         """
         cache = InputCache()
-        total: dict = {"updated": 0, "conflicts": 0, "standing": 0, "skipped": 0,
-                       "problems": {} if per_step else []}
+        total: dict = {"updated": 0, "conflicts": 0, "standing": 0, "closed": 0,
+                       "skipped": 0, "problems": {} if per_step else []}
         for step in steps:
             one = self.refresh(FrameKey(desktop, int(step), view), cache,
                                ignore_digest=ignore_digest)
-            for counter in ("updated", "conflicts", "standing", "skipped"):
+            for counter in REFRESH_COUNTERS:
                 total[counter] += one[counter]
             if per_step:
                 total["problems"][int(step)] = list(one["problems"])
@@ -482,11 +499,11 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
         queued rather than being cleared unchecked.
         """
         cache = InputCache()
-        total: dict = {"updated": 0, "conflicts": 0, "standing": 0, "skipped": 0,
-                       "problems": []}
+        total: dict = {"updated": 0, "conflicts": 0, "standing": 0, "closed": 0,
+                       "skipped": 0, "problems": []}
         for step, gen in self.db.recheck_items(desktop, view):
             one = self.refresh(FrameKey(desktop, int(step), view), cache)
-            for counter in ("updated", "conflicts", "standing", "skipped"):
+            for counter in REFRESH_COUNTERS:
                 total[counter] += one[counter]
             total["problems"].extend(one["problems"])
             self.db.clear_recheck(desktop, view, step, gen)

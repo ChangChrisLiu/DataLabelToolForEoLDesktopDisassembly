@@ -12,7 +12,7 @@ import threading
 from typing import Any, Optional
 
 import numpy as np
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QApplication, QGraphicsPixmapItem
 
@@ -53,6 +53,11 @@ class _SamLoader(QObject):
 
 #: How long ``Space`` waits for an unfinished comparison before giving up on it.
 ASSIST_CONFIRM_WAIT = 1.0
+
+#: A window with no SAM queue that has not started loading one this long after
+#: it was built loads none: the detector's build stops waiting for SAM's turn
+#: (U6 round 2).  ``tda.cli app`` starts SAM right after ``show()``.
+SAM_TURN_GRACE_MS = 2000
 
 #: A diff box bigger than this share of the ROI is not used as a prompt box:
 #: it says "everything changed", which narrows nothing for SAM.  The rule holds
@@ -119,6 +124,26 @@ PROMPT_ARMED_DET_NO_SAM = ("虚线框是检测器找到的{name}：SAM 没加载
                            "the detector found; SAM is not loaded: Y and drag")
 #: ... and after ``Shift+C``: which of how many.
 DET_CHIP_RANK = "SAM 提示框 {rank}/{total}（检测器：{name}）"
+#: The other boxes while SAM is not loaded (U6 round 2): the same rule as
+#: :data:`DET_CHIP_NO_SAM` -- the box stays, it is where ``Y`` or ``B`` goes, and
+#: it is not called a SAM prompt.  All four go back the moment SAM loads.
+PROMPT_CHIP_NO_SAM = "程序猜的位置（SAM 未加载：Y 拖一下 / B 涂）"
+PROMPT_CHIP_RANK_NO_SAM = "提示框 {rank}/{total}（SAM 未加载：Y 拖一下 / B 涂）"
+DET_CHIP_RANK_NO_SAM = "检测器找到的{name} {rank}/{total}（SAM 未加载：Y 拖一下 / B 涂）"
+#: :data:`PROMPT_ARMED` with no SAM to click for.
+PROMPT_ARMED_NO_SAM = ("虚线框是程序猜的位置（这一帧和下一帧差别最大的地方）：SAM 没加载，零件在框里就"
+                       "按 Y 拖一下，或用 B 涂 / P 围出它 / the dashed box is a guess; SAM is "
+                       "not loaded: Y, B or P")
+#: chip kind -> (with SAM, without SAM); a chip on screen is kept as
+#: ``(kind, fields)`` so it can be said again either way (:meth:`chip_text`).
+CHIPS = {
+    "diff": (PROMPT_CHIP, PROMPT_CHIP_NO_SAM),
+    "diff_rank": (PROMPT_CHIP_RANK, PROMPT_CHIP_RANK_NO_SAM),
+    "det": (DET_CHIP, DET_CHIP_NO_SAM),
+    "det_rank": (DET_CHIP_RANK, DET_CHIP_RANK_NO_SAM),
+}
+#: The chip of the difference map's own box.
+DIFF_CHIP = ("diff", {})
 #: The arrival line when the detector armed the box.  Its confidence and dE
 #: go to the log, not here.
 PROMPT_ARMED_DET = ("虚线框是检测器找到的{name}（这一帧和下一帧差别最大的那个）：对就直接在零件上"
@@ -228,6 +253,16 @@ class AssistMixin(DetectMixin):
         #: detector waits for this, the SAM loader releases it -- at once when
         #: a queue was handed in and this window loads no SAM of its own.
         self._sam_turn = Turn(released=sam_queue is not None)
+        #: :meth:`start_sam` was called at least once in this window.
+        self._sam_started = False
+        #: Set when the window shuts down: a load that finishes afterwards stops
+        #: its own queue instead of handing it to a window that is gone.
+        self._sam_closing = threading.Event()
+        if sam_queue is None:
+            # Round 2: a window that never starts SAM must not keep the
+            # detector waiting for the turn's ceiling (three minutes).
+            QTimer.singleShot(SAM_TURN_GRACE_MS, self,
+                              self._release_turn_unless_sam_started)
         self.sam_point = SamPointTool(self.canvas, None, queue=sam_queue, refine=True)
         self.sam_box = SamBoxTool(self.canvas, None, queue=sam_queue)
         #: Why the last prompt failed, until one is armed again.  Empty means
@@ -276,9 +311,13 @@ class AssistMixin(DetectMixin):
         #: annotator pressed ``Shift+C``.
         self._prompt_rank = 0
         #: Who armed rank 1 (task U3): ``"diff"``, or ``"det:<class>"`` when the
-        #: small-part detector did -- and the chip every reset puts back with it.
+        #: small-part detector did -- and the chip every reset puts back with it,
+        #: as a ``(kind, fields)`` spec of :data:`CHIPS` (U6 round 2).
         self._rank_one_source = "diff"
-        self._rank_one_chip = PROMPT_CHIP
+        self._rank_one_chip: tuple = DIFF_CHIP
+        #: The chip of the box on screen now, the same way: said again when SAM
+        #: comes or goes (:meth:`refresh_prompt_chip`).
+        self._prompt_chip: Optional[tuple] = None
         #: The detector's other candidates behind a detector rank 1, in dE order.
         self._det_behind: list = []
         #: Who armed the box on screen now: ``"diff"``, ``"det:<class>"`` or
@@ -396,7 +435,8 @@ class AssistMixin(DetectMixin):
         self._withheld_box = None
         self._prompt_rank = 0
         self._rank_one_source = "diff"
-        self._rank_one_chip = PROMPT_CHIP
+        self._rank_one_chip = DIFF_CHIP
+        self._prompt_chip = None
         self._det_behind = []
         self._prompt_source = None
         self.canvas.set_prompt_point(None)
@@ -443,7 +483,7 @@ class AssistMixin(DetectMixin):
         self._drop_prompt_for_new_box()
         # With rank 1's own chip: the detector's (task U3), or today's.
         self._arm_prompt_box(None if refused else self._rank_one,
-                             label=self._rank_one_chip, source=self._rank_one_source)
+                             chip=self._rank_one_chip, source=self._rank_one_source)
 
     def _box_refused_here(self) -> bool:
         """Has a click outside the armed box turned it down on this frame?
@@ -490,7 +530,7 @@ class AssistMixin(DetectMixin):
 
     def _arm_prompt_box(self, box: Optional[tuple],
                         point: Optional[tuple] = None,
-                        label: str = PROMPT_CHIP, source: str = "diff") -> None:
+                        chip: tuple = DIFF_CHIP, source: str = "diff") -> None:
         """Put one box -- and optionally the pixel to click inside it -- on both tools.
 
         Both, always: ``S`` and ``X`` share the armed box, and arming only the
@@ -498,16 +538,41 @@ class AssistMixin(DetectMixin):
         silently downgraded the prompt to point-only.  ``None`` takes it off
         both, and off the canvas -- the one funnel for that too.  ``source``
         says who proposed it (``"diff"`` or ``"det:<class>"``) for the hover.
+        ``chip`` is a ``(kind, fields)`` spec of :data:`CHIPS`, said with or
+        without SAM (:meth:`chip_text`) and again whenever SAM comes or goes.
         """
         self._prompt_box = box
         self._prompt_source = None if box is None else str(source)
+        self._prompt_chip = None if box is None else chip
         for tool in (self.sam_point, self.sam_box):
             tool.set_prompt_box(box)
         # The difference map's box, not a drag: its own band, colour and chip
         # saying it is a guess (U2g addendum A).  The canvas keeps it off the
         # screen by itself while the ROI rectangle is being edited.
-        self.canvas.set_rubber_band(box, kind="prompt", label=label)
+        self.canvas.set_rubber_band(box, kind="prompt", label=self.chip_text(chip))
         self.canvas.set_prompt_point(point)
+
+    def chip_text(self, chip: tuple) -> str:
+        """A chip spec as the canvas says it: the SAM wording or the no-SAM one.
+
+        Every box keeps showing while SAM is down -- it is still where the part
+        probably is, and ``Y`` / ``B`` go there -- but a box called "SAM 提示框"
+        that SAM will never see is what confused the D13 annotator (U6).
+        """
+        kind, fields = chip
+        with_sam, without = CHIPS[kind]
+        return (with_sam if self.sam_available else without).format(**fields)
+
+    def refresh_prompt_chip(self) -> None:
+        """SAM came or went: the box on screen is said again, nothing else moves.
+
+        Not the box, not the rank, not the prompt -- the box is the same box
+        either way; what it is *for* changed.  Rank 1's own chip is kept as a
+        spec, so a reset after this says it the new way too.
+        """
+        if self._prompt_box is not None and self._prompt_chip is not None:
+            self.canvas.set_rubber_band(self._prompt_box, kind="prompt",
+                                        label=self.chip_text(self._prompt_chip))
 
     @S.guard
     def on_prompt_box_refused(self, box: object) -> None:
@@ -889,12 +954,13 @@ class AssistMixin(DetectMixin):
         self._withheld_box = None
         self._prompt_rank = 0
         self._rank_one_source = "diff"
-        self._rank_one_chip = PROMPT_CHIP
+        self._rank_one_chip = DIFF_CHIP
         self._det_behind = []
         self._arm_prompt_box(box)
         self.logger.info("prompt box from the difference map: %s (%d px)",
                          tuple(int(v) for v in blob.box), int(blob.area))
-        self.report(PROMPT_ARMED)
+        # "点 S" only when there is a SAM to click for (U6 round 2)
+        self.report(PROMPT_ARMED if self.sam_available else PROMPT_ARMED_NO_SAM)
 
     def _arm_from_detector(self, rows: Optional[list]) -> bool:
         """Arm the detector's best candidate as rank 1 (task U3); ``True`` if it did.
@@ -920,9 +986,9 @@ class AssistMixin(DetectMixin):
         self._withheld_box = None
         self._prompt_rank = 0
         self._rank_one_source = f"det:{top.cls}"
-        self._rank_one_chip = self.det_chip(top.cls)
+        self._rank_one_chip = ("det", {"name": name})
         self._det_behind = list(ranking.chosen[1:])
-        self._arm_prompt_box(top.box, label=self._rank_one_chip,
+        self._arm_prompt_box(top.box, chip=self._rank_one_chip,
                              source=self._rank_one_source)
         key = ranking.key
         self.logger.info(
@@ -938,23 +1004,7 @@ class AssistMixin(DetectMixin):
 
     def det_chip(self, cls: str) -> str:
         """The detector box's chip: :data:`DET_CHIP`, or the no-SAM one (task U6)."""
-        name = class_zh(cls)
-        return (DET_CHIP if self.sam_available else DET_CHIP_NO_SAM).format(name=name)
-
-    def refresh_det_chip(self) -> None:
-        """SAM came or went: a detector box on screen at rank 1 gets the right chip.
-
-        Only the chip changes -- not the box, not the rank, not the prompt --
-        because the box is the same box either way; what it is *for* moved.
-        """
-        source = str(self._rank_one_source or "")
-        if not source.startswith("det:"):
-            return
-        self._rank_one_chip = self.det_chip(source.split(":", 1)[1])
-        if (self._prompt_rank == 0 and self._prompt_box is not None
-                and self._prompt_box == self._rank_one):
-            self.canvas.set_rubber_band(self._prompt_box, kind="prompt",
-                                        label=self._rank_one_chip)
+        return self.chip_text(("det", {"name": class_zh(cls)}))
 
     def no_box_note(self) -> str:
         """:data:`EDITING_NO_BOX` while the gate's withholding is what is on the frame."""
@@ -1127,16 +1177,17 @@ class AssistMixin(DetectMixin):
         note = self._drop_prompt_for_new_box()
         total = len(alternates) + 1
         self._prompt_rank = (self._prompt_rank + 1) % total
-        chip = PROMPT_CHIP_RANK.format(rank=self._prompt_rank + 1, total=total)
+        chip = ("diff_rank", {"rank": self._prompt_rank + 1, "total": total})
         if self._prompt_rank == 0 and self._rank_one_source.startswith("det"):
             name = class_zh(self._rank_one_source.split(":", 1)[1])
             self._arm_prompt_box(self._rank_one, source=self._rank_one_source,
-                                 label=DET_CHIP_RANK.format(rank=1, total=total, name=name))
+                                 chip=("det_rank", {"rank": 1, "total": total,
+                                                    "name": name}))
             self.report(f"提示框 1/{total}：检测器找到的那个{name}（差别最大） / prompt box "
                         f"1/{total}: the detector's own{note}")
             return
         if self._prompt_rank == 0:
-            self._arm_prompt_box(self._rank_one, label=chip)
+            self._arm_prompt_box(self._rank_one, chip=chip)
             if self._rank_one is None:
                 # Rank 1 was no box at all -- withheld (U2h) or the whole ROI.
                 self.report(f"提示框 1/{total}：这次不给框，直接在零件上点 / "
@@ -1151,8 +1202,8 @@ class AssistMixin(DetectMixin):
         rank = self._prompt_rank + 1
         if isinstance(part, DetCandidate):
             name = class_zh(part.cls)
-            self._arm_prompt_box(box, label=DET_CHIP_RANK.format(rank=rank, total=total,
-                                                                  name=name),
+            self._arm_prompt_box(box, chip=("det_rank", {"rank": rank, "total": total,
+                                                         "name": name}),
                                  source=f"det:{part.cls}")
             self.logger.info("prompt box %d/%d from the detector: %s conf %.3f dE %.2f",
                              rank, total, part.int_box, part.conf, part.change)
@@ -1160,7 +1211,7 @@ class AssistMixin(DetectMixin):
                         f"prompt box {rank}/{total}: another {part.cls} the detector "
                         f"found: click the part{note}")
             return
-        self._arm_prompt_box(box, part.point, label=chip)
+        self._arm_prompt_box(box, part.point, chip=chip)
         self.logger.info("prompt box %d/%d box=%s point=%s area=%d",
                          self._prompt_rank + 1, total,
                          tuple(int(v) for v in part.box), part.point, part.area)
@@ -1243,19 +1294,57 @@ class AssistMixin(DetectMixin):
         if self._tool_name in ("sam_point", "sam_box"):
             self._tool_name = "brush"
             self._attach_tool()
-        self.refresh_det_chip()
+        if not self._sam_loading:
+            # SAM is off and nothing is loading it: the detector's build has
+            # nobody to wait for (U6 round 2)
+            self._sam_turn.release()
+        self.refresh_prompt_chip()
         self.update_status()
 
     def set_sam_queue(self, queue: Any, owns: bool = True) -> None:
-        """Arm the SAM tools once a checkpoint has finished loading."""
+        """Arm the SAM tools once a checkpoint has finished loading.
+
+        A queue handed in from outside -- a smoke run, a test -- is also this
+        window deciding it loads no SAM of its own, so the detector's build
+        stops waiting for one (U6 round 2).
+        """
         self.sam_queue = queue
         self._owns_queue = bool(owns)
         self.sam_available = queue is not None
         self.sam_reason = ""
         for tool in (self.sam_point, self.sam_box):
             tool.queue = queue
-        self.refresh_det_chip()
+        self._sam_turn.release()
+        self.refresh_prompt_chip()
         self.update_status()
+
+    def decline_sam(self, reason: str = "not loaded in this window") -> None:
+        """This window will load no SAM of its own (``--no-sam``, a probe, a test).
+
+        The detector's model build waits for SAM's import phase (U6); a window
+        that will never start one says so here and the build goes ahead at
+        once, instead of after :data:`~tda.models.load_gate.TURN_TIMEOUT_S`.
+        Nothing else changes: SAM can still be loaded later with
+        :meth:`start_sam` or :meth:`set_sam_queue`.
+        """
+        self._sam_turn.release()
+        if self.sam_queue is None and not self._sam_loading:
+            self.sam_reason = str(reason)
+            self.update_status()
+        self.logger.info("SAM: not loaded in this window (%s); the detector does "
+                         "not wait for it", reason)
+
+    def _release_turn_unless_sam_started(self) -> None:
+        """The grace timer: no SAM load started -- the detector need not wait.
+
+        ``tda.cli app`` calls :meth:`start_sam` right after ``show()``, long
+        before this fires; a window built by anything else that never starts
+        one would otherwise keep the detector off for the turn's ceiling.
+        """
+        if self.closed or self._sam_started or self.sam_queue is not None:
+            return
+        if not self._sam_turn.released:
+            self.decline_sam("no SAM load was started")
 
     def start_sam(self) -> None:
         """Load SAM on a background thread; the first frame must not wait for it.
@@ -1268,6 +1357,7 @@ class AssistMixin(DetectMixin):
         """
         if self.sam_queue is not None or self._sam_loading:
             return
+        self._sam_started = True
         self._sam_loading = True
         self._sam_load_failed = ""
         self.sam_reason = "loading"
@@ -1276,6 +1366,7 @@ class AssistMixin(DetectMixin):
         loader = self._sam_loader
         paths = dict(self.paths)
         turn = self._sam_turn
+        closing = self._sam_closing
 
         def load() -> None:
             try:
@@ -1292,6 +1383,14 @@ class AssistMixin(DetectMixin):
                 outcome = f"{type(exc).__name__}: {exc}"
             finally:
                 turn.release()          # loaded or failed: the detector's turn
+            if closing.is_set():
+                # The window shut while this loaded (round 2): nobody will take
+                # the queue, and one nobody stops keeps a thread and a CUDA
+                # context alive for the life of the process.
+                stop = getattr(outcome, "stop", None)
+                if callable(stop):
+                    stop()
+                return
             loader.sigLoaded.emit(outcome)
 
         self._sam_loader_thread = threading.Thread(target=load, name="tda-sam-load",
@@ -1380,9 +1479,23 @@ class AssistMixin(DetectMixin):
 
     # ------------------------------------------------------------- lifecycle
     def shutdown_assist(self) -> None:
-        """Stop every assist thread: the SAM queue, the loader, the diff worker."""
+        """Stop every assist thread: the detector, the SAM queue and loader, the diff worker.
+
+        **The detector first** (U6 round 2).  Its model build waits for SAM's
+        turn, and SAM's loader releases that turn when it finishes; joining the
+        loader before stopping the detector let a window closed during SAM's
+        load wake the build *after* the close and spend seconds building
+        RF-DETR for nobody.  Now the worker is stopped, the turn is released
+        (the build wakes, sees the stop and builds nothing), and only then is
+        the loader waited for -- which, finding the window closing, stops the
+        queue it built itself rather than handing it over.
+        """
         for tool in (self.sam_point, self.sam_box):
             tool.queue = None       # nothing new may be submitted from here on
+        # The detector's thread writes its cache on the way out (task U3).
+        self.shutdown_detector()
+        self._sam_turn.release()
+        self._sam_closing.set()
         if self._owns_queue and self.sam_queue is not None:
             try:
                 self.sam_queue.stop()
@@ -1394,9 +1507,3 @@ class AssistMixin(DetectMixin):
             loader.join(30.0)       # a half-built SamQueue must not outlive us
         self.assist.shutdown()
         self.roi_proposer.shutdown()
-        # The detector's thread writes its cache on the way out (task U3).
-        self.shutdown_detector()
-        # A detector build still waiting for SAM's turn must not wait for a
-        # window that is gone (U6): released after the worker is stopped, so
-        # it wakes, sees that, and builds nothing.
-        self._sam_turn.release()

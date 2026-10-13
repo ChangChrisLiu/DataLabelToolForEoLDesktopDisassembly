@@ -240,18 +240,24 @@ def _prepare_truth(db, tax, desktops: Sequence[int], view: str,
     hundreds of missing shapes. The exports keep the digest shortcut.
 
     Returns ``{"truth", "desktops", "view", "steps", "updated", "conflicts",
-    "problems", "pending"}``; ``pending`` is what is *still* queued afterwards,
-    which is what the exports refuse on.
+    "closed", "problems", "pending"}``; ``pending`` is what is *still* queued
+    afterwards, which is what the exports refuse on, and ``closed`` the
+    conflicts closed because the inputs agree with the frozen rows again (U6).
     """
     from tda.core.truth import TruthService
 
     truth = TruthService(db, tax)
     total = {"truth": truth, "desktops": list(desktops), "view": str(view),
-             "steps": 0, "updated": 0, "conflicts": 0, "problems": [], "pending": []}
+             "steps": 0, "updated": 0, "conflicts": 0, "closed": 0, "problems": [],
+             "pending": []}
     for desktop in desktops:
         runner = getattr(truth, "run_pending_rechecks", None)
         if callable(runner):
-            runner(int(desktop), str(view))
+            drained = runner(int(desktop), str(view))
+            # conflicts the inputs agree with again are closed by the drain
+            # too (U6), and the operator is told how many
+            if isinstance(drained, dict):
+                total["closed"] += int(drained.get("closed", 0))
         if refresh:
             steps = [int(row["step"]) for row in db.frames_for(int(desktop), str(view))
                      if not row.get("missing")]
@@ -260,6 +266,7 @@ def _prepare_truth(db, tax, desktops: Sequence[int], view: str,
             total["steps"] += len(steps)
             total["updated"] += int(stats.get("updated", 0))
             total["conflicts"] += int(stats.get("conflicts", 0))
+            total["closed"] += int(stats.get("closed", 0))
             total["problems"].extend(stats.get("problems") or [])
         total["pending"].extend(_pending_rechecks(truth, int(desktop), str(view)))
     return total
@@ -333,6 +340,9 @@ def _check_one(db, tax, args: argparse.Namespace, desktop: int, view: str) -> in
     standing = _open_conflicts(stats["truth"], db, [desktop], view)
     print(f"[check] D{desktop:02d} {view}: {stats['steps']} steps, "
           f"{stats['updated']} rows written, {stats['conflicts']} conflicts")
+    if stats.get("closed"):
+        print(f"[check] {stats['closed']} conflict(s) closed: the inputs agree with "
+              f"the frozen rows again")
     if stats["pending"]:
         print(f"[check] {len(stats['pending'])} frames are still queued for "
               f"a re-check: {sorted(stats['pending'])[:10]}")
@@ -424,6 +434,9 @@ def _export_prologue(args, db, desktops: Sequence[int], view: str, command: str)
     verified, unverified = _frame_counts(db, desktops, view)
     print(f"[{command}] {view}: {verified} verified frames, {unverified} not "
           f"verified, {verified + unverified} considered")
+    if stats.get("closed"):
+        print(f"[{command}] {stats['closed']} conflict(s) closed: the inputs agree "
+              f"with the frozen rows again")
     if stats["pending"]:
         print(f"[{command}] refused: {len(stats['pending'])} frames are still "
               f"pending a re-check ({sorted(stats['pending'])[:10]}). Run "

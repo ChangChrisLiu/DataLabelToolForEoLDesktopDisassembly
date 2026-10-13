@@ -20,10 +20,12 @@ packages, so no cycle can form.
 detector, hands it to the detector's worker, and the SAM loader
 :meth:`~Turn.release` s it the moment its import phase has finished or failed;
 the detector's model build waits for it (:meth:`~Turn.wait`).  A window that
-loads no SAM at all releases the turn at once.  The wait has a ceiling
-(:data:`TURN_TIMEOUT_S`) because the ordering is a preference -- the lock is
-what makes it safe -- and a turn nobody ever releases must not keep the
-detector off for the session.
+loads no SAM of its own releases the turn at once -- a queue handed in
+(``set_sam_queue``), ``decline_sam`` (``--no-sam``), SAM switched off, or no
+SAM load started within ``SAM_TURN_GRACE_MS`` of the window being built (round
+2).  The wait still has a ceiling (:data:`TURN_TIMEOUT_S`), as a last resort:
+the ordering is a preference -- the lock is what makes it safe -- and a turn
+nobody ever releases must not keep the detector off for the session.
 """
 from __future__ import annotations
 

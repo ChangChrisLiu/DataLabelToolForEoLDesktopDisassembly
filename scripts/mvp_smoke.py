@@ -183,6 +183,10 @@ class Smoke:
         if self.args.start_step is not None:
             session.goto(int(self.args.start_step), force=True)
         window = MainWindow(session, config, self.args.annotator)
+        if not self.args.sam:
+            # This run loads no SAM: the detector's model build must not wait
+            # for one (task U6 round 2 -- it would wait three minutes).
+            window.decline_sam("--no-sam")
         if self.args.shots:
             # Real fonts, no window on screen: the offscreen plugin has no font
             # database and renders every label -- Chinese first -- as boxes.
@@ -255,9 +259,15 @@ class Smoke:
         if self.args.sam:
             note("loading SAM")
             started = time.perf_counter()
+            from tda.models.load_gate import heavy
             from tda.models.sam_service import SamQueue, SamService
 
-            window.set_sam_queue(SamQueue(SamService()), owns=True)
+            # Under the lock the detector's loader holds too (task U6): this
+            # import used to race it like the app's own loader did.  Handing
+            # the queue over releases the detector's turn.
+            with heavy("sam"):
+                service = SamService()
+            window.set_sam_queue(SamQueue(service), owns=True)
             self.report["sam_load_ms"] = (time.perf_counter() - started) * 1000
         self.note_peak()
 
