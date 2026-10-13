@@ -18,13 +18,17 @@ is one click:
 * an optional note.
 
 Below them, the keys it will create -- ``ram_latch.05 … ram_latch.08`` -- so
-nothing about the numbering is a surprise. The dialog only *reads* the view
-model; :meth:`values` is what the panel hands to
-:meth:`~tda.ui.steps_model.StepTableData.add_extras`.
+nothing about the numbering is a surprise, and how many **confirmed frames**
+of the open view the new parts will appear in (task U7): each of those frames
+gains an instance and goes back to 需复核.  On D13/scan four clips demoted the
+25 frames 17-41 and nothing said so beforehand.  Not a confirmation -- adding
+them is right, the frames just need a Space each once the clips are drawn --
+only the sentence.  The dialog only *reads* the view model; :meth:`values` is
+what the panel hands to :meth:`~tda.ui.steps_model.StepTableData.add_extras`.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
 from PySide6.QtWidgets import (
     QComboBox,
@@ -41,10 +45,11 @@ from PySide6.QtWidgets import (
 from tda.core import extra as X
 from tda.core.logs import CHASSIS_KEY
 from tda.ui.class_names import class_zh, state_zh
+from tda.ui.guide import steps_text
 from tda.ui.steps_model import StepTableData
 
-__all__ = ["AddPartsDialog", "BUTTON", "HINT", "NO_PARENT", "TIP", "TITLE",
-           "class_choices", "preview_text"]
+__all__ = ["AddPartsDialog", "BUTTON", "DEMOTION", "HINT", "NO_PARENT", "TIP", "TITLE",
+           "class_choices", "demotion_text", "preview_text"]
 
 TITLE = "＋ 添加零件 / Add parts"
 #: The button above the Instances table that opens the dialog.
@@ -62,6 +67,9 @@ INTRO = ("画面里有、日志里没有的零件（例如空内存槽上的卡�
          "直到它所在的零件被拆走。")
 #: How many keys the preview spells out before it abbreviates.
 PREVIEW_SHOWN = 6
+#: What adding them does to the confirmed frames of the open view (task U7).
+DEMOTION = ("{who}出现在 {n} 个已确认帧（{steps}）里；添加后这些帧会回到“需复核”，"
+            "补画后逐帧按 Space 即可。")
 
 
 def class_choices(data: StepTableData) -> list[tuple[str, str]]:
@@ -86,13 +94,29 @@ def preview_text(keys: list[str], parent: Optional[str]) -> str:
     return text
 
 
+def demotion_text(steps: list[int], count: int) -> str:
+    """The sentence for the confirmed frames a batch demotes; ``""`` for none."""
+    if not steps:
+        return ""
+    who = "这个零件" if int(count) <= 1 else f"这 {int(count)} 个零件"
+    return DEMOTION.format(who=who, n=len(steps), steps=steps_text(steps))
+
+
 class AddPartsDialog(QDialog):
-    """Pick a class, a count, a parent, a starting state and a note."""
+    """Pick a class, a count, a parent, a starting state and a note.
+
+    ``demotion`` answers "which confirmed frames would these parts demote?"
+    for the form's :meth:`values` (the panel's
+    :meth:`~tda.ui.steps_model.StepTableData.frames_demoted_by_extras` on the
+    open view); without it the dialog says nothing about them.
+    """
 
     def __init__(self, data: StepTableData, parent: Optional[QWidget] = None,
-                 cls: Optional[str] = None) -> None:
+                 cls: Optional[str] = None,
+                 demotion: Optional[Callable[[dict], list[int]]] = None) -> None:
         super().__init__(parent)
         self.data = data
+        self._demotion = demotion
         self.setWindowTitle(TITLE)
         self.class_combo = QComboBox(self)
         for label, name in class_choices(data):
@@ -108,6 +132,11 @@ class AddPartsDialog(QDialog):
         self.note_edit.setPlaceholderText("可选 / optional，例如：空槽的卡扣")
         self.preview = QLabel("", self)
         self.preview.setWordWrap(True)
+        #: The confirmed frames the parts will demote (U7); hidden when none.
+        self.warning = QLabel("", self)
+        self.warning.setWordWrap(True)
+        self.warning.setStyleSheet("color: #b35c00;")
+        self.warning.setVisible(False)
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
             parent=self,
@@ -124,6 +153,7 @@ class AddPartsDialog(QDialog):
         self.disc_combo.currentIndexChanged.connect(self._refresh_preview)
         self.count_spin.valueChanged.connect(self._refresh_preview)
         self.parent_combo.currentIndexChanged.connect(self._refresh_preview)
+        self.state_combo.currentIndexChanged.connect(self._refresh_preview)
         self._on_class()
 
     def _build(self) -> None:
@@ -140,6 +170,7 @@ class AddPartsDialog(QDialog):
         layout.addWidget(intro)
         layout.addLayout(form)
         layout.addWidget(self.preview)
+        layout.addWidget(self.warning)
         layout.addWidget(self.buttons)
 
     # -- reading ------------------------------------------------------------ #
@@ -201,7 +232,19 @@ class AddPartsDialog(QDialog):
         self.state_combo.setCurrentIndex(max(index, 0))
         self._refresh_preview()
 
+    def demoted_frames(self) -> list[int]:
+        """The confirmed frames of the open view the form's parts would demote."""
+        if self._demotion is None or not self.keys():
+            return []
+        try:
+            return sorted(int(s) for s in self._demotion(self.values()))
+        except Exception:  # noqa: BLE001 - a warning is never worth a failure
+            return []
+
     def _refresh_preview(self, *_args) -> None:
         keys = self.keys()
         self.preview.setText(preview_text(keys, self._parent()))
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(bool(keys))
+        text = demotion_text(self.demoted_frames(), self.count_spin.value())
+        self.warning.setText(text)
+        self.warning.setVisible(bool(text))

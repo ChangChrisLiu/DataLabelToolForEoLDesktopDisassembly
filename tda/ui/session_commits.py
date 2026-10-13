@@ -350,6 +350,30 @@ class CommitMixin:
         return edit.preview(self.db, self.truth, self.current(), self.editing_instance,
                             scope, direction, **({"geom_type": geom} if geom else {}))
 
+    def retrace_reach(self, instance: Optional[str] = None) -> Optional[dict]:
+        """How many confirmed frames re-tracing this shape here would put in conflict (U7).
+
+        ``{"steps", "frozen"}`` for the instance being edited (or ``instance``)
+        when a keyframe of it applies at the open frame: the frames ``Enter``
+        would rewrite -- :meth:`preview` with keyframe scope, the same chain
+        rule -- and the frozen ones among them (the frame confirmed, or a row
+        of it signed).  ``None`` for a shape drawn here for the first time:
+        that adds a part, it re-traces nothing.
+
+        On D13/scan a re-trace of four confirmed clips at frame 41 put frames
+        17-41 in conflict and nothing said so before the commit; the task card
+        says it now, from this.  A few state lookups and one query.
+        """
+        target = instance or self.editing_instance
+        if target is None or not self.is_open or not self.keyframe_applies(target):
+            return None
+        key = self.current()
+        geom = GEOM_BOX if edit.placement_of(self.db, self.tax, key, str(target)) == ON_BENCH \
+            else edit.GEOM_MASK
+        reach = edit.preview(self.db, self.truth, key, str(target), api.SCOPE_KEYFRAME,
+                             geom_type=geom)
+        return {"steps": list(reach["steps"]), "frozen": list(reach["verified_steps"])}
+
     def set_visibility(self, instance: str, vis: str) -> None:
         """Override one instance's visibility label on this frame (spec 6.2)."""
         self._after_edit(

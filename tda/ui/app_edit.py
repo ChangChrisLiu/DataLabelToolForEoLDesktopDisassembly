@@ -662,6 +662,8 @@ class EditMixin:
         # On a frame whose box the gate withheld, the line that said so has
         # just been replaced by this one: it says it again (task U2i).
         note = getattr(self, "no_box_note", lambda: "")()
+        # ... and a re-trace of a confirmed shape says what it will reach (U7)
+        note += getattr(self, "retrace_note", lambda: "")()
         self.report(f"editing {instance} / 正在画 {self._edit_label[1] or instance}{note}")
         self.update_status()
 

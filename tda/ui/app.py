@@ -145,7 +145,10 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, Assist
 
             panel = StepTablePanel(self.db, int(self.session.desktop),
                                    self.session.tax, self.paths.get("cache_dir", ""),
-                                   annotator=self.annotator)
+                                   annotator=self.annotator,
+                                   # 添加零件 says what it demotes in this view (U7)
+                                   view_of=lambda: str(getattr(self.session, "view", "")
+                                                       or ""))
             panel.sigSaved.connect(self.on_steps_saved)
             panel.sigEdited.connect(self._mark_steps_dirty)  # a part added (U5b)
             panel.sigReverted.connect(self._clear_steps_dirty)

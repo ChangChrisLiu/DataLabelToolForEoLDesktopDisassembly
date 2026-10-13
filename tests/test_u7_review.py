@@ -168,12 +168,40 @@ def test_bulk_accept_works_with_the_sweeper_running(session):
     assert again["standing"] == 0
 
 
-def test_the_guide_names_shift_n():
+# --------------------------------------------------------------------------- #
+# the re-trace warning (E)
+# --------------------------------------------------------------------------- #
+def test_retrace_reach_counts_the_confirmed_frames_a_keyframe_reaches(session):
+    _two_confirmed_frames(session)
+    session.goto(10)
+    session.begin_edit(CHASSIS)
+
+    reach = session.retrace_reach()
+
+    assert reach["frozen"] == [12, 13] and {12, 13} <= set(reach["steps"])
+    session.clear_edit()
+    # a part with no shape yet re-traces nothing
+    session.db.conn.execute("DELETE FROM shape_keyframe WHERE instance=?", (COOLER,))
+    session.db.conn.commit()
+    session._invalidate()
+    assert session.retrace_reach(COOLER) is None
+
+
+def test_the_guide_names_shift_n_and_the_retrace_reach():
     review = G.plan_for(G.GuideFacts(mode="review", open_conflicts=145))
     assert "Shift+N" in review.now and "145" in review.now
     assert review.action == "review_accept_all_new"
     single = G.plan_for(G.GuideFacts(mode="review", open_conflicts=1))
     assert "Shift+N" not in single.now and "N 采用新的" in single.now
+
+    loaded = G.plan_for(G.GuideFacts(editing="内存卡扣 ram_latch.01", layer_pixels=True,
+                                     retrace_frozen=tuple(range(17, 42))))
+    assert "重画会影响 25 个已确认帧，提交后用 Shift+N 一次接受" in loaded.now
+    dirty = G.plan_for(G.GuideFacts(editing="x", layer_pixels=True, layer_dirty=True,
+                                    retrace_frozen=(40, 41)))
+    assert "重画会影响 2 个已确认帧" in dirty.now
+    fresh = G.plan_for(G.GuideFacts(editing="x", layer_pixels=True))
+    assert "重画会影响" not in fresh.now
 
 
 # --------------------------------------------------------------------------- #
@@ -205,6 +233,9 @@ def _window_conflicts(win) -> None:
     assert session.confirm_frame() and session.confirm_frame()
     session.goto(10)
     win.on_request_edit(CHASSIS)
+    assert "重画会影响 2 个已确认帧（第 12、13 帧），提交后用 Shift+N 一次接受" \
+        in win.status_message()
+    assert "重画会影响 2 个已确认帧" in win.guide_plan().now
     session.set_editing_mask(rect(2, 34, 34, 62))
     session.commit_edit(api.SCOPE_KEYFRAME)
     session.clear_edit()
