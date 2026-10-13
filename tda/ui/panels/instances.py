@@ -15,6 +15,13 @@ Keys, on the table or on the panel: ``Ctrl+Up``/``Ctrl+Down`` reorder (the bare
 arrows stay with the table's row navigation), ``H`` toggles hidden, ``V``
 cycles the visibility values and ``1``-``7`` set one of them directly.
 
+The **state** combo (task U8) sets the selected part's state at this frame when
+the picture disagrees with the log -- the same gesture as ``T``.  It lists the
+row's ``state_choices`` (the session offers them only for a part in the
+picture whose class has two or more states that need a mask) and is greyed
+otherwise; like the move buttons it reports, and the window writes.  It never
+takes the keyboard focus: a focused combo swallows every shortcut.
+
 Every mutating gesture is followed by a re-read of ``instance_rows()``, so the
 table can never drift from the session's state -- hitting ``H`` after clicking
 the checkbox sends the value the session actually holds.
@@ -28,6 +35,7 @@ from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QComboBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -40,7 +48,7 @@ from PySide6.QtWidgets import (
 
 from tda.ui import session_api as api
 from tda.ui.canvas.overlay import palette_color
-from tda.ui.class_names import visibility_zh
+from tda.ui.class_names import state_zh, visibility_zh
 from tda.ui.panels import session_is_open
 from tda.ui.session_rows import HIDING_VISIBILITY
 
@@ -61,6 +69,11 @@ GONE_COLOR = QColor(128, 128, 132)
 OVERRIDE_COLOR = QColor(255, 226, 150)
 WARN_COLOR = QColor(170, 60, 0)
 
+
+#: The state combo's caption when the selected part has no state to set (U8).
+STATE_NONE = "状态 —"
+STATE_TIP = ("这一帧画面里的状态和日志不一样时（例如卡扣中途又关上了）在这里改，或选中后按 T；"
+             "只改这一帧，下一帧起自动恢复原状态 / the state the picture shows at this frame")
 
 #: The Vis cell of a part that has no shape on this frame yet (task U2c).
 NOT_DRAWN = "—"
@@ -97,6 +110,8 @@ class InstanceListPanel(QWidget):
     sigReorder = Signal(int)
     #: The hidden checkbox of one instance was toggled: ``(key, hidden)``.
     sigHiddenToggled = Signal(str, bool)
+    #: A state was picked in the state combo: ``(key, state)`` (task U8).
+    sigAssertState = Signal(str, str)
 
     #: Four columns, not seven.  Class and placement are in every row's tooltip
     #: instead: the instance key already names the class (``screw.cpu_cooler.01``)
@@ -156,10 +171,18 @@ class InstanceListPanel(QWidget):
         self.up_button.clicked.connect(lambda: self.sigReorder.emit(-1))
         self.down_button.clicked.connect(lambda: self.sigReorder.emit(+1))
 
+        self.state_combo = QComboBox()
+        self.state_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.state_combo.setMinimumWidth(1)
+        self.state_combo.setToolTip(STATE_TIP)
+        self.state_combo.activated.connect(self._on_state_activated)
+        self._table.itemSelectionChanged.connect(self._sync_state_combo)
+
         buttons = QHBoxLayout()
         buttons.setContentsMargins(4, 0, 4, 4)
         buttons.addWidget(self.up_button)
         buttons.addWidget(self.down_button)
+        buttons.addWidget(self.state_combo)
         buttons.addStretch(1)
         buttons.addWidget(self.show_removed)
 
@@ -265,6 +288,7 @@ class InstanceListPanel(QWidget):
         # leave H / V / 1-7 acting on a key this frame no longer has.
         if keep is None or not self.select_instance(keep):
             self._table.setCurrentCell(-1, -1)
+        self._sync_state_combo()
 
     @staticmethod
     def _vis_cell(data: dict, gone: bool) -> QTableWidgetItem:
@@ -421,6 +445,44 @@ class InstanceListPanel(QWidget):
             return
         self._session.set_visibility(instance, vis)
         self.refresh()
+
+    # -- state (task U8) ------------------------------------------------------
+    def state_choices(self) -> list[str]:
+        """The states the selected part can be set to here; ``[]`` = none."""
+        row = self._table.currentRow()
+        if row < 0 or row >= len(self._rows):
+            return []
+        return [str(s) for s in self._rows[row].get("state_choices") or ()]
+
+    def _sync_state_combo(self) -> None:
+        """Show the selected part's state and the ones it can be set to."""
+        combo = self.state_combo
+        choices = self.state_choices()
+        row = self._table.currentRow()
+        held = str(self._rows[row].get("state", "")) if 0 <= row < len(self._rows) else ""
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            if not choices:
+                combo.addItem(STATE_NONE, "")
+                combo.setEnabled(False)
+                return
+            for state in choices:
+                combo.addItem(f"状态：{state_zh(state)}", state)
+            if held in choices:
+                combo.setCurrentIndex(choices.index(held))
+            combo.setEnabled(True)
+        finally:
+            combo.blockSignals(False)
+
+    def _on_state_activated(self, index: int) -> None:
+        """A state picked by hand: report it unless it is the one already held."""
+        instance = self.selected_instance()
+        state = str(self.state_combo.itemData(index) or "")
+        row = self._table.currentRow()
+        held = str(self._rows[row].get("state", "")) if 0 <= row < len(self._rows) else ""
+        if instance and state and state != held:
+            self.sigAssertState.emit(instance, state)
 
     # -- keys ---------------------------------------------------------------
     # There is exactly one key map, and it is not here: the main window's

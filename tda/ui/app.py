@@ -46,6 +46,7 @@ from tda.ui.app_keys import FLASH_UNNAMED, KeysMixin
 from tda.ui.app_pose import PoseMixin
 from tda.ui.app_rawdata import NO_IMAGE_TEXT, RawDataMixin
 from tda.ui.app_roi import RoiMixin
+from tda.ui.app_state import StateMixin
 from tda.ui.app_shell import (
     MODE_TITLES,
     ShellMixin,
@@ -74,8 +75,8 @@ STEPS_UNSAVED = ("Steps 里有没 Apply 的修改（例如刚加的零件）：�
                  "The step table has edits that were never applied; Yes drops them all.")
 
 
-class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, AssistMixin,
-                 GuideMixin, KeysMixin, RawDataMixin,
+class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateMixin,
+                 AssistMixin, GuideMixin, KeysMixin, RawDataMixin,
                  ToolsMixin, StatusMixin, ShellMixin, QMainWindow):
     """One annotator, one desktop/view, three modes."""
 
@@ -115,6 +116,7 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, Assist
         self._init_edit()
         self._init_adopt()
         self._init_pose()
+        self._init_state()
         self._init_assist(sam_queue)
         self._init_rawdata()
         self._init_guide()      # last: it reads the bars and the raw-drive state
