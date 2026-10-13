@@ -68,6 +68,7 @@ from tda.core.truth_conflicts import (
     AGREE_AGAIN,
     BOX_TOL_PX,
     CLOSE_KIND,
+    DUPLICATE,
     GEOM_BOX,
     OVERTAKEN,
     REOPEN_KIND,
@@ -88,8 +89,8 @@ from tda.core.truth_inputs import (
     state_of,
 )
 
-__all__ = ["AGREE_AGAIN", "BLOCKING_PROBLEMS", "BOX_TOL_PX", "BY_HAND", "OVERTAKEN",
-           "ROW_GONE", "StaleConflictError", "TruthService"]
+__all__ = ["AGREE_AGAIN", "BLOCKING_PROBLEMS", "BOX_TOL_PX", "BY_HAND", "DUPLICATE",
+           "OVERTAKEN", "ROW_GONE", "StaleConflictError", "TruthService"]
 
 ACCEPT_NEW = "accept_new"
 KEEP_OLD = "keep_old"
@@ -293,7 +294,7 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
 
         verified_frame = self._frame_is_verified(key, stored)
         queued: Optional[list[dict]] = None
-        overtaken: list[tuple[int, str]] = []
+        overtaken: list[tuple[int, str, str]] = []
         # The one comparison of frozen rows with this compilation, the same one
         # verify_frame refuses on (U2e round 2); queued here in this pass's own
         # order -- moved parts, then departed ones -- as it always was.
@@ -334,8 +335,8 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
             else:
                 self.db.delete_compiled(key, instance)
                 result["updated"] += 1
-        # one op-log row for every conflict this pass replaced (U7)
-        result["overtaken"] = self._log_superseded(key, overtaken, OVERTAKEN)
+        # one op-log row (per reason) for every conflict this pass replaced (U7)
+        result["overtaken"] = self._log_superseded(key, overtaken)
 
         if verified_frame and (fresh - known or known - fresh):
             self.demote_frame(key, self._demotion_reason(fresh, known))
@@ -391,35 +392,43 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
             self.db.resolve_conflict(int(cid), SUPERSEDED)
         return self._log_superseded(key, agree, AGREE_AGAIN)
 
-    def _log_superseded(self, key: FrameKey, closed: list[tuple[int, str]],
-                        reason: str) -> int:
-        """The one op-log row for conflicts the service closed on its own.
+    def _log_superseded(self, key: FrameKey, closed: list[tuple],
+                        reason: Optional[str] = None,
+                        asked_by: Optional[str] = None) -> int:
+        """The op-log row for conflicts the service closed on its own -- one per reason.
 
-        ``closed`` is ``(id, instance)`` of conflicts already resolved
-        ``superseded`` in the caller's transaction, all of one frame; ``reason``
-        is one of :data:`SUPERSEDE_REASONS`.  Every path that supersedes --
-        a refresh finding the inputs agree again (:meth:`_close_agreeing`), a
-        refresh replacing a conflict by a newer one (:meth:`_queue_conflict`),
-        an ``accept_new`` the inputs had overtaken
+        ``closed`` holds ``(id, instance)`` -- closed for ``reason`` -- or
+        ``(id, instance, reason)`` of conflicts already resolved ``superseded``
+        in the caller's transaction, all of one frame; each reason is one of
+        :data:`SUPERSEDE_REASONS`.  Every path that supersedes -- a refresh
+        finding the inputs agree again (:meth:`_close_agreeing`), a refresh
+        replacing a conflict by a newer one or dropping a duplicate
+        (:meth:`_queue_conflict`), an ``accept_new`` the inputs had overtaken
         (:meth:`~tda.core.truth_resolve.ResolveMixin.resolve_conflict`) --
         writes this same ``resolve_conflicts`` row, by :data:`SYSTEM`, whose
-        inverse names them for :meth:`reopen_agreed`.  Nothing is written for
-        an empty list.  Returns how many.
+        inverse names them for :meth:`reopen_agreed`: one row per reason, in
+        the order the reasons first appear.  ``asked_by`` is the human whose
+        request led to it (a late ``accept_new``) and goes into the payload as
+        one more key; the row stays the service's.  Nothing is written for an
+        empty list.  Returns how many conflicts were named.
         """
-        if not closed:
-            return 0
-        if reason not in SUPERSEDE_REASONS:
-            raise ValueError(f"reason must be one of {SUPERSEDE_REASONS}, got {reason!r}")
-        ids = [int(cid) for cid, _instance in closed]
-        self.db.log_op(
-            key.desktop, key.view, CLOSE_KIND,
-            {"step": key.step, "conflicts": ids,
-             "instances": sorted({str(instance) for _cid, instance in closed}),
-             "resolution": SUPERSEDED, "reason": reason},
-            {"kind": REOPEN_KIND, "step": key.step, "conflicts": ids},
-            SYSTEM,
-        )
-        return len(ids)
+        groups: dict[str, list[tuple[int, str]]] = {}
+        for item in closed:
+            why = item[2] if len(item) > 2 else reason
+            if why not in SUPERSEDE_REASONS:
+                raise ValueError(f"reason must be one of {SUPERSEDE_REASONS}, got {why!r}")
+            groups.setdefault(why, []).append((int(item[0]), str(item[1])))
+        for why, items in groups.items():
+            ids = [cid for cid, _instance in items]
+            payload = {"step": key.step, "conflicts": ids,
+                       "instances": sorted({instance for _cid, instance in items}),
+                       "resolution": SUPERSEDED, "reason": why}
+            if asked_by:
+                payload["asked_by"] = str(asked_by)
+            self.db.log_op(key.desktop, key.view, CLOSE_KIND, payload,
+                           {"kind": REOPEN_KIND, "step": key.step, "conflicts": ids},
+                           SYSTEM)
+        return sum(len(items) for items in groups.values())
 
     def reopen_agreed(self, op_id: int) -> list[int]:
         """Undo one ``resolve_conflicts`` row of :meth:`_close_agreeing`: reopen them.
@@ -433,17 +442,19 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
 
         **One open conflict per frozen row** (task U7) holds here too:
 
-        * a row closed with the reason :data:`OVERTAKEN` is **refused**
-          (``ValueError``).  The conflicts it closed describe values the inputs
-          no longer produce, and the newer conflict that replaced each of them
-          is open for that very row -- reopening would put two open conflicts
-          on it, one of them about a shape nobody can see any more.  The way
-          back to an overtaken value is to move the inputs back (undo the
-          edit); the next refresh then queues it again, or closes the newer
-          one because the row agrees.
-        * a conflict whose ``(frame, instance)`` has another open conflict now
-          -- the inputs moved again after the agreement and a newer
-          disagreement was queued -- is left closed for the same reason.
+        * only a row closed with the reason :data:`AGREE_AGAIN` is reopened;
+          any other is **refused** (``ValueError``).  :data:`OVERTAKEN` and
+          :data:`DUPLICATE` closed conflicts whose row has another open
+          conflict standing for it -- reopening would put two on it, one of
+          them about a shape nobody can see any more; the way back to an
+          overtaken value is to move the inputs back (undo the edit), and the
+          next refresh queues it again or closes the newer one.
+          :data:`ROW_GONE` closed a conflict about a row that no longer exists.
+        * the ids are walked newest first, and a row gets **one** conflict
+          back: one agreement that closed a stack of conflicts on one row (a
+          database from before U7) reopens the newest of them only, and a row
+          that has an open conflict now -- the inputs moved again after the
+          agreement -- gets none.
 
         **Idempotent** (U6 round 2): when there is nothing left to reopen --
         the second call on the same op -- nothing is written at all, no op-log
@@ -456,21 +467,25 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
         op = self.db.get_op(int(op_id))
         if op is None or op["kind"] != CLOSE_KIND:
             raise ValueError(f"op {op_id} is not a {CLOSE_KIND} row of the truth service")
-        if (op["payload"] or {}).get("reason") == OVERTAKEN:
+        reason = (op["payload"] or {}).get("reason")
+        if reason != AGREE_AGAIN:
             raise ValueError(
-                f"op {op_id} closed conflicts a newer disagreement overtook; the newer one "
-                f"is the open conflict of each of those rows, so they are not reopened")
+                f"op {op_id} closed conflicts because {reason!r}; only a closing because "
+                f"{AGREE_AGAIN!r} is reopened -- the others stand for a row that has its "
+                f"open conflict already, or for none")
         inverse = op["inverse"] or {}
         key = FrameKey(int(op["desktop"]), int(inverse["step"]), str(op["view"]))
         taken = {instance for _cid, instance in self.db.open_conflicts_at(key)}
         wanted: list[int] = []
-        for cid in inverse.get("conflicts") or []:
-            found = self.db.get_conflict(int(cid))
+        for cid in sorted((int(c) for c in inverse.get("conflicts") or []), reverse=True):
+            found = self.db.get_conflict(cid)
+            instance = "" if found is None else str(found["instance"] or "")
             if (found is None or found["status"] == OPEN
-                    or found.get("resolution") != SUPERSEDED
-                    or str(found["instance"] or "") in taken):
+                    or found.get("resolution") != SUPERSEDED or instance in taken):
                 continue
-            wanted.append(int(cid))
+            wanted.append(cid)
+            taken.add(instance)          # one per row: the newest of a stack
+        wanted.sort()
         if not wanted:
             return []
         reopened: list[int] = []
@@ -677,7 +692,7 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
         new_payload: Optional[dict],
         pixels: int,
         queued: Optional[list[dict]],
-        overtaken: Optional[list[tuple[int, str]]] = None,
+        overtaken: Optional[list[tuple[int, str, str]]] = None,
     ) -> tuple[list[dict], bool]:
         """Make this disagreement the one open conflict of ``(step, instance)``.
 
@@ -689,12 +704,15 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
           inserted, and refreshing the same frame twice piles nothing up;
         * every open conflict with a **different** new value is about a value
           the inputs no longer produce.  It is closed ``superseded`` and
-          recorded in ``overtaken`` as ``(id, instance)``, for the caller to
-          log once per refresh (:meth:`_log_superseded`, reason
-          :data:`OVERTAKEN`); with no ``overtaken`` list given, that row is
-          written here.  Before U7 each one stayed open next to the newer one:
-          every commit of a re-traced shape queued one more conflict for the
-          same frozen row, thirteen of them on D13/scan frame 41.
+          recorded in ``overtaken`` as ``(id, instance, OVERTAKEN)``, for the
+          caller to log once per refresh (:meth:`_log_superseded`); with no
+          ``overtaken`` list given, that row is written here.  Before U7 each
+          one stayed open next to the newer one: every commit of a re-traced
+          shape queued one more conflict for the same frozen row, thirteen of
+          them on D13/scan frame 41;
+        * a second open conflict with the **same** new value -- only a
+          database from before U7 holds one -- is closed the same way with the
+          reason :data:`DUPLICATE`; the oldest stays.
 
         A conflict a human already resolved is not in the open queue, so it
         may legitimately be raised again -- the resolution writes the inputs
@@ -716,13 +734,17 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
         same = next((c for c in mine if self._geom_id(c["new_rle"]) == wanted), None)
         replaced = [c for c in mine if c is not same]
         if replaced:
-            gone = {int(c["id"]) for c in replaced}
-            for cid in sorted(gone):
+            closed = []
+            for conflict in sorted(replaced, key=lambda c: int(c["id"])):
+                cid = int(conflict["id"])
                 self.db.resolve_conflict(cid, SUPERSEDED)
+                closed.append((cid, instance,
+                               DUPLICATE if self._geom_id(conflict["new_rle"]) == wanted
+                               else OVERTAKEN))
+            gone = {cid for cid, _instance, _why in closed}
             queued[:] = [c for c in queued if int(c["id"]) not in gone]
-            closed = [(cid, instance) for cid in sorted(gone)]
             if overtaken is None:
-                self._log_superseded(key, closed, OVERTAKEN)
+                self._log_superseded(key, closed)
             else:
                 overtaken.extend(closed)
         if same is not None:

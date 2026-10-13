@@ -22,8 +22,10 @@ from tda.core.model import ShapePart
 from tda.core.truth import (
     AGREE_AGAIN,
     CLOSE_KIND,
+    DUPLICATE,
     OVERTAKEN,
     REOPEN_KIND,
+    ROW_GONE,
     StaleConflictError,
 )
 from truth_scenes import DESKTOP, PSU, SCREW, VIEW, Scene, build_scene, rect, replace_parts
@@ -166,8 +168,10 @@ def test_a_stale_accept_new_is_recorded_like_a_refresh_overtaking_it(scene: Scen
     # the same op-log row a refresh writes when it replaces a conflict
     last = scene.db.ops(DESKTOP, VIEW, limit=1)[0]
     assert last["kind"] == CLOSE_KIND and last["annotator"] == "system"
+    # a refresh's row plus one key: who pressed N (round 2)
     assert last["payload"] == {"step": 2, "conflicts": [cid], "instances": [PSU],
-                               "resolution": "superseded", "reason": OVERTAKEN}
+                               "resolution": "superseded", "reason": OVERTAKEN,
+                               "asked_by": "lin"}
     assert last["inverse"] == {"kind": REOPEN_KIND, "step": 2, "conflicts": [cid]}
     # and no second, human-signed row for the same supersession
     assert not [op for op in scene.db.ops(DESKTOP, VIEW, limit=10)
@@ -217,7 +221,7 @@ def test_an_overtaken_closing_is_not_reopened(scene: Scene):
     with pytest.raises(ValueError) as err:
         scene.svc.reopen_agreed(op["id"])
 
-    assert "overtook" in str(err.value)
+    assert OVERTAKEN in str(err.value) and AGREE_AGAIN in str(err.value)
     assert len(scene.db.ops(DESKTOP, VIEW, limit=10_000)) == rows
     assert max(_per_row(scene).values()) == 1
 
@@ -269,3 +273,76 @@ def test_any_sequence_of_edits_refreshes_and_answers_keeps_one_per_row(scene: Sc
                 pass
         counts = _per_row(scene)
         assert not counts or max(counts.values()) == 1, (move, counts)
+
+
+# --------------------------------------------------------------------------- #
+# round 2
+# --------------------------------------------------------------------------- #
+def test_a_same_value_duplicate_is_closed_as_a_duplicate_not_overtaken(scene: Scene):
+    """A pre-U7 stack of the very same disagreement: the oldest stays, the rest are duplicates."""
+    _psu(scene, 30)
+    scene.svc.refresh(scene.key(2))
+    first = _open(scene)[0]
+    for _ in range(2):
+        scene.db.add_conflict(scene.key(2), PSU, first["old_rle"], first["new_rle"], 100)
+    assert _per_row(scene)[(2, PSU)] == 3
+
+    out = scene.svc.refresh(scene.key(2), ignore_digest=True)
+
+    assert [c["id"] for c in _open(scene)] == [first["id"]]
+    assert (out["conflicts"], out["overtaken"]) == (0, 2)
+    rows = _closings(scene)
+    assert [op["payload"]["reason"] for op in rows] == [DUPLICATE]
+    assert DUPLICATE == "duplicate of an open conflict"
+    with pytest.raises(ValueError):
+        scene.svc.reopen_agreed(rows[0]["id"])
+
+
+def test_one_refresh_writes_one_row_per_reason(scene: Scene):
+    """A stack of a stale value and a duplicate of the current one: two reasons, two rows."""
+    _psu(scene, 30)
+    scene.svc.refresh(scene.key(2))
+    old = _open(scene)[0]
+    _psu(scene, 20)
+    scene.svc.refresh(scene.key(2))           # replaces `old`
+    current = _open(scene)[0]
+    scene.db.reopen_conflict(old["id"])       # what a pre-U7 database holds ...
+    scene.db.add_conflict(scene.key(2), PSU, current["old_rle"], current["new_rle"], 100)
+    before = {op["id"] for op in _closings(scene)}
+
+    scene.svc.refresh(scene.key(2), ignore_digest=True)
+
+    new_rows = [op for op in _closings(scene) if op["id"] not in before]
+    assert sorted(op["payload"]["reason"] for op in new_rows) == sorted([OVERTAKEN, DUPLICATE])
+    assert [c["id"] for c in _open(scene)] == [current["id"]]
+
+
+def test_reopening_an_agreement_over_a_stack_reopens_one(scene: Scene):
+    """One agreement that closed four stacked conflicts of one row gives that row one back."""
+    _psu(scene, 30)
+    scene.svc.refresh(scene.key(2))
+    first = _open(scene)[0]
+    for y1 in (28, 26, 24):                   # a pre-U7 stack on the same row
+        scene.db.add_conflict(scene.key(2), PSU, first["old_rle"],
+                              masks.encode_rle(rect(10, 10, 50, y1)), 100)
+    stack = sorted(c["id"] for c in _open(scene))
+    _psu(scene, 50)                            # the row agrees again
+    assert scene.svc.refresh(scene.key(2))["closed"] == 4
+    op = _closings(scene, AGREE_AGAIN)[0]
+
+    assert scene.svc.reopen_agreed(op["id"]) == [stack[-1]]     # the newest only
+    assert _per_row(scene)[(2, PSU)] == 1
+
+
+def test_only_an_agreement_is_reopened(scene: Scene):
+    _psu(scene, 30)
+    scene.svc.refresh(scene.key(2))
+    cid = _open(scene)[0]["id"]
+    with scene.db.transaction():
+        scene.db.resolve_conflict(cid, "superseded")
+        scene.svc._log_superseded(scene.key(2), [(cid, PSU, ROW_GONE)])
+    op = _closings(scene, ROW_GONE)[0]
+
+    with pytest.raises(ValueError):
+        scene.svc.reopen_agreed(op["id"])
+    assert _open(scene) == []

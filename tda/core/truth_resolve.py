@@ -89,7 +89,8 @@ class ResolveMixin:
         one ``resolve_conflicts`` row by ``system`` with the reason
         ``overtaken by a newer disagreement`` (or ``inputs agree again`` /
         ``the frozen row is gone`` when that is what the recompilation found),
-        written by :meth:`~tda.core.truth.TruthService._log_superseded`.  The
+        written by :meth:`~tda.core.truth.TruthService._log_superseded`, plus
+        ``asked_by``: the annotator whose ``N`` led to it.  The
         re-queue goes through the same one-open-conflict-per-row rule as a
         refresh, so an older duplicate of the row left by a database from
         before U7 is closed with it.
@@ -135,7 +136,7 @@ class ResolveMixin:
         instance = conflict["instance"]
         stale: Optional[tuple[str, str]] = None
         with self.db.transaction():
-            closed: list[tuple[int, str]] = []
+            closed: list[tuple[int, str, str]] = []
             if resolution == ACCEPT_NEW:
                 stale = self._accept_new(key, instance, conflict, annotator, closed,
                                          prepared, cache)
@@ -148,10 +149,11 @@ class ResolveMixin:
             if stale is not None:
                 # the service's own answer, recorded the way a refresh records
                 # it (U7); the re-queue may already have closed this one
-                if int(cid) not in {done for done, _inst in closed}:
+                if int(cid) not in {done for done, _inst, _why in closed}:
                     self.db.resolve_conflict(cid, SUPERSEDED)
-                    closed.insert(0, (int(cid), instance))
-                self._log_superseded(key, closed, stale[1])
+                    closed.insert(0, (int(cid), instance, stale[1]))
+                # ... and who asked, as one more key of the same payload
+                self._log_superseded(key, closed, asked_by=annotator)
             else:
                 self.db.resolve_conflict(cid, resolution)
                 self.db.log_op(
@@ -166,7 +168,7 @@ class ResolveMixin:
 
     def _accept_new(
         self, key: FrameKey, instance: str, conflict: dict, annotator: str,
-        closed: list[tuple[int, str]], prepared=None, cache=None,
+        closed: list[tuple[int, str, str]], prepared=None, cache=None,
     ) -> Optional[tuple[str, str]]:
         """Confirm the current compilation, or report that it overtook the conflict.
 
@@ -198,7 +200,7 @@ class ResolveMixin:
 
     def _supersede(
         self, key: FrameKey, instance: str, conflict: dict, compiled_inst,
-        closed: list[tuple[int, str]],
+        closed: list[tuple[int, str, str]],
     ) -> tuple[str, str]:
         """Queue the disagreement against the current value.
 
