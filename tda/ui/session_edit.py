@@ -118,6 +118,7 @@ __all__ = [
     "require_instance",
     "split_zorder_scope",
     "splits_the_shape",
+    "clear_visibility",
     "set_visibility",
     "set_zorder_move",
     "suggest_scope",
@@ -125,8 +126,8 @@ __all__ = [
     "task_card_for",
 ]
 
-def _result(db: Db, truth: TruthService, key: FrameKey, steps: Sequence[int], op: Op,
-            extra: Optional[dict] = None) -> dict:
+def _result(db: Db, truth: TruthService, key: FrameKey, steps: Sequence[int],
+            op: Optional[Op], extra: Optional[dict] = None) -> dict:
     """Bring the truth table up to date with one edit, and report what it cost.
 
     Only the frame the annotator is looking at is compiled here.  The compiled
@@ -784,6 +785,33 @@ def set_visibility(db: Db, truth: TruthService, key: FrameKey, instance: str, vi
                         "visible_rle": None if previous is None else previous.visible_rle}
     with db.transaction():
         db.set_frame_override(FrameOverride(key, instance, payload["visible_rle"], vis))
+        db.log_op(key.desktop, key.view, "set_frame_override", payload, inverse, annotator)
+    return _result(db, truth, key, [key.step], Op("set_frame_override", payload, inverse))
+
+
+def clear_visibility(db: Db, truth: TruthService, key: FrameKey, instance: str,
+                     annotator: str = "system") -> dict:
+    """Take a hand-set ``visibility`` label of this frame back (undoable).
+
+    A single-frame mask in the same override stays; the row goes only when it
+    held nothing else. What a second 「看不见」 on a components-gallery shot
+    does (task U10): the part is to be drawn again, with no label of its own.
+    """
+    previous = db.frame_overrides(key).get(instance)
+    if previous is None or previous.visibility is None:
+        return _result(db, truth, key, [key.step], None)
+    common = {"desktop": key.desktop, "view": key.view, "step": key.step,
+              "instance": instance, "steps": [key.step]}
+    keep = previous.visible_rle is not None
+    payload = common | {"exists": keep, "visibility": None,
+                        "visible_rle": previous.visible_rle}
+    inverse = common | {"exists": True, "visibility": previous.visibility,
+                        "visible_rle": previous.visible_rle}
+    with db.transaction():
+        if keep:
+            db.set_frame_override(FrameOverride(key, instance, previous.visible_rle, None))
+        else:
+            db.delete_frame_override(key, instance)
         db.log_op(key.desktop, key.view, "set_frame_override", payload, inverse, annotator)
     return _result(db, truth, key, [key.step], Op("set_frame_override", payload, inverse))
 

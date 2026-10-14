@@ -39,9 +39,11 @@ from PySide6.QtWidgets import (
 )
 
 from tda.core.db import acquire_lock_file, release_lock_file
-from tda.core.model import VIEWS
+from tda.core.model import ALL_VIEWS, COMPONENT_VIEWS, VIEWS
+from tda.ui import app_actions as A
 from tda.ui import app_compat as compat
 from tda.ui import app_support as S
+from tda.ui.gallery import view_label
 from tda.ui.app_status import (  # re-exported: this was their home
     KNOWN_FAILURES,
     StatusMixin,
@@ -195,9 +197,12 @@ class ShellMixin:
         self.view_buttons: dict[str, QToolButton] = {}
         group = QButtonGroup(self)
         group.setExclusive(True)
-        for i, view in enumerate(VIEWS):
+        keys = {a.args[0]: a.keys[0] for a in A.ACTIONS if a.slot == "act_set_view"}
+        for view in ALL_VIEWS:
+            if view == COMPONENT_VIEWS[0]:
+                bar.addSeparator()      # the components gallery (task U10)
             button = QToolButton()
-            button.setText(f"{view} (F{i + 1})")
+            button.setText(f"{view_label(view)} ({keys.get(view, '')})")
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.setCheckable(True)
             button.setChecked(view == self.session.view)

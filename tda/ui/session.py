@@ -25,7 +25,7 @@ from PySide6.QtCore import QObject, Signal
 from tda.core import masks
 from tda.core.compiler import CompiledFrame
 from tda.core.db import Db
-from tda.core.model import FrameKey
+from tda.core.model import FrameKey, is_component_view
 from tda.core.taxonomy import Taxonomy
 from tda.core.truth import TruthService
 from tda.core.truth_inputs import instances_of, state_of
@@ -198,6 +198,10 @@ class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, TruthCa
         self._step = self._available[-1] if self._available else (
             self._steps[-1] if self._steps else None
         )
+        if self.gallery and self._available:
+            # the components gallery has no order to walk backwards in: its
+            # shots are independent layouts, and Space goes to the next one
+            self._step = self._available[0]
         self._reset_working_set()
         self._set_dirty(False)
         # Every frozen frame without an open conflict is owed a comparison with
@@ -266,6 +270,15 @@ class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, TruthCa
     def is_open(self) -> bool:
         """Is a desktop/view open? The window asks before touching anything else."""
         return self.desktop is not None and self._step is not None
+
+    @property
+    def gallery(self) -> bool:
+        """Is the open view one of the components gallery's (task U10)?
+
+        Its frames are shots of the parts laid out after the teardown: no
+        state, no neighbour to compare with, no order to walk.
+        """
+        return is_component_view(self.view)
 
     def steps(self) -> list[int]:
         """Logical steps of the open desktop/view, ascending."""
@@ -421,7 +434,7 @@ class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, TruthCa
         """One row per instance of the current frame, top-most layer first."""
         key = self.current()
         labelled, drawn = self._frame_overrides_of(key)
-        state = state_of(self.db, self.tax, key.desktop, key.step)
+        state = state_of(self.db, self.tax, key.desktop, key.step, view=key.view)
         instances = instances_of(self.db, key.desktop)
         found = rows.instance_rows(
             self.compiled(),
@@ -502,7 +515,9 @@ class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, TruthCa
         return [s for s in self._steps if low < s <= high]
 
     def _neighbour(self, direction: str) -> Optional[int]:
-        if self._step is None:
+        if self._step is None or self.gallery:
+            # a gallery shot is diffed against nothing: the parts were
+            # re-arranged between shots (task U10)
             return None
         if direction == edit.REVERSE:
             later = [s for s in self._available if s > self._step]

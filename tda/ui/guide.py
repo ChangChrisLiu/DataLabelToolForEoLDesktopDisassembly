@@ -150,6 +150,9 @@ class GuideFacts:
     #: (``AnnotationSession.retrace_reach``), computed once when the edit
     #: starts; empty for a new shape (task U7).
     retrace_frozen: tuple[int, ...] = ()
+    #: A components-gallery shot (task U10): its title, ``零件合照 OAK1 第 2/5
+    #: 张``; ``""`` on the teardown sequence.
+    gallery: str = ""
 
 
 @dataclass(frozen=True)
@@ -175,6 +178,8 @@ ROI_NOW = "回答机箱范围（ROI）：拖紫红框的白色小方块调整，
 #: A stored ROI opened to check it: Esc keeps it, it skips nothing (round 2).
 ROI_EDIT_NOW = "机箱范围（ROI）：拖白色小方块调整，Enter 保存 / Esc 不改"
 ROI_DONE = "机箱范围（ROI）✓"
+#: A components-gallery shot's first line (task U10): no ROI question at all.
+ROI_GALLERY = "零件合照：整张图都是工作范围 ✓"
 ROI_NONE = "机箱范围（ROI）：这一段不用 ✓"
 ROI_WARN = ("机箱范围（ROI）还没确认：画布下方点「确认建议框」，或 Shift+R 重画"
             "（不挡你继续）")
@@ -240,6 +245,8 @@ def _title(facts: GuideFacts) -> str:
     step = facts.step
     if step is None:
         return "现在做什么"
+    if facts.gallery:
+        return facts.gallery          # 零件合照 OAK1 第 k/N 张 (task U10)
     if facts.neighbour is None:
         look = "还没开始拆的样子" if facts.forward_start else "已经拆完的样子"
         return f"第 {step} 帧（起点：{look}）"
@@ -247,6 +254,8 @@ def _title(facts: GuideFacts) -> str:
 
 
 def _roi_line(facts: GuideFacts) -> tuple[str, str]:
+    if facts.gallery:
+        return (DONE, ROI_GALLERY)
     if facts.roi_editing:
         return (NOW, ROI_EDIT_NOW if facts.roi_stored else ROI_NOW)
     if facts.roi_stored:

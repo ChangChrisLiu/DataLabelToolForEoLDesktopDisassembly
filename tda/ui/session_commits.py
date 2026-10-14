@@ -20,6 +20,7 @@ import numpy as np
 from tda.core.model import FrameKey, is_provisional
 from tda.core.truth_inputs import frame_hw
 from tda.ui import session_api as api
+from tda.ui.gallery import gallery_refusal
 from tda.ui.session_api import SessionRefusal
 from tda.ui import session_edit as edit
 from tda.ui.session_ops import GEOM_BOX, ON_BENCH
@@ -202,6 +203,11 @@ class CommitMixin:
             raise RuntimeError("commit_edit() needs begin_edit() first")
         extra = _loggable_extra(extra)
         key, instance = self._editable_frame(), self.layer.instance
+        if getattr(self, "gallery", False) and (
+                scope == api.SCOPE_SPLIT or edit.splits_the_shape(scope)):
+            # a components-gallery shot is one segment of its own (task U10):
+            # there is no "from this frame on", only this shot
+            raise SessionRefusal(gallery_refusal(key.view, "commit_split"))
         pair = edit.split_zorder_scope(scope)
         unchanged_split = False
         if pair is None and not self.layer.changed():
@@ -406,6 +412,13 @@ class CommitMixin:
                                 self.annotator)
         )
 
+    def clear_visibility(self, instance: str) -> None:
+        """Take this frame's hand-set visibility label of ``instance`` back (undoable)."""
+        self._after_edit(
+            edit.clear_visibility(self.db, self.truth, self.current(), instance,
+                                  self.annotator)
+        )
+
     def set_hidden(self, instance: str, hidden: bool) -> None:
         """Show or hide an instance in the canvas.
 
@@ -442,5 +455,12 @@ class CommitMixin:
         :func:`tda.ui.session_scope.hosts_of` over the instance table: the
         relation pointers, the taxonomy's ``host_class`` and the chassis.  Read
         per suggestion -- one small table, and the Steps mode can change it.
+
+        None on a components-gallery shot (task U10): the parts lie side by
+        side or across each other on the table, and what sits on what inside
+        the machine says nothing about that -- the layering suggestion there is
+        the pixels' alone, and ``L`` answers it as anywhere.
         """
+        if getattr(self, "gallery", False):
+            return {}
         return edit.hosts_of(self.db.instances(self.desktop), self.tax)

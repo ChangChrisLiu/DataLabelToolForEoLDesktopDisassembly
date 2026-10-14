@@ -176,6 +176,9 @@ class KeysMixin:
         pressing = not action.hold or bool(extra and extra[0])
         refusal = getattr(self, "key_refusal", None)
         why = refusal(action.name) if pressing and refusal is not None else ""
+        gallery = getattr(self, "gallery_key_refusal", None)
+        if pressing and not why and gallery is not None:
+            why = gallery(action.name)   # what a 零件合照 shot has not got (U10)
         if why:
             self.report(f"{A.short_parts(action)[0]}：{why}")
             return

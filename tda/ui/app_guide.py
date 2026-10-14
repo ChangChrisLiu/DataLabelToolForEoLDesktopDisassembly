@@ -39,6 +39,7 @@ from tda.ui.app_edit import SHAPE_BUSY
 from tda.ui.app_roi import BENCH_NEEDS_ITEM, ON_BENCH
 from tda.ui.canvas import overlay_style as _OS
 from tda.ui.class_names import instance_label
+from tda.ui.gallery import gallery_refusal
 from tda.ui.panels.palette import RADIUS_MAX, RADIUS_MIN
 
 __all__ = ["BANNER_CIRCLE", "BANNER_EMPTY", "BANNER_PIXELS", "BANNER_POLYGON",
@@ -367,6 +368,14 @@ class GuideMixin:
         listed = review and facts.open_conflicts > 0
         states["review_accept_all_new"] = (bool(listed), False,
                                            not_review if not review else "这个视图没有开放的冲突")
+        if facts.gallery:
+            # what a components-gallery shot has not got (task U10): the
+            # button greys with the reason the key gives
+            view = str(getattr(self.session, "view", "") or "")
+            for name in list(states):
+                why = gallery_refusal(view, name)
+                if why:
+                    states[name] = (False, False, why)
         return states
 
     def _bench_box_usable(self) -> bool:
@@ -469,6 +478,7 @@ class GuideMixin:
             step=None if key is None else int(key.step),
             neighbour=neighbour,
             forward_start=forward_start,
+            gallery=getattr(self, "gallery_title_text", str)(),   # 零件合照 (U10)
             frame_confirmed=getattr(self, "_frame_status_seen", "") in _VERIFIED,
             roi_stored=roi_stored,
             roi_editing=roi_editing,

@@ -41,6 +41,7 @@ import numpy as np
 from PySide6.QtCore import QTimer, Qt
 
 from tda.core import masks as _masks
+from tda.core.model import is_component_view
 from tda.ui import app_compat as compat
 from tda.ui import app_priors
 from tda.ui import app_support as S
@@ -360,7 +361,10 @@ class EditMixin:
             if self.roi() is not None:
                 if self.roi_editing:
                     self.cancel_roi_edit()
-            elif self.roi_key() not in self._roi_dismissed and not self.roi_editing:
+            elif (self.roi_key() not in self._roi_dismissed and not self.roi_editing
+                  and not is_component_view(getattr(key, "view", ""))):
+                # (a components-gallery shot has no chassis ROI to ask about:
+                # the whole image is its working area -- task U10)
                 self.start_roi_edit()
         self.on_frame_changed_roi()
         self._offer_restore(key)

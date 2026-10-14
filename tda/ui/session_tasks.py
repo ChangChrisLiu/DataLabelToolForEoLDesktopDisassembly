@@ -31,9 +31,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from tda.core.compiler import select_keyframe
+from tda.core.compiler import marked_absent, select_keyframe
 from tda.core.db import Db
-from tda.core.model import FrameKey, InstanceRec
+from tda.core.model import FrameKey, InstanceRec, is_component_view
 from tda.core.states import diff_states, needs_geom
 from tda.core.split_rows import (  # noqa: F401 - re-exported, the card's vocabulary
     NOTHING_VISIBLE,
@@ -59,8 +59,8 @@ from tda.ui.session_ops import (
 )
 
 __all__ = ["LAYER_RANK", "SHAPE_PREDATES_STATE", "SPLIT_TRANSITIONS",
-           "STATE_ONLY_TRANSITIONS", "bench_roi_of", "has_bench_roi", "item_text",
-           "stale_split_rows", "task_card_for"]
+           "STATE_ONLY_TRANSITIONS", "bench_roi_of", "gallery_card", "has_bench_roi",
+           "item_text", "stale_split_rows", "task_card_for"]
 
 REMOVED = "removed"
 _VERIFIED = "verified"
@@ -255,6 +255,8 @@ def task_card_for(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
     the geometry the item asks for already exists **on this frame**, so the
     panel can grey an item out without the annotator having to remember.
     """
+    if is_component_view(view):
+        return gallery_card(db, tax, desktop, view, step)
     cache = InputCache()
     records = {rec.step: rec for rec in db.steps(desktop)}
     if step not in records:
@@ -345,4 +347,44 @@ def _start_card(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
         items.append(_item(instance, kind, {}, done, instances.get(instance), None))
     if not items:
         return [_item(f"step {step}", api.KIND_CONFIRM, {}, confirmed, None, None)]
+    return _bottom_up(items, instances, tax)
+
+
+def gallery_card(db: Db, tax: Taxonomy, desktop: int, view: str, shot: int) -> list[dict]:
+    """The card of one components-gallery shot (task U10, spec 3.2b).
+
+    One row per part the gallery asks for -- the parts removed by the end of
+    the teardown, laid out on the table (:func:`tda.core.states.gallery_state`)
+    -- whatever the shot before it held: the layout was re-arranged between
+    shots, so there is no neighbour and no change to describe. A row is done
+    when the part has a shape on this shot, or when the annotator said it is
+    not in it (``absent``: an ``out_of_view`` label with no pixels, 「看不见」);
+    open rows first, bottom-up like a start card. Every row carries
+    ``gallery: True``, which is what the panel words it by.
+    """
+    cache = InputCache()
+    key = FrameKey(desktop, shot, view)
+    if db.get_frame(key) is None:
+        return []
+    instances = instances_of(db, desktop, cache)
+    state = state_of(db, tax, desktop, shot, cache, view=view)
+    try:
+        overrides = db.frame_overrides(key) or {}
+    except Exception:  # noqa: BLE001 - a missing table is "none set"
+        overrides = {}
+    confirmed = (db.get_frame(key) or {}).get("review_status") == _VERIFIED
+    items = []
+    for instance in sorted(needs_geom(instances, state, tax)):
+        drawn = _has_shape(db, tax, desktop, view, instance, shot, cache)
+        absent = not drawn and marked_absent(overrides.get(instance))
+        row = _item(instance, api.KIND_ADD_SHAPE, {}, drawn or absent,
+                    instances.get(instance), None)
+        row["gallery"] = True
+        if absent:
+            row["absent"] = True
+        items.append(row)
+    if not items:
+        row = _item(f"shot {shot}", api.KIND_CONFIRM, {}, confirmed, None, None)
+        row["gallery"] = True
+        return [row]
     return _bottom_up(items, instances, tax)
