@@ -1,9 +1,9 @@
-"""Task U9 round 2: a forced re-import replays the ``Shift+T`` verb corrections.
+"""Task U9: a forced re-import keeps what ``Shift+T`` left in the step table.
 
 ``import-logs --force`` writes the freshly parsed actions over the whole step
-table. The corrections made with ``Shift+T`` are ``correct_verb`` rows in the
-op log, so the import puts the ones still in effect back, in op order, and
-says which it kept and which the new sheet no longer fits.
+table. The ``correct_verb`` rows of the op log say which actions an annotator
+corrected; for each, the verb the stored table carries -- the annotator's last
+word, whatever undo/redo led there -- is copied onto the parsed action.
 
 The scene is the real D2 sheet (``tests/fixtures/logs/desktop_02.csv``) as it
 was imported before the importer read "remove ..." names (step 17 ``open``),
@@ -34,6 +34,7 @@ from tda.ui.steps_model import StepTableData
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "logs"
 D2 = 2
+KEY = FrameKey(D2, 48, "scan")
 SIX = {"cooler_latch.01": 2, "drive_latch.01": 12, "drive_latch.02": 17, "cover.01": 38,
        "cover.02": 46, "psu_latch.01": 47}
 
@@ -62,18 +63,23 @@ def verbs(db: Db) -> dict[str, tuple[int, str]]:
     return {a.target: (a.step, a.verb) for a in db.actions(D2)}
 
 
-@pytest.fixture
-def corrected(tmp_path, tax):
-    """D2 imported as the old importer did, then the six corrections (Shift+T)."""
+def old_import(tmp_path: Path, tax) -> Db:
+    """D2 as the importer drafted it before C: step 17 ``open`` too."""
     db = Db(str(tmp_path / "tda.sqlite"))
     import_logs_into_db(db, sheets(tmp_path), tax, desktops={D2})
     data = StepTableData.load(db, D2, tax)
-    data.apply_edit(17, "verb", "open")          # before C, the sheet drafted open
+    data.apply_edit(17, "verb", "open")
     data.save(db)
+    return db
+
+
+@pytest.fixture
+def corrected(tmp_path, tax):
+    """The six corrections made with Shift+T."""
+    db = old_import(tmp_path, tax)
     truth = TruthService(db, tax)
-    key = FrameKey(D2, 48, "scan")
     for target in SIX:
-        commit_verb_fix(db, truth, key, target, "remove", "tester")
+        commit_verb_fix(db, truth, KEY, target, "remove", "tester")
     assert all(verbs(db)[t] == (s, "remove") for t, s in SIX.items())
     yield db, truth
     db.close()
@@ -88,18 +94,19 @@ def test_the_six_corrections_survive_a_forced_re_import(corrected, tmp_path, tax
     assert {t: verbs(db)[t] for t in SIX} == {t: (s, "remove") for t, s in SIX.items()}
     assert not validate_events(db.instances(D2), events_of(db, tax, D2), tax)
     op = db.ops_of_kind(D2, OP_REPLAY)[-1]
-    replayed = {(e["step"], e["target"]) for e in op["payload"]["replayed"]}
-    assert replayed == {(s, t) for t, s in SIX.items() if t != "drive_latch.02"}
-    # the sheet itself says "remove SSD locker shield" now (C): nothing to replay
-    assert [(e["step"], e["target"]) for e in op["payload"]["already"]] == \
-        [(17, "drive_latch.02")]
+    kept = {(e["step"], e["target"], e["verb"], e["sheet"]) for e in op["payload"]["kept"]}
+    assert kept == {(s, t, "remove", "open") for t, s in SIX.items() if t != "drive_latch.02"}
+    # the sheet itself says "remove SSD locker shield" now (C): it already agrees
+    assert [(e["step"], e["target"], e["verb"]) for e in op["payload"]["agrees"]] == \
+        [(17, "drive_latch.02", "remove")]
     assert op["payload"]["unmatched"] == []
     assert sorted(a["verb"] for a in op["inverse"]["actions"]) == ["open"] * 5
     text = "\n".join(printed)
     assert "Shift+T are replayed" in text                       # the --force warning
-    assert "kept 6 verb correction(s) made with Shift+T (5 replayed)" in text
-    assert "step 17 drive_latch.02 open->remove (already in the sheet)" in text
-    assert run.runs[0].corrections and run.runs[0].corrections[0].startswith("kept 6")
+    assert "kept the annotator's verb on 5 action(s): step 2 cooler_latch.01 remove " \
+           "(sheet: open)" in text
+    assert "the sheet already agrees on 1: step 17 drive_latch.02 remove" in text
+    assert run.runs[0].corrections[0].startswith("Shift+T corrections: kept")
 
 
 def test_a_second_forced_import_changes_nothing(corrected, tmp_path, tax):
@@ -113,7 +120,7 @@ def test_a_second_forced_import_changes_nothing(corrected, tmp_path, tax):
     assert len(db.ops_of_kind(D2, OP_REPLAY)) == 2
 
 
-def test_a_correction_the_new_sheet_no_longer_fits_is_reported_not_applied(
+def test_an_action_the_new_sheet_no_longer_has_is_reported_not_applied(
         corrected, tmp_path, tax):
     """Step 47 now names a GPU locker: the PSU latch's correction has no row to go on."""
     db, _truth = corrected
@@ -127,43 +134,82 @@ def test_a_correction_the_new_sheet_no_longer_fits_is_reported_not_applied(
     assert (missed["step"], missed["target"]) == (47, "psu_latch.01")
     assert "no longer has psu_latch.01 at step 47" in missed["why"]
     assert "card_latch.01" in missed["why"]
-    assert any("verb correction not replayed: step 47 psu_latch.01 open->remove" in line
+    assert any("Shift+T correction not matched: step 47 psu_latch.01" in line
                for line in printed)
-    assert len(op["payload"]["replayed"]) == 4                  # the other five stay
+    assert len(op["payload"]["kept"]) == 4                      # the other five stay
+    assert len(op["payload"]["agrees"]) == 1
 
 
-def test_a_correction_taken_back_with_ctrl_z_is_not_replayed(corrected, tmp_path, tax):
-    db, truth = corrected
-    op = [o for o in db.ops_of_kind(D2, OP_CORRECT_VERB)
-          if o["payload"]["target"] == "cover.01"][-1]
-    apply_correct_verb(db, truth, op["inverse"])               # what Ctrl+Z runs
-    assert verbs(db)["cover.01"] == (38, "open")
-    import_logs_into_db(db, sheets(tmp_path), tax, desktops={D2}, force=True)
-    assert verbs(db)["cover.01"] == (38, "open")
-    replay = db.ops_of_kind(D2, OP_REPLAY)[-1]["payload"]
-    [back] = replay["unmatched"]
-    assert back["target"] == "cover.01" and "taken back" in back["why"]
+#: The reviewer's table: what the step table holds after each sequence on
+#: cover.01 (T = Shift+T, back = 「其实只是打开了」, Z = Ctrl+Z, Y = Ctrl+Y),
+#: and so what a forced re-import must leave there.
+SEQUENCES = {
+    "T,Z,Y": "remove",
+    "T,Z": "open",
+    "T,Z,T": "remove",
+    "T,back,T": "remove",
+    "T,back": "open",
+    "T,back,Z": "remove",
+}
 
 
-def test_ops_replay_in_order_and_a_verb_must_fit_the_class(tax):
-    """Pure: open -> remove -> open on one action nets open; a third verb is reported."""
+@pytest.mark.parametrize("sequence,expected", sorted(SEQUENCES.items()),
+                         ids=sorted(SEQUENCES))
+def test_undo_and_redo_paths_keep_the_last_word(tmp_path, tax, sequence, expected):
+    db = old_import(tmp_path, tax)
+    truth = TruthService(db, tax)
+    done: list[dict] = []
+    undone: list[dict] = []
+    for move in sequence.split(","):
+        if move in ("T", "back"):
+            result = commit_verb_fix(db, truth, KEY, "cover.01",
+                                     "remove" if move == "T" else "open", "tester")
+            done.append({"payload": result["op"].payload, "inverse": result["op"].inverse})
+            undone.clear()
+        elif move == "Z":
+            op = done.pop()
+            apply_correct_verb(db, truth, op["inverse"])        # what Ctrl+Z runs
+            undone.append(op)
+        else:
+            op = undone.pop()
+            apply_correct_verb(db, truth, op["payload"])        # what Ctrl+Y runs
+            done.append(op)
+    assert verbs(db)["cover.01"] == (38, expected)              # the table's last word
+    folder = sheets(tmp_path)
+    import_logs_into_db(db, folder, tax, desktops={D2}, force=True)
+    assert verbs(db)["cover.01"] == (38, expected)
+    import_logs_into_db(db, folder, tax, desktops={D2}, force=True)
+    assert verbs(db)["cover.01"] == (38, expected)
+    payload = db.ops_of_kind(D2, OP_REPLAY)[-1]["payload"]
+    assert payload["unmatched"] == []
+    listed = payload["kept"] if expected == "remove" else payload["agrees"]
+    assert [(e["target"], e["verb"]) for e in listed] == [("cover.01", expected)]
+    db.close()
+
+
+def test_the_rule_is_pure_and_order_free(tax):
+    """Which actions were corrected comes from the ops; what they say, from the table."""
     inst = {"cover.01": InstanceRec(key="cover.01", desktop=1, cls="cover"),
-            "psu_latch.01": InstanceRec(key="psu_latch.01", desktop=1, cls="psu_latch")}
+            "psu_latch.01": InstanceRec(key="psu_latch.01", desktop=1, cls="psu_latch"),
+            "screw.01": InstanceRec(key="screw.01", desktop=1, cls="screw")}
 
-    def op(i, step, target, old, new):
-        return {"id": i, "payload": {"step": step, "target": target, "verb": new},
-                "inverse": {"step": step, "target": target, "verb": old}}
+    def op(i, step, target):
+        return {"id": i, "payload": {"step": step, "target": target, "verb": "remove"},
+                "inverse": {"step": step, "target": target, "verb": "open"}}
 
-    fresh = [ActionRec(1, 3, 0, "cover.01", "open"), ActionRec(1, 5, 0, "psu_latch.01", "open")]
-    stored = [ActionRec(1, 3, 0, "cover.01", "open"), ActionRec(1, 5, 0, "psu_latch.01", "remove")]
-    ops = [op(1, 3, "cover.01", "open", "remove"), op(2, 3, "cover.01", "remove", "open"),
-           op(3, 5, "psu_latch.01", "open", "remove")]
+    fresh = [ActionRec(1, 3, 0, "cover.01", "open"), ActionRec(1, 5, 0, "psu_latch.01", "open"),
+             ActionRec(1, 6, 0, "screw.01", "unscrew")]
+    stored = [ActionRec(1, 3, 0, "cover.01", "remove"),
+              ActionRec(1, 5, 0, "psu_latch.01", "open"),
+              ActionRec(1, 6, 0, "screw.01", "unscrew")]
+    ops = [op(1, 3, "cover.01"), op(2, 5, "psu_latch.01"), op(3, 3, "cover.01"),
+           op(4, 6, "screw.01"), op(5, 9, "cover.02")]
     out, report = replay_corrections(ops, stored, fresh, inst, tax)
-    assert [a.verb for a in out] == ["open", "remove"]
-    assert [e["op"] for e in report.replayed] == [1, 2, 3]
-    assert [a.verb for a in fresh] == ["open", "open"]          # the input is left alone
-    # the sheet now has a third verb on the latch: reported, not applied
-    fresh2 = [fresh[0], ActionRec(1, 5, 0, "psu_latch.01", "displace")]
-    out2, report2 = replay_corrections(ops[2:], stored, fresh2, inst, tax)
-    assert out2[1].verb == "displace"
-    assert "the sheet has displace there, not open" in report2.unmatched[0]["why"]
+    again, _ = replay_corrections(list(reversed(ops)), stored, fresh, inst, tax)
+    assert [a.verb for a in out] == [a.verb for a in again] == ["remove", "open", "unscrew"]
+    assert [a.verb for a in fresh] == ["open", "open", "unscrew"]   # the input is left alone
+    assert [(e["target"], e["ops"]) for e in report.kept] == [("cover.01", [1, 3])]
+    assert [e["target"] for e in report.agrees] == ["psu_latch.01"]
+    whys = {e["target"]: e["why"] for e in report.unmatched}
+    assert "no cover.02 at step 9" in whys["cover.02"]
+    assert "unscrew" in whys["screw.01"]

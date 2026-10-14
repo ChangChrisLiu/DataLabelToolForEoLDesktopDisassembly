@@ -1,28 +1,28 @@
-"""A forced re-import keeps the verb corrections made with ``Shift+T`` (task U9 round 2).
+"""A forced re-import keeps the verb corrections made with ``Shift+T`` (task U9).
 
 ``import-logs --force`` writes the freshly parsed actions over the desktop's
 whole step table (:func:`tda.pipeline_logs._write_import`), so every open ⇄
 remove correction an annotator made from the pictures (:mod:`tda.core.verb_fix`)
-would silently go back to what the sheet says. Each correction is an
-``op_log`` row of kind ``correct_verb`` -- the action's step, target and the
-verb it flipped from and to -- so the import replays them onto the parsed
-actions before it writes them, in op order:
+would silently go back to what the sheet says.
 
-* an op whose action is still there with the verb it flipped **from** is
-  applied (the verb it flipped **to** must apply to the part's class);
-* one whose action already carries the verb it flipped **to** needs nothing
-  (C's importer rule now reads "remove SSD locker shield" as ``remove``);
-* every other one is reported, with why, and not applied -- the row names
-  another part now, the target is gone, the sheet has a third verb there.
+**The net effect, not the history.** Undo and redo write nothing to the op
+log, so its ``correct_verb`` rows cannot say what the step table ended up with
+(Shift+T, 「其实只是打开了」, then Ctrl+Z of the second leaves ``remove`` -- and
+a replay of the rows in order gets that wrong). They only say **which actions**
+an annotator corrected. For each such ``(step, target)`` the verb the stored
+step table carries right now -- the annotator's last word, whatever the
+undo/redo path to it -- is copied onto the parsed action:
 
-Undo does not write the op log, so a correction taken back with ``Ctrl+Z`` is
-still a row. What decides is the step table the import is about to replace:
-the **latest** op on an action is in effect only when the stored action carries
-the verb it flipped to; when it does not, every op on that action was taken
-back (or overruled in Steps mode) and none of them is replayed.
+* **kept** -- the stored verb is ``open`` or ``remove``, applies to the part's
+  class, and differs from the sheet's: the parsed action gets it;
+* **agrees** -- the sheet already says the same (D2 step 17, which the importer
+  now reads as ``remove``; or a correction taken back);
+* **not matched** -- either side has no successful action of that target at
+  that step (the row names another part now, the part is gone), or the stored
+  verb is not one a correction can leave; reported with why, nothing applied.
 
-Replaying twice is replaying once: the stored step table then carries the
-replayed verbs, which is exactly what keeps the same ops in effect.
+Order-independent and idempotent: a second forced import finds the stored
+table carrying exactly the verbs the first one kept.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ from typing import Optional
 from tda.core.db import Db
 from tda.core.model import ActionRec, InstanceRec
 from tda.core.taxonomy import Taxonomy
-from tda.core.verb_fix import OP_CORRECT_VERB
+from tda.core.verb_fix import FLIP, OP_CORRECT_VERB
 
 __all__ = ["OP_REPLAY", "Replay", "replay_corrections", "replay_for_import"]
 
@@ -43,109 +43,103 @@ SUCCESS = "success"
 
 @dataclass
 class Replay:
-    """What a re-import did with the desktop's ``correct_verb`` ops.
+    """What a re-import did with the actions ``Shift+T`` corrected.
 
-    Each entry is ``{"op", "step", "target", "old", "new"}``; an ``unmatched``
-    one also has ``"why"``. ``inverse`` holds the sheet's verb of every action
-    the replay changed, which is what undoing the replay would write back.
+    Each entry is ``{"step", "target", "ops"}`` plus ``"verb"`` (the stored,
+    i.e. the annotator's) and ``"sheet"`` (the parsed) where there is one;
+    a ``not matched`` entry also has ``"why"``. ``inverse`` holds the sheet's
+    verb of every action the replay changed -- what undoing it would write back.
     """
 
-    replayed: list[dict] = field(default_factory=list)
-    already: list[dict] = field(default_factory=list)
+    kept: list[dict] = field(default_factory=list)
+    agrees: list[dict] = field(default_factory=list)
     unmatched: list[dict] = field(default_factory=list)
     inverse: list[dict] = field(default_factory=list)
 
     def __bool__(self) -> bool:
-        return bool(self.replayed or self.already or self.unmatched)
+        return bool(self.kept or self.agrees or self.unmatched)
 
     def payload(self) -> dict:
-        return {"replayed": self.replayed, "already": self.already,
-                "unmatched": self.unmatched}
+        return {"kept": self.kept, "agrees": self.agrees, "unmatched": self.unmatched}
 
     def kept_line(self) -> str:
-        """``kept 6 verb correction(s) (Shift+T): ...`` or ``""``."""
-        kept = self.replayed + self.already
-        if not kept:
+        """The corrections that survive, in one line; ``""`` when there are none."""
+        if not (self.kept or self.agrees):
             return ""
-        parts = [f"step {e['step']} {e['target']} {e['old']}->{e['new']}"
-                 + ("" if e in self.replayed else " (already in the sheet)") for e in kept]
-        return (f"kept {len(kept)} verb correction(s) made with Shift+T "
-                f"({len(self.replayed)} replayed): " + ", ".join(parts))
+        parts = []
+        if self.kept:
+            parts.append(f"kept the annotator's verb on {len(self.kept)} action(s): " + ", ".join(
+                f"step {e['step']} {e['target']} {e['verb']} (sheet: {e['sheet']})"
+                for e in self.kept))
+        if self.agrees:
+            parts.append(f"the sheet already agrees on {len(self.agrees)}: " + ", ".join(
+                f"step {e['step']} {e['target']} {e['verb']}" for e in self.agrees))
+        return "Shift+T corrections: " + "; ".join(parts)
 
     def unmatched_lines(self) -> list[str]:
-        """One line per correction the new sheet no longer fits."""
-        return [f"verb correction not replayed: step {e['step']} {e['target']} "
-                f"{e['old']}->{e['new']} ({e['why']})" for e in self.unmatched]
+        """One line per corrected action the new sheet (or the table) does not fit."""
+        return [f"Shift+T correction not matched: step {e['step']} {e['target']} ({e['why']})"
+                for e in self.unmatched]
 
 
-def _entry(op: dict) -> dict:
-    payload, inverse = op.get("payload") or {}, op.get("inverse") or {}
-    return {"op": int(op["id"]), "step": int(payload["step"]),
-            "target": str(payload["target"]), "old": str(inverse["verb"]),
-            "new": str(payload["verb"])}
+def _find(actions: list[ActionRec], step: int, target: str) -> Optional[int]:
+    """Index of the first successful action of ``target`` at ``step``, or ``None``."""
+    return next((i for i, a in enumerate(actions)
+                 if a.step == step and a.target == target and a.result == SUCCESS), None)
 
 
-def _find(actions: list[ActionRec], step: int, target: str,
-          verb: Optional[str] = None) -> Optional[int]:
-    """Index of the successful action of ``target`` at ``step`` (with ``verb`` first)."""
-    found = [i for i, a in enumerate(actions)
-             if a.step == step and a.target == target and a.result == SUCCESS]
-    if verb is not None:
-        exact = [i for i in found if actions[i].verb == verb]
-        if exact:
-            return exact[0]
-    return found[0] if found else None
+def _named_at(actions: list[ActionRec], step: int) -> str:
+    return ", ".join(sorted({a.target for a in actions if a.step == step})) or "nothing"
 
 
 def replay_corrections(ops: list[dict], stored: list[ActionRec], fresh: list[ActionRec],
                        instances: dict[str, InstanceRec],
                        tax: Taxonomy) -> tuple[list[ActionRec], Replay]:
-    """The parsed actions with the ``correct_verb`` ops in effect replayed onto them.
+    """The parsed actions with the stored verb of every corrected action copied over.
 
-    ``ops`` are the desktop's ``correct_verb`` rows (payload/inverse decoded),
-    ``stored`` the step table the import is about to replace, ``fresh`` what
-    the sheet parses to now. Pure: returns new action records and the
-    :class:`Replay`; ``fresh`` is left alone.
+    ``ops`` are the desktop's ``correct_verb`` rows (payload decoded) and only
+    say which ``(step, target)`` were corrected; ``stored`` is the step table
+    the import is about to replace, ``fresh`` what the sheet parses to now.
+    Pure: returns new action records and the :class:`Replay`.
     """
     out = list(fresh)
     report = Replay()
-    entries = sorted((_entry(op) for op in ops), key=lambda e: e["op"])
-    latest: dict[tuple[int, str], dict] = {}
-    for entry in entries:
-        latest[(entry["step"], entry["target"])] = entry
-    for entry in entries:
-        step, target, old, new = entry["step"], entry["target"], entry["old"], entry["new"]
-        last = latest[(step, target)]
-        held = _find(stored, step, target, last["new"])
-        if held is None or stored[held].verb != last["new"]:
-            had = "no such action" if held is None else stored[held].verb
+    touched: dict[tuple[int, str], list[int]] = {}
+    for op in ops:
+        payload = op.get("payload") or {}
+        touched.setdefault((int(payload["step"]), str(payload["target"])), []).append(
+            int(op["id"]))
+    for (step, target), ids in sorted(touched.items()):
+        entry = {"step": step, "target": target, "ops": sorted(ids)}
+        held = _find(stored, step, target)
+        at = _find(out, step, target)
+        if held is None:
             report.unmatched.append(entry | {
-                "why": f"taken back before the import (the step table had {had} there)"})
+                "why": f"the step table being replaced has no {target} at step {step}"})
             continue
-        at = _find(out, step, target, old)
+        verb = stored[held].verb
+        entry["verb"] = verb
         if at is None:
-            there = sorted({a.target for a in out if a.step == step})
             report.unmatched.append(entry | {
                 "why": f"the sheet no longer has {target} at step {step} "
-                       f"(it names {', '.join(there) or 'nothing'} there)"})
+                       f"(it names {_named_at(out, step)} there)"})
             continue
-        if out[at].verb == new:
-            report.already.append(entry)
-            continue
-        if out[at].verb != old:
-            report.unmatched.append(entry | {
-                "why": f"the sheet has {out[at].verb} there, not {old}"})
-            continue
+        entry["sheet"] = out[at].verb
         rec = instances.get(target)
-        applies = (tax.verbs.get(new) or {}).get("applies_to") or ()
-        if rec is not None and rec.cls not in applies:
+        applies = (tax.verbs.get(verb) or {}).get("applies_to") or ()
+        if verb not in FLIP:
             report.unmatched.append(entry | {
-                "why": f"{new} does not apply to class {rec.cls}"})
-            continue
-        report.inverse.append({"step": step, "idx": int(out[at].idx), "target": target,
-                               "verb": out[at].verb})
-        out[at] = replace(out[at], verb=new)
-        report.replayed.append(entry)
+                "why": f"the step table has {verb} there, which is no open/remove correction"})
+        elif rec is not None and rec.cls not in applies:
+            report.unmatched.append(entry | {
+                "why": f"{verb} does not apply to class {rec.cls}"})
+        elif out[at].verb == verb:
+            report.agrees.append(entry)
+        else:
+            report.inverse.append({"step": step, "idx": int(out[at].idx), "target": target,
+                                   "verb": out[at].verb})
+            out[at] = replace(out[at], verb=verb)
+            report.kept.append(entry)
     return out, report
 
 
@@ -155,7 +149,7 @@ def replay_for_import(db: Db, desktop: int, fresh: list[ActionRec],
     """:func:`replay_corrections` for one desktop, read before the import writes.
 
     Must be called **before** the step table is replaced: the stored actions
-    are what say which corrections are still in effect.
+    are the annotator's last word on every corrected action.
     """
     ops = db.ops_of_kind(int(desktop), OP_CORRECT_VERB)
     if not ops:

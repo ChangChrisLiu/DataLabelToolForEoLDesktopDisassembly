@@ -10,8 +10,8 @@ The import is deliberately hard to lose work to. A desktop that already has
 steps is skipped unless ``force`` is given, and even a forced run
 * says per desktop what it is about to replace,
 * carries the imported ``LS:`` note lines over to the new steps,
-* replays the open/remove corrections made with ``Shift+T`` that are still in
-  effect (:mod:`tda.core.verb_replay`), and
+* keeps the verb the step table carries on every action corrected with
+  ``Shift+T`` (:mod:`tda.core.verb_replay`), and
 * leaves the hand-written (``auto=False``) state events alone.
 
 One desktop is one transaction, and a sheet that cannot be read is recorded as
@@ -743,10 +743,11 @@ def _write_import(
     :func:`extra_clash` when ``--adopt-extras`` was given (see
     :func:`_adopt_extras`).
 
-    The verb corrections made with ``Shift+T`` that are still in effect are
-    replayed onto the parsed actions before they are written
-    (:mod:`tda.core.verb_replay`), and one ``replay_corrections`` row in the
-    op log says which were replayed and which no longer fit the sheet.
+    Every action corrected with ``Shift+T`` keeps the verb the replaced step
+    table carries -- the annotator's last word, undo and redo included -- on
+    the parsed action before it is written (:mod:`tda.core.verb_replay`), and
+    one ``replay_corrections`` row in the op log says which were kept, which
+    the sheet already agrees with, and which no longer fit it.
 
     The relational heuristic of spec 7.3 runs here, *before* the instances are
     written and inside the same transaction: ``logs.py`` leaves ``fastens``,
@@ -764,8 +765,8 @@ def _write_import(
     clip out with its board is part of the same log.
     """
     declined = db.declined_implied(li.desktop)  # read before the transaction writes
-    # the Shift+T corrections still in effect, read off the step table this
-    # replaces and put back onto the parsed actions (task U9 round 2), so the
+    # the verbs of the actions corrected with Shift+T, read off the step table
+    # this replaces and put back onto the parsed actions (task U9), so the
     # events and the relational inference below see the corrected verbs
     li.actions, replay = replay_for_import(db, li.desktop, li.actions, li.instances, tax)
     adopt = dict(adopt or {})
