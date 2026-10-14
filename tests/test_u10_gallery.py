@@ -578,6 +578,28 @@ def test_export_vlm_refuses_a_gallery_view(tmp_path):
         export_vlm(db, tax, [GS.DESKTOP], "cmp_oak1", str(tmp_path / "x.jsonl"))
 
 
+def test_an_added_part_never_demotes_a_gallery_shot(tmp_path):
+    """An S1 extra has no action of its own: no gallery shot ever asks for it."""
+    from tda.core.extra import verified_frames_gaining
+
+    session = GS.make_session(tmp_path)
+    _confirm_shot(session, 1)
+    clip = InstanceRec(key="ram_latch.09", desktop=GS.DESKTOP, cls="ram_latch",
+                       attrs={"added_by": "tester"})
+    assert verified_frames_gaining(session.db, session.tax, GS.DESKTOP, "cmp_oak1",
+                                   [clip]) == []
+
+
+def test_the_removed_rows_of_a_shot_read_the_gallery_state(tmp_path):
+    """The instance table's ``Removed`` list on a shot: never a part to draw there."""
+    from tda.ui import app_compat as compat
+
+    session = GS.make_session(tmp_path)
+    removed = {str(r.get("key")) for r in compat.removed_rows(session)}
+    drawn = {r["instance"] for r in session.task_card()}
+    assert removed and not removed & drawn
+
+
 def test_status_rows_count_the_gallery(tmp_path):
     from tda.cli import format_desktop, format_status
 
