@@ -68,7 +68,7 @@ from tda.core.db import Db
 from tda.core.extra import extra_keys
 from tda.core.index import build_index, load_index, respell_paths, save_index
 from tda.core.index_report import write_report
-from tda.core.model import VIEWS
+from tda.core.model import ALL_VIEWS, COMPONENT_VIEWS, VIEWS
 from tda.core.taxonomy import load_taxonomy
 
 __all__ = ["main"]
@@ -152,6 +152,7 @@ def cmd_load_index(args: argparse.Namespace) -> int:
         failed = counts.get("failed") or []
         print(f"[load-index] {counts['desktops']} desktops, {counts['frames']} frames, "
               f"{counts['missing']} missing, {counts['segments']} pose segments, "
+              f"{counts.get('gallery', 0)} components-gallery shots, "
               f"{len(failed)} failed")
         if failed:
             for text in failed:
@@ -509,7 +510,42 @@ def format_status(rows: list[dict]) -> str:
         # off: until it is zero the truth table of those views is not one to
         # export (spec 3.4). `cli check` holds the lock and drains them.
         lines.append(f"re-checks pending: {pending}")
+    lines.extend(format_gallery(rows))
     return "\n".join(lines)
+
+
+GALLERY_CELL_HEAD = "shots   kf  done/work"
+
+
+def _gallery_cell(counts: dict) -> str:
+    """One gallery view's ``shots  keyframes  done/work`` cell (task U10)."""
+    return (f"{counts.get('frames', 0):>5}{counts.get('keyframes', 0):>5}"
+            f"{counts.get('done', 0):>6}/{counts.get('work', 0):<4}")
+
+
+def format_gallery(rows: list[dict]) -> list[str]:
+    """The components gallery's progress, apart from the sequence (task U10).
+
+    Its shots are not steps of the teardown, so they are not in the table above;
+    one line per desktop that has any, and nothing at all when none has.
+    """
+    with_shots = [r for r in rows
+                  if any(r.get("views", {}).get(v, {}).get("frames") for v in COMPONENT_VIEWS)]
+    if not with_shots:
+        return []
+    width = len(GALLERY_CELL_HEAD)
+    lines = ["", "零件合照 / components gallery (spec 3.2b)",
+             f"{'desktop':<8} | " + " | ".join(f"{v:^{width}}" for v in COMPONENT_VIEWS),
+             f"{'':<8} | " + " | ".join(f"{GALLERY_CELL_HEAD:^{width}}"
+                                        for _ in COMPONENT_VIEWS)]
+    for row in with_shots:
+        lines.append(f"D{row['desktop']:02d}{'':<5} | " + " | ".join(
+            _gallery_cell(row["views"].get(v, {})) for v in COMPONENT_VIEWS))
+    total = {v: {k: sum(r["views"].get(v, {}).get(k, 0) for r in with_shots)
+                 for k in ("frames", "keyframes", "done", "work")} for v in COMPONENT_VIEWS}
+    lines.append(f"{'TOTAL':<8} | " + " | ".join(_gallery_cell(total[v])
+                                                 for v in COMPONENT_VIEWS))
+    return lines
 
 
 def format_desktop(db: Db, row: dict) -> str:
@@ -534,8 +570,17 @@ def format_desktop(db: Db, row: dict) -> str:
             f"  {view:<6}{counts['frames']:>8}{counts['missing']:>9}"
             f"{counts['keyframes']:>11}{counts['done']:>7}/{counts['work']:<4}"
         )
-    for view in VIEWS:
-        waiting = row["views"][view].get("rechecks", 0)
+    gallery = [v for v in COMPONENT_VIEWS if row["views"].get(v, {}).get("frames")]
+    if gallery:
+        # the components gallery (task U10): shots, not steps
+        lines.append("  零件合照 / components gallery:")
+        for view in gallery:
+            counts = row["views"][view]
+            lines.append(
+                f"  {view:<9}{counts['frames']:>5} shots{counts['keyframes']:>8} kf"
+                f"{counts['done']:>7}/{counts['work']:<4}")
+    for view in ALL_VIEWS:
+        waiting = row["views"].get(view, {}).get("rechecks", 0)
         if waiting:
             lines.append(f"  re-checks pending: {view} {waiting}")
     for view in VIEWS:

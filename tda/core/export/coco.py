@@ -48,9 +48,10 @@ from tda.core.compiler import select_keyframe
 from tda.core.db import Db
 from tda.core.implied import is_implied
 from tda.core.model import (
+    ALL_VIEWS,
     NO_CHANGE_STEP_TYPES,
     SKIP_STEP_TYPES,
-    VIEWS,
+    VIEWS,  # noqa: F401 - read off this module by tda.core.export.vlm
     ActionRec,
     FrameKey,
     InstanceRec,
@@ -59,10 +60,11 @@ from tda.core.model import (
     StepRec,
     StepType,
     Visibility,
+    is_component_view,
     is_provisional,
     step_is_annotatable,
 )
-from tda.core.states import FrameState, state_at
+from tda.core.states import GALLERY_EXPORT_STATE, FrameState, state_at
 from tda.core.taxonomy import Taxonomy
 from tda.core.truth import TruthService
 from tda.core.truth_inputs import events_of, infer_hw, pose_segment_of
@@ -105,6 +107,24 @@ VERIFIED = "verified"
 GEOM_BOX = "box"
 DEFAULT_EXT = ".png"
 EXPORT_VERSION = "1"
+#: ``info.split`` of an export: the teardown, or the components gallery (U10).
+SPLIT_SEQUENCE = "sequence"
+SPLIT_COMPONENTS = "components"
+
+
+def _shot_source(frame: dict, key: FrameKey) -> dict:
+    """What a components-gallery image says about the photo it is (task U10).
+
+    The shot number among its camera's shots, the source file as recorded, and
+    -- for a sheet row of the laid-out parts moved out of the sequence -- the
+    step it was filed under.
+    """
+    out = {"split": SPLIT_COMPONENTS, "shot": int(key.step),
+           "source": (frame or {}).get("path")}
+    sheet_step = ((frame or {}).get("aux") or {}).get("sheet_step")
+    if sheet_step is not None:
+        out["sheet_step"] = int(sheet_step)
+    return out
 
 # What a step type means is :mod:`tda.core.model`'s table, re-exported here
 # because :mod:`tda.core.export.vlm` reads it off this module. The truth table
@@ -116,9 +136,14 @@ EXPORT_VERSION = "1"
 # frame identity (shared with the VLM export)
 # --------------------------------------------------------------------------- #
 def view_index(view: str) -> int:
-    """Position of ``view`` in :data:`tda.core.model.VIEWS` (scan=0 .. rs=3)."""
+    """Position of ``view`` in :data:`tda.core.model.ALL_VIEWS`.
+
+    scan=0 .. rs=3 for the sequence, then the components gallery
+    (cmp_oak1=4 .. cmp_rs=6): still below :data:`STEP_STRIDE`, so a gallery
+    shot's image id never collides with a sequence frame's (task U10).
+    """
     try:
-        return VIEWS.index(view)
+        return ALL_VIEWS.index(view)
     except ValueError:
         raise ValueError(f"unknown view: {view!r}") from None
 
@@ -424,7 +449,7 @@ def view_tier(view: str, tax: Taxonomy) -> str:
 
 def _attributes(ctx: DesktopCtx, instance: str, row: dict, step: int,
                 keyframe: Optional[ShapeKeyframe], tier: Optional[str],
-                disputed: bool = False) -> dict:
+                disputed: bool = False, gallery: bool = False) -> dict:
     """The truth-table semantics carried alongside every annotation.
 
     ``tier`` and ``verified`` are deliberately two fields. The tier is the
@@ -443,13 +468,22 @@ def _attributes(ctx: DesktopCtx, instance: str, row: dict, step: int,
     ``implied`` is provenance: the instance was created by
     :mod:`tda.core.implied` because the desktop plainly has one and its log
     never touched it, not because a step named it.
+
+    ``gallery`` is a components-gallery shot (task U10): every part on it is
+    ``removed`` and ``on_bench`` (:data:`~tda.core.states.GALLERY_EXPORT_STATE`).
     """
     inst_state = ctx.state_at(step).get(instance)
     rec = ctx.instances.get(instance)
+    state = None if inst_state is None else inst_state.state
+    placement = row.get("placement")
+    if gallery:
+        # a part laid out for the components gallery (task U10): taken out of
+        # the machine and lying on the table, whatever chain it is drawn in
+        state, placement = GALLERY_EXPORT_STATE
     return {
         "instance_key": instance,
-        "state": None if inst_state is None else inst_state.state,
-        "placement": row.get("placement"),
+        "state": state,
+        "placement": placement,
         "visibility": row.get("visibility"),
         "occlusion_ratio": row.get("occlusion_ratio"),
         "amodal_complete": None if keyframe is None else bool(keyframe.amodal_complete),
@@ -545,15 +579,25 @@ def export_coco(
 
     Steps typed ``ignore`` are skipped: they describe no moment of the teardown.
 
+    A components-gallery view (``cmp_oak1``/``cmp_oak2``/``cmp_rs``, task U10)
+    is its own split, ``info.split == "components"``: one image per shot, every
+    annotation ``removed`` / ``on_bench``, and each image's ``extra`` naming the
+    source photo (``shot``, ``source``, ``sheet_step`` when it came from a sheet
+    row). The step table's types do not apply to shots.
+
     Returns the COCO document that was written (``images``, ``annotations``,
     ``categories``, plus a deterministic ``info`` block: nothing in the file
     depends on the wall clock, so two exports of the same truth are identical).
     """
+    gallery = is_component_view(view)
     doc: dict[str, Any] = {
         "info": {
             "description": "TDA rehearsal export (spec 8.1)",
             "version": EXPORT_VERSION,
             "view": view,
+            # the teardown sequence, or the components gallery's layout photos
+            # of the removed parts (task U10, spec 3.2b): two datasets
+            "split": SPLIT_COMPONENTS if gallery else SPLIT_SEQUENCE,
             "desktops": [int(d) for d in desktops],
             "only_verified": bool(only_verified),
             "roi_crop": bool(roi_crop),
@@ -582,7 +626,8 @@ def export_coco(
         doc["info"]["open_conflicts"] += len(disputed)
         for frame in db.frames_for(desktop, view):
             key = FrameKey(desktop, frame["step"], view)
-            if not ctx.exportable(key.step):
+            # a gallery shot is not a step: the step table says nothing about it
+            if not gallery and not ctx.exportable(key.step):
                 continue
             rows = db.compiled(key)
             if only_verified:
@@ -609,6 +654,8 @@ def export_coco(
                 "extra": {"desktop": desktop, "step": key.step, "view": view,
                           "review_status": frame.get("review_status")},
             }
+            if gallery:
+                image["extra"].update(_shot_source(frame, key))
             if roi is not None:
                 image["roi"] = list(roi)
             doc["images"].append(image)
@@ -624,7 +671,7 @@ def export_coco(
                 ann = _annotation(
                     ann_id, img_id, cat_of[cls], row,
                     _attributes(ctx, instance, row, key.step, keyframe, tier,
-                                key.step in disputed),
+                                key.step in disputed, gallery),
                     roi, include_boxes,
                 )
                 if ann is not None:

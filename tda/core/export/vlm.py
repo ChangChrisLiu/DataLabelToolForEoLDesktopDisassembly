@@ -102,7 +102,7 @@ from tda.core.export.vlm_tasks import (
 )
 from tda.core.export.vlm_shortcuts import option_verb_shortcut, shortcut_report
 from tda.core.graph import constraint_edges, edges_from_db
-from tda.core.model import FrameKey
+from tda.core.model import FrameKey, is_component_view
 from tda.core.taxonomy import Taxonomy
 from tda.core.truth import TruthService
 
@@ -276,7 +276,14 @@ def export_vlm(
     Returns ``{"path", "manifest", "records", "images", "by_task", "by_source",
     "desktops", "view", "open_conflicts", "illegal_steps", "excluded_desktops",
     "v10_excluded"}``.
+
+    Raises ``ValueError`` for a components-gallery view (task U10): every
+    question here is about the teardown, and a layout photo of the removed
+    parts answers none of them.
     """
+    if is_component_view(view):
+        raise ValueError(f"{view} is a components-gallery view: the VLM questions are "
+                         f"about the teardown sequence ({', '.join(VIEWS)})")
     wanted = [t for t in TASKS if t in set(tasks)]
     records: list[dict] = []
     images: dict[str, tuple[int, str, int, str]] = {}

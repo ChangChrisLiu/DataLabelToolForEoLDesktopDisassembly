@@ -22,7 +22,7 @@ from typing import Callable, Optional, Sequence
 
 from tda import pipeline as P
 from tda.cli_common import EXIT_ERROR, EXIT_OK, load_paths, session
-from tda.core.model import VIEWS
+from tda.core.model import ALL_VIEWS, COMPONENT_VIEWS, is_component_view
 from tda.core.taxonomy import load_taxonomy
 
 __all__ = ["SUBCOMMANDS", "cmd_app", "cmd_build_cache", "cmd_check",
@@ -35,6 +35,10 @@ def _desktop_list(spec: str | None) -> list[int]:
     return sorted(wanted) if wanted else []
 
 
+#: ``--view components``: the components gallery's three views (task U10).
+COMPONENTS_ALIAS = "components"
+
+
 def _view_list(spec: str) -> list[str]:
     """``"scan,oak1"`` -> ``["scan", "oak1"]``, in order and without repeats.
 
@@ -42,12 +46,17 @@ def _view_list(spec: str) -> list[str]:
     turns into one line and exit 1. That replaces argparse's ``choices``, which
     cannot describe a comma-separated list and answered "invalid choice:
     'scan,oak1'" for a spelling this now accepts.
+
+    The components gallery's views (task U10) are views like any other here;
+    ``components`` names all three.
     """
-    known = ", ".join(VIEWS)
-    wanted = [v.strip() for v in str(spec).split(",") if v.strip()]
+    known = ", ".join(ALL_VIEWS) + f" ({COMPONENTS_ALIAS} = {', '.join(COMPONENT_VIEWS)})"
+    wanted: list[str] = []
+    for name in (v.strip() for v in str(spec).split(",") if v.strip()):
+        wanted.extend(COMPONENT_VIEWS if name == COMPONENTS_ALIAS else [name])
     if not wanted:
         raise ValueError(f"no view given; the views are {known}")
-    unknown = [v for v in wanted if v not in VIEWS]
+    unknown = [v for v in wanted if v not in ALL_VIEWS]
     if unknown:
         raise ValueError(f"not a view: {', '.join(unknown)}; the views are {known}")
     out: list[str] = []
@@ -67,7 +76,8 @@ def _add_view_flags(p, default: str = "scan", plural_first: bool = False) -> Non
     """
     names = ("--views", "--view") if plural_first else ("--view", "--views")
     p.add_argument(*names, dest="views", default=default, metavar="VIEW[,VIEW...]",
-                   help=f"one view or a comma-separated list ({', '.join(VIEWS)}); "
+                   help=f"one view or a comma-separated list ({', '.join(ALL_VIEWS)}; "
+                        f"'{COMPONENTS_ALIAS}' = the components gallery's three); "
                         f"--view and --views are the same option")
 
 
@@ -304,8 +314,9 @@ def _add_app(sub) -> None:
     # one view, not a list: the window opens on a single view. The plural
     # spelling is accepted so that a hand that has just typed `--views` at an
     # export does not get "unrecognized arguments" here.
-    p.add_argument("--view", "--views", dest="view", default=None, choices=list(VIEWS),
-                   help="the ONE view to open (default: the last one, else scan); "
+    p.add_argument("--view", "--views", dest="view", default=None, choices=list(ALL_VIEWS),
+                   help="the ONE view to open (default: the last one, else scan; "
+                        "cmp_oak1/cmp_oak2/cmp_rs open the components gallery); "
                         "unlike check and the exports this takes no list")
     p.add_argument("--annotator", required=True, help="who is annotating (the lock holder)")
     p.add_argument("--step", type=int, default=None, help="open this logical step")
@@ -549,6 +560,15 @@ def cmd_export_vlm(args: argparse.Namespace) -> int:
             print("[export-vlm] nothing to export: pass --desktops")
             return EXIT_ERROR
         views = _view_list(args.views)
+        gallery = [v for v in views if is_component_view(v)]
+        if gallery:
+            # the VLM questions are about the teardown (task U10): a layout
+            # photo of the removed parts answers none of them
+            print(f"[export-vlm] the components gallery ({', '.join(gallery)}) has no "
+                  f"VLM questions: they are about the teardown sequence; skipped")
+            views = [v for v in views if not is_component_view(v)]
+            if not views:
+                return EXIT_ERROR
         targets = _out_paths(args.out, views, paths, "vlm_{view}.jsonl", "export-vlm")
         if targets is None:
             return EXIT_ERROR
