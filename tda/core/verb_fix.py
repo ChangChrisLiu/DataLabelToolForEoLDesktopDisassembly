@@ -35,6 +35,7 @@ from tda.core.db import Db
 from tda.core.model import ActionRec, InstanceRec, is_provisional
 from tda.core.states import (
     ATTR_STATE,
+    INITIAL_STEP,
     LEAVES_REMOVED,
     REMOVED,
     EventProblem,
@@ -147,7 +148,8 @@ def _contradiction(problem: EventProblem, name: Namer) -> str:
     event = problem.event
     if not event.auto and problem.code == LEAVES_REMOVED:
         return (f"{event.target} 第 {event.step} 步有手动设的状态（T：{name(event.old)} → "
-                f"{name(event.new)}），拆下以后就接不上了：先到第 {event.step} 步按 T 把它改回去")
+                f"{name(event.new)}），拆下以后就接不上了：先到第 {event.step} 步按 T 把它改回去，"
+                f"或在 Steps 模式里改拆下的那一步")
     return (f"这样改会和第 {event.step} 步的状态记录对不上（{problem.text}）："
             f"请在 Steps 模式里改")
 
@@ -193,10 +195,17 @@ def plan_verb_fix(db: Db, tax: Taxonomy, desktop: int, target: str, step: int,
             and e.step <= step and e.new == held]
     derived = [e for e in mine if e.auto]
     if not derived:
+        if mine and mine[-1].step <= INITIAL_STEP:
+            # a part added in S1: its state is where it started, and T cannot
+            # say "removed" -- only an action can
+            raise VerbFixError(
+                f"{target} 是 S1 添加的零件，「{name(held)}」是添加时设的初始状态，日志里没有它的"
+                f"动作：它被拆下了，就到 Steps 模式给它加一步 remove 动作")
         if mine:
             raise VerbFixError(
                 f"{target} 的「{name(held)}」是第 {mine[-1].step} 步手动设的状态（T），不是日志里"
-                f"的动作：没有动作可改；画面里不是这样，就在那一帧按 T 改")
+                f"的动作：没有动作可改；其实关着就在那一帧按 T 改，拆下了就到 Steps 模式"
+                f"给它加一步 remove 动作")
         raise VerbFixError(f"{target} 的「{name(held)}」不是日志里哪个动作做的：没有动作可改")
     at = derived[-1].step
     action = next((a for a in actions if a.step == at and a.target == target

@@ -191,3 +191,80 @@ def test_the_steps_panel_is_re_read_after_a_correction(window):
     # an Apply from there now keeps the correction
     panel.apply()
     assert verb(window, COVER) == [(2, "remove")]
+
+
+# --------------------------------------------------------------------------- #
+# review round: the Steps panel never loses staged edits (B1), card click (m3)
+# --------------------------------------------------------------------------- #
+def answer(monkeypatch, *buttons) -> None:
+    """Answer the leave-Steps question with ``buttons`` in turn."""
+    from PySide6.QtWidgets import QMessageBox
+
+    answers = iter(buttons)
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: next(answers)))
+
+
+def staged_actions(panel, step: int) -> int:
+    return len(panel.data.row(step).actions)
+
+
+@pytest.mark.parametrize("command", ["add_action", "remove_action"])
+def test_a_staged_structural_edit_makes_leaving_steps_ask(window, monkeypatch, command):
+    """The reviewer's repro: add/remove an action, Steps -> Annotate -> Steps."""
+    from PySide6.QtWidgets import QMessageBox
+
+    window.set_mode(A.MODE_STEPS)
+    panel = window.steps_panel
+    before = staged_actions(panel, 3)
+    if command == "add_action":
+        panel.add_action(3)
+    else:
+        panel.remove_action(3, 0)
+    staged = staged_actions(panel, 3)
+    assert staged != before and window._steps_dirty
+    answer(monkeypatch, QMessageBox.StandardButton.No)
+    window.set_mode(A.MODE_ANNOTATE)
+    assert window.mode == A.MODE_STEPS                   # asked, and kept
+    assert staged_actions(panel, 3) == staged
+    assert panel.has_unapplied_edits()
+
+
+def test_a_round_trip_with_nothing_moved_reloads_nothing(window):
+    window.set_mode(A.MODE_STEPS)
+    panel = window.steps_panel
+    data = panel.data
+    window.set_mode(A.MODE_ANNOTATE)
+    window.set_mode(A.MODE_STEPS)
+    assert panel.data is data
+
+
+def test_edits_the_gate_missed_survive_a_correction_and_are_reported(window):
+    """Staged in the panel without its flag (the old gap), then Shift+T in Annotate."""
+    from tda.ui.app_verb import STEPS_MOVED
+
+    window.set_mode(A.MODE_STEPS)
+    panel = window.steps_panel
+    panel.data.add_action(3)                              # no sigEdited: the flag stays down
+    staged = staged_actions(panel, 3)
+    assert not window._steps_dirty
+    window.set_mode(A.MODE_ANNOTATE)
+    window.session.goto(LAST_STEP, force=True)
+    window.instances.select_instance(COVER)
+    window.act_correct_verb()
+    assert verb(window, COVER) == [(2, "remove")]
+    window.set_mode(A.MODE_STEPS)
+    assert staged_actions(panel, 3) == staged            # not reloaded away
+    assert panel.database_moved() and panel.has_unapplied_edits()
+    assert window.status_message() == STEPS_MOVED
+    assert panel.status.text() == STEPS_MOVED
+
+
+def test_a_card_click_moves_the_list_selection(window):
+    """m3: a row selected earlier must not beat the card row just clicked."""
+    assert window.instances.select_instance(COVER)
+    window.task_card.sigRequestEdit.emit(LATCH)
+    QApplication.processEvents()
+    assert window.instances.selected_instance() == LATCH
+    window.act_correct_verb()
+    assert verb(window, LATCH) == [(7, "remove")]
+    assert verb(window, COVER) == [(2, "open")]

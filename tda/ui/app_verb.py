@@ -10,9 +10,10 @@ part leaves every frame from that step on. A part in the ``Removed`` rows goes
 the other way: 「其实只是打开了」.
 
 It is a step-table edit made from Annotate mode, so the Steps panel, if it was
-built, is re-read the next time Steps mode is shown (:meth:`VerbMixin.refresh_stale_steps`)
+built, is re-read the next time Steps mode is shown when the database moved
+under it and it has no edits of its own (:meth:`VerbMixin.refresh_stale_steps`)
 -- its own copy of the actions would otherwise write the old verb back on the
-next Apply.
+next Apply; with edits of its own it is left alone and the annotator is told.
 """
 from __future__ import annotations
 
@@ -21,13 +22,17 @@ from typing import Optional
 from tda.ui import app_actions as A
 from tda.ui import app_support as S
 
-__all__ = ["NO_VERB_TARGET", "VerbMixin", "verb_note"]
+__all__ = ["NO_VERB_TARGET", "STEPS_MOVED", "VerbMixin", "verb_note"]
 
 #: ``Shift+T`` with nothing selected and nothing being drawn.
 NO_VERB_TARGET = ("Shift+T 改的是实例表里选中的零件（拆下的零件勾上 Removed 才列出）："
                   "先在右下实例表点一行 / select a part in the instance table first")
 #: Prefix of a refusal.
 REFUSED = "改不了："
+#: Steps mode shown again with edits of its own while the database moved (U9).
+STEPS_MOVED = ("Steps 表里有没 Apply 的修改，数据库却在这期间变了（标注模式里按过 Shift+T）："
+               "现在 Apply 会把动词按这张表写回去（盖掉那次修改）；Revert 丢掉没 Apply 的修改、"
+               "读入新的 / unapplied edits here, and the database changed underneath")
 
 
 def verb_note(label: str, result: dict) -> str:
@@ -51,10 +56,6 @@ def verb_note(label: str, result: dict) -> str:
         if todo:
             text += f"，要画出来（{len(todo)} 帧）"
     return text + "（Ctrl+Z 撤销）"
-
-
-def _actions_signature(actions) -> list[tuple]:
-    return [(a.step, a.idx, a.target, a.verb, a.result) for a in actions]
 
 
 class VerbMixin:
@@ -116,15 +117,21 @@ class VerbMixin:
         return result
 
     def refresh_stale_steps(self) -> None:
-        """Re-read the Steps panel when the actions moved under it (task U9).
+        """Re-read the Steps panel when the database moved under it (task U9).
 
-        Annotate mode only ever reaches here with nothing staged in Steps
-        (leaving it asks first), so re-reading loses nothing -- and not
-        re-reading would let the next Apply write the old verb back.
+        Only when the stored table changed since the panel's own load or Apply
+        (:meth:`StepTablePanel.database_moved`) -- a plain Steps → Annotate →
+        Steps round trip reloads nothing. And only when the panel has no edits
+        of its own since then: those are never dropped here. With both, the
+        annotator is told, and Apply / Revert / the leave-Steps question decide
+        -- not re-reading would let the next Apply write the old verb back, and
+        re-reading would lose the staged edits without a word.
         """
         panel = getattr(self, "_steps_panel", None)
-        if panel is None or getattr(self, "_steps_dirty", False):
+        if panel is None or not panel.database_moved():
             return
-        stored = self.db.actions(int(panel.desktop))
-        if _actions_signature(panel.data.actions) != _actions_signature(stored):
-            panel.set_desktop(int(panel.desktop))
+        if getattr(self, "_steps_dirty", False) or panel.has_unapplied_edits():
+            panel.status.setText(STEPS_MOVED)
+            self.report(STEPS_MOVED, hold_ms=8000)
+            return
+        panel.set_desktop(int(panel.desktop))

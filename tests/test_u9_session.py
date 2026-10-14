@@ -257,3 +257,40 @@ def test_the_frame_in_hand_is_compiled_without_the_part(session):
     compiled = session.compiled()
     assert COVER not in compiled.instances
     assert FrameKey(DESKTOP, LAST, VIEW) == compiled.key
+
+
+# --------------------------------------------------------------------------- #
+# review round
+# --------------------------------------------------------------------------- #
+def test_an_added_part_open_from_the_start_points_to_steps_mode(session):
+    """m1: T cannot say "removed"; an added part leaves by an action of its own."""
+    data = StepTableData.load(session.db, DESKTOP, session.tax)
+    [added] = data.add_extras("psu_latch", 1, state="open")
+    data.save(session.db)
+    session.goto(LAST)
+    assert held(session, LAST, added) == "open"
+    with pytest.raises(SessionRefusal, match="S1 添加的零件") as refused:
+        session.correct_verb(added)
+    assert "Steps 模式" in str(refused.value) and "remove" in str(refused.value)
+
+
+def test_a_re_close_by_t_also_offers_steps_mode(session):
+    """m2: the T correction after the step can go, or the removal can move."""
+    session.goto(10)
+    session.assert_state(COVER, "closed")
+    session.goto(LAST)
+    with pytest.raises(SessionRefusal, match="或在 Steps 模式里改拆下的那一步"):
+        session.correct_verb(COVER)
+
+
+def test_the_correction_leaves_the_graph_alone_and_keeps_its_annotator(session):
+    """m4: no relations op from Shift+T; undo and redo carry who made it."""
+    session.correct_verb(COVER)
+    kinds = [r["kind"] for r in session.db.conn.execute(
+        "SELECT kind FROM op_log WHERE desktop=? ORDER BY id", (DESKTOP,))]
+    assert kinds == [OP_CORRECT_VERB]
+    op = session.db.ops(DESKTOP, VIEW, limit=1)[0]
+    assert op["payload"]["annotator"] == op["inverse"]["annotator"] == session.annotator
+    assert op["annotator"] == session.annotator
+    assert session.undo() and session.redo()
+    assert verbs(session, COVER) == [(2, "remove")]

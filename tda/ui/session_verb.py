@@ -3,13 +3,15 @@
 :mod:`tda.core.verb_fix` decides which action's verb flips; this module is the
 session's half: the gate the instance list and the task card show
 (:meth:`VerbMixin.verb_offers`), the write -- through the step table's own path,
-``StepTableData.load`` → ``apply_edit(step, "verb", ...)`` → ``save``, exactly
-what an edit in Steps mode does, so the action is validated by the same rules
-and the automatic event log is recompiled the same way -- the op-log row with
-its inverse, the undo/redo handler, and :func:`~tda.ui.session_ops.settle` over
-every frame of this view from the action's step on: the part's rows leave the
-card (or come back) from there, and a frozen frame among them is queued for a
-re-check.
+``StepTableData.load`` → ``apply_edit(step, "verb", ...)`` → ``save``, what an
+edit in Steps mode does, so the action is validated by the same rules and the
+automatic event log is recompiled the same way (only the constraint graph is
+left to Apply, see :func:`write_verb`) -- the op-log row with its inverse, the
+undo/redo handler, and :func:`~tda.ui.session_ops.settle` over every frame of
+**this view** from the action's step on: the part's rows leave the card (or
+come back) from there, and a frozen frame among them is queued for a re-check.
+The other views follow on their next opening, which re-checks every frozen
+frame against its inputs -- as for a state assertion (task U8).
 
 Both directions of the op are the same record with a different verb, so one
 handler (:func:`apply_correct_verb`) is the redo and the undo.
@@ -42,21 +44,30 @@ __all__ = ["OP_CORRECT_VERB", "VerbMixin", "apply_correct_verb", "commit_verb_fi
            "write_verb"]
 
 
-def write_verb(db: Db, tax, rows: dict, annotator: str = ANNOTATOR) -> list[str]:
+def write_verb(db: Db, tax, rows: dict, annotator: Optional[str] = None) -> list[str]:
     """Give one action the verb ``rows["verb"]`` through the S1 path; joins a transaction.
 
     Returns what :meth:`StepTableData.save` returns: the event log's problems
     after the write. The action is found by step, ``idx`` and target, so a
-    redo after anything else moved in the row still lands on it.
+    redo after anything else moved in the row still lands on it. The op's
+    own ``annotator`` is who the write is credited to, on undo and redo too.
+
+    The constraint graph is left alone (``save(graph=False)``): it is derived
+    from the instances and the edges, never from a verb, so a flip can neither
+    move an edge nor make a deadlock -- the deadlock refusal lives in that same
+    derivation and has nothing to refuse here. Catching a stale graph up is
+    an S1 Apply's job, not a side effect of ``Shift+T`` that Ctrl+Z would not
+    take back.
     """
-    data = StepTableData.load(db, int(rows["desktop"]), tax, annotator)
+    who = str(annotator or rows.get("annotator") or ANNOTATOR)
+    data = StepTableData.load(db, int(rows["desktop"]), tax, who)
     step, target, idx = int(rows["step"]), str(rows["target"]), int(rows["idx"])
     found = [i for i, action in enumerate(data.row(step).actions)
              if action.target == target and int(action.idx) == idx]
     if not found:
         raise SessionRefusal(f"第 {step} 步已经没有 {target} 的动作了（步骤表在别处改过）")
     data.apply_edit(step, "verb", str(rows["verb"]), found[0])
-    return data.save(db)
+    return data.save(db, graph=False)
 
 
 def apply_correct_verb(db: Db, truth: TruthService, payload: dict,
@@ -102,8 +113,9 @@ def commit_verb_fix(db: Db, truth: TruthService, key: FrameKey, instance: str,
     reach = annotatable_steps(db, key.desktop, key.view, [s for s in table if s >= fix.step])
     lost = (_frames(db, truth.tax, key.desktop, key.view, instance, reach, drawn=True)
             if fix.new == REMOVE else [])
-    payload = fix.rows(fix.new) | {"view": key.view, "reach": reach}
-    inverse = fix.rows(fix.old) | {"view": key.view, "reach": reach}
+    # who made it travels with both directions: undo and redo are credited to them
+    payload = fix.rows(fix.new) | {"view": key.view, "reach": reach, "annotator": annotator}
+    inverse = fix.rows(fix.old) | {"view": key.view, "reach": reach, "annotator": annotator}
     try:
         with db.transaction():
             messages = write_verb(db, truth.tax, payload, annotator)

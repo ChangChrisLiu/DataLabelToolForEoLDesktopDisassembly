@@ -612,6 +612,17 @@ class EditMixin:
 
     # ----------------------------------------------------------------- edits
     @S.guard
+    def _select_in_list(self, instance: str) -> None:
+        """Point the instance list at the part being drawn (task U9 review).
+
+        ``T``, ``Shift+T``, ``H``, ``V`` and ``1``-``7`` act on the list's
+        selection first: a row selected minutes ago would beat the card row
+        the annotator has just clicked. A part the list does not show (a bench
+        box) clears the selection, so the keys fall back to the edit's part.
+        """
+        if not self.instances.select_instance(instance):
+            self.instances.table().setCurrentCell(-1, -1)
+
     def on_request_edit(self, instance: str, switch_tool: bool = True) -> None:
         """A panel asked for an instance to be edited (task card / instance list).
 
@@ -634,6 +645,7 @@ class EditMixin:
             self.report("切到标注模式再编辑 / switch to Annotate mode to edit")
             return
         if getattr(self.session, "editing_instance", None) == instance:
+            self._select_in_list(instance)
             return
         if not self.can_leave_edit():
             self.task_card.select_instance(
@@ -650,6 +662,7 @@ class EditMixin:
             self.report_error(f"refused: {refused}")
             return
         self._sync_editing_layer()
+        self._select_in_list(instance)
         self.set_sam_instance(instance)
         if switch_tool:
             self.switch_tool_for_empty_layer()
