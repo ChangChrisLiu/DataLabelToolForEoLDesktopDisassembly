@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QKeyEvent, QKeySequence
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -80,7 +81,9 @@ def test_shift_t_is_bound_in_annotate_mode_only():
 
 def test_shift_t_takes_the_selected_part_out_and_says_where_from(window):
     assert window.instances.select_instance(COVER)
-    window.act_correct_verb()
+    combo = QKeySequence.fromString("Shift+T")[0]
+    assert window.handle_key(QKeyEvent(QKeyEvent.Type.KeyPress, int(combo.key()),
+                                       combo.keyboardModifiers())) is True
     assert verb(window, COVER) == [(2, "remove")]
     message = window.status_message()
     assert "cover.01 在第 2 步是拆下的（不是打开）：从第 2 步起它不在机箱里了" in message
