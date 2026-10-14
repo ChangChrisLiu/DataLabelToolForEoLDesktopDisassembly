@@ -117,7 +117,9 @@ DIST_MAX = 20.0  # mean abs difference to the burst median above this gray level
 #                  -> a gross scene difference, e.g. a hand or tool in the shot
 
 # --- cache layout --------------------------------------------------------
-VIEW_EXT = {"scan": "png", "rs": "png", "oak1": "jpg", "oak2": "jpg"}
+VIEW_EXT = {"scan": "png", "rs": "png", "oak1": "jpg", "oak2": "jpg",
+            # the components gallery (task U10): its camera's files
+            "cmp_oak1": "jpg", "cmp_oak2": "jpg", "cmp_rs": "png"}
 MANIFEST_NAME = "manifest.json"
 MANIFEST_FLUSH_EVERY = 25  # flush mid-desktop so an interrupted run resumes
 METRICS_VERSION = 1  # bump whenever burst_metrics changes what it measures (a new

@@ -14,7 +14,7 @@ to find out -- nor disagreeing about whether a *frame* is a row.
 """
 from __future__ import annotations
 
-from tda.core.model import SKIP_STEP_TYPES, StepType
+from tda.core.model import COMPONENT_VIEWS, SKIP_STEP_TYPES, StepType
 
 __all__ = ["DESKTOP_COUNTERS", "VIEW_COUNTERS", "StatusMixin"]
 
@@ -33,10 +33,14 @@ DESKTOP_COUNTERS: dict[str, str] = {
 #: (Space is refused there), so counting it put ``[22/23]`` on a view that was
 #: finished (task U2c).  A step with no row, or no type, counts as ``normal``.
 _SKIPPED = ", ".join(f"'{t}'" for t in sorted(SKIP_STEP_TYPES))
+#: A components-gallery frame is a *shot*, not a step (task U10): its number
+#: says nothing about the step table, so the join never reaches it.
+_GALLERY = ", ".join(f"'{v}'" for v in COMPONENT_VIEWS)
 _WORK = (
     "FROM (SELECT f.desktop AS desktop, f.view AS view, "
     "f.review_status AS review_status FROM frame f "
     "LEFT JOIN step s ON s.desktop = f.desktop AND s.step = f.step "
+    f"AND f.view NOT IN ({_GALLERY}) "
     "WHERE COALESCE(f.missing, 0) = 0 "
     f"AND COALESCE(NULLIF(s.step_type, ''), '{StepType.NORMAL.value}') "
     f"NOT IN ({_SKIPPED}))"

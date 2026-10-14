@@ -29,6 +29,8 @@ from tda.core.index_report import write_report
 from tda.core.model import VIEWS, FrameKey
 from tda.core.sources import (
     BURST_RE,
+    COMPONENT_CAMERA_DIRS,
+    COMPONENTS_DIR,
     DEFAULT_FOLDER_ALIASES,
     STEP_DIR_RE,
     dirs,
@@ -140,7 +142,10 @@ def scan_desktop(desktop: int, roots: dict, fixes: dict) -> DesktopIndex:
     )
     issues.extend(_add_scanner(desktop, roots, step_of_dir, frames))
     issues.extend(_add_realsense(desktop, roots, aliases, step_of_dir, frames))
+    issues.extend(_add_components(desktop, roots, oak_desktop, oak_fix, step_of_ts, frames))
 
+    # the gallery's shots are not steps: a camera with fewer of them than
+    # another misses nothing, so only the sequence views can miss a frame
     missing = [
         FrameKey(desktop, step, view)
         for step in range(1, n_steps + 1)
@@ -403,6 +408,92 @@ def _add_realsense(
         )
         issues.extend(_check_rs_time(desktop, step, entry.name, ts, frames))
     return issues
+
+
+def _add_components(
+    desktop: int,
+    roots: dict,
+    oak_desktop: str,
+    oak_fix: dict,
+    step_of_ts: dict[str, int],
+    frames: dict[FrameKey, FrameFile],
+) -> list[str]:
+    """Index the components gallery (task U10, spec 3.2b): one view per camera.
+
+    Every capture in ``Components`` is a **shot** of the parts laid out after
+    the teardown, numbered ``1..N`` per camera in capture-time order; the
+    cameras are not matched against each other (the layout was re-arranged
+    between shots, and nothing needs a shot of one camera to be "the same" as
+    another's). The source folder is kept in ``src_step_dir`` and ``aux``.
+
+    What is **not** a shot: a capture of the teardown that was filed under
+    ``Components`` by mistake -- D24's last Camera_2 step (``cam2_extra_from``)
+    and its last RealSense frame. An OAK capture whose timestamp token is a
+    sequence capture's is one; a RealSense frame whose file time lies within
+    :data:`RS_TIME_TOLERANCE_S` of a sequence OAK capture is reported and left
+    out the same way.
+    """
+    issues: list[str] = []
+    base = os.path.join(oak_desktop, COMPONENTS_DIR)
+    extra = oak_fix.get("cam2_extra_from") or ""
+    for view, names in COMPONENT_CAMERA_DIRS.items():
+        cam_dir = first_existing(base, names) if os.path.isdir(base) else None
+        if cam_dir is None:
+            continue
+        captures: list[tuple[str, str, dict[str, str]]] = []
+        for src_dir, by_ts in sorted(scan_oak_camera(cam_dir, issues).items()):
+            rel = f"{COMPONENTS_DIR}/{os.path.basename(cam_dir)}/{src_dir}"
+            for ts, role_paths in sorted(by_ts.items()):
+                if ts in step_of_ts or rel == extra:
+                    issues.append(f"{view}: {rel} ({ts}) is a capture of the teardown "
+                                  f"(step {step_of_ts.get(ts, '?')}), not a gallery shot")
+                    continue
+                if "main" not in role_paths:
+                    issues.append(f"{view}: {rel} ({ts}) has no rgb_12mp.jpg; skipped")
+                    continue
+                captures.append((rel, ts, role_paths))
+        for shot, (rel, ts, role_paths) in enumerate(
+                sorted(captures, key=lambda c: (c[1], c[0])), start=1):
+            key = FrameKey(desktop, shot, view)
+            frames[key] = _oak_frame(key, ts, role_paths, rel)
+
+    teardown = sorted(ff.ts for k, ff in frames.items() if k.view == "oak1" and ff.ts)
+    rs_base = os.path.join(roots["rs_root"], f"Desktop {desktop}", COMPONENTS_DIR)
+    if not os.path.isdir(rs_base):
+        return issues
+    shot = 0
+    for entry in sorted(dirs(rs_base, issues), key=lambda e: e.name):
+        if not STEP_DIR_RE.match(entry.name):
+            continue
+        rel = f"{COMPONENTS_DIR}/{entry.name}"
+        found = {f.name: f for f in files(entry.path, issues)}
+        main = found.get("original_color.png")
+        if main is None:
+            issues.append(f"cmp_rs: {rel} has no original_color.png; skipped")
+            continue
+        ts = iso_from_mtime(main.stat().st_mtime)
+        near = _nearest_seconds(ts, teardown)
+        if near is not None and near <= RS_TIME_TOLERANCE_S:
+            issues.append(f"cmp_rs: {rel} was taken {near:.0f}s from a teardown capture "
+                          f"(tolerance {RS_TIME_TOLERANCE_S:.0f}s): a frame of the "
+                          f"teardown, not a gallery shot; left out")
+            continue
+        shot += 1
+        aux = {}
+        if "depth_raw.npy" in found:
+            aux["depth_npy"] = norm(found["depth_raw.npy"].path)
+        key = FrameKey(desktop, shot, "cmp_rs")
+        frames[key] = FrameFile(key=key, path=norm(main.path), aux=aux, ts=ts,
+                                src_step_dir=rel)
+    return issues
+
+
+def _nearest_seconds(ts: str, others: list[str]) -> Optional[float]:
+    """Seconds from ``ts`` to the closest of ``others`` (ISO strings), or ``None``."""
+    if not others:
+        return None
+    at = datetime.fromisoformat(ts)
+    return min(abs((at - datetime.fromisoformat(o)).total_seconds()) for o in others)
 
 
 def _check_rs_time(

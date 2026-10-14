@@ -49,7 +49,7 @@ from tda.core.graph_rules import HARD_TYPES, active_edges
 from tda.core.implied import is_implied
 from tda.core.logs import CHASSIS_KEY
 from tda.core.ls_import import SOURCE as LS_SOURCE
-from tda.core.model import VIEWS, InstanceRec, is_extra, is_provisional
+from tda.core.model import ALL_VIEWS, InstanceRec, is_extra, is_provisional
 from tda.core.states import INITIAL_STEP
 from tda.ui.steps_values import RELATION_FIELDS, EditError
 
@@ -90,7 +90,7 @@ def check_deletable(data: "StepTableData", db: Db, key: str) -> None:
     if steps:
         raise EditError(f"{key!r} is still the target of step(s) {', '.join(map(str, steps))}")
     draft = is_provisional(key)
-    for view in VIEWS:
+    for view in ALL_VIEWS:
         held = db.keyframes(data.desktop, view, key)
         if draft:
             # a draft's own draft keyframes go with it (see `delete_instance`);

@@ -40,11 +40,17 @@ implied_when_referenced: [motherboard]
 #   gold    the scanner and OAK1: every instance, amodal masks, full review
 #   silver  OAK2: model drafts corrected frame by frame, staging area as boxes
 #   bronze  RealSense: the coarsest tier (`too_small` is common)
+#
+# The components gallery (零件合照, spec 3.2b) takes the tier of the camera
+# that shot it.
 view_tiers:
   scan: gold
   oak1: gold
   oak2: silver
   rs: bronze
+  cmp_oak1: gold
+  cmp_oak2: silver
+  cmp_rs: bronze
 
 classes:
   # --- 结构 / structure ------------------------------------------------------
