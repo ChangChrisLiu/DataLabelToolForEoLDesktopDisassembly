@@ -422,6 +422,25 @@ class Db(ConnectionMixin, PoseSegmentMixin, StatusMixin, DeleteMixin,
             cur = self.conn.execute(sql, args)
         return int(cur.rowcount or 0)
 
+    def delete_manual_events_at(self, desktop: int, target: str, steps: Iterable[int],
+                                attr: str = "state") -> int:
+        """Drop one target's hand-written ``attr`` events at exactly these steps.
+
+        The row set a state assertion (:mod:`tda.core.state_assert`) owns and
+        rewrites as a whole; returns how many went.
+        """
+        wanted = sorted({int(s) for s in steps})
+        if not wanted:
+            return 0
+        marks = ", ".join("?" for _ in wanted)
+        with self._tx():
+            cur = self.conn.execute(
+                "DELETE FROM state_event WHERE desktop=? AND target=? AND auto=0 "
+                f"AND attr=? AND step IN ({marks})",
+                [desktop, target, attr, *wanted],
+            )
+        return int(cur.rowcount or 0)
+
     def instances(self, desktop: int) -> dict[str, InstanceRec]:
         """All instances of one desktop keyed by ``instance_key``."""
         rows = self.conn.execute(

@@ -33,6 +33,7 @@ KINDS: frozenset[str] = frozenset(
         "set_frame_override",  # FrameOverride (single-frame mask/visibility)
         "set_occluder",  # OccluderMask of one occluder_type on a frame
         "commit_keyframe",  # write/split a ShapeKeyframe
+        "assert_state",  # manual StateEvents: a part's state at one frame (U8)
     }
 )
 

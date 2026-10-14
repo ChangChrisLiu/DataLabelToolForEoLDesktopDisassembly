@@ -35,6 +35,7 @@ from tda.core.states import (
     validate_events,
 )
 from tda.core.taxonomy import Taxonomy, load_taxonomy, parse_raw_name
+from tda.core.truth_inputs import events_of
 from tda.ui.steps_delete import delete_instance
 from tda.ui.steps_relations import RelationsData
 from tda.ui.steps_issues import (
@@ -639,7 +640,11 @@ class StepTableData:
         self.extras = []
         self.stored_initial = _stored_initial(db, self.desktop)
         self.relations.committed()
-        self.messages = validate_events(self.instances, db.events(self.desktop), self.tax)
+        # the merged log, in the order every reader folds it -- manual events
+        # after the derived ones of their step (task U8: a re-close at the step
+        # of a derived open read as two problems in stored-id order)
+        self.messages = validate_events(self.instances,
+                                        events_of(db, self.tax, self.desktop), self.tax)
         self.refresh_issues()
         return list(self.messages)
 

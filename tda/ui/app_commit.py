@@ -18,6 +18,7 @@ from tda.ui import app_compat as compat
 from tda.ui import app_priors
 from tda.ui import app_support as S
 from tda.ui import session_api as api
+from tda.ui.app_state import cut_note
 from tda.ui.class_names import instance_label, visibility_zh
 # the frame-range wording lives with the guide's other sentences now (U7: the
 # add-parts dialog and the bulk accept say ranges too); importable from here
@@ -36,6 +37,10 @@ SPLIT_PREFIX = "split+"
 #: re-traces that version instead (``_cannot_split``), and said nothing -- the
 #: D13 annotator believed they had split (task U6).
 NO_SPLIT = "这一帧就是这版形状的起点：Ctrl+K 等于重画这一版，没有拆分"
+#: ``Ctrl+K`` on an open ✂ row with the layer untouched (U8 round 2b): the
+#: version boundary is cut here and the shape on this side stays as it is.
+SPLIT_UNCHANGED = ("已在这帧切出新版本（形状不变）：另一侧的帧现在单独一版，到那边用 Enter "
+                   "改它，只影响那一段")
 #: ``L`` with no layering suggestion on the bar.
 NO_LAYERING = ("L 只用来回答画布下方的层级建议；现在没有层级建议 / L answers a "
                "layering suggestion, and none is open")
@@ -313,6 +318,14 @@ class CommitMixin:
         # No re_explain() here: committing re-renders the frame, which clears
         # assist_result, so a re-split would run against nothing.  The real one
         # happens at confirm time, where the answer is actually used.
+        cut = cut_note(result, steps_text)
+        if cut:
+            # the commit stopped at a state boundary (U8 round 3): say where,
+            # and which frames the edit reached
+            self.logger.info("commit of %s at step %s cut at %s / %s", instance, key.step,
+                             result.get("cut_below"), result.get("cut_top"))
+            self.report(cut, hold_ms=6000)
+            return
         if result.get("no_split"):
             # Ctrl+K where the version in force starts: it re-traced that one
             # (U6 addendum, item 2) -- and saying nothing let the annotator
@@ -320,6 +333,12 @@ class CommitMixin:
             self.logger.info("split of %s at step %s re-traced the version that "
                              "starts there", instance, key.step)
             self.report(NO_SPLIT, hold_ms=6000)
+            return
+        if result.get("unchanged_split"):
+            # Ctrl+K on an open ✂ row, layer untouched: only the boundary (U8 2b)
+            self.logger.info("split of %s at step %s with the shape unchanged",
+                             instance, key.step)
+            self.report(SPLIT_UNCHANGED, hold_ms=6000)
             return
         self.report(f"committed ({scope}): {result.get('changed', '')}".strip())
 

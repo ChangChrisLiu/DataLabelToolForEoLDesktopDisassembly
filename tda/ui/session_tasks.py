@@ -33,8 +33,18 @@ from typing import Optional
 
 from tda.core.compiler import select_keyframe
 from tda.core.db import Db
-from tda.core.model import FrameKey, InstanceRec, Visibility
+from tda.core.model import FrameKey, InstanceRec
 from tda.core.states import diff_states, needs_geom
+from tda.core.split_rows import (  # noqa: F401 - re-exported, the card's vocabulary
+    NOTHING_VISIBLE,
+    SHAPE_PREDATES_STATE,
+    SPLIT_TRANSITIONS,
+    STATE_ONLY_TRANSITIONS,
+    has_split,
+    keyframe_at,
+    kind_for,
+    stale_split_rows,
+)
 from tda.core.taxonomy import Taxonomy
 from tda.core.truth_inputs import InputCache, instances_of, pose_segment_of, state_of
 from tda.ui import session_api as api
@@ -48,21 +58,12 @@ from tda.ui.session_ops import (
     placement_of,
 )
 
-__all__ = ["LAYER_RANK", "SPLIT_TRANSITIONS", "STATE_ONLY_TRANSITIONS", "bench_roi_of",
-           "has_bench_roi", "item_text", "task_card_for"]
+__all__ = ["LAYER_RANK", "SHAPE_PREDATES_STATE", "SPLIT_TRANSITIONS",
+           "STATE_ONLY_TRANSITIONS", "bench_roi_of", "has_bench_roi", "item_text",
+           "stale_split_rows", "task_card_for"]
 
 REMOVED = "removed"
 _VERIFIED = "verified"
-
-#: State transitions that keep the shape but need a new version of it here.
-SPLIT_TRANSITIONS = frozenset(
-    {("open", "closed"), ("unplugged", "plugged"), ("displaced", "installed")}
-)
-#: ``loosened -> fastened``: the shape carries over untouched.
-STATE_ONLY_TRANSITIONS = frozenset({("loosened", "fastened")})
-#: Visibility labels that say nothing of the instance is visible on a frame:
-#: set there, a ✂ row has nothing to draw (round 3, I-A).
-NOTHING_VISIBLE = frozenset({Visibility.OUT_OF_VIEW.value, Visibility.OCCLUDED_FULL.value})
 
 #: Taxonomy group -> how low it sits in a frame, so the start frame's card can
 #: be drawn from the bottom up: the chassis is behind everything, the parts
@@ -103,43 +104,10 @@ def _has_shape(db: Db, tax: Taxonomy, desktop: int, view: str, instance: str, st
     return geom_type is None or chosen.geom_type == geom_type
 
 
-def _keyframe_at(db: Db, tax: Taxonomy, key: FrameKey, instance: str,
-                 cache: Optional[InputCache] = None):
-    """The keyframe in force for ``instance`` at ``key``, or ``None``."""
-    seg = pose_segment_of(db, key, cache)
-    placement = placement_of(db, tax, key, instance, cache)
-    return select_keyframe(chain_for(db, key, instance, seg, placement), key.step)
-
-
-def _has_split(db: Db, tax: Taxonomy, desktop: int, view: str, instance: str,
-               step: int, neighbour: int, cache: Optional[InputCache] = None) -> bool:
-    """Is there a shape boundary between ``step`` and ``neighbour`` (U2b round 2)?
-
-    A ✂ row asks for a *new version* of a shape from this frame on.  The old
-    version reaching this frame is exactly what the row is about, so "a shape
-    applies here" -- which is what ``done`` used to test -- was true before
-    anybody did anything, and the guide said "都做完了，按 Space" over a split
-    that did not exist.  Done means the version in force here is not the one in
-    force next door (a keyframe anchored here, in the reverse walk), or a
-    frame override for this frame that settles the question: a drawn
-    per-frame shape, or a label saying nothing of it can be seen here
-    (``out_of_view`` / ``occluded_full`` -- nothing to draw).  Any other label
-    is only a label: pressing ``2`` (部分遮挡) on the row's instance turned it ✔
-    with no shape drawn (round 3, I-A).
-    """
-    here_key = FrameKey(desktop, step, view)
-    try:
-        override = (db.frame_overrides(here_key) or {}).get(instance)
-    except Exception:  # noqa: BLE001 - a missing table is "no override"
-        override = None
-    if override is not None and (override.visible_rle is not None
-                                 or str(override.visibility) in NOTHING_VISIBLE):
-        return True
-    here = _keyframe_at(db, tax, here_key, instance, cache)
-    if here is None:
-        return False
-    there = _keyframe_at(db, tax, FrameKey(desktop, neighbour, view), instance, cache)
-    return there is None or there.id != here.id
+#: The card's own decisions live in :mod:`tda.core.split_rows` (U8 round 3):
+#: ``cli check`` and the commit rule read them without Qt.
+_keyframe_at = keyframe_at
+_has_split = has_split
 
 
 def _has_bench_chain(db: Db, desktop: int, view: str, instance: str) -> bool:
@@ -169,34 +137,9 @@ def has_bench_roi(db: Db, key: FrameKey, cache: Optional[InputCache] = None) -> 
 # --------------------------------------------------------------------------- #
 # one change -> one instruction
 # --------------------------------------------------------------------------- #
-def _kind_for(changes: dict, needs_neighbour: bool, needs_here: bool) -> str:
-    """Map one instance's difference from the neighbour onto a kind (spec 4.2).
-
-    ``changes`` reads ``neighbour value -> value on this frame``.  The three
-    named transition sets come straight from the spec.  Anything else falls back
-    on where geometry is required: a shape needed *here* but not next door has
-    to be drawn, one needed on both sides needs a second version, and one needed
-    on neither is a label change.
-    """
-    transition = changes.get("state")
-    if transition is not None:
-        old, new = transition
-        if old == REMOVED and new != REMOVED:
-            return api.KIND_ADD_SHAPE
-        if transition in SPLIT_TRANSITIONS:
-            return api.KIND_SPLIT_KEYFRAME
-        if transition in STATE_ONLY_TRANSITIONS:
-            return api.KIND_STATE_ONLY
-    if changes.get("placement") is not None and needs_here:
-        # the chassis and bench chains of an instance are independent (spec 3.3),
-        # so a part that changed side carries no shape on this one yet, whichever
-        # way the annotator is walking
-        return api.KIND_ADD_SHAPE
-    if needs_here and not needs_neighbour:
-        return api.KIND_ADD_SHAPE
-    if needs_here and needs_neighbour:
-        return api.KIND_SPLIT_KEYFRAME
-    return api.KIND_STATE_ONLY
+#: The card's kind decision (:func:`tda.core.split_rows.kind_for`); its strings
+#: are :mod:`tda.ui.session_api`'s ``KIND_*`` values.
+_kind_for = kind_for
 
 
 def item_text(kind: str, instance: str, changes: dict, rec: Optional[InstanceRec],

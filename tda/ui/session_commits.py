@@ -183,8 +183,11 @@ class CommitMixin:
         ``PairOverride`` instead of pixels (spec 4.3 改层级).
 
         A pixel scope with nothing changed is a no-op: loading a shape and
-        pressing Enter must not mint a new version of it.  An explicit layering
-        scope is always honoured, because there the pixels are not the point.
+        pressing Enter must not mint a new version of it.  The one exception is
+        ``Ctrl+K`` on an open ✂ row of this frame (:meth:`open_split_here`):
+        there the boundary *is* the edit, and the result says
+        ``unchanged_split``.  An explicit layering scope is always honoured,
+        because there the pixels are not the point.
 
         A layering commit never discards painted pixels.  The editing layer is
         the instance's *amodal* shape, so pixels added inside ``B`` are by
@@ -200,9 +203,17 @@ class CommitMixin:
         extra = _loggable_extra(extra)
         key, instance = self._editable_frame(), self.layer.instance
         pair = edit.split_zorder_scope(scope)
+        unchanged_split = False
         if pair is None and not self.layer.changed():
-            return {"changed": False, "affected": [], "conflicts": 0, "problems": {},
-                    "scope": scope}
+            if not (scope == api.SCOPE_SPLIT and self.open_split_here(instance)):
+                return {"changed": False, "affected": [], "conflicts": 0, "problems": {},
+                        "scope": scope}
+            # An open ✂ row whose shape is already right on this side (U8
+            # round 2b): the clip closed at 39-41 before the board takes it out
+            # at 42 leaves the ✂ at 38, where the open shape loaded is the open
+            # shape. Ctrl+K cuts the version boundary with it unchanged, so a
+            # later Enter on the far side reaches only that state's frames.
+            unchanged_split = True
         if pair is not None and self._added_pixels(pair):
             other, _above = pair
             edit.require_instance(self._known_instances(), other)
@@ -239,7 +250,21 @@ class CommitMixin:
             # user is left holding them rather than having them silently marked
             # as written.
             self.layer.settle()
+        if unchanged_split:
+            result["unchanged_split"] = True
         return self._after_edit(result)
+
+    def open_split_here(self, instance: Optional[str]) -> bool:
+        """Does this frame's task card hold an open ✂ row for ``instance``?
+
+        The one case where ``Ctrl+K`` on an untouched layer writes: the
+        version boundary itself is the work (U8 round 2b).
+        """
+        if not instance:
+            return False
+        return any(row.get("instance") == instance
+                   and row.get("kind") == api.KIND_SPLIT_KEYFRAME and not row.get("done")
+                   for row in self.task_card())
 
     @staticmethod
     def _shape_scope(scope: str) -> str:

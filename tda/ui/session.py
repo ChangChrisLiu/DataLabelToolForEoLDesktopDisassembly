@@ -40,6 +40,7 @@ from tda.ui.session_layer import EditingLayer
 from tda.ui import session_rows as rows
 from tda.ui.session_queues import ReviewState
 from tda.ui.session_review import ReviewMixin
+from tda.ui.session_state import StateMixin, apply_assert_state
 from tda.ui.session_truth import TruthCacheMixin
 from tda.ui.session_sweep import TruthSweeper
 
@@ -47,7 +48,7 @@ __all__ = ["AnnotationSession"]
 
 log = logging.getLogger("tda.session")
 
-class AnnotationSession(CommitMixin, ReviewMixin, TruthCacheMixin, QObject):
+class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, TruthCacheMixin, QObject):
     """One annotator's working set: a desktop, a view, and the frame in hand."""
 
     #: The current frame changed; payload is a :class:`~tda.core.model.FrameKey`.
@@ -129,6 +130,7 @@ class AnnotationSession(CommitMixin, ReviewMixin, TruthCacheMixin, QObject):
             ("set_pair_override", edit.apply_pair_override),
             ("set_frame_override", edit.apply_frame_override),
             ("set_occluder", edit.apply_occluder),
+            ("assert_state", apply_assert_state),   # task U8
         ):
             handler = self._make_handler(apply)
             self.undo_stack.register(kind, handler, handler)
@@ -416,14 +418,18 @@ class AnnotationSession(CommitMixin, ReviewMixin, TruthCacheMixin, QObject):
         """One row per instance of the current frame, top-most layer first."""
         key = self.current()
         labelled, drawn = self._frame_overrides_of(key)
-        return rows.instance_rows(
+        state = state_of(self.db, self.tax, key.desktop, key.step)
+        instances = instances_of(self.db, key.desktop)
+        found = rows.instance_rows(
             self.compiled(),
-            state_of(self.db, self.tax, key.desktop, key.step),
-            instances_of(self.db, key.desktop),
+            state,
+            instances,
             self._hidden,
             overridden=labelled,
             drawn=drawn,
         )
+        # which states each part can be set to here (task U8): the panel's combo
+        return self._with_state_choices(found, state, instances)
 
     def _frame_overrides_of(self, key: FrameKey) -> tuple[frozenset, frozenset]:
         """``(labelled, drawn)``: instances with a hand-set label / pixels on this frame."""

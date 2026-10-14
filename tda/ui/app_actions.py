@@ -249,6 +249,12 @@ ACTIONS: tuple[Action, ...] = (
            "隐藏或显示选中实例", "edit", (), _ANN),
     Action("cycle_visibility", ("V",), "act_cycle_visibility", "Cycle visibility",
            "循环切换可见性取值", "edit", (), _ANN),
+    # Task U8: the state the picture shows when the log's is different (a clip
+    # shut again).  ``T`` for 状态 / sTate: free in every mode.
+    Action("cycle_state", ("T",), "act_cycle_state",
+           "Selected part's state at this frame: the next one (log correction)",
+           "选中零件这一帧的状态换成下一个（如 打开→关上；下一帧起自动恢复；"
+           "之后按任务卡 ✂ 条用 Ctrl+K 画形状）", "edit", (), _ANN),
     Action("zorder_up", ("Ctrl+Up",), "act_move_instance", "One layer up",
            "选中实例上移一层", "edit", (-1,), _ANN, repeat=True),
     Action("zorder_down", ("Ctrl+Down",), "act_move_instance", "One layer down",
