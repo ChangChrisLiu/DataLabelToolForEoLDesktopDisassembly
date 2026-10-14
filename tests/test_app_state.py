@@ -309,3 +309,27 @@ def test_a_refusal_right_after_a_change_is_what_shows(window):
     window.act_cycle_state()
     assert window.status_message().startswith("改不了状态：")
     assert "在第 12 步：打开" not in window.canvas.banner_text()
+
+
+def test_ctrl_k_on_an_open_split_row_cuts_the_version_untouched(window):
+    """Round 2b: the key and its button take an untouched layer on a ✂ row only."""
+    from tda.ui.app_commit import SPLIT_UNCHANGED
+
+    goto(window, STEP)
+    window.task_card.sigRequestEdit.emit(CORRECTED)        # no ✂ row for it yet
+    assert window.key_refusal("commit_split")              # untouched: refused as before
+    window.act_clear_edit()
+    window.instances.select_instance(CORRECTED)
+    window.act_cycle_state()                               # open at 12: ✂ here
+    window.expire_visibility_note()
+    window.task_card.sigRequestEdit.emit(CORRECTED)
+    assert not window.has_uncommitted_edit()
+    assert window.key_refusal("commit_split") == ""
+    assert window.palette.button("commit_split").isEnabled()
+    window.act_commit_split()
+    if window._pending_warning is not None:     # the synthetic latch is "too big"
+        window.act_commit_split()               # ... the second press writes it
+    assert window.status_message() == SPLIT_UNCHANGED
+    anchors = sorted(kf.anchor_step for kf in window.db.keyframes(DESKTOP, "scan", CORRECTED))
+    assert anchors == [STEP, LAST_STEP]
+    assert card_row(window, CORRECTED)["done"] is True

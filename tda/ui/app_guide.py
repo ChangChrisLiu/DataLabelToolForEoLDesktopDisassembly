@@ -320,7 +320,11 @@ class GuideMixin:
         no_shape = self.override_refusal() if scoped else ""
         states["commit_override"] = (scoped and not no_shape, False,
                                      closed or no_shape or why_scope)
-        states["commit_split"] = (scoped, False, closed or why_scope)
+        # ... and Ctrl+K on an open ✂ row of the part being drawn writes even
+        # untouched: the version boundary is the edit (U8 round 2b)
+        cut_only = bool(not closed and not facts.ghost and not facts.roi_editing
+                        and not facts.shape and self._open_split_editing())
+        states["commit_split"] = (scoped or cut_only, False, closed or why_scope)
         if facts.shape:
             why_confirm = SHAPE_BUSY
         elif dirty:
@@ -401,6 +405,19 @@ class GuideMixin:
             return ""
         enabled, _checked, why = self.palette_states(facts).get(name, (True, False, ""))
         return "" if enabled else (why or "现在不能用")
+
+    def _open_split_editing(self) -> bool:
+        """Is the part being drawn an open ✂ row of this frame's card? (U8 round 2b)
+
+        Read off the card the panel already holds, so it costs nothing per
+        refresh; the session asks its own card again before it writes.
+        """
+        instance = getattr(self.session, "editing_instance", None)
+        if not instance:
+            return False
+        return any(str(row.get("instance")) == str(instance)
+                   and row.get("kind") == api.KIND_SPLIT_KEYFRAME and not row.get("done")
+                   for row in self.task_card.rows())
 
     def override_refusal(self) -> str:
         """Why ``Alt+Enter`` cannot write this edit, or ``""`` (U2d).

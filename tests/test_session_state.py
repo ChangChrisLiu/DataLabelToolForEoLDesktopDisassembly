@@ -14,7 +14,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from session_scene import DESKTOP, VIEW, cell, draw, make_session, seed_shapes
+from session_scene import DESKTOP, VIEW, cell, draw, make_session, rect, seed_shapes
 from tda.core.model import FrameKey
 from tda.core.states import needs_geom
 from tda.core.truth_inputs import instances_of, state_of
@@ -244,3 +244,72 @@ def test_confirmed_frames_that_still_owe_a_split_are_listed(qapp, tmp_path):
         assert latch_rows() == []
     finally:
         made.close(force=True)
+
+
+# --------------------------------------------------------------------------- #
+# round 2b: the end of a part's life
+# --------------------------------------------------------------------------- #
+def test_ctrl_k_cuts_the_boundary_unchanged_so_enter_reaches_only_the_run(qapp, tmp_path):
+    """Closed at 39-41, the board takes the clip at 42; ✂ lands at 38.
+
+    At 38 the loaded shape is already the open one: Ctrl+K with the layer
+    untouched cuts the version there, and Enter at 41 then re-traces 39-41
+    only -- conflicts on the frozen frames of that run, 33-38 untouched.
+    """
+    # 256 px, so a latch is not `visible_tiny` and a re-trace is past tolerance
+    made = make_session(tmp_path, last_step=42, hw=(256, 256))
+    made.sweeper_enabled = False
+    db = made.db
+    try:
+        seed_shapes(made, 33, anchor=42)                 # frames 33-42 complete
+        made.goto(42, force=True)
+        for _ in range(10):
+            assert made.confirm_frame() is True          # 42 ... 33 frozen
+        closed_shape = rect(2, 2, 30, 12, (256, 256))
+        for step in (41, 40, 39):
+            made.goto(step, force=True)
+            made.assert_state(LATCH, "closed")
+        assert manual(made) == [(39, "open", "closed")]
+        row = card_row(made, 38)
+        assert row["kind"] == api.KIND_SPLIT_KEYFRAME and not row["done"]
+        before = {s: _amodal(made, s) for s in (33, 36, 38, 39, 41)}
+
+        made.goto(38, force=True)
+        made.begin_edit(LATCH)
+        assert not made.layer.changed()
+        result = made.commit_edit(api.SCOPE_SPLIT)       # Ctrl+K, nothing painted
+        made.clear_edit()
+        assert result["changed"] and result.get("unchanged_split") is True
+        assert not result["no_split"] and result["anchor_step"] == 38
+        assert sorted(kf.anchor_step for kf in db.keyframes(DESKTOP, VIEW, LATCH)) == [38, 42]
+        assert card_row(made, 38)["done"] is True
+        made.truth.run_pending_rechecks(DESKTOP, VIEW)
+        assert db.conflicts(DESKTOP, VIEW) == []         # same pixels: nothing moved
+
+        made.goto(41, force=True)
+        result = draw(made, LATCH, closed_shape, api.SCOPE_KEYFRAME)   # Enter
+        made.clear_edit()
+        assert result["affected"] == [39, 40, 41]
+        made.truth.run_pending_rechecks(DESKTOP, VIEW)
+        assert sorted({c["step"] for c in db.conflicts(DESKTOP, VIEW)}) == [39, 40, 41]
+        for step in (33, 36, 38):
+            assert (_amodal(made, step) == before[step]).all(), step
+        for step in (39, 41):
+            assert (_amodal(made, step) == closed_shape).all(), step
+    finally:
+        made.close(force=True)
+
+
+def test_ctrl_k_with_nothing_changed_and_no_open_row_is_still_a_no_op(session):
+    session.goto(21)
+    assert not session.open_split_here(LATCH)            # open on both sides
+    session.begin_edit(LATCH)
+    result = session.commit_edit(api.SCOPE_SPLIT)
+    session.clear_edit()
+    assert result["changed"] is False and "unchanged_split" not in result
+    assert [kf.anchor_step for kf in session.db.keyframes(DESKTOP, VIEW, LATCH)] == [LAST]
+
+
+def _amodal(session, step: int):
+    session.goto(step, force=True)
+    return session.compiled().instances[LATCH].amodal.copy()

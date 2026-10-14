@@ -36,6 +36,10 @@ SPLIT_PREFIX = "split+"
 #: re-traces that version instead (``_cannot_split``), and said nothing -- the
 #: D13 annotator believed they had split (task U6).
 NO_SPLIT = "这一帧就是这版形状的起点：Ctrl+K 等于重画这一版，没有拆分"
+#: ``Ctrl+K`` on an open ✂ row with the layer untouched (U8 round 2b): the
+#: version boundary is cut here and the shape on this side stays as it is.
+SPLIT_UNCHANGED = ("已在这帧切出新版本（形状不变）：另一侧的帧现在单独一版，到那边用 Enter "
+                   "改它，只影响那一段")
 #: ``L`` with no layering suggestion on the bar.
 NO_LAYERING = ("L 只用来回答画布下方的层级建议；现在没有层级建议 / L answers a "
                "layering suggestion, and none is open")
@@ -320,6 +324,12 @@ class CommitMixin:
             self.logger.info("split of %s at step %s re-traced the version that "
                              "starts there", instance, key.step)
             self.report(NO_SPLIT, hold_ms=6000)
+            return
+        if result.get("unchanged_split"):
+            # Ctrl+K on an open ✂ row, layer untouched: only the boundary (U8 2b)
+            self.logger.info("split of %s at step %s with the shape unchanged",
+                             instance, key.step)
+            self.report(SPLIT_UNCHANGED, hold_ms=6000)
             return
         self.report(f"committed ({scope}): {result.get('changed', '')}".strip())
 
