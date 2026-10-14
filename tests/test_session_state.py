@@ -464,3 +464,36 @@ def test_d_no_shape_in_force_means_no_cut(qapp, tmp_path):
         assert all(p.rle for kf in kfs for p in kf.parts)
     finally:
         made.close(force=True)
+
+
+def test_a_boundary_in_another_pose_segment_is_not_cut(qapp, tmp_path):
+    """Round 3b: segments 1-10 and 11-24, a ✂ at 5; Enter at 12 must not mint a 5."""
+    from tda.core import masks
+    from tda.core.model import ShapeKeyframe, ShapePart
+
+    made = make_session(tmp_path, last_step=LAST, hw=HW256)
+    made.sweeper_enabled = False
+    db = made.db
+    try:
+        db.set_pose_segment(DESKTOP, VIEW, 1, 1, 10, 10, None, None)
+        db.set_pose_segment(DESKTOP, VIEW, 2, 11, LAST, LAST, None, None)
+        shape = rect(40, 40, 80, 60, HW256)
+        for seg, anchor in ((1, 10), (2, LAST)):
+            db.add_keyframe(ShapeKeyframe(
+                id=None, instance=LATCH, desktop=DESKTOP, view=VIEW, pose_segment=seg,
+                anchor_step=anchor, placement="in_chassis", geom_type="mask",
+                parts=[ShapePart("main", masks.encode_rle(shape))]))
+        made._invalidate()
+        made.goto(5, force=True)
+        made.assert_state(LATCH, "open")            # ✂ at 5 and 4, in segment 1
+        made.goto(12, force=True)
+        result = draw(made, LATCH, rect(40, 40, 70, 50, HW256), api.SCOPE_KEYFRAME)
+        made.clear_edit()
+        assert result["cut_below"] is None          # 5 is segment 1's business
+        seg2 = sorted(kf.anchor_step for kf in db.keyframes(DESKTOP, VIEW, LATCH)
+                      if kf.pose_segment == 2)
+        assert 5 not in seg2 and 4 not in seg2
+        # (the log's own boundary at 13 is in segment 2: Enter stops there)
+        assert result["cut_top"] == 13 and seg2 == [13, LAST]
+    finally:
+        made.close(force=True)

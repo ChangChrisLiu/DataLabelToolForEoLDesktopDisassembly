@@ -42,7 +42,9 @@ def redraw_text(state: str, run: tuple[int, int], redraw) -> str:
     "below"}`` (``True`` reads as a ✂ at the top). Any frame of the run takes
     ``Enter`` -- the commit cuts the version at both edges -- except the run's
     top frame when it is an open ✂ row: there ``Enter`` is refused and
-    ``Ctrl+K`` is the key.
+    ``Ctrl+K`` is the key. A ✂ row only *below* the run is on the other
+    state's side (the clip still open at 38 under a closed 39-41): Ctrl+K there
+    would draw the wrong frames, so it is not offered.
     """
     if redraw is True:
         redraw = {"top": True, "below": False}
@@ -51,13 +53,11 @@ def redraw_text(state: str, run: tuple[int, int], redraw) -> str:
     first, last = run
     look = f"「{state_zh(state)}」"
     if first == last:
-        key = "Ctrl+K" if redraw.get("top") else "Enter（或 Ctrl+K）"
+        key = "Ctrl+K" if redraw.get("top") else "Enter"
         return f"这帧的形状要重画：画{look}后 {key}；{SPLIT_NOW}"
     where = f"在第 {first}–{last} 步任一帧画{look}后 Enter"
     if redraw.get("top"):
         where += f"（第 {last} 步是 ✂ 行，那里用 Ctrl+K）"
-    else:
-        where += "（或在 ✂ 行 Ctrl+K）"
     return f"这几帧的形状要重画：{where}；{SPLIT_NOW}"
 
 

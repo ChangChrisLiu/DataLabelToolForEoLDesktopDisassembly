@@ -409,8 +409,12 @@ def plan_cuts(db: Db, tax, key: FrameKey, instance: str, chain: list[ShapeKeyfra
     re_trace = scope == api.SCOPE_KEYFRAME or _cannot_split(chosen, key.step, direction)
     high = int(chosen.anchor_step) if re_trace else int(key.step)
     walk = reverse_walk(db, key.desktop, key.view)
-    opened = open_split_steps(db, tax, key.desktop, key.view, instance, low, high,
-                              cache, walk)
+    # only boundaries of this chain's pose segment: a cut anchored in another
+    # segment is a version no frame of this one ever selects
+    opened = [f for f in open_split_steps(db, tax, key.desktop, key.view, instance, low,
+                                          high, cache, walk)
+              if pose_segment_of(db, FrameKey(key.desktop, f, key.view), cache)
+              == chosen.pose_segment]
     below = [f for f in opened if f < key.step]
     above = [f for f in opened if f >= key.step]
     if below:

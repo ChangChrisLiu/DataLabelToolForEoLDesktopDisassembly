@@ -243,6 +243,18 @@ def test_the_documents_say_it():
     spec = _squash((repo / "docs" / "superpowers" / "specs"
                     / "2026-09-17-teardown-annotator-design.md").read_text(encoding="utf-8"))
     assert _squash("**v1.8（2026-10-13）**：**按帧断言状态**") in spec
+    # round 3b: the quickstart quotes the status lines exactly as they are made
+    from tda.ui.app_commit import steps_text
+    from tda.ui.app_state import cut_note, redraw_text
+
+    ctrl_k = cut_note({"cut_below": 19, "cut_top": None, "edit_reach": [20, 21]}, steps_text)
+    enter = cut_note({"cut_below": 19, "cut_top": 21, "edit_reach": [20, 21]}, steps_text)
+    end = cut_note({"cut_below": 38, "cut_top": None, "edit_reach": [39, 40, 41]},
+                   steps_text)
+    for line in (ctrl_k, enter, end,
+                 redraw_text("closed", (39, 41), {"top": False, "below": True})):
+        assert _squash(line) in quick, line
+    assert "新版本只到第 21 步，后面的帧保持原来的形状" in enter
 
 
 # --------------------------------------------------------------------------- #
@@ -278,9 +290,28 @@ def test_the_frames_before_a_removal_are_said_as_one_run(whole_window):
                     "第 42 步起是 拆下" in win.status_message())
     assert manual(win, LOGGED) == [(39, "open", "closed")]
     assert "第 39–41 步都是 关上；第 42 步起是 拆下" in win.status_message()
-    # round 3: the redraw needs no order -- any frame of the run, Enter
-    assert ("这几帧的形状要重画：在第 39–41 步任一帧画「关上」后 Enter（或在 ✂ 行 Ctrl+K）；"
+    # round 3: the redraw needs no order -- any frame of the run, Enter; the
+    # only ✂ row is 38, on the open side, so Ctrl+K is not offered (round 3b)
+    assert ("这几帧的形状要重画：在第 39–41 步任一帧画「关上」后 Enter；"
             "工具会自动在状态边界切开版本") in win.status_message()
+    assert "✂ 行" not in win.status_message()
+
+
+def test_the_redraw_text_offers_ctrl_k_only_on_the_runs_own_top():
+    """Round 3b: the two texts -- a ✂ below the run is the other state's frame."""
+    from tda.ui.app_state import redraw_text
+
+    below_only = redraw_text("closed", (39, 41), {"top": False, "below": True})
+    assert below_only == ("这几帧的形状要重画：在第 39–41 步任一帧画「关上」后 Enter；"
+                          "工具会自动在状态边界切开版本")
+    top = redraw_text("closed", (20, 21), {"top": True, "below": True})
+    assert top == ("这几帧的形状要重画：在第 20–21 步任一帧画「关上」后 Enter（第 21 步是 ✂ 行，"
+                   "那里用 Ctrl+K）；工具会自动在状态边界切开版本")
+    assert redraw_text("closed", (41, 41), {"top": False, "below": True}) == (
+        "这帧的形状要重画：画「关上」后 Enter；工具会自动在状态边界切开版本")
+    assert redraw_text("closed", (21, 21), {"top": True, "below": False}) == (
+        "这帧的形状要重画：画「关上」后 Ctrl+K；工具会自动在状态边界切开版本")
+    assert redraw_text("closed", (21, 21), {"top": False, "below": False}) == ""
 
 
 def test_enter_at_the_end_of_life_says_where_it_cut(whole_window):
