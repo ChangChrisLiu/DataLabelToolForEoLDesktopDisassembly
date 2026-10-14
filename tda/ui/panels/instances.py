@@ -454,6 +454,15 @@ class InstanceListPanel(QWidget):
             return []
         return [str(s) for s in self._rows[row].get("state_choices") or ()]
 
+    def set_state_editable(self, editable: bool) -> None:
+        """Annotate mode only (like ``T``): elsewhere the combo shows, read-only."""
+        self._state_editable = bool(editable)
+        self._sync_state_combo()
+
+    def state_editable(self) -> bool:
+        """Can the state combo be used right now?"""
+        return bool(getattr(self, "_state_editable", True))
+
     def _sync_state_combo(self) -> None:
         """Show the selected part's state and the ones it can be set to."""
         combo = self.state_combo
@@ -471,12 +480,15 @@ class InstanceListPanel(QWidget):
                 combo.addItem(f"状态：{state_zh(state)}", state)
             if held in choices:
                 combo.setCurrentIndex(choices.index(held))
-            combo.setEnabled(True)
+            combo.setEnabled(self.state_editable())
         finally:
             combo.blockSignals(False)
 
     def _on_state_activated(self, index: int) -> None:
         """A state picked by hand: report it unless it is the one already held."""
+        if not self.state_editable():
+            self._sync_state_combo()
+            return
         instance = self.selected_instance()
         state = str(self.state_combo.itemData(index) or "")
         row = self._table.currentRow()

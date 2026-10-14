@@ -189,3 +189,58 @@ def test_ctrl_k_at_the_far_boundary_starts_from_the_version_in_force(session):
     session.begin_edit(LATCH)
     assert (session.editing_mask() == cell(60)).all()
     session.clear_edit()
+
+
+# --------------------------------------------------------------------------- #
+# round 2
+# --------------------------------------------------------------------------- #
+def test_a_frame_with_no_image_here_is_refused_and_points_elsewhere(qapp, tmp_path):
+    """Minor 3: nobody can see the state on a missing frame; the restore may land there."""
+    made = make_session(tmp_path, last_step=LAST, missing=(20,))
+    made.sweeper_enabled = False
+    try:
+        made.goto(20, force=True)
+        with pytest.raises(SessionRefusal, match="第 20 步在 scan 没有可用的图像") as refused:
+            made.assert_state(LATCH, "closed")
+        assert "第 19 步" in str(refused.value) and "视角" in str(refused.value)
+        assert manual(made) == []
+        made.goto(19, force=True)
+        result = made.assert_state(LATCH, "closed")
+        assert result["restore_unseen"] is True        # 20 has no image in this view
+        assert manual(made) == [(19, "open", "closed"), (20, "closed", "open")]
+    finally:
+        made.close(force=True)
+
+
+def test_confirmed_frames_that_still_owe_a_split_are_listed(qapp, tmp_path):
+    """Minor 4: what ``cli check`` counts -- an open ✂ row on a confirmed frame."""
+    from tda.ui.session_tasks import stale_split_rows
+
+    made = make_session(tmp_path, last_step=LAST)
+    made.sweeper_enabled = False
+    try:
+        seed_shapes(made, 19, anchor=LAST)              # frames 19-24 complete
+        made.goto(22, force=True)
+        for _ in range(4):
+            assert made.confirm_frame() is True         # 22, 21, 20, 19 frozen
+
+        def latch_rows() -> list[tuple[int, str]]:
+            # the seed gives every part one shape, so the log's own boundaries
+            # (the socket lever at 20, ...) are open ✂ rows too: only the latch
+            # is this test's business
+            return [r for r in stale_split_rows(made.db, made.tax, DESKTOP, VIEW)
+                    if r[1] == LATCH]
+
+        assert latch_rows() == []
+        for step in (21, 20):
+            made.goto(step, force=True)
+            made.assert_state(LATCH, "closed")
+        assert latch_rows() == [(19, LATCH), (21, LATCH)]
+        made.goto(21, force=True)
+        draw(made, LATCH, cell(60), api.SCOPE_SPLIT)
+        assert latch_rows() == [(19, LATCH)]
+        made.goto(19, force=True)
+        draw(made, LATCH, cell(61), api.SCOPE_SPLIT)
+        assert latch_rows() == []
+    finally:
+        made.close(force=True)

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from tda.ui import app_actions as A
 from tda.ui import app_support as S
 from tda.ui import session_api as api
 from tda.ui.class_names import state_zh
@@ -36,14 +37,15 @@ REFUSED = "改不了状态："
 
 def state_note(label: str, patch, split_here: bool,
                run: Optional[tuple[int, int]] = None,
-               after: Optional[tuple[int, str]] = None) -> str:
+               after: Optional[tuple[int, str]] = None, unseen: bool = False) -> str:
     """The status line after an assertion, in the annotator's words.
 
     ``内存卡扣 ram_latch.01 在第 21 步：关上（之前为 打开）；第 22 步起恢复 打开``;
     ``run`` (the steps now sharing the state) and ``after`` (the first step past
     them) make a run of frames read as one: ``…；第 20–21 步都是 关上；第 22 步起
-    恢复 打开``.  When this frame's card now asks for a new shape version,
-    :data:`SPLIT_NOW`.
+    恢复 打开``.  ``unseen``: the restore step has no image in this view, so the
+    log's value is kept there without anyone having looked.  When this frame's
+    card now asks for a new shape version, :data:`SPLIT_NOW`.
     """
     text = (f"{label} 在第 {patch.step} 步：{state_zh(patch.state)}"
             f"（之前为 {state_zh(patch.previous)}）")
@@ -55,6 +57,9 @@ def state_note(label: str, patch, split_here: bool,
     if after is not None:
         back = "恢复 " if after[1] == patch.previous else "是 "
         text += f"；第 {after[0]} 步起{back}{state_zh(after[1])}"
+    if unseen and patch.next_step is not None:
+        text += (f"（第 {patch.next_step} 步在这个视角没有图像，那里按日志算"
+                 f"{'' if patch.restores is None else ' ' + state_zh(patch.restores)}）")
     if split_here:
         text += f"。{SPLIT_NOW}"
     return text + "（Ctrl+Z 撤销）"
@@ -71,6 +76,19 @@ class StateMixin:
         return (self.instances.selected_instance()
                 or getattr(self.session, "editing_instance", None))
 
+    def _refuse_state(self, text: str) -> None:
+        """Say why, over whatever the last change said.
+
+        A change holds its line for six seconds and its canvas note for four;
+        a refusal right after it -- ``T`` on the next part, which has nothing
+        to set -- used to be swallowed by both. An empty report clears the
+        hold, and the note goes.
+        """
+        self.report("")
+        self.report(text)
+        if getattr(self, "_vis_note", ("", None))[0]:
+            self.expire_visibility_note()
+
     @S.guard
     def act_cycle_state(self) -> None:
         """``T``: the selected part's state at this frame becomes the next one."""
@@ -78,20 +96,29 @@ class StateMixin:
             return
         instance = self._state_target()
         if not instance:
-            self.report(NO_TARGET)
+            self._refuse_state(NO_TARGET)
             return
         if not callable(getattr(self.session, "assert_state", None)):
-            self.report(f"{REFUSED}这个会话不支持 / not supported by this session")
+            self._refuse_state(f"{REFUSED}这个会话不支持 / not supported by this session")
             return
         nxt = self.session.next_state(instance)
         if nxt is None:
-            self.report(REFUSED + self.session.state_gate(instance)[1])
+            self._refuse_state(REFUSED + self.session.state_gate(instance)[1])
             return
         self.assert_state_here(instance, nxt)
 
     @S.guard
     def on_state_picked(self, instance: str, state: str) -> None:
-        """The instance list's combo: the same gesture as ``T``, to a named state."""
+        """The instance list's combo: the same gesture as ``T``, to a named state.
+
+        Annotate mode only, like ``T``: Review shows the frame the queue points
+        at and Steps is about the log, and a state written from either landed
+        on a frame nobody was annotating.
+        """
+        if self.mode != A.MODE_ANNOTATE:
+            self.instances.refresh()             # the combo goes back to what holds
+            self._refuse_state(f"{REFUSED}只在标注模式可用 / Annotate mode only")
+            return
         self.assert_state_here(instance, state)
 
     def assert_state_here(self, instance: str, state: str) -> Optional[dict]:
@@ -102,8 +129,8 @@ class StateMixin:
         except ValueError as refused:            # SessionRefusal is one
             self.logger.info("assert_state refused %s step %s -> %s: %s",
                              instance, key.step, state, refused)
-            self.report(f"{REFUSED}{refused}")
             self.instances.refresh()             # the combo goes back to what holds
+            self._refuse_state(f"{REFUSED}{refused}")
             return None
         label = self._label_of(instance)[0] or instance
         patch = result.get("patch")
@@ -120,7 +147,8 @@ class StateMixin:
             str(row.get("instance")) == str(instance)
             and row.get("kind") == api.KIND_SPLIT_KEYFRAME and not row.get("done")
             for row in self.task_card.rows())
-        note = state_note(label, patch, split_here, result.get("run"), result.get("after"))
+        note = state_note(label, patch, split_here, result.get("run"), result.get("after"),
+                          unseen=bool(result.get("restore_unseen")))
         self.update_status()
         self.report(note, hold_ms=6000)
         self.flash_visibility_note(note)

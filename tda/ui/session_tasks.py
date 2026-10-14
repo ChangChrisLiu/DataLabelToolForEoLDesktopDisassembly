@@ -48,8 +48,9 @@ from tda.ui.session_ops import (
     placement_of,
 )
 
-__all__ = ["LAYER_RANK", "SPLIT_TRANSITIONS", "STATE_ONLY_TRANSITIONS", "bench_roi_of",
-           "has_bench_roi", "item_text", "task_card_for"]
+__all__ = ["LAYER_RANK", "SHAPE_PREDATES_STATE", "SPLIT_TRANSITIONS",
+           "STATE_ONLY_TRANSITIONS", "bench_roi_of", "has_bench_roi", "item_text",
+           "stale_split_rows", "task_card_for"]
 
 REMOVED = "removed"
 _VERIFIED = "verified"
@@ -403,3 +404,38 @@ def _start_card(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
     if not items:
         return [_item(f"step {step}", api.KIND_CONFIRM, {}, confirmed, None, None)]
     return _bottom_up(items, instances, tax)
+
+
+# --------------------------------------------------------------------------- #
+# what a confirmed frame still owes (task U8 round 2)
+# --------------------------------------------------------------------------- #
+#: The problem ``cli check`` reports for an open ✂ row on a confirmed frame.
+SHAPE_PREDATES_STATE = "shape_predates_state"
+
+
+def stale_split_rows(db: Db, tax: Taxonomy, desktop: int, view: str) -> list[tuple[int, str]]:
+    """``(step, instance)`` of every open ✂ row on a confirmed frame.
+
+    A frame confirmed before its state changed -- a clip set ``closed`` there
+    with ``T`` after the frame was frozen with its open shape -- exports
+    ``state: closed`` next to the open mask, and the only place that said so
+    was its task card. The card is the one used here, diffed against the frame
+    the reverse walk comes from (the next annotatable step), so ``check``
+    counts exactly the rows an annotator standing on the frame would see.
+    """
+    from tda.core.truth_inputs import annotatable_steps   # one import site for the gate
+
+    steps = [int(row["step"]) for row in db.frames_for(desktop, view)]
+    available = annotatable_steps(db, desktop, view, steps)
+    out: list[tuple[int, str]] = []
+    for index, step in enumerate(available[:-1]):
+        frame = db.get_frame(FrameKey(desktop, step, view)) or {}
+        if frame.get("review_status") != _VERIFIED:
+            continue
+        neighbour = available[index + 1]
+        span = [s for s in steps if step < s <= neighbour]
+        for row in task_card_for(db, tax, desktop, view, step, neighbour=neighbour,
+                                 span=span):
+            if row["kind"] == api.KIND_SPLIT_KEYFRAME and not row["done"]:
+                out.append((step, str(row["instance"])))
+    return out

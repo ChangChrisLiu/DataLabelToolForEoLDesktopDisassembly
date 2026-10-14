@@ -31,6 +31,7 @@ from tda.core.state_assert import (
 from tda.core.states import FrameState, needs_geom
 from tda.core.truth import TruthService
 from tda.core.truth_inputs import InputCache, annotatable_steps, instances_of, state_of
+from tda.ui.class_names import state_zh
 from tda.ui.commands import Op
 from tda.ui.session_api import SessionRefusal
 from tda.ui.session_ops import settle
@@ -118,7 +119,7 @@ def commit_assertion(db: Db, truth: TruthService, key: FrameKey, instance: str,
     try:
         with db.transaction():
             patch = assert_state(db, truth.tax, key.desktop, instance, key.step, state,
-                                 evidence_view=key.view)
+                                 evidence_view=key.view, name=state_zh)
             if not patch.changed:
                 return {"changed": False, "patch": patch, "affected": [], "problems": {},
                         "rechecks": [], "conflicts": 0, "frame": None}
@@ -177,18 +178,39 @@ class StateMixin:
         """"At this frame ``instance`` is ``state``" (task U8); undoable.
 
         Refused (:class:`SessionRefusal`) where :meth:`state_gate` does not
-        offer it and wherever the core refuses. The state from the next step
-        on is left as it was, which is what makes one keystroke per frame
-        enough to mark a run of frames.
+        offer it, on a frame this view has no usable image of (nobody can see
+        the state there: the sentence names the nearest frame that has one, or
+        another view -- the state is shared by all four), and wherever the core
+        refuses. The state from the next step on is left as it was, which is
+        what makes one keystroke per frame enough to mark a run of frames.
+
+        ``restore_unseen`` in the result says the restore step has no image in
+        this view: the log's value is kept there, and the window says so.
         """
+        key = self.current()
+        if not self._has_picture(key.step):
+            seen = [s for s in self._available if self._has_picture(s)]
+            near = min(seen, key=lambda s: (abs(s - key.step), s)) if seen else None
+            where = (f"到有图像的第 {near} 步，或换个视角去改" if near is not None
+                     else "换个视角去改")
+            raise SessionRefusal(
+                f"第 {key.step} 步在 {self.view} 没有可用的图像，看不到它的状态：{where}"
+                f"（状态四个视角共用）")
         choices, why = self.state_gate(instance)
         if not choices:
             raise SessionRefusal(why)
         if state not in choices:
             raise SessionRefusal(
-                f"{instance} 在这里只能设为 {'、'.join(choices)}，不能设为 {state}")
-        result = commit_assertion(self.db, self.truth, self.current(), str(instance),
+                f"{instance} 在这里只能设为 {'、'.join(state_zh(c) for c in choices)}，"
+                f"不能设为 {state_zh(state)}")
+        result = commit_assertion(self.db, self.truth, key, str(instance),
                                   str(state), self.annotator)
         if not result["changed"]:
             return result
+        nxt = result["patch"].next_step
+        result["restore_unseen"] = nxt is not None and not self._has_picture(nxt)
         return self._after_edit(result)
+
+    def _has_picture(self, step: int) -> bool:
+        """Does this view have a usable image of ``step``? (``_editable_frame``'s test)"""
+        return int(step) in self._available and self.image_path(int(step)) is not None

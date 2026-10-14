@@ -150,6 +150,9 @@ def test_t_is_refused_in_words_where_there_is_nothing_to_set(window):
     window.instances.select_instance(LOGGED)
     window.act_cycle_state()
     assert "Steps 模式" in window.status_message()
+    # minor 5: in the annotator's words, not the validator's
+    assert "日志第 14 步把 ram_latch.01 从「关上」变成「打开」" in window.status_message()
+    assert "current state" not in window.status_message()
     assert manual(window, LOGGED) == []
 
 
@@ -241,20 +244,68 @@ def test_the_documents_say_it():
     assert _squash("**v1.8（2026-10-13）**：**按帧断言状态**") in spec
 
 
-def test_the_note_names_a_run_and_what_follows_it():
-    from types import SimpleNamespace
+# --------------------------------------------------------------------------- #
+# round 2
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def whole_window(qapp, tmp_path: Path):
+    """The whole sheet (42 steps); the clips ride out with the board at 42."""
+    session = make_session(tmp_path, last_step=42)
+    session.sweeper_enabled = False
+    for key, rec in session.db.instances(DESKTOP).items():
+        if key.startswith("ram_latch."):
+            rec.parent, rec.attached = "motherboard.01", True
+            session.db.upsert_instance(rec)
+    win = MainWindow(session, make_paths(tmp_path), "tester", sam_queue=StubSamQueue())
+    answer_roi(win)
+    yield win
+    close_window(win)
 
-    from tda.ui.app_state import state_note
 
-    patch = SimpleNamespace(step=41, state="closed", previous="open", next_step=42,
-                            restores="removed")
-    # the board leaves at 42 and takes the clip with it: nothing is "restored"
-    assert state_note("ram_latch.01", patch, False, (40, 41), (42, "removed")) == (
-        "ram_latch.01 在第 41 步：关上（之前为 打开）；第 40–41 步都是 关上；"
-        "第 42 步起是 拆下（Ctrl+Z 撤销）")
-    # without a run (an older caller): the next step alone
-    patch = SimpleNamespace(step=21, state="closed", previous="open", next_step=22,
-                            restores="open")
-    assert state_note("ram_latch.01", patch, True) == (
-        "ram_latch.01 在第 21 步：关上（之前为 打开）；第 22 步起恢复 打开。"
-        f"{SPLIT_NOW}（Ctrl+Z 撤销）")
+def test_the_frames_before_a_removal_are_said_as_one_run(whole_window):
+    """B1 end to end: 41, 40, 39 closed; the board takes the clip out at 42."""
+    win = whole_window
+    for step in (41, 40, 39):
+        goto(win, step)
+        assert win.instances.select_instance(LOGGED), step
+        win.act_cycle_state()
+        if step == 41:
+            assert ("ram_latch.01 在第 41 步：关上（之前为 打开）；第 42 步起是 拆下"
+                    in win.status_message())
+        if step == 40:
+            assert ("ram_latch.01 在第 40 步：关上（之前为 打开）；第 40–41 步都是 关上；"
+                    "第 42 步起是 拆下" in win.status_message())
+    assert manual(win, LOGGED) == [(39, "open", "closed")]
+    assert "第 39–41 步都是 关上；第 42 步起是 拆下" in win.status_message()
+
+
+def test_the_combo_is_annotate_mode_only(window):
+    """Minor 1: like T, the combo writes nothing in Review or Steps."""
+    goto(window, STEP)
+    window.instances.select_instance(CORRECTED)
+    combo = window.instances.state_combo
+    assert combo.isEnabled()
+    for mode in (A.MODE_REVIEW, A.MODE_STEPS):
+        window.set_mode(mode)
+        window.instances.select_instance(CORRECTED)
+        assert not combo.isEnabled(), mode
+        assert combo.currentText() == "状态：关上"          # still shows what holds
+        combo.activated.emit(1)                            # a click that got through
+        window.on_state_picked(CORRECTED, "open")          # ... or a direct call
+        assert manual(window, CORRECTED) == [], mode
+        assert "只在标注模式可用" in window.status_message()
+    window.set_mode(A.MODE_ANNOTATE)
+    window.instances.select_instance(CORRECTED)
+    assert combo.isEnabled()
+
+
+def test_a_refusal_right_after_a_change_is_what_shows(window):
+    """Minor 2: the change's held line and canvas note do not swallow the refusal."""
+    goto(window, STEP)
+    window.instances.select_instance(CORRECTED)
+    window.act_cycle_state()
+    assert "在第 12 步：打开" in window.status_message()
+    window.instances.select_instance("chassis")
+    window.act_cycle_state()
+    assert window.status_message().startswith("改不了状态：")
+    assert "在第 12 步：打开" not in window.canvas.banner_text()

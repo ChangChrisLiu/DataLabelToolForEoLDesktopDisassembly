@@ -87,6 +87,50 @@ def test_check_prints_zero_problems_on_a_clean_view(tmp_path, capsys):
     assert code == EXIT_OK
 
 
+def test_check_counts_a_confirmed_frame_whose_shape_predates_its_state(env, capsys):
+    """U8 round 2: ``T`` on a frozen frame leaves an open ✂ row; check says so."""
+    from PySide6.QtWidgets import QApplication
+
+    from app_scene import seed_shapes
+    from tda.core import state_assert as SA
+    from tda.core.taxonomy import load_taxonomy
+    from tda.core.truth import TruthService
+    from tda.ui.session import AnnotationSession
+
+    QApplication.instance() or QApplication([])
+    db = Db(env["cfg"]["db_path"])
+    tax = load_taxonomy()
+    session = AnnotationSession(db, tax, TruthService(db, tax), env["cfg"]["cache_dir"],
+                                "tester")
+    session.sweeper_enabled = False
+    session.open(DESKTOP, VIEW)
+    try:
+        seed_shapes(session, 11)           # every part of 11-14 drawn
+        session.goto(12, force=True)
+        assert session.confirm_frame() and session.confirm_frame()   # 12, 11 frozen
+    finally:
+        session.close(force=True)
+
+    def stale_lines() -> list[str]:
+        run(env, "check", "--desktop", str(DESKTOP), "--view", VIEW, "--limit", "500")
+        out = capsys.readouterr().out
+        return sorted(line.strip() for line in out.splitlines()
+                      if "shape_predates_state:" in line and line.strip().startswith("-"))
+
+    # the seeded scene confirmed a log boundary nobody split (one shape per
+    # part): that one is counted before and after alike
+    before = stale_lines()
+    try:
+        SA.assert_state(db, tax, DESKTOP, "ram_latch.02", 12, "open")
+    finally:
+        db.close()
+    after = stale_lines()
+    assert sorted(set(after) - set(before)) == [
+        "- shape_predates_state:ram_latch.02 (step 11)",
+        "- shape_predates_state:ram_latch.02 (step 12)"]
+    assert set(before) <= set(after)
+
+
 def test_check_counts_the_problems_and_exits_one(env, capsys):
     code = run(env, "check", "--desktop", str(DESKTOP), "--view", VIEW)
     out = capsys.readouterr().out

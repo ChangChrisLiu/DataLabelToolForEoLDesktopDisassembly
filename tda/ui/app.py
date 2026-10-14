@@ -315,6 +315,8 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateM
             self._sync_mode_tab()
             return
         self.mode = mode
+        # the state combo is T's twin: annotate mode only (U8 round 2)
+        self.instances.set_state_editable(mode == A.MODE_ANNOTATE)
         self.disarm_bench()
         self.forget_draft_ghost()   # the canvas it was offered on is going away
         # ... and so is the frame a ``Shift+C`` alternate was an offer about.
