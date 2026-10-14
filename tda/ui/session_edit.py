@@ -46,8 +46,10 @@ from tda.core.model import (
     ZOrderRec,
 )
 from tda.core.truth import TruthService
-from tda.core.truth_inputs import InputCache, frame_hw, pose_segment_of
+from tda.core.split_rows import open_split_steps, reverse_walk
+from tda.core.truth_inputs import InputCache, frame_hw, pose_segment_of, state_of
 from tda.ui import session_api as api
+from tda.ui.class_names import state_zh
 from tda.ui.session_api import SessionRefusal
 from tda.ui.commands import Op
 from tda.ui.session_ops import (
@@ -109,6 +111,7 @@ __all__ = [
     "commit_pair_override",
     "default_anchor",
     "hosts_of",
+    "plan_cuts",
     "preview",
     "preview_pair",
     "refresh_steps",
@@ -235,7 +238,13 @@ def _commit_shape(db: Db, truth: TruthService, key: FrameKey, instance: str,
     """
     seg = pose_segment_of(db, key, cache)
     placement = placement_of(db, truth.tax, key, instance, cache)
-    chosen = select_keyframe(chain_for(db, key, instance, seg, placement), key.step)
+    chain = chain_for(db, key, instance, seg, placement)
+    chosen = select_keyframe(chain, key.step)
+    # a shape commit never crosses an open state boundary (U8 round 3)
+    cuts = plan_cuts(db, truth.tax, key, instance, chain, chosen, scope, direction,
+                     geom_type, cache)
+    if cuts["refuse"]:
+        raise SessionRefusal(cuts["refuse"])
     source, draft_id = _adoption(extra)
     ref: dict = {"keyframe_id": None}
     old_ref: dict = {"keyframe_id": None if chosen is None else chosen.id}
@@ -251,7 +260,25 @@ def _commit_shape(db: Db, truth: TruthService, key: FrameKey, instance: str,
         scope = api.SCOPE_KEYFRAME
 
     with db.transaction():
-        if scope == api.SCOPE_SPLIT:
+        cut_kf = None
+        if cuts["below"] is not None:
+            # the old shape keeps the frames of the other state: the version in
+            # force is cut at the boundary, pixels unchanged, in this same op
+            cut_ref: dict = {"keyframe_id": None}
+            cut_kf = _copy_keyframe(chosen, key, cuts["below"])
+            before.append(keyframe_state(None, cut_ref, template=cut_kf))
+            cut_ref["keyframe_id"] = db.add_keyframe(cut_kf)
+            after.append(keyframe_state(cut_kf, cut_ref))
+        if cuts["top"] is not None:
+            # Enter inside a state run whose top is an open boundary: the edit
+            # is the run's own version, the frames above keep the one in force
+            kf = new_keyframe(key, instance, seg, cuts["top"], placement, parts, geom_type)
+            _stamp_source(kf, source, draft_id)
+            kf.version = int(chosen.version) + 1
+            before.append(keyframe_state(None, ref, template=kf))
+            ref["keyframe_id"] = db.add_keyframe(kf)
+            after.append(keyframe_state(kf, ref))
+        elif scope == api.SCOPE_SPLIT:
             anchor = key.step
             if direction == FORWARD and chosen is not None:
                 before.append(keyframe_state(chosen, old_ref))
@@ -284,7 +311,11 @@ def _commit_shape(db: Db, truth: TruthService, key: FrameKey, instance: str,
             after.append(keyframe_state(kf, ref))
 
         zorder = None if geom_type == GEOM_BOX else _append_to_zorder(db, key, seg, instance)
-        reach = set(truth.affected_steps(key.desktop, key.view, instance, kf)) | {key.step}
+        edit_reach = set(truth.affected_steps(key.desktop, key.view, instance, kf))
+        reach = edit_reach | {key.step}
+        if cut_kf is not None:
+            # same pixels, but another keyframe is selected there: re-checked
+            reach |= set(truth.affected_steps(key.desktop, key.view, instance, cut_kf))
         pair_state = None
         if pair is not None:
             po = PairOverride(key.desktop, key.view, seg, instance, pair)
@@ -310,7 +341,93 @@ def _commit_shape(db: Db, truth: TruthService, key: FrameKey, instance: str,
     op = Op(kind="commit_keyframe", payload=payload, inverse=inverse)
     return _result(db, truth, key, steps, op,
                    {"keyframe_id": kf.id, "anchor_step": kf.anchor_step, "scope": scope,
-                    "changed": True, "no_split": bool(no_split)})
+                    "changed": True, "no_split": bool(no_split),
+                    "cut_below": cuts["below"], "cut_top": cuts["top"],
+                    "edit_reach": annotatable_steps(db, key.desktop, key.view,
+                                                    edit_reach | {key.step})})
+
+
+# --------------------------------------------------------------------------- #
+# a shape commit never crosses an open state boundary (U8 round 3)
+# --------------------------------------------------------------------------- #
+def _has_pixels(kf: Optional[ShapeKeyframe]) -> bool:
+    """Is there a shape at all? A cut must never mint an empty keyframe."""
+    if kf is None:
+        return False
+    for part in kf.parts or ():
+        if part.box is not None:
+            return True
+        if part.rle and masks.rle_area(part.rle) > 0:
+            return True
+    return False
+
+
+def _copy_keyframe(chosen: ShapeKeyframe, key: FrameKey, anchor: int) -> ShapeKeyframe:
+    """``chosen``'s shape as a new version anchored at ``anchor`` (pixels unchanged)."""
+    parts = [ShapePart(p.name, None if p.rle is None else dict(p.rle),
+                       None if p.box is None else tuple(p.box)) for p in chosen.parts]
+    kf = new_keyframe(key, chosen.instance, chosen.pose_segment, anchor, chosen.placement,
+                      parts, chosen.geom_type)
+    kf.version = int(chosen.version) + 1
+    kf.amodal_complete = chosen.amodal_complete
+    _stamp_source(kf, chosen.source, chosen.draft_id)
+    return kf
+
+
+def plan_cuts(db: Db, tax, key: FrameKey, instance: str, chain: list[ShapeKeyframe],
+              chosen: Optional[ShapeKeyframe], scope: str, direction: str,
+              geom_type: str, cache: Optional[InputCache] = None) -> dict:
+    """Where a shape commit at ``key`` has to stop (U8 round 3).
+
+    **A shape commit never crosses an open state boundary.** The frames the
+    written keyframe would select are looked through for open ✂ rows of this
+    instance (:func:`tda.core.split_rows.open_split_steps`: the state changes
+    between a frame and the next one of the walk, and one version is in force
+    on both sides):
+
+    * ``below`` -- the highest such frame under the current one: the version in
+      force is cut there first, pixels unchanged (``Enter`` and ``Ctrl+K``);
+    * ``top`` -- ``Enter`` only, whose reach runs up to the anchor: the lowest
+      such frame above the current one. The edit is written as a version
+      anchored there instead of re-tracing the one in force, so the frames of
+      the next state keep their shape;
+    * ``refuse`` -- ``Enter`` on a frame that is itself an open ✂ row: the row
+      says Ctrl+K, and Enter would rewrite the other state's frames.
+
+    Nothing is cut when no non-empty mask is in force (the part is drawn here
+    for the first time, or by a box), and in the forward walk, which is for
+    repairs and keeps today's rules. Returns ``{"below", "top", "refuse"}``.
+    """
+    out: dict = {"below": None, "top": None, "refuse": ""}
+    if scope not in (api.SCOPE_KEYFRAME, api.SCOPE_SPLIT) or direction != REVERSE:
+        return out
+    if geom_type != GEOM_MASK or chosen is None or chosen.geom_type != GEOM_MASK \
+            or not _has_pixels(chosen):
+        return out
+    lower = [kf.anchor_step for kf in chain if kf.anchor_step < key.step]
+    low = max(lower) + 1 if lower else None
+    re_trace = scope == api.SCOPE_KEYFRAME or _cannot_split(chosen, key.step, direction)
+    high = int(chosen.anchor_step) if re_trace else int(key.step)
+    walk = reverse_walk(db, key.desktop, key.view)
+    opened = open_split_steps(db, tax, key.desktop, key.view, instance, low, high,
+                              cache, walk)
+    below = [f for f in opened if f < key.step]
+    above = [f for f in opened if f >= key.step]
+    if below:
+        out["below"] = below[-1]
+    if re_trace and above:
+        if above[0] == key.step and scope == api.SCOPE_KEYFRAME:
+            later = [s for s in walk if s > key.step]
+            there = later[0] if later else None
+            held = (None if there is None else
+                    state_of(db, tax, key.desktop, there, cache).get(instance))
+            what = "" if held is None else f"（{state_zh(held.state)}）"
+            out["refuse"] = (
+                f"这一帧是状态边界（✂）：Enter 会把第 {there}–{chosen.anchor_step} 步{what}"
+                f"的形状一起改掉。用 Ctrl+K（从这帧起新版本）")
+        else:
+            out["top"] = above[0]
+    return out
 
 
 def _stamp_source(kf: ShapeKeyframe, source: str, draft_id: Optional[int]) -> None:
@@ -384,7 +501,17 @@ def preview(db: Db, truth: TruthService, key: FrameKey, instance: str, scope: st
     if scope == api.SCOPE_FRAME_OVERRIDE:
         steps = annotatable_steps(db, key.desktop, key.view, [key.step])
     else:
-        if scope == api.SCOPE_SPLIT and not _cannot_split(chosen, key.step, direction):
+        # the reach *after* the cuts the commit would make (U8 round 3): a
+        # re-trace inside a state run reaches that run, not the version's span
+        cuts = plan_cuts(db, truth.tax, key, instance, chain, chosen, scope, direction,
+                         geom_type, cache)
+        if cuts["below"] is not None:
+            chain = chain + [_copy_keyframe(chosen, key, cuts["below"])]
+        if cuts["top"] is not None:
+            target = new_keyframe(key, instance, seg, cuts["top"], placement, [], geom_type)
+            target.version = int(chosen.version) + 1
+            simulated = chain + [target]
+        elif scope == api.SCOPE_SPLIT and not _cannot_split(chosen, key.step, direction):
             target = new_keyframe(key, instance, seg, key.step, placement, [], geom_type)
             target.version = 1 if chosen is None else int(chosen.version) + 1
             simulated = chain + [target]

@@ -21,7 +21,6 @@ from typing import Optional
 
 from tda.ui import app_actions as A
 from tda.ui import app_support as S
-from tda.ui import session_api as api
 from tda.ui.class_names import state_zh
 
 __all__ = ["NO_TARGET", "SPLIT_NOW", "StateMixin", "state_note"]
@@ -29,13 +28,56 @@ __all__ = ["NO_TARGET", "SPLIT_NOW", "StateMixin", "state_note"]
 #: ``T`` with nothing selected and nothing being drawn.
 NO_TARGET = ("T 改的是实例表里选中的零件（或正在画的零件）：先在右下实例表点一行 / "
              "select a part in the instance table first")
-#: Said after a change that leaves an open ✂ row on this frame.
-SPLIT_NOW = "这帧的形状要重画：Ctrl+K 从这帧起新版本"
+#: The tail of every "the shape has to be redrawn" sentence (U8 round 3): no
+#: order to remember, the commit cuts the version at the run's edges itself.
+SPLIT_NOW = "工具会自动在状态边界切开版本"
 #: Prefix of a refusal.
 REFUSED = "改不了状态："
 
 
-def state_note(label: str, patch, split_here: bool,
+def redraw_text(state: str, run: tuple[int, int], redraw) -> str:
+    """Which key draws the run's shape, or ``""`` when nothing has to be drawn.
+
+    ``redraw`` is :func:`tda.ui.session_state.redraw_needed`'s ``{"top",
+    "below"}`` (``True`` reads as a ✂ at the top). Any frame of the run takes
+    ``Enter`` -- the commit cuts the version at both edges -- except the run's
+    top frame when it is an open ✂ row: there ``Enter`` is refused and
+    ``Ctrl+K`` is the key.
+    """
+    if redraw is True:
+        redraw = {"top": True, "below": False}
+    if not redraw or not (redraw.get("top") or redraw.get("below")):
+        return ""
+    first, last = run
+    look = f"「{state_zh(state)}」"
+    if first == last:
+        key = "Ctrl+K" if redraw.get("top") else "Enter（或 Ctrl+K）"
+        return f"这帧的形状要重画：画{look}后 {key}；{SPLIT_NOW}"
+    where = f"在第 {first}–{last} 步任一帧画{look}后 Enter"
+    if redraw.get("top"):
+        where += f"（第 {last} 步是 ✂ 行，那里用 Ctrl+K）"
+    else:
+        where += "（或在 ✂ 行 Ctrl+K）"
+    return f"这几帧的形状要重画：{where}；{SPLIT_NOW}"
+
+
+def cut_note(result: dict, steps_text) -> str:
+    """What a commit that stopped at a state boundary did (U8 round 3), or ``""``."""
+    below, top = result.get("cut_below"), result.get("cut_top")
+    if below is None and top is None:
+        return ""
+    parts = []
+    if below is not None:
+        parts.append(f"已先在第 {below} 步切开旧版本（形状不变）")
+    if top is not None:
+        parts.append(f"新版本只到第 {top} 步，后面的帧保持原来的形状")
+    reach = result.get("edit_reach") or []
+    if reach:
+        parts.append(f"这次修改只影响第 {steps_text(reach)} 步")
+    return "，".join(parts)
+
+
+def state_note(label: str, patch, redraw=None,
                run: Optional[tuple[int, int]] = None,
                after: Optional[tuple[int, str]] = None, unseen: bool = False) -> str:
     """The status line after an assertion, in the annotator's words.
@@ -44,8 +86,8 @@ def state_note(label: str, patch, split_here: bool,
     ``run`` (the steps now sharing the state) and ``after`` (the first step past
     them) make a run of frames read as one: ``…；第 20–21 步都是 关上；第 22 步起
     恢复 打开``.  ``unseen``: the restore step has no image in this view, so the
-    log's value is kept there without anyone having looked.  When this frame's
-    card now asks for a new shape version, :data:`SPLIT_NOW`.
+    log's value is kept there without anyone having looked.  ``redraw``: where
+    the run still shows the other state's shape -- then :func:`redraw_text`.
     """
     text = (f"{label} 在第 {patch.step} 步：{state_zh(patch.state)}"
             f"（之前为 {state_zh(patch.previous)}）")
@@ -60,8 +102,9 @@ def state_note(label: str, patch, split_here: bool,
     if unseen and patch.next_step is not None:
         text += (f"（第 {patch.next_step} 步在这个视角没有图像，那里按日志算"
                  f"{'' if patch.restores is None else ' ' + state_zh(patch.restores)}）")
-    if split_here:
-        text += f"。{SPLIT_NOW}"
+    redo = redraw_text(patch.state, run or (patch.step, patch.step), redraw)
+    if redo:
+        text += f"。{redo}"
     return text + "（Ctrl+Z 撤销）"
 
 
@@ -143,12 +186,8 @@ class StateMixin:
         self.task_card.refresh()
         self.timeline.refresh_statuses()
         self.forget_card_hints()
-        split_here = any(
-            str(row.get("instance")) == str(instance)
-            and row.get("kind") == api.KIND_SPLIT_KEYFRAME and not row.get("done")
-            for row in self.task_card.rows())
-        note = state_note(label, patch, split_here, result.get("run"), result.get("after"),
-                          unseen=bool(result.get("restore_unseen")))
+        note = state_note(label, patch, result.get("redraw"), result.get("run"),
+                          result.get("after"), unseen=bool(result.get("restore_unseen")))
         self.update_status()
         self.report(note, hold_ms=6000)
         self.flash_visibility_note(note)

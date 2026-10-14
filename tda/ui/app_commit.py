@@ -18,6 +18,7 @@ from tda.ui import app_compat as compat
 from tda.ui import app_priors
 from tda.ui import app_support as S
 from tda.ui import session_api as api
+from tda.ui.app_state import cut_note
 from tda.ui.class_names import instance_label, visibility_zh
 # the frame-range wording lives with the guide's other sentences now (U7: the
 # add-parts dialog and the bulk accept say ranges too); importable from here
@@ -317,6 +318,14 @@ class CommitMixin:
         # No re_explain() here: committing re-renders the frame, which clears
         # assist_result, so a re-split would run against nothing.  The real one
         # happens at confirm time, where the answer is actually used.
+        cut = cut_note(result, steps_text)
+        if cut:
+            # the commit stopped at a state boundary (U8 round 3): say where,
+            # and which frames the edit reached
+            self.logger.info("commit of %s at step %s cut at %s / %s", instance, key.step,
+                             result.get("cut_below"), result.get("cut_top"))
+            self.report(cut, hold_ms=6000)
+            return
         if result.get("no_split"):
             # Ctrl+K where the version in force starts: it re-traced that one
             # (U6 addendum, item 2) -- and saying nothing let the annotator

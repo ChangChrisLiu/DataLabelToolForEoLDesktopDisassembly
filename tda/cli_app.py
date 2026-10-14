@@ -343,7 +343,7 @@ def _check_one(db, tax, args: argparse.Namespace, desktop: int, view: str) -> in
     standing = _open_conflicts(stats["truth"], db, [desktop], view)
     # a confirmed frame whose card still has an open ✂ row ships the new state
     # next to the old shape (U8 round 2): visible here, not only on the card
-    from tda.ui.session_tasks import SHAPE_PREDATES_STATE, stale_split_rows
+    from tda.core.split_rows import SHAPE_PREDATES_STATE, stale_split_rows
 
     stale = stale_split_rows(db, tax, desktop, view)
     problems.extend(f"{SHAPE_PREDATES_STATE}:{instance} (step {step})"

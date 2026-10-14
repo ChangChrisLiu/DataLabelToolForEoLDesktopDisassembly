@@ -128,8 +128,9 @@ def test_a_run_of_frames_is_said_as_one(window):
     message = window.status_message()
     assert ("ram_latch.02 在第 11 步：打开（之前为 关上）；第 11–12 步都是 打开；"
             "第 13 步起恢复 关上") in message
-    # frame 11 is diffed against 12, where it is open too: nothing to draw here
-    assert SPLIT_NOW not in message
+    # round 3: which key draws the run, no order to remember; 12 is the ✂ row
+    assert ("这几帧的形状要重画：在第 11–12 步任一帧画「打开」后 Enter（第 12 步是 ✂ 行，"
+            "那里用 Ctrl+K）；工具会自动在状态边界切开版本") in message
 
 
 def test_t_with_nothing_selected_says_where_to_click(window):
@@ -237,7 +238,7 @@ def test_the_documents_say_it():
         "不要用 `Enter` 重画已确认的形状去表达状态变化。") in quick
     assert _squash("在第 21 步：关上（之前为 打开）；第 22 步起恢复 打开") in quick
     assert _squash("按 `T`（或实例表的状态框）改这一帧") in guide
-    assert _squash("**别用 `Enter` 重画已确认的形状**") in guide
+    assert _squash("**形状不会越过状态边界**") in guide
     assert _squash(A.action_named("cycle_state").label_zh) in guide   # the key table
     spec = _squash((repo / "docs" / "superpowers" / "specs"
                     / "2026-09-17-teardown-annotator-design.md").read_text(encoding="utf-8"))
@@ -277,6 +278,39 @@ def test_the_frames_before_a_removal_are_said_as_one_run(whole_window):
                     "第 42 步起是 拆下" in win.status_message())
     assert manual(win, LOGGED) == [(39, "open", "closed")]
     assert "第 39–41 步都是 关上；第 42 步起是 拆下" in win.status_message()
+    # round 3: the redraw needs no order -- any frame of the run, Enter
+    assert ("这几帧的形状要重画：在第 39–41 步任一帧画「关上」后 Enter（或在 ✂ 行 Ctrl+K）；"
+            "工具会自动在状态边界切开版本") in win.status_message()
+
+
+def test_enter_at_the_end_of_life_says_where_it_cut(whole_window):
+    """Round 3 (a) through the window: Enter at 41, the status line says it all."""
+    from tda.core import masks
+    from tda.core.model import ShapeKeyframe, ShapePart
+    import numpy as np
+
+    win = whole_window
+    shape = np.zeros((64, 64), dtype=bool)
+    shape[40:50, 40:50] = True                    # the open clip, away from the stroke
+    win.db.add_keyframe(ShapeKeyframe(
+        id=None, instance=LOGGED, desktop=DESKTOP, view="scan", pose_segment=1,
+        anchor_step=42, placement="in_chassis", geom_type="mask",
+        parts=[ShapePart("main", masks.encode_rle(shape))]))
+    for step in (41, 40, 39):
+        goto(win, step)
+        win.instances.select_instance(LOGGED)
+        win.act_cycle_state()
+    goto(win, 41)
+    win.expire_visibility_note()
+    win.task_card.sigRequestEdit.emit(LOGGED)
+    brush_stroke(win)
+    win.act_commit()
+    if win._pending_warning is not None:          # the synthetic clip is "too big"
+        win.act_commit()
+    assert win.status_message() == ("已先在第 38 步切开旧版本（形状不变），"
+                                    "这次修改只影响第 39–41 步")
+    anchors = sorted(kf.anchor_step for kf in win.db.keyframes(DESKTOP, "scan", LOGGED))
+    assert anchors == [38, 42]
 
 
 def test_the_combo_is_annotate_mode_only(window):
@@ -329,7 +363,10 @@ def test_ctrl_k_on_an_open_split_row_cuts_the_version_untouched(window):
     window.act_commit_split()
     if window._pending_warning is not None:     # the synthetic latch is "too big"
         window.act_commit_split()               # ... the second press writes it
-    assert window.status_message() == SPLIT_UNCHANGED
+    # round 3: 11 (closed, same version) is cut first, and the line says so
+    assert window.status_message() == ("已先在第 11 步切开旧版本（形状不变），"
+                                       "这次修改只影响第 12 步")
+    assert SPLIT_UNCHANGED != window.status_message()
     anchors = sorted(kf.anchor_step for kf in window.db.keyframes(DESKTOP, "scan", CORRECTED))
-    assert anchors == [STEP, LAST_STEP]
+    assert anchors == [STEP - 1, STEP, LAST_STEP]
     assert card_row(window, CORRECTED)["done"] is True

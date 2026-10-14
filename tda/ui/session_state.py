@@ -28,6 +28,7 @@ from tda.core.state_assert import (
     assertable_states,
     write_events,
 )
+from tda.core.split_rows import open_split_steps, reverse_walk
 from tda.core.states import FrameState, needs_geom
 from tda.core.truth import TruthService
 from tda.core.truth_inputs import InputCache, annotatable_steps, instances_of, state_of
@@ -96,6 +97,24 @@ def run_around(db: Db, tax, desktop: int, instance: str,
     return table[first], table[last], after
 
 
+def redraw_needed(db: Db, tax, key: FrameKey, instance: str, first: int,
+                  last: int) -> dict:
+    """Where the state run ``first..last`` still shows the other state's shape.
+
+    ``{"top", "below"}``: an open ✂ row at the run's last frame (its state
+    differs from the next one's, one version on both sides) and one at the walk
+    frame just under it. Either means the run's shape has to be drawn; the
+    commit rule of round 3 then cuts the version at those edges by itself, so
+    the status line only has to say *which key* (:func:`tda.ui.app_state.state_note`).
+    """
+    walk = reverse_walk(db, key.desktop, key.view)
+    under = [s for s in walk if s < first]
+    low = under[-1] if under else first
+    opened = set(open_split_steps(db, tax, key.desktop, key.view, instance, low, last + 1,
+                                  walk=walk))
+    return {"top": last in opened, "below": bool(under) and low in opened}
+
+
 def apply_assert_state(db: Db, truth: TruthService, payload: dict,
                        current: Optional[int] = None) -> dict:
     """Both directions of an ``assert_state`` op: write its rows, then settle."""
@@ -133,6 +152,7 @@ def commit_assertion(db: Db, truth: TruthService, key: FrameKey, instance: str,
     first, last, after = run_around(db, truth.tax, key.desktop, instance, key.step)
     return {"changed": True, "patch": patch, "affected": affected,
             "run": (first, last), "after": after,
+            "redraw": redraw_needed(db, truth.tax, key, instance, first, last),
             "compiled": stats["compiled"], "rechecks": stats["rechecks"],
             "conflicts": stats["conflicts"], "problems": stats["problems"],
             "frame": stats["frame"], "op": Op(OP_ASSERT_STATE, payload, inverse)}
