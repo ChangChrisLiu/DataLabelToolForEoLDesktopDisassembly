@@ -460,6 +460,12 @@ class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, TruthCa
         key = self.current()
         card = edit.task_card_for(self.db, self.tax, key.desktop, key.view, key.step,
                                   neighbour=self.task_neighbour(), span=self.task_span())
+        # an open cover / latch may be on the pile instead (task U9): its row says
+        # which key to press when the picture does not have it
+        offered = self.verb_offers()
+        for row in card:
+            if offered.get(str(row.get("instance", ""))) == "remove":
+                row["verb_fix"] = "remove"
         return rows.mark_invisible(card, self._compiled_or_none())
 
     def _compiled_or_none(self) -> Optional[CompiledFrame]:
