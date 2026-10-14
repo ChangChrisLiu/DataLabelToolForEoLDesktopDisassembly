@@ -161,6 +161,15 @@ class TruthCacheMixin:
         """
         if not self.sweeper_enabled or self._step is None:
             return
+        if getattr(self, "gallery", False):
+            # the components gallery walks forwards: Space goes to shot k+1 (U10)
+            later = [s for s in self._available if s > self._step]
+            if not later:
+                return
+            step = later[0]
+            if self._compiled.get(step, (None,))[0] != self._epoch:
+                self.sweeper.prefetch(step, self._epoch)
+            return
         earlier = [s for s in self._available if s < self._step]
         if not earlier:
             return
