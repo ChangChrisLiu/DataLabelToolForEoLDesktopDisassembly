@@ -205,6 +205,29 @@ def _default_verb(cls: str) -> str:
     return "open" if cls in _OPENABLE else "remove"
 
 
+#: A word in a sheet name that says the part came out (task U9).
+_TAKEN_OUT = re.compile(r"\b(?:remove|take)\b", re.IGNORECASE)
+
+
+def sheet_verb(cls: str, raw_name: str, drafted: Optional[str], tax: Taxonomy) -> str:
+    """The verb one sheet row's action gets (task U9).
+
+    ``drafted`` is what the name's own words and the class default give
+    (:func:`tda.core.taxonomy.parse_raw_name`, :func:`_default_verb`). For a
+    class that may be opened *or* taken out
+    (:meth:`~tda.core.taxonomy.Taxonomy.opened_or_taken_out`) that is ``open``
+    even for "remove SSD locker shield" -- ``verb_class_overrides`` turns a
+    latch's ``remove`` into ``open`` -- and on D2 six such parts went on the
+    pile while the card kept asking for them. A name that says ``remove`` or
+    ``take`` as a word is taken at its word; every other one stays ``open``,
+    and the annotator corrects it from the pictures (``Shift+T``).
+    """
+    verb = drafted or _default_verb(cls)
+    if verb == "open" and cls in tax.opened_or_taken_out() and _TAKEN_OUT.search(raw_name or ""):
+        return "remove"
+    return verb
+
+
 def _is_chassis(parsed: ParsedTarget, step_type: str) -> bool:
     return step_type == "reorient" or parsed.cls == CHASSIS_KEY
 
@@ -282,10 +305,14 @@ class _Importer:
         self, step: int, raw_name: str, parsed: ParsedTarget, step_type: str, row: dict
     ) -> ActionRec:
         cls = CHASSIS_KEY if _is_chassis(parsed, step_type) else parsed.cls
-        verb = parsed.verb or _default_verb(cls)
+        drafted = parsed.verb or _default_verb(cls)
+        verb = sheet_verb(cls, raw_name, drafted, self.tax)
         result = "failed" if step_type == "failed" else "success"
         self._check_verb(step, cls, verb)
-        target = self._target(step, raw_name, parsed, step_type, verb, result)
+        # which part a row names is decided on the drafted verb: U9 says what
+        # was done to it, never which part it is ("remove SSD locker shield"
+        # is not merged into the "SSD Locker" opened before it)
+        target = self._target(step, raw_name, parsed, step_type, drafted, result)
         return ActionRec(
             desktop=self.desktop,
             step=step,

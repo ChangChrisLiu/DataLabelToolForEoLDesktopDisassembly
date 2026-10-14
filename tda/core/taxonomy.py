@@ -118,6 +118,19 @@ class Taxonomy:
         return bool(self._defn(cls)["needs_mask"].get(state, False))
 
     # -- verbs --------------------------------------------------------------
+    def opened_or_taken_out(self) -> frozenset[str]:
+        """Classes whose parts are either opened in place or taken out (task U9).
+
+        Exactly the classes both ``open`` and ``remove`` apply to: a cover or a
+        PSU / drive / card / cooler latch can swing open and stay on the
+        machine, or come off and go on the pile, and only the pictures say
+        which. A RAM clip or a socket lever is moulded into the board and only
+        ever opens, so it is not one of them.
+        """
+        opens = (self.verbs.get("open") or {}).get("applies_to") or ()
+        removes = (self.verbs.get("remove") or {}).get("applies_to") or ()
+        return frozenset(opens) & frozenset(removes)
+
     def apply_verb(self, cls: str, attrs: dict, verb: str) -> Optional[tuple[str, str]]:
         """Return ``(attr, new_value)`` or ``None`` when nothing changes.
 
