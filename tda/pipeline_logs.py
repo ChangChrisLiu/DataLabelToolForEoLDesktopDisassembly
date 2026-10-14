@@ -9,7 +9,9 @@ sheet and cameras disagree.
 The import is deliberately hard to lose work to. A desktop that already has
 steps is skipped unless ``force`` is given, and even a forced run
 * says per desktop what it is about to replace,
-* carries the imported ``LS:`` note lines over to the new steps, and
+* carries the imported ``LS:`` note lines over to the new steps,
+* replays the open/remove corrections made with ``Shift+T`` that are still in
+  effect (:mod:`tda.core.verb_replay`), and
 * leaves the hand-written (``auto=False``) state events alone.
 
 One desktop is one transaction, and a sheet that cannot be read is recorded as
@@ -38,6 +40,7 @@ from tda.core.extra import extra_keys
 from tda.core.model import VIEWS, StepRec, StepType, is_extra
 from tda.core.states import INITIAL_STEP, events_from_actions, initial_overrides
 from tda.core.taxonomy import Taxonomy
+from tda.core.verb_replay import OP_REPLAY, Replay, replay_for_import
 from tda.pipeline import Log, merge_desktop_meta, split_pose_segments, wanted
 
 #: Mirrors :data:`tda.core.ls_import.NOTES_PREFIX`; repeated so importing the
@@ -185,6 +188,9 @@ class DesktopRun:
     extras_kept: list[str] = field(default_factory=list)
     #: One line per added instance ``--adopt-extras`` handed to the sheet.
     adopted: list[str] = field(default_factory=list)
+    #: The ``Shift+T`` verb corrections a forced re-import kept (one line) and
+    #: the ones the new sheet no longer fits (one line each), task U9 round 2.
+    corrections: list[str] = field(default_factory=list)
 
 
 def inferred_section(run: DesktopRun) -> list[str]:
@@ -728,13 +734,19 @@ def _adopt_extras(db: Db, desktop: int, taken_by: dict[str, str]) -> list[str]:
 def _write_import(
     db: Db, li: LogImport, tax: Taxonomy, previous: list[StepRec], plan: DropPlan,
     adopt: Optional[dict[str, str]] = None,
-) -> tuple[int, int, int, list[str], list[str], list[str], list[str], list[str], list[str]]:
+) -> tuple[int, int, int, list[str], list[str], list[str], list[str], list[str], list[str],
+           Replay]:
     """Write one desktop's import atomically.
 
     Returns ``(events, steps with LS notes, notes dropped, fills, unresolved,
-    implied, dropped instances, drop issues, adopted)``. ``adopt`` is
+    implied, dropped instances, drop issues, adopted, replay)``. ``adopt`` is
     :func:`extra_clash` when ``--adopt-extras`` was given (see
     :func:`_adopt_extras`).
+
+    The verb corrections made with ``Shift+T`` that are still in effect are
+    replayed onto the parsed actions before they are written
+    (:mod:`tda.core.verb_replay`), and one ``replay_corrections`` row in the
+    op log says which were replayed and which no longer fit the sheet.
 
     The relational heuristic of spec 7.3 runs here, *before* the instances are
     written and inside the same transaction: ``logs.py`` leaves ``fastens``,
@@ -752,6 +764,10 @@ def _write_import(
     clip out with its board is part of the same log.
     """
     declined = db.declined_implied(li.desktop)  # read before the transaction writes
+    # the Shift+T corrections still in effect, read off the step table this
+    # replaces and put back onto the parsed actions (task U9 round 2), so the
+    # events and the relational inference below see the corrected verbs
+    li.actions, replay = replay_for_import(db, li.desktop, li.actions, li.instances, tax)
     adopt = dict(adopt or {})
     extras = {key: rec for key, rec in db.instances(li.desktop).items()
               if is_extra(rec) and key not in li.instances and key not in adopt}
@@ -761,6 +777,9 @@ def _write_import(
         kept, dropped = carry_ls_notes(li.steps, previous)
         merge_desktop_meta(db, li.desktop, desktop_fields(li.meta))
         db.replace_steps(li.desktop, li.steps, li.actions)
+        if replay:
+            db.log_op(li.desktop, OP_VIEW, OP_REPLAY, replay.payload(),
+                      {"actions": replay.inverse}, IMPLIED_ANNOTATOR)
         adopted = _adopt_extras(db, li.desktop, adopt)
         implied = add_implied_instances(db, li, tax)
         fills = infer_relational_fields(li.instances, tax, li.actions)
@@ -776,7 +795,7 @@ def _write_import(
         split_pose_segments(db, li.desktop)
     return (len(events), kept, dropped, fills,
             unresolved_relations(li.instances, tax, li.actions, declined), implied,
-            gone, drop_issues, adopted)
+            gone, drop_issues, adopted, replay)
 
 
 def dropped_notes_line(desktop: int, dropped: int) -> str:
@@ -806,8 +825,10 @@ def _force_warning(db: Db, desktop: int, previous: list[StepRec]) -> str:
     )
     return (
         f"[import-logs] D{desktop:02d}: --force, replacing {len(previous)} steps / "
-        f"{len(db.actions(desktop))} actions; {notes}every other manual edit to the step "
-        f"table is lost, and so is every relational field a human set on an instance "
+        f"{len(db.actions(desktop))} actions; {notes}the open/remove corrections made "
+        f"with Shift+T are replayed where the sheet still has that action; every other "
+        f"manual edit to the step table is lost, and so is every relational field a "
+        f"human set on an instance "
         f"(fastens, parent, mounted_on, socket_host): the instances are re-created from "
         f"the sheet and the heuristic fills them again"
     )
@@ -926,10 +947,12 @@ def _import_one(
             f"kept the file's number"
         )
     (events, kept, dropped, fills, unresolved, implied,
-     gone, drop_issues, adopted) = _write_import(db, li, tax, previous, plan, clash)
+     gone, drop_issues, adopted, replay) = _write_import(db, li, tax, previous, plan, clash)
     extras_kept = extra_keys(db.instances(desktop))
     if dropped:
         issues.append(dropped_notes_line(desktop, dropped))
+    corrections = ([replay.kept_line()] if replay.kept_line() else []) + \
+        replay.unmatched_lines()
     issues.extend(drop_issues)
     if log:
         for text in adopted:
@@ -950,6 +973,8 @@ def _import_one(
             log(f"[import-logs]   {text}")
         if dropped:
             log(f"[import-logs]   {dropped_notes_line(desktop, dropped)}")
+        for text in corrections:
+            log(f"[import-logs]   {text}")
     return DesktopRun(
         desktop=desktop, source=str(path), status="imported", steps=len(li.steps),
         actions=len(li.actions), instances=len(li.instances), events=events,
@@ -958,6 +983,7 @@ def _import_one(
         issues=list(li.issues) + issues, fills=fills, unresolved=unresolved,
         implied=implied, dropped=gone, kept_for_review=len(plan.holding),
         kept_carrying_work=plan.carrying_work, extras_kept=extras_kept, adopted=adopted,
+        corrections=corrections,
     )
 
 
