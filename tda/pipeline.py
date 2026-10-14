@@ -21,6 +21,7 @@ command that may reach the raw drive, and only into ``backup_dir`` as
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
@@ -30,8 +31,15 @@ from tda.core.pose_breaks import describe_discard, describe_uncarried
 from tda.core.db_backup import DEFAULT_KEEP
 from tda.core.db_status import VIEW_COUNTERS
 from tda.core.index import DesktopIndex, load_index
-from tda.core.model import VIEWS
-from tda.core.truth_inputs import TRUTH_AUX_KEYS
+from tda.core.model import (
+    ALL_VIEWS,
+    COMPONENT_CAMERA,
+    COMPONENT_VIEWS,
+    VIEWS,
+    FrameKey,
+    StepType,
+)
+from tda.core.truth_inputs import TRUTH_AUX_KEYS, infer_hw
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PATHS_PATH = "configs/paths.yaml"
@@ -54,7 +62,7 @@ __all__ = [
     "backup_dest", "backup_keep", "cache_file", "desktops_without_steps", "drive_dir", "index_path",
     "load_index_into_db", "load_paths", "ls_export_path", "merge_desktop_meta", "open_db",
     "parse_desktops", "read_index", "ready_backup_dest", "require", "split_pose_segments",
-    "status_rows",
+    "status_rows", "gallery_rows", "settle_gallery",
 ]
 
 
@@ -334,18 +342,139 @@ def _load_one(
             if log:
                 log(f"[load-index] D{desktop:02d}: no steps in the index, no pose segment")
             return
+        gallery = settle_gallery(db, desktop)   # before the sequence is seeded
         _seed_pose_segments(db, desktop, di.n_steps)
         segments = split_pose_segments(db, desktop)
     counts["frames"] += len(frames)
     counts["missing"] += len(di.missing)
     counts["segments"] += sum(segments.values())
+    counts["gallery"] = counts.get("gallery", 0) + sum(gallery["shots"].values())
     if log:
         extra = f", {len(di.missing)} missing" if di.missing else ""
         cut = f", {max(segments.values())} pose segments" if segments else ""
+        shots = ""
+        if any(gallery["shots"].values()):
+            shots = ", gallery " + " ".join(
+                f"{view} {n}" for view, n in gallery["shots"].items() if n)
         log(
             f"[load-index] D{desktop:02d}: {di.n_steps} steps, "
-            f"{len(frames)} frames{extra}{cut}"
+            f"{len(frames)} frames{extra}{cut}{shots}"
         )
+        for line in gallery["moved"]:
+            log(f"[load-index] D{desktop:02d}: {line}")
+
+
+# --------------------------------------------------------------------------- #
+# the components gallery (task U10, spec 3.2b)
+# --------------------------------------------------------------------------- #
+#: A sheet row that photographed the laid-out parts rather than a step of the
+#: teardown: typed ``ignore`` and named for all the components (D66's step 13,
+#: "All components").
+ALL_COMPONENTS_RE = re.compile(r"\ball\s+(?:the\s+)?(?:components?|parts)\b", re.IGNORECASE)
+#: Where a sequence view's frame of such a row goes: its camera's gallery.
+GALLERY_OF: dict[str, str] = {camera: view for view, camera in COMPONENT_CAMERA.items()}
+#: ``op_log.annotator`` of the whole-image ROI a gallery shot is seeded with.
+GALLERY_ANNOTATOR = "cli:load-index"
+#: ``aux`` key naming the sheet step a relocated gallery shot came from.
+SHEET_STEP_KEY = "sheet_step"
+
+
+def gallery_rows(db: Db, desktop: int) -> list[int]:
+    """The steps of ``desktop``'s sheet that are layout photos, not teardown steps."""
+    return [int(rec.step) for rec in db.steps(desktop)
+            if rec.step_type == StepType.IGNORE.value
+            and ALL_COMPONENTS_RE.search(str(rec.raw_name or ""))]
+
+
+def settle_gallery(db: Db, desktop: int) -> dict:
+    """Move layout-photo rows into the gallery and give every shot its segment.
+
+    Idempotent, and called by both ``load-index`` and ``import-logs`` -- the
+    rule needs the step table, which may arrive after the frames.
+
+    1. **A sheet row of the parts** (:func:`gallery_rows`): its step keeps its
+       number and its ``ignore`` type, but its frames are not frames of the
+       teardown -- each sequence view's photo of it becomes the next shot of
+       its camera's gallery view (scanner: none; ``aux["sheet_step"]`` says
+       where it came from) and the sequence rows are dropped. A row somebody
+       annotated is never dropped (it is reported instead).
+    2. **One pose segment per shot**, ``[k, k]``, with the whole image as its
+       ROI. The layout was re-arranged between shots, so a shape drawn on one
+       must reach no other -- and a pose segment is exactly the scope a shape,
+       a layer order and a pairwise layering live in.
+
+    Returns ``{"moved": [lines], "shots": {view: n}}``.
+    """
+    moved: list[str] = []
+    with db.transaction():
+        for step in gallery_rows(db, desktop):
+            for view in VIEWS:
+                key = FrameKey(desktop, step, view)
+                row = db.get_frame(key)
+                if row is None:
+                    continue
+                if db.frame_is_annotated(key):
+                    moved.append(f"step {step} ({view}) is a photo of the laid-out parts "
+                                 f"but has annotations; left in the sequence")
+                    continue
+                target = GALLERY_OF.get(view)
+                if target is not None and row.get("path") and not row.get("missing"):
+                    shot = _gallery_shot(db, desktop, target, step)
+                    aux = dict(row.get("aux") or {})
+                    aux[SHEET_STEP_KEY] = step
+                    db.upsert_frame(FrameKey(desktop, shot, target), row["path"], aux,
+                                    row.get("ts"), {"missing": False})
+                    where = f"{target} shot {shot}"
+                else:
+                    where = "nowhere (no image)"
+                db.delete_unannotated_frame(key)
+                moved.append(f"step {step} ({view}) is a photo of the laid-out parts: "
+                             f"moved to {where}")
+        shots = {view: _seed_gallery_segments(db, desktop, view) for view in COMPONENT_VIEWS}
+    return {"moved": moved, "shots": shots}
+
+
+def _gallery_shot(db: Db, desktop: int, view: str, sheet_step: int) -> int:
+    """The shot a sheet row's photo has, or gets: after the folder's own shots."""
+    rows = db.frames_for(desktop, view)
+    for row in rows:
+        if (row.get("aux") or {}).get(SHEET_STEP_KEY) == sheet_step:
+            return int(row["step"])
+    return max((int(row["step"]) for row in rows), default=0) + 1
+
+
+def _seed_gallery_segments(db: Db, desktop: int, view: str) -> int:
+    """Segment ``[k, k]`` with a whole-image ROI for every shot; the number of shots.
+
+    Nothing that is there is rewritten: a segment keeps its row (and so the
+    shapes drawn against it), and a stored ROI is left alone.
+    """
+    shots = [int(row["step"]) for row in db.frames_for(desktop, view) if not row.get("missing")]
+    have = {int(s["seg"]): s for s in db.pose_segments(desktop, view)}
+    for shot in shots:
+        seg = have.get(shot)
+        if seg is None:
+            db.set_pose_segment(desktop, view, shot, shot, shot, shot, None, None)
+        elif (seg.get("start_step"), seg.get("end_step")) != (shot, shot):
+            db.update_pose_segment(desktop, view, shot, start_step=shot, end_step=shot,
+                                   ref_step=shot)
+        if not (seg or {}).get("roi"):
+            height, width = _gallery_hw(db, FrameKey(desktop, shot, view))
+            db.set_pose_segment_roi(desktop, view, shot, [0, 0, width, height],
+                                    annotator=GALLERY_ANNOTATOR, hw=(height, width))
+    return len(shots)
+
+
+def _gallery_hw(db: Db, key: FrameKey) -> tuple[int, int]:
+    """The shot's recorded size, else its camera's nominal one."""
+    recorded = ((db.get_frame(key) or {}).get("aux") or {}).get("hw")
+    try:
+        height, width = (int(v) for v in recorded)
+        if height > 0 and width > 0:
+            return height, width
+    except (TypeError, ValueError):
+        pass
+    return infer_hw(key.view)
 
 
 # --------------------------------------------------------------------------- #
@@ -485,9 +614,10 @@ def status_rows(db: Db, desktops: Optional[set[int]] = None) -> list[dict]:
             "desktop": desktop,
             "brand": meta.get("brand_model_raw") or meta.get("brand") or "",
             **{name: totals[name].get(desktop, 0) for name in STATUS_TOTALS},
+            # the sequence's four views and the components gallery's three
             "views": {
                 view: {name: per_view[name].get((desktop, view), 0) for name in VIEW_COUNTERS}
-                for view in VIEWS
+                for view in ALL_VIEWS
             },
         })
     return out

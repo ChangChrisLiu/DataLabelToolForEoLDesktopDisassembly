@@ -38,12 +38,12 @@ from tda.core.log_report import _expected_steps
 from tda.core.logs import LogImport, import_log, iter_desktop_csvs, read_desktop_csv
 from tda.core import extra as X
 from tda.core.extra import extra_keys
-from tda.core.model import VIEWS, StepRec, StepType, is_extra
+from tda.core.model import ALL_VIEWS, StepRec, StepType, is_extra
 from tda.core.states import INITIAL_STEP, events_from_actions, initial_overrides
 from tda.core.taxonomy import Taxonomy
 from tda.core.merge_replay import OP_REPLAY_MERGES, MergeReplay, replay_merges_for_import
 from tda.core.verb_replay import OP_REPLAY, Replay, replay_for_import
-from tda.pipeline import Log, merge_desktop_meta, split_pose_segments, wanted
+from tda.pipeline import Log, merge_desktop_meta, settle_gallery, split_pose_segments, wanted
 
 #: Mirrors :data:`tda.core.ls_import.NOTES_PREFIX`; repeated so importing the
 #: pipeline does not pull in numpy/pycocotools. ``tests/test_cli.py`` pins them
@@ -416,7 +416,7 @@ def _references(db: Db, desktop: int, key: str) -> dict[str, int]:
     a reason -- it was derived from the instance and is re-derived without it.
     """
     counts = dict(db.instance_reference_counts(desktop, key))
-    shapes = sum(len(db.keyframes(desktop, view, key)) for view in VIEWS)
+    shapes = sum(len(db.keyframes(desktop, view, key)) for view in ALL_VIEWS)
     if shapes:
         counts["shape_keyframe"] = shapes
     held = [r for r in db.relations(desktop)
@@ -812,6 +812,8 @@ def _write_import(
         events = events_from_actions({**extras, **li.instances}, li.actions, tax,
                                      initial=initial)
         db.replace_events(li.desktop, events, auto_only=True)
+        # a sheet row of the laid-out parts leaves the sequence (task U10)
+        settle_gallery(db, li.desktop)
         split_pose_segments(db, li.desktop)
     return (len(events), kept, dropped, fills,
             unresolved_relations(li.instances, tax, li.actions, declined), implied,

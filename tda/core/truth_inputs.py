@@ -30,6 +30,7 @@ from tda.core.cache import cached_image_path
 from tda.core.db import Db
 from tda.core.rawroot import resolve_raw
 from tda.core.model import (
+    GALLERY_EXCLUDED_CLASSES,
     FrameKey,
     FrameOverride,
     InstanceRec,
@@ -40,12 +41,14 @@ from tda.core.model import (
     Similarity,
     StateEvent,
     ZOrderRec,
+    is_component_view,
     is_provisional,
     step_is_annotatable,
 )
 from tda.core.states import (
     FrameState,
     events_from_actions,
+    gallery_state,
     initial_overrides,
     needs_geom,
     state_at,
@@ -69,6 +72,7 @@ __all__ = [
     "instances_of",
     "pose_segment_of",
     "state_of",
+    "view_steps",
 ]
 
 #: The pose segment a frame belongs to when nothing is recorded. Segment 0 is
@@ -82,6 +86,10 @@ VIEW_HW: dict[str, tuple[int, int]] = {
     "oak1": (3040, 4032),
     "oak2": (3040, 4032),
     "rs": (720, 1280),
+    # the components gallery (task U10): the same cameras
+    "cmp_oak1": (3040, 4032),
+    "cmp_oak2": (3040, 4032),
+    "cmp_rs": (720, 1280),
 }
 
 #: Values of ``aux["hw_source"]``: the view's nominal size vs. the real image's.
@@ -117,11 +125,15 @@ def annotatable_steps(db: Db, desktop: int, view: str, steps) -> list[int]:
       (:func:`tda.core.model.step_is_annotatable`). The exports have always
       dropped it; compiling and confirming it first only produced work with
       nowhere to go.
+
+    A components-gallery view (task U10) has shots, not steps: its frame
+    numbers say nothing about the step table, so only the first gate applies.
     """
     wanted = sorted({int(s) for s in steps})
     if not wanted:
         return []
-    types = {rec.step: rec.step_type for rec in db.steps(desktop)}
+    types = ({} if is_component_view(view)
+             else {rec.step: rec.step_type for rec in db.steps(desktop)})
     out = []
     for step in wanted:
         if not step_is_annotatable(types.get(step)):
@@ -137,7 +149,7 @@ def infer_hw(view: str) -> tuple[int, int]:
     known = VIEW_HW.get(view)
     if known is not None:
         return known
-    if view.startswith("oak"):
+    if view.startswith(("oak", "cmp_oak")):
         return VIEW_HW["oak1"]
     raise ValueError(f"cannot infer the image size of view {view!r}")
 
@@ -281,6 +293,8 @@ class InputCache:
     )
     zorder: dict[tuple[int, str, int], ZOrderRec] = field(default_factory=dict)
     overrides: dict[tuple[int, str, int], list[PairOverride]] = field(default_factory=dict)
+    #: The components gallery's one frame state per desktop (task U10).
+    gallery: dict[int, FrameState] = field(default_factory=dict)
 
 
 def instances_of(
@@ -376,12 +390,47 @@ def _overrides_of(
 # state and segment
 # --------------------------------------------------------------------------- #
 def state_of(
-    db: Db, tax: Taxonomy, desktop: int, step: int, cache: Optional[InputCache] = None
+    db: Db, tax: Taxonomy, desktop: int, step: int, cache: Optional[InputCache] = None,
+    view: Optional[str] = None,
 ) -> FrameState:
-    """Every instance's state and placement at one logical step (spec 3.3.1)."""
+    """Every instance's state and placement at one logical step (spec 3.3.1).
+
+    ``view`` matters for one kind of view only: a components-gallery shot
+    (task U10) is not a step, and every shot of it has the one state
+    :func:`tda.core.states.gallery_state` gives -- the parts removed by the end
+    of the teardown, laid out on the table. ``step`` is the shot number there
+    and changes nothing.
+    """
+    if is_component_view(view):
+        return gallery_state_of(db, tax, desktop, cache)
     return state_at(
         instances_of(db, desktop, cache), events_of(db, tax, desktop, cache), step, tax
     )
+
+
+def gallery_state_of(db: Db, tax: Taxonomy, desktop: int,
+                     cache: Optional[InputCache] = None) -> FrameState:
+    """The components gallery's frame state of one desktop (task U10), memoised."""
+    if cache is not None and desktop in cache.gallery:
+        return cache.gallery[desktop]
+    found = gallery_state(instances_of(db, desktop, cache),
+                          events_of(db, tax, desktop, cache), tax,
+                          GALLERY_EXCLUDED_CLASSES)
+    if cache is not None:
+        cache.gallery[desktop] = found
+    return found
+
+
+def view_steps(db: Db, desktop: int, view: str) -> list[int]:
+    """The frame numbers an anchor or an edit's reach may run over, ascending.
+
+    The step table's steps for a view of the teardown sequence, whose shapes
+    live on logical steps; the shot numbers of a components-gallery view (task
+    U10), whose frames are not steps at all.
+    """
+    if is_component_view(view):
+        return [int(row["step"]) for row in db.frames_for(desktop, view)]
+    return [int(rec.step) for rec in db.steps(desktop)]
 
 
 def pose_segment_of(db: Db, key: FrameKey, cache: Optional[InputCache] = None) -> int:
@@ -436,9 +485,12 @@ def gather(
     """
     cache = cache if cache is not None else InputCache()
     instances = instances_of(db, key.desktop, cache)
-    state = state_of(db, tax, key.desktop, key.step, cache)
+    state = state_of(db, tax, key.desktop, key.step, cache, view=key.view)
     seg = pose_segment_of(db, key, cache)
-    bench_roi = db.bench_roi(key.desktop, key.view, seg)
+    # a components-gallery shot (task U10) has no staging area: the whole
+    # image is the working area, and its parts are masks (gallery_state)
+    bench_roi = (None if is_component_view(key.view)
+                 else db.bench_roi(key.desktop, key.view, seg))
     needs = needs_geom(instances, state, tax, bench_roi=bench_roi)
     return FrameInputs(
         key=key,

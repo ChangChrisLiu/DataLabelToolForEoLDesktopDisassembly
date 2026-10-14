@@ -114,6 +114,48 @@ class DeleteMixin:
                 (key.desktop, key.step, key.view, instance),
             )
 
+    #: Tables a human writes about one frame: a frame holding any of them is
+    #: annotated, and :meth:`delete_unannotated_frame` will not drop it.
+    FRAME_WORK_TABLES = ("frame_override", "occluder_mask", "instance_frame_flags",
+                         "conflict")
+    #: Per-frame caches the truth service rebuilds: dropped with their frame.
+    FRAME_CACHE_TABLES = ("compiled_mask", "frame_digest", "recheck_queue",
+                          "frame_transform")
+
+    def frame_is_annotated(self, key: FrameKey) -> bool:
+        """Has anybody written anything about this frame beyond its caches?
+
+        A frame row a human confirmed, a confirmed compiled row, or any row of
+        :data:`FRAME_WORK_TABLES`.
+        """
+        args = (key.desktop, key.step, key.view)
+        where = "WHERE desktop=? AND step=? AND view=?"
+        row = self.conn.execute(f"SELECT review_status FROM frame {where}", args).fetchone()
+        if row is not None and row["review_status"] == "verified":
+            return True
+        if self.conn.execute(f"SELECT 1 FROM compiled_mask {where} AND status='verified'",
+                             args).fetchone() is not None:
+            return True
+        return any(self.conn.execute(f"SELECT 1 FROM {table} {where}", args).fetchone()
+                   is not None for table in self.FRAME_WORK_TABLES)
+
+    def delete_unannotated_frame(self, key: FrameKey) -> bool:
+        """Drop one frame row and its caches; ``False`` (nothing dropped) if annotated.
+
+        The one way a frame row ever leaves the database: the components
+        gallery (task U10) takes the frames of a sheet row that photographed the
+        laid-out parts out of the teardown sequence. A frame somebody worked on
+        (:meth:`frame_is_annotated`) is never dropped.
+        """
+        if self.frame_is_annotated(key):
+            return False
+        args = (key.desktop, key.step, key.view)
+        with self._tx():
+            for table in self.FRAME_CACHE_TABLES + ("frame",):
+                self.conn.execute(
+                    f"DELETE FROM {table} WHERE desktop=? AND step=? AND view=?", args)
+        return True
+
     def delete_occluder(self, key: FrameKey, occluder_type: str) -> None:
         """Drop one occluder layer of one frame."""
         with self._tx():

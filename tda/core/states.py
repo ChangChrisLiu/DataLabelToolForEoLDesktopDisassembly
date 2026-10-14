@@ -43,7 +43,10 @@ from tda.core.model import ActionRec, InstanceRec, Placement, StateEvent, is_pro
 from tda.core.taxonomy import Taxonomy
 
 __all__ = [
+    "AFTER_LAST_STEP",
     "ANY_VIEW",
+    "GALLERY_EXPORT_STATE",
+    "GALLERY_PLACEMENT",
     "INITIAL_STEP",
     "InstState",
     "FrameState",
@@ -51,8 +54,10 @@ __all__ = [
     "diff_states",
     "event_problems",
     "events_from_actions",
+    "gallery_state",
     "gone_with_parent",
     "initial_overrides",
+    "is_gallery_part",
     "initial_state",
     "is_virtual_target",
     "needs_geom",
@@ -107,6 +112,9 @@ class InstState:
     state: str
     placement: str
     left_with: Optional[str] = field(default=None, compare=False)
+    #: A part of the components gallery (task U10, :func:`gallery_state`): it
+    #: is drawn in a layout photo whatever its state and placement say.
+    gallery: bool = field(default=False, compare=False)
 
 
 #: instance key -> its state at one logical step
@@ -456,6 +464,11 @@ def needs_geom(
         rec = instances.get(key)
         if rec is None or is_provisional(key) or gone_with_parent(fs, key):
             continue
+        if inst.gallery:
+            # a part laid out for the components gallery (task U10) is a mask
+            # wherever it is, and the snapshot only marks the ones to draw
+            geom[key] = "mask"
+            continue
         if inst.placement == IN_CHASSIS:
             kind = "mask"
         elif inst.placement == ON_BENCH:
@@ -467,6 +480,66 @@ def needs_geom(
         if tax.needs_mask(rec.cls, inst.state, inst.placement):
             geom[key] = kind
     return geom
+
+
+# --------------------------------------------------------------------------- #
+# the components gallery (task U10, spec 3.2b)
+# --------------------------------------------------------------------------- #
+#: A step after every step: :func:`state_at` folds the whole log up to it,
+#: which is the state at the end of the teardown.
+AFTER_LAST_STEP = 1 << 30
+#: Where a gallery part is in the frame state: the **mask chain**. A part laid
+#: out on the table is drawn like a part in the chassis -- a mask, layered with
+#: its neighbours, and a missing one blocks the shot -- but it has no bench ROI
+#: and no box; the exports write it as ``removed`` / ``on_bench``
+#: (:data:`GALLERY_EXPORT_STATE`).
+GALLERY_PLACEMENT = IN_CHASSIS
+#: Where everything that is not in the gallery is: out of the picture.
+ELSEWHERE = Placement.ELSEWHERE.value
+#: ``(state, placement)`` the exports write for a gallery part.
+GALLERY_EXPORT_STATE = (REMOVED, ON_BENCH)
+
+
+def is_gallery_part(instances: dict[str, InstanceRec], final: FrameState, key: str,
+                    excluded: Iterable[str] = ()) -> bool:
+    """Is ``key`` one of the parts the components gallery asks for?
+
+    Every real instance that is ``removed`` at the end of the teardown and
+    left the chassis in its own right -- not inside a parent
+    (:func:`gone_with_parent`: the clips on the board are *in* the board) --
+    except the classes in ``excluded`` (:data:`tda.core.model.GALLERY_EXCLUDED_CLASSES`),
+    which are not identifiable in a layout. A Label Studio draft never is.
+    """
+    rec = instances.get(key)
+    inst = final.get(key)
+    if rec is None or inst is None or is_provisional(key):
+        return False
+    if rec.cls in set(excluded) or inst.state != REMOVED:
+        return False
+    return not gone_with_parent(final, key)
+
+
+def gallery_state(instances: dict[str, InstanceRec], events: list[StateEvent],
+                  tax: Taxonomy, excluded: Iterable[str] = ()) -> FrameState:
+    """The frame state of every components-gallery shot of one desktop.
+
+    One answer for all of them, because a layout photo is not a moment of the
+    teardown: the parts on the table are the ones removed by its **last** step.
+    Each of them is marked ``gallery`` (:func:`needs_geom` asks for a mask of
+    it) in :data:`GALLERY_PLACEMENT`, keeping its ``removed`` state; every other
+    instance -- what stayed in the chassis, the excluded classes, the children
+    that went out inside a parent -- is ``elsewhere``, out of the picture.
+    """
+    excluded = frozenset(excluded)
+    final = state_at(instances, events, AFTER_LAST_STEP, tax)
+    out: FrameState = {}
+    for key, inst in final.items():
+        if is_gallery_part(instances, final, key, excluded):
+            out[key] = InstState(state=inst.state, placement=GALLERY_PLACEMENT,
+                                 gallery=True)
+        else:
+            out[key] = InstState(state=inst.state, placement=ELSEWHERE)
+    return out
 
 
 def diff_states(a: FrameState, b: FrameState) -> list[tuple[str, str, str, str]]:

@@ -51,11 +51,12 @@ from tda.core.db import Db
 from tda.core.dbrows import now_iso
 from tda.core.log_identity import CHASSIS_KEY, instance_key
 from tda.core.model import (
+    ALL_VIEWS,
     EXTRA_ATTR,
-    VIEWS,
     FrameKey,
     InstanceRec,
     StateEvent,
+    is_component_view,
     is_extra,
     is_provisional,
 )
@@ -320,7 +321,10 @@ def verified_frames_gaining(
     from tda.core.truth_inputs import merge_events, pose_segment_of
 
     new = {rec.key: rec for rec in records}
-    if not new:
+    if not new or is_component_view(view):
+        # a part added in S1 has no action of its own, so it never ends the
+        # teardown removed in its own right: no components-gallery shot (task
+        # U10) ever asks for it
         return []
     frozen = [int(row["step"]) for row in db.frames_for(desktop, view)
               if row.get("review_status") == "verified"]
@@ -411,7 +415,7 @@ def adopt_patch(records: Iterable[InstanceRec], events: Iterable[StateEvent],
 
 def _refusal(db: Db, desktop: int, key: str) -> str:
     """Why ``key`` may not be removed by an undo, or ``""``."""
-    views = [view for view in VIEWS if db.keyframes(desktop, view, key)]
+    views = [view for view in ALL_VIEWS if db.keyframes(desktop, view, key)]
     if views:
         return f"{key} already has shapes in {', '.join(views)}"
     steps = sorted({a.step for a in db.actions(desktop) if a.target == key})
