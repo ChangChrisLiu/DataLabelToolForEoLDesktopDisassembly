@@ -13,28 +13,33 @@ after the derived events of the same step (:func:`tda.core.truth_inputs.events_o
 **"At step k this instance is in state s."** That is the whole gesture, and it
 is local by construction: the state at every other step stays what it was.
 
-* the manual state events of the target at ``k`` and at the next step of the
-  table (``k+1``) are dropped;
-* at ``k`` an event ``held -> s`` is written, ``held`` being the state the log
+* The *restore step* is the first step after ``k`` that the table does not type
+  ``dupli``: a duplicate frame shows the step before it, so it takes the state
+  of ``k`` along (the ``dupli`` steps in between are :attr:`StatePatch.inherits`).
+* The manual state events of the target at ``k``, at the ``dupli`` steps after
+  it and at the restore step are dropped.
+* At ``k`` an event ``held -> s`` is written, ``held`` being the state the log
   arrives at once everything else of step ``k`` has been applied (so its
-  ``old`` is exactly what :func:`~tda.core.states.validate_events` checks);
-* at ``k+1`` an event ``s -> next`` brings the state back to what it was there
-  before the change -- ``next`` is read off the *current* merged log -- when it
-  is not ``s`` already;
-* a manual event the change turned into a no-op (the state it moves to is the
-  one already held) is dropped as well, so walking backwards over a closed run
-  (21, then 20, then 19) leaves exactly two events, ``open -> closed`` at 19 and
-  ``closed -> open`` at 22.
+  ``old`` is exactly what :func:`~tda.core.states.validate_events` checks).
+* At the restore step an event ``s -> next`` brings the state back to what it
+  was there before the change -- ``next`` is read off the *current* merged log
+  -- unless it is ``s`` already, or the log's own events of that step get there
+  by themselves (a removal: the board takes the clip out at 42 whatever state it
+  was in at 41).
+* A manual event the change turned into a no-op is dropped as well, so walking
+  backwards over a closed run (21, then 20, then 19) leaves exactly two events,
+  ``open -> closed`` at 19 and ``closed -> open`` at 22.
 
 Refused, with a sentence an annotator can act on (:class:`StateAssertError`):
 a state the class does not have, ``removed`` (when a part leaves is the step
-table's to say), a part already removed at ``k``, a change landing on a step the
-table types ``dupli`` (a duplicate frame is "no change" by definition: its task
-card asks nothing and V12 exports it as a "nothing changed" negative), and
-anything that would make
-:func:`~tda.core.states.validate_events` find a problem in the merged log it did
-not find before -- a derived event whose ``old`` no longer holds means the
+table's to say), a part already removed at ``k``, an assertion *at* a ``dupli``
+step (it is the frame before it, which is where to say it), and anything that
+would make :func:`~tda.core.states.event_problems` find a problem in the merged
+log it did not find before -- a derived event that no longer holds means the
 action itself is on the wrong step, which is a step-table correction.
+
+The wording takes a ``name`` function for the state values: the core has no
+display vocabulary, the session passes :func:`tda.ui.class_names.state_zh`.
 
 :func:`assert_state` writes and returns a :class:`StatePatch`, whose
 :meth:`~StatePatch.payload` and :meth:`~StatePatch.inverse` are two *states* of
@@ -45,18 +50,21 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import asdict, dataclass, field
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 from tda.core.db import Db
 from tda.core.model import Placement, StateEvent, StepType, is_provisional
 from tda.core.states import (
     ATTR_STATE,
     INITIAL_STEP,
+    LEAVES_REMOVED,
+    OLD_MISMATCH,
     REMOVED,
+    EventProblem,
+    event_problems,
     events_from_actions,
     initial_overrides,
     state_at,
-    validate_events,
 )
 from tda.core.taxonomy import Taxonomy
 from tda.core.truth_inputs import merge_events
@@ -75,6 +83,13 @@ __all__ = [
 #: ``op_log.kind`` (and :data:`tda.ui.commands.KINDS` entry) of one assertion.
 OP_ASSERT_STATE = "assert_state"
 IN_CHASSIS = Placement.IN_CHASSIS.value
+
+#: How a state value is said; the session passes the annotator's words.
+Namer = Callable[[str], str]
+
+
+def _same(value: str) -> str:
+    return str(value)
 
 
 class StateAssertError(ValueError):
@@ -115,8 +130,10 @@ class StatePatch:
     ``steps`` are the steps whose manual ``state`` events of ``target`` the
     patch owns; ``before`` and ``after`` are those events (stored order) on
     either side of it. ``previous`` is the state at ``step`` before the change,
-    ``next_step`` the step after it in the table (``None`` on the last one) and
-    ``restores`` the state from there on, which the change leaves alone.
+    ``inherits`` the ``dupli`` steps right after it (they show the same frame,
+    so they carry the same state), ``next_step`` the restore step (``None``
+    when the table ends first) and ``restores`` the state from there on, which
+    the change leaves alone.
     """
 
     desktop: int
@@ -126,6 +143,7 @@ class StatePatch:
     previous: str
     next_step: Optional[int]
     restores: Optional[str]
+    inherits: list[int] = field(default_factory=list)
     steps: list[int] = field(default_factory=list)
     before: list[StateEvent] = field(default_factory=list)
     after: list[StateEvent] = field(default_factory=list)
@@ -140,33 +158,31 @@ class StatePatch:
     def reach(self) -> list[int]:
         """The steps whose frames have to be brought up to date after it.
 
-        The state moves at ``step`` only; ``next_step`` is in because its own
-        events were rewritten, which is cheap to re-check and keeps a frozen
-        frame there honest.
+        The state moves at ``step`` and at the ``dupli`` steps that follow it;
+        ``next_step`` is in because its own events were rewritten, which is
+        cheap to re-check and keeps a frozen frame there honest.
         """
-        return sorted({self.step} | ({self.next_step} if self.next_step is not None
-                                     else set()))
+        return sorted({self.step, *self.inherits}
+                      | ({self.next_step} if self.next_step is not None else set()))
 
     def _rows(self, events: list[StateEvent]) -> dict:
         return {"desktop": self.desktop, "target": self.target,
                 "steps": [int(s) for s in self.steps],
                 "events": [asdict(e) for e in events]}
 
+    def _facts(self, state: str, previous: str) -> dict:
+        return {"step": int(self.step), "state": state, "previous": previous,
+                "inherits": [int(s) for s in self.inherits],
+                "next_step": self.next_step, "restores": self.restores,
+                "evidence_view": self.evidence_view, "reach": self.reach}
+
     def payload(self) -> dict:
         """The op-log payload: the rows after, plus what was asserted."""
-        return self._rows(self.after) | {
-            "step": int(self.step), "state": self.state, "previous": self.previous,
-            "next_step": self.next_step, "restores": self.restores,
-            "evidence_view": self.evidence_view, "reach": self.reach,
-        }
+        return self._rows(self.after) | self._facts(self.state, self.previous)
 
     def inverse(self) -> dict:
         """The rows as they were: :func:`write_events` of this undoes the patch."""
-        return self._rows(self.before) | {
-            "step": int(self.step), "state": self.previous, "previous": self.state,
-            "next_step": self.next_step, "restores": self.restores,
-            "evidence_view": self.evidence_view, "reach": self.reach,
-        }
+        return self._rows(self.before) | self._facts(self.previous, self.state)
 
 
 # --------------------------------------------------------------------------- #
@@ -203,8 +219,24 @@ def _idle(instances, derived, manual: list[StateEvent], target: str,
     return idle
 
 
+def _contradiction(problem: EventProblem, name: Namer) -> str:
+    """One new problem of the merged log, said as what the annotator has to do."""
+    event = problem.event
+    if problem.code == OLD_MISMATCH and event.auto:
+        return (f"日志第 {event.step} 步把 {event.target} 从「{name(event.old)}」变成"
+                f"「{name(event.new)}」，那一步之前它应是「{name(event.old)}」，这样改以后"
+                f"却已经是「{name(problem.held)}」了。动作发生在哪一步，请在 Steps 模式里改")
+    if problem.code == OLD_MISMATCH:
+        return (f"第 {event.step} 步另有一条手工状态（{name(event.old)} → "
+                f"{name(event.new)}）会接不上：先到第 {event.step} 步把它改过来")
+    if problem.code == LEAVES_REMOVED:
+        return f"{event.target} 第 {event.step} 步已经拆下，之后的状态不能再变"
+    return f"这样改会和第 {event.step} 步的状态记录对不上"
+
+
 def plan_assertion(db: Db, tax: Taxonomy, desktop: int, target: str, step: int,
-                   new_state: str, evidence_view: Optional[str] = None) -> StatePatch:
+                   new_state: str, evidence_view: Optional[str] = None,
+                   name: Namer = _same) -> StatePatch:
     """Work out :func:`assert_state`'s patch without writing anything."""
     desktop, step, new_state = int(desktop), int(step), str(new_state)
     instances = db.instances(desktop)
@@ -216,15 +248,30 @@ def plan_assertion(db: Db, tax: Taxonomy, desktop: int, target: str, step: int,
     states = tax.states_of(rec.cls)
     if new_state not in states:
         raise StateAssertError(
-            f"{target}（{rec.cls}）没有「{new_state}」这个状态；可选：{'、'.join(states)}")
+            f"{target} 没有「{name(new_state)}」这个状态；可选："
+            f"{'、'.join(name(s) for s in states)}")
     if new_state == REMOVED:
         raise StateAssertError(
-            "「拆下 removed」不能在这里设：零件哪一步被拆下由步骤表决定（在 Steps 模式里改）")
-    table = sorted({int(r.step) for r in db.steps(desktop)})
+            f"「{name(REMOVED)}」不能在这里设：零件哪一步被拆下由步骤表决定（在 Steps 模式里改）")
+    rows = sorted(db.steps(desktop), key=lambda r: int(r.step))
+    table = [int(r.step) for r in rows]
     if step not in table:
         raise StateAssertError(f"第 {step} 步不在 D{desktop:02d} 的步骤表里")
+    dupli = {int(r.step) for r in rows if r.dupli or r.step_type == StepType.DUPLI.value}
+    if step in dupli:
+        # a duplicate frame shows the step before it: that is where to say it
+        shown = [s for s in table if s < step and s not in dupli]
+        where = f"第 {shown[-1]} 步" if shown else "它前面那一帧"
+        raise StateAssertError(
+            f"第 {step} 步在步骤表里是重复帧（dupli），和{where}是同一个样子，状态跟着它走："
+            f"到{where}去改")
     later = [s for s in table if s > step]
-    nxt = later[0] if later else None
+    inherits = []
+    for s in later:
+        if s not in dupli:
+            break
+        inherits.append(s)
+    nxt = next((s for s in later if s not in dupli), None)
 
     manual = [e for e in db.events(desktop) if not e.auto]
     derived = events_from_actions(instances, db.actions(desktop), tax,
@@ -236,11 +283,11 @@ def plan_assertion(db: Db, tax: Taxonomy, desktop: int, target: str, step: int,
         raise StateAssertError(f"{target} 在第 {step} 步已经拆下，没有状态可改")
     patch = StatePatch(desktop=desktop, target=target, step=step, state=new_state,
                        previous=cur, next_step=nxt, restores=restores,
-                       evidence_view=evidence_view)
+                       inherits=inherits, evidence_view=evidence_view)
     if cur == new_state:
         return patch      # asserting what already holds: nothing to write
 
-    touched = {step} | ({nxt} if nxt is not None else set())
+    touched = {step, *inherits} | ({nxt} if nxt is not None else set())
     kept = [e for e in manual if not _mine(e, target, touched)]
     added: list[StateEvent] = []
     held_k = _held(instances, derived, kept, step, target, tax)
@@ -257,16 +304,6 @@ def plan_assertion(db: Db, tax: Taxonomy, desktop: int, target: str, step: int,
                     f"{target} 在第 {nxt} 步已经拆下，第 {step} 步的状态接不回去")
             added.append(StateEvent(desktop, nxt, target, ATTR_STATE, held_n, restores,
                                     evidence_view=evidence_view, auto=False))
-    dupli = {int(r.step) for r in db.steps(desktop)
-             if r.dupli or r.step_type == StepType.DUPLI.value}
-    for event in added:
-        if event.step in dupli:
-            # a duplicate frame is "no change" by definition: the task card asks
-            # nothing there and V12 exports it as the negative of "did anything
-            # change?" -- a state moving on it makes both untrue
-            raise StateAssertError(
-                f"第 {event.step} 步在步骤表里是重复帧（dupli，和前一帧一样）：这样改它就和"
-                f"前一帧不一样了。画面确实变了的话，先在 Steps 模式改第 {event.step} 步的类型")
     after_manual = kept + added
     # a manual event this change turned into a no-op goes with it
     was_idle = _idle(instances, derived, manual, target, tax)
@@ -275,12 +312,14 @@ def plan_assertion(db: Db, tax: Taxonomy, desktop: int, target: str, step: int,
     after_manual = [e for e in after_manual if id(e) not in now_idle]
     touched |= {e.step for e in dropped}
 
-    found = Counter(validate_events(instances, merge_events(derived, after_manual), tax))
-    new_problems = found - Counter(validate_events(instances, current, tax))
-    if new_problems:
-        raise StateAssertError(
-            "这样改会和步骤表里的动作对不上（" + "；".join(sorted(new_problems)) +
-            "）：动作发生在哪一步要在 Steps 模式里改")
+    def keyed(found: list[EventProblem]) -> Counter:
+        return Counter((id(p.event), p.code) for p in found)
+
+    after_problems = event_problems(instances, merge_events(derived, after_manual), tax)
+    new = keyed(after_problems) - keyed(event_problems(instances, current, tax))
+    if new:
+        first = next(p for p in after_problems if (id(p.event), p.code) in new)
+        raise StateAssertError(_contradiction(first, name))
     merged_after = merge_events(derived, after_manual)
     got = state_at(instances, merged_after, step, tax)[target].state
     back = None if nxt is None else state_at(instances, merged_after, nxt, tax)[target].state
@@ -312,15 +351,18 @@ def write_events(db: Db, desktop: int, target: str, steps: Iterable[int],
 
 
 def assert_state(db: Db, tax: Taxonomy, desktop: int, target: str, step: int,
-                 new_state: str, evidence_view: Optional[str] = None) -> StatePatch:
+                 new_state: str, evidence_view: Optional[str] = None,
+                 name: Namer = _same) -> StatePatch:
     """"At step ``step`` ``target`` is in ``new_state``": write it, return the patch.
 
     Nothing is written when the state already holds (``patch.changed`` is
     false). The op log is the caller's: the session records the patch with its
-    inverse in the same transaction (:mod:`tda.ui.session_state`).
+    inverse in the same transaction (:mod:`tda.ui.session_state`). ``name``
+    says a state value in the refusals.
     """
     with db.transaction():
-        patch = plan_assertion(db, tax, desktop, target, step, new_state, evidence_view)
+        patch = plan_assertion(db, tax, desktop, target, step, new_state, evidence_view,
+                               name)
         if patch.changed:
             write_events(db, patch.desktop, patch.target, patch.steps, patch.after)
     return patch

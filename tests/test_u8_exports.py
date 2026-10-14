@@ -2,7 +2,7 @@
 
 The VLM scene's ``ram_latch.01`` is closed until the log opens it at step 7.
 "Open at 4" is a correction with no action behind it (4 and 5 are ordinary
-steps; 3 is a ``dupli`` one, where a change is refused). COCO's ``state``
+steps; 3 is a ``dupli`` one, which takes the state of 2). COCO's ``state``
 attribute and V2's state question must both carry it at step 4 -- and the
 log's own history everywhere else -- and the independent re-derivation in
 :mod:`tests.vlm_checker` must agree with every record.
@@ -32,12 +32,28 @@ def scene(tmp_path: Path):
     db.close()
 
 
-def test_the_scene_gives_a_normal_step_to_correct(scene):
+def test_a_duplicate_frame_carries_the_state_into_v12(scene, tmp_path: Path):
+    """Round 2 (B2): open at 2, dupli 3 shows the same frame, the restore is at 4.
+
+    V12 exports the ``dupli`` step 3 as "nothing changed" -- true again, since
+    3 takes 2's state -- and the independent checker agrees with every record.
+    """
     db, tax = scene
     types = {r.step: r.step_type for r in db.steps(S.DESKTOP)}
-    assert types[STEP] == types[STEP + 1] == "normal" and types[3] == "dupli"
-    with pytest.raises(SA.StateAssertError, match="重复帧"):
-        SA.assert_state(db, tax, S.DESKTOP, S.LATCH, 2, "open")   # restores on 3
+    assert types[2] == types[STEP] == "normal" and types[3] == "dupli"
+    with pytest.raises(SA.StateAssertError, match="和第 2 步是同一个样子"):
+        SA.assert_state(db, tax, S.DESKTOP, S.LATCH, 3, "open")
+    patch = SA.assert_state(db, tax, S.DESKTOP, S.LATCH, 2, "open")
+    assert patch.inherits == [3] and patch.next_step == STEP
+    assert [(e.step, e.old, e.new) for e in patch.after] == [
+        (2, "closed", "open"), (STEP, "open", "closed")]
+    out = tmp_path / "v.jsonl"
+    export_vlm(db, tax, [S.DESKTOP], S.VIEW, str(out))
+    records = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()
+               if line]
+    v12 = [{**r["prompt"], **r["label"]} for r in records if r["prompt"]["task"] == "V12"]
+    assert any(r["step"] == 3 and r["answer"]["changed"] is False for r in v12)
+    assert Checker(db, tax, S.DESKTOP).check_all(records) == len(records)
 
 
 def test_coco_and_vlm_carry_the_corrected_state(scene, tmp_path: Path):

@@ -47,7 +47,9 @@ __all__ = [
     "INITIAL_STEP",
     "InstState",
     "FrameState",
+    "EventProblem",
     "diff_states",
+    "event_problems",
     "events_from_actions",
     "gone_with_parent",
     "initial_overrides",
@@ -486,27 +488,36 @@ def diff_states(a: FrameState, b: FrameState) -> list[tuple[str, str, str, str]]
 # --------------------------------------------------------------------------- #
 # validation (spec 6.2 legal transitions)
 # --------------------------------------------------------------------------- #
-def validate_events(
+#: Codes of :class:`EventProblem`, one per rule of :func:`validate_events`.
+LEAVES_REMOVED = "leaves_removed"
+OLD_MISMATCH = "old_mismatch"
+UNKNOWN_VALUE = "unknown_value"
+
+
+@dataclass(frozen=True)
+class EventProblem:
+    """One illegal event, as data: :func:`validate_events` is its text.
+
+    ``held`` is the value of ``event.attr`` the replay held when the event
+    was applied; ``code`` is :data:`LEAVES_REMOVED`, :data:`OLD_MISMATCH` or
+    :data:`UNKNOWN_VALUE`. A caller that has to *explain* a problem -- the
+    state assertion of task U8, in the annotator's words -- reads these
+    instead of parsing the English.
+    """
+
+    event: StateEvent
+    held: str
+    code: str
+    text: str
+
+
+def event_problems(
     instances: dict[str, InstanceRec],
     events: list[StateEvent],
     tax: Taxonomy,
-) -> list[str]:
-    """Report every illegal event as ``"<key>: <old> → <new> at step <k>: <reason>"``.
-
-    Three things are flagged, in that order per event:
-
-    1. leaving ``removed`` -- a removed part cannot come back (manual events may
-       otherwise reverse a transition, e.g. a latch ``open -> closed``);
-    2. an ``old`` value that does not match the value actually held at that step;
-    3. a ``new`` value that is not a state of the target's class (or not a known
-       placement).
-
-    Events are replayed in ``(step, list)`` order and applied even when flagged,
-    so later events are checked against the recorded trajectory. Targets that
-    are neither instances nor virtual nodes are ignored, as are attributes other
-    than ``state`` and ``placement``.
-    """
-    problems: list[str] = []
+) -> list[EventProblem]:
+    """:func:`validate_events` as :class:`EventProblem` records, same order."""
+    problems: list[EventProblem] = []
     current: dict[str, InstState] = initial_state(instances, tax)
 
     for event in sorted(events, key=lambda e: e.step):  # stable: keeps intra-step order
@@ -526,20 +537,58 @@ def validate_events(
             continue
 
         held = getattr(inst, event.attr)
-        reasons: list[str] = []
+        reasons: list[tuple[str, str]] = []
         if event.attr == ATTR_STATE and held == REMOVED and event.new != REMOVED:
-            reasons.append(f"{REMOVED!r} is final, an instance cannot leave it")
-        if event.old != held:
-            reasons.append(f"the current {event.attr} at that step is {held!r}")
+            reasons.append((LEAVES_REMOVED,
+                            f"{REMOVED!r} is final, an instance cannot leave it"))
+        # A removal is legal from any state but ``removed`` itself: the clip a
+        # board takes out with it at 42 was recorded leaving ``open`` and is
+        # ``closed`` once the annotator says so at 41 (task U8). Its ``old`` is
+        # the log's account of the state, not a precondition of the removal.
+        into_removed = (event.attr == ATTR_STATE and event.new == REMOVED
+                        and held != REMOVED)
+        if event.old != held and not into_removed:
+            reasons.append((OLD_MISMATCH,
+                            f"the current {event.attr} at that step is {held!r}"))
         if event.attr == ATTR_STATE:
             if event.new not in tax.states_of(cls):
-                reasons.append(f"{event.new!r} is not a state of class {cls!r}")
+                reasons.append((UNKNOWN_VALUE,
+                                f"{event.new!r} is not a state of class {cls!r}"))
         elif event.new not in _PLACEMENTS:
-            reasons.append(f"{event.new!r} is not a known placement")
+            reasons.append((UNKNOWN_VALUE, f"{event.new!r} is not a known placement"))
 
         problems.extend(
-            f"{event.target}: {event.old} → {event.new} at step {event.step}: {reason}"
-            for reason in reasons
+            EventProblem(event, held, code,
+                         f"{event.target}: {event.old} → {event.new} at step "
+                         f"{event.step}: {reason}")
+            for code, reason in reasons
         )
         setattr(inst, event.attr, event.new)
     return problems
+
+
+def validate_events(
+    instances: dict[str, InstanceRec],
+    events: list[StateEvent],
+    tax: Taxonomy,
+) -> list[str]:
+    """Report every illegal event as ``"<key>: <old> → <new> at step <k>: <reason>"``.
+
+    Three things are flagged, in that order per event:
+
+    1. leaving ``removed`` -- a removed part cannot come back (manual events may
+       otherwise reverse a transition, e.g. a latch ``open -> closed``);
+    2. an ``old`` value that does not match the value actually held at that step
+       -- except on a move *into* ``removed``, which is legal from every state
+       but ``removed`` itself (a part can be taken out open or closed; the
+       recorded ``old`` is the log's account, not a precondition);
+    3. a ``new`` value that is not a state of the target's class (or not a known
+       placement).
+
+    Events are replayed in ``(step, list)`` order and applied even when flagged,
+    so later events are checked against the recorded trajectory. Targets that
+    are neither instances nor virtual nodes are ignored, as are attributes other
+    than ``state`` and ``placement``. :func:`event_problems` is the same check
+    as records.
+    """
+    return [problem.text for problem in event_problems(instances, events, tax)]

@@ -17,6 +17,7 @@ from tda.core.model import StateEvent
 from tda.core.states import INITIAL_STEP, state_at, validate_events
 from tda.core.taxonomy import load_taxonomy
 from tda.core.truth_inputs import events_of
+from tda.ui.class_names import state_zh
 
 LATCH = "ram_latch.01"
 LAST = 24
@@ -185,8 +186,11 @@ def test_a_correction_that_breaks_a_derived_event_is_refused(scene):
     db, tax = scene
     before = rows(db)
     with pytest.raises(SA.StateAssertError) as refused:
-        SA.assert_state(db, tax, DESKTOP, LATCH, 13, "open")
-    assert "Steps 模式" in str(refused.value) and "step 14" in str(refused.value)
+        SA.assert_state(db, tax, DESKTOP, LATCH, 13, "open", name=state_zh)
+    text = str(refused.value)
+    assert "日志第 14 步把 ram_latch.01 从「关上」变成「打开」" in text
+    assert "已经是「打开」" in text and "Steps 模式" in text
+    assert "step" not in text and "current state" not in text    # no validator English
     assert rows(db) == before
 
 
@@ -235,19 +239,122 @@ def test_s1_validates_the_merged_log_not_the_stored_row_order(tmp_path):
         db.close()
 
 
-def test_a_change_on_a_duplicate_frame_is_refused(scene):
-    """``dupli`` means "no change": the card asks nothing there, V12 says so."""
-    db, tax = scene
+def _dupli(db, step: int) -> None:
     steps = db.steps(DESKTOP)
     for rec in steps:
-        if rec.step == 22:
+        if rec.step == step:
             rec.step_type = "dupli"
     db.replace_steps(DESKTOP, steps, db.actions(DESKTOP))
+
+
+def test_a_duplicate_frame_takes_the_state_of_the_frame_it_repeats(scene):
+    """B2: the restore goes past ``dupli`` steps; 22 repeats 21, 23 restores."""
+    db, tax = scene
+    _dupli(db, 22)
+    patch = SA.assert_state(db, tax, DESKTOP, LATCH, 21, "closed")
+    assert patch.inherits == [22] and patch.next_step == 23
+    assert patch.reach == [21, 22, 23]
+    assert manual(db) == [(21, "open", "closed"), (23, "closed", "open")]
+    assert states(db, tax, (20, 21, 22, 23)) == {20: "open", 21: "closed",
+                                                  22: "closed", 23: "open"}
+    assert validate_events(db.instances(DESKTOP), events_of(db, tax, DESKTOP), tax) == []
+
+
+def test_an_assertion_at_a_duplicate_frame_points_at_the_frame_it_repeats(scene):
+    db, tax = scene
+    _dupli(db, 22)
     before = rows(db)
-    with pytest.raises(SA.StateAssertError, match="第 22 步在步骤表里是重复帧"):
-        SA.assert_state(db, tax, DESKTOP, LATCH, 21, "closed")     # the restore lands on 22
-    with pytest.raises(SA.StateAssertError, match="第 22 步在步骤表里是重复帧"):
-        SA.assert_state(db, tax, DESKTOP, LATCH, 22, "closed")     # the change itself
+    with pytest.raises(SA.StateAssertError,
+                       match="第 22 步在步骤表里是重复帧（dupli），和第 21 步是同一个样子"):
+        SA.assert_state(db, tax, DESKTOP, LATCH, 22, "closed")
     assert rows(db) == before
-    SA.assert_state(db, tax, DESKTOP, LATCH, 20, "closed")          # 20 and 21 are normal
+
+
+def test_a_run_extends_over_a_duplicate_frame(scene):
+    """Closed at 20, then 21 too: the run carries through dupli 22 to 23."""
+    db, tax = scene
+    _dupli(db, 22)
+    SA.assert_state(db, tax, DESKTOP, LATCH, 20, "closed")
     assert manual(db) == [(20, "open", "closed"), (21, "closed", "open")]
+    SA.assert_state(db, tax, DESKTOP, LATCH, 21, "closed")
+    assert manual(db) == [(20, "open", "closed"), (23, "closed", "open")]
+    # and back: open at 21 again ends the run at 20, 22 follows 21
+    SA.assert_state(db, tax, DESKTOP, LATCH, 21, "open")
+    assert manual(db) == [(20, "open", "closed"), (21, "closed", "open")]
+    assert states(db, tax, (20, 21, 22, 23)) == {20: "closed", 21: "open",
+                                                  22: "open", 23: "open"}
+
+
+# --------------------------------------------------------------------------- #
+# B1: the last frame before a removal
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def whole(tmp_path):
+    """The whole sheet: the board leaves at 42 and takes the clips with it."""
+    tax = load_taxonomy()
+    db = Db(str(tmp_path / "whole.sqlite"))
+    seed_db(db, tax, tmp_path / "cache", last_step=42)
+    return db, tax
+
+
+def test_a_removal_is_legal_from_any_state_but_removed():
+    """``validate_events``: the ``old`` of a move into ``removed`` is not checked."""
+    tax = load_taxonomy()
+    from tda.core.model import InstanceRec
+
+    instances = {"ram_latch.01": InstanceRec(key="ram_latch.01", desktop=1, cls="ram_latch")}
+    open_then_out = [
+        StateEvent(1, 14, "ram_latch.01", "state", "closed", "open"),
+        StateEvent(1, 41, "ram_latch.01", "state", "open", "closed", auto=False),
+        StateEvent(1, 42, "ram_latch.01", "state", "open", "removed"),  # recorded open
+    ]
+    assert validate_events(instances, open_then_out, tax) == []
+    back = open_then_out + [StateEvent(1, 43, "ram_latch.01", "state", "removed", "open",
+                                       auto=False)]
+    assert [p.split(": ", 2)[-1] for p in validate_events(instances, back, tax)] == [
+        "'removed' is final, an instance cannot leave it"]
+    wrong_old = [StateEvent(1, 14, "ram_latch.01", "state", "open", "closed")]
+    assert "the current state at that step is 'closed'" in validate_events(
+        instances, wrong_old, tax)[0]
+
+
+def test_walking_back_from_the_removal_leaves_one_event(whole):
+    """41, 40, 39 closed: one event at 39; the board's step takes it out closed."""
+    db, tax = whole
+    for step in (41, 40, 39):
+        patch = SA.assert_state(db, tax, DESKTOP, LATCH, step, "closed")
+        assert patch.changed and patch.next_step == step + 1
+    assert manual(db) == [(39, "open", "closed")]
+    assert states(db, tax, range(38, 43)) == {38: "open", 39: "closed", 40: "closed",
+                                              41: "closed", 42: "removed"}
+    assert validate_events(db.instances(DESKTOP), events_of(db, tax, DESKTOP), tax) == []
+
+
+@pytest.mark.parametrize("target,step,state", [
+    (LATCH, 41, "closed"),                         # the host cascade at 42
+    ("ram_latch.02", 41, "closed"),
+    ("screw.motherboard.01", 35, "loosened"),      # its own removal at 36
+    ("screw.motherboard.06", 40, "loosened"),      # ... at 41
+    ("motherboard.01", 41, "displaced"),           # the board itself at 42
+])
+def test_the_frame_before_a_removal_can_be_corrected(whole, target, step, state):
+    db, tax = whole
+    patch = SA.assert_state(db, tax, DESKTOP, target, step, state)
+    assert [(e.step, e.old, e.new) for e in patch.after] == [(step, patch.previous, state)]
+    assert states(db, tax, (step, step + 1), target) == {step: state, step + 1: "removed"}
+    assert validate_events(db.instances(DESKTOP), events_of(db, tax, DESKTOP), tax) == []
+
+
+def test_s1_apply_takes_a_correction_before_a_removal(tmp_path):
+    """The same validator runs in S1: closed at 41 must not read as a problem there."""
+    from steps_fixtures import seeded_db
+    from tda.ui.steps_model import StepTableData
+
+    tax = load_taxonomy()
+    db = seeded_db(str(tmp_path / "s1.sqlite"), tax)
+    try:
+        SA.assert_state(db, tax, 13, LATCH, 41, "closed", evidence_view="scan")
+        messages = StepTableData.load(db, 13, tax).save(db)
+        assert not [m for m in messages if LATCH in m], messages
+    finally:
+        db.close()
