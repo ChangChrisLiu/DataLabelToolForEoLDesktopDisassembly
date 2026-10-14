@@ -22,6 +22,11 @@ picture whose class has two or more states that need a mask) and is greyed
 otherwise; like the move buttons it reports, and the window writes.  It never
 takes the keyboard focus: a focused combo swallows every shortcut.
 
+The **verb** button (task U9) next to it says 「其实拆下来了」 for an open cover
+or removable latch (the row's ``verb_fix``) and 「其实只是打开了」 for one in the
+``Removed`` rows -- the same gesture as ``Shift+T``; it reports, the window
+writes.
+
 Every mutating gesture is followed by a re-read of ``instance_rows()``, so the
 table can never drift from the session's state -- hitting ``H`` after clicking
 the checkbox sends the value the session actually holds.
@@ -75,6 +80,14 @@ STATE_NONE = "状态 —"
 STATE_TIP = ("这一帧画面里的状态和日志不一样时（例如卡扣中途又关上了）在这里改，或选中后按 T；"
              "只改这一帧，下一帧起自动恢复原状态 / the state the picture shows at this frame")
 
+#: The verb button (task U9): what it says for each direction, and its tooltip.
+VERB_TAKEN_OUT = "其实拆下来了"
+VERB_ONLY_OPENED = "其实只是打开了"
+VERB_CAPTIONS = {"remove": VERB_TAKEN_OUT, "open": VERB_ONLY_OPENED}
+VERB_TIP = ("打开着的盖板/卡扣其实被拆走了（画面里没有它）：选中后点这里或按 Shift+T，"
+            "日志里那一步的「打开」改成「拆下」；拆下的零件（勾上 Removed）反过来 / "
+            "the log's open was a removal, or the other way round")
+
 #: The Vis cell of a part that has no shape on this frame yet (task U2c).
 NOT_DRAWN = "—"
 NOT_DRAWN_TIP = "还没画：这一帧还没有它的形状 / not drawn yet"
@@ -112,6 +125,8 @@ class InstanceListPanel(QWidget):
     sigHiddenToggled = Signal(str, bool)
     #: A state was picked in the state combo: ``(key, state)`` (task U8).
     sigAssertState = Signal(str, str)
+    #: The verb button was pressed: ``(key, "remove" | "open")`` (task U9).
+    sigCorrectVerb = Signal(str, str)
 
     #: Four columns, not seven.  Class and placement are in every row's tooltip
     #: instead: the instance key already names the class (``screw.cpu_cooler.01``)
@@ -178,11 +193,21 @@ class InstanceListPanel(QWidget):
         self.state_combo.activated.connect(self._on_state_activated)
         self._table.itemSelectionChanged.connect(self._sync_state_combo)
 
+        # task U9: the selected cover / latch was taken out after all (or, for a
+        # removed one, only opened). Reports; the window writes. No focus, so
+        # the next key is still a shortcut.
+        self.verb_button = QPushButton(VERB_TAKEN_OUT)
+        self.verb_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.verb_button.setMinimumWidth(1)
+        self.verb_button.setToolTip(VERB_TIP)
+        self.verb_button.clicked.connect(self._on_verb_clicked)
+
         buttons = QHBoxLayout()
         buttons.setContentsMargins(4, 0, 4, 4)
         buttons.addWidget(self.up_button)
         buttons.addWidget(self.down_button)
         buttons.addWidget(self.state_combo)
+        buttons.addWidget(self.verb_button)
         buttons.addStretch(1)
         buttons.addWidget(self.show_removed)
 
@@ -383,6 +408,17 @@ class InstanceListPanel(QWidget):
         row = self._table.currentRow()
         return bool(self._gone) and len(self._rows) <= row < self._table.rowCount()
 
+    def selected_removed_instance(self) -> Optional[str]:
+        """Key of the selected "already removed" row, or ``None`` (task U9).
+
+        Those rows carry no key in their cells, so nothing that edits a frame
+        can reach them; only the verb correction asks for one.
+        """
+        row = self._table.currentRow() - len(self._rows)
+        if not self.selected_is_removed() or not 0 <= row < len(self._gone):
+            return None
+        return str(self._gone[row].get("key", "")) or None
+
     def select_instance(self, instance: str) -> bool:
         """Select the row of ``instance``; ``False`` when it is not in the table."""
         for row, data in enumerate(self._rows):
@@ -455,7 +491,10 @@ class InstanceListPanel(QWidget):
         return [str(s) for s in self._rows[row].get("state_choices") or ()]
 
     def set_state_editable(self, editable: bool) -> None:
-        """Annotate mode only (like ``T``): elsewhere the combo shows, read-only."""
+        """Annotate mode only (like ``T``): elsewhere the combo shows, read-only.
+
+        The verb button (task U9) follows the same rule.
+        """
         self._state_editable = bool(editable)
         self._sync_state_combo()
 
@@ -465,6 +504,7 @@ class InstanceListPanel(QWidget):
 
     def _sync_state_combo(self) -> None:
         """Show the selected part's state and the ones it can be set to."""
+        self._sync_verb_button()
         combo = self.state_combo
         choices = self.state_choices()
         row = self._table.currentRow()
@@ -495,6 +535,34 @@ class InstanceListPanel(QWidget):
         held = str(self._rows[row].get("state", "")) if 0 <= row < len(self._rows) else ""
         if instance and state and state != held:
             self.sigAssertState.emit(instance, state)
+
+    # -- verb (task U9) -------------------------------------------------------
+    def verb_offer(self) -> tuple[Optional[str], Optional[str]]:
+        """``(key, "remove" | "open")`` the button offers for the selection, or Nones.
+
+        An open cover / latch in the frame offers "taken out"; a removed one
+        (the ``Removed`` rows) "only opened" -- the session's ``verb_fix``.
+        """
+        row = self._table.currentRow()
+        if 0 <= row < len(self._rows):
+            data = self._rows[row]
+        elif self.selected_is_removed() and 0 <= row - len(self._rows) < len(self._gone):
+            data = self._gone[row - len(self._rows)]
+        else:
+            return None, None
+        verb = data.get("verb_fix")
+        return (str(data.get("key", "")), str(verb)) if verb else (None, None)
+
+    def _sync_verb_button(self) -> None:
+        """Caption and enable the button for the selected row."""
+        _key, verb = self.verb_offer()
+        self.verb_button.setText(VERB_CAPTIONS.get(verb or "", VERB_TAKEN_OUT))
+        self.verb_button.setEnabled(bool(verb) and self.state_editable())
+
+    def _on_verb_clicked(self) -> None:
+        key, verb = self.verb_offer()
+        if key and verb and self.state_editable():
+            self.sigCorrectVerb.emit(key, verb)
 
     # -- keys ---------------------------------------------------------------
     # There is exactly one key map, and it is not here: the main window's

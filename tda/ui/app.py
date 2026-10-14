@@ -47,6 +47,7 @@ from tda.ui.app_pose import PoseMixin
 from tda.ui.app_rawdata import NO_IMAGE_TEXT, RawDataMixin
 from tda.ui.app_roi import RoiMixin
 from tda.ui.app_state import StateMixin
+from tda.ui.app_verb import VerbMixin
 from tda.ui.app_shell import (
     MODE_TITLES,
     ShellMixin,
@@ -76,7 +77,7 @@ STEPS_UNSAVED = ("Steps 里有没 Apply 的修改（例如刚加的零件）：�
 
 
 class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateMixin,
-                 AssistMixin, GuideMixin, KeysMixin, RawDataMixin,
+                 VerbMixin, AssistMixin, GuideMixin, KeysMixin, RawDataMixin,
                  ToolsMixin, StatusMixin, ShellMixin, QMainWindow):
     """One annotator, one desktop/view, three modes."""
 
@@ -117,6 +118,7 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateM
         self._init_adopt()
         self._init_pose()
         self._init_state()
+        self._init_verb()
         self._init_assist(sam_queue)
         self._init_rawdata()
         self._init_guide()      # last: it reads the bars and the raw-drive state
@@ -324,6 +326,7 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateM
         # Annotate has to come back to the difference map's own box.
         self.reset_prompt_rank()
         if mode == A.MODE_STEPS:
+            self.refresh_stale_steps()   # a Shift+T in Annotate rewrote a verb (U9)
             self.stack.setCurrentWidget(self.steps_panel)
         else:
             self.stack.setCurrentWidget(
