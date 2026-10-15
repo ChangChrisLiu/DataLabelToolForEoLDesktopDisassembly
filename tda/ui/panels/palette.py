@@ -62,6 +62,8 @@ __all__ = ["PALETTE_WIDTH", "RADIUS_MAX", "RADIUS_MIN", "PaletteButton",
 #: The strip's width in logical pixels (see the module docstring for why a
 #: strip at all).  Measured against ``tests/test_app.py``'s canvas share.
 PALETTE_WIDTH = 124
+#: The extra space above a group's heading (工具 / 笔刷大小 / 操作 / 状态 / 其他).
+GROUP_GAP = 2
 #: The brush, the eraser and the occluder share one radius, in image pixels --
 #: and the circle tool's plain click fills a disk of it (task U5a).
 RADIUS_MIN = 1
@@ -222,9 +224,9 @@ class PaletteButton(QAbstractButton):
     """
 
     PAD = 5
-    #: Above and below the text: one pixel less than at the sides, so that the
-    #: 「状态」 group fits a 1920x1080 window unscrolled (U13 follow-up).
-    VPAD = 4
+    #: Above and below the text: two pixels less than at the sides, so that the
+    #: 「状态」 group fits a maximized 1080p window unscrolled (U13 follow-up).
+    VPAD = 3
     GAP = 4
 
     #: A press on the button while it is greyed out: say why (round 2).
@@ -396,7 +398,7 @@ class ToolPalette(QWidget):
     read-only -- and keeps the difference map and the queue's four keys; Steps
     hides the whole strip (the window does that).  The 「状态」 group (task U13:
     ``T``, ``Ctrl+T``, ``Shift+T``, ``Ctrl+Shift+K``, ``I``) and the 「其他」 one
-    at the foot (``C``, ``Esc``) are Annotate's, their headings with them.
+    at the foot (``Tab``, ``C``, ``Esc``) are Annotate's, their headings with them.
 
     The buttons scroll (:attr:`scroll`) on a short screen; the minimap sits
     below them, outside the scroll area, so it is always in view (U2b round 2:
@@ -436,7 +438,8 @@ class ToolPalette(QWidget):
         inner.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         layout = QVBoxLayout(inner)
         layout.setContentsMargins(4, 4, 4, 4)
-        # 2, not 3: with VPAD, what lets the 「状态」 group fit 1920x1080 (U13)
+        # 2, not 3: with VPAD and GROUP_GAP, what lets the 「状态」 group fit a
+        # maximized 1080p window (U13)
         layout.setSpacing(2)
         self._buttons: dict[str, PaletteButton] = {}
         self._mode = ""
@@ -477,14 +480,14 @@ class ToolPalette(QWidget):
         # a wheel meant for it must not quietly resize the brush.
         self.radius_slider.installEventFilter(self)
         self.radius_spin.editingFinished.connect(self._on_spin_finished)
-        layout.addSpacing(4)
+        layout.addSpacing(GROUP_GAP)
         for widget in (self.radius_label, self.radius_slider, self.radius_spin):
             layout.addWidget(widget)
             self._tool_widgets.append(widget)
         self.radius_slider.valueChanged.connect(self._on_slider)
         self.radius_spin.valueChanged.connect(self._on_spin)
 
-        layout.addSpacing(4)
+        layout.addSpacing(GROUP_GAP)
         layout.addWidget(self._header("操作"))
         # Review's own keys first: in Review they are the whole strip, with
         # 差异图 after them; in Annotate they are hidden.
@@ -494,7 +497,7 @@ class ToolPalette(QWidget):
 
         # The keys that say the log is wrong about a part, and the two that
         # settle a frame without drawing (task U13): they had keys only.
-        layout.addSpacing(4)
+        layout.addSpacing(GROUP_GAP)
         self.state_header = self._header("状态")
         self.state_header.setToolTip("日志和画面对不上时用：这一帧的状态、一段帧的状态、"
                                      "其实拆下 / 其实只是打开；切开的形状副本没变；"
@@ -502,9 +505,9 @@ class ToolPalette(QWidget):
         layout.addWidget(self.state_header)
         for name in A.PALETTE_STATE:
             layout.addWidget(self._add(name, checkable=False))
-        # ... and the two action buttons clicked least, at the foot, so that
-        # the group above fits a 1920x1080 window unscrolled (U13 follow-up).
-        layout.addSpacing(4)
+        # ... and the action buttons clicked least, at the foot, so that the
+        # group above fits a maximized 1920x1080 window unscrolled (U13 follow-up).
+        layout.addSpacing(GROUP_GAP)
         self.other_header = self._header("其他")
         layout.addWidget(self.other_header)
         for name in A.PALETTE_OTHER:

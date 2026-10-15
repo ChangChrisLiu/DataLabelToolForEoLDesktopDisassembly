@@ -205,12 +205,12 @@ def test_the_group_sits_under_its_own_heading_after_the_actions(window):
     operations = next(w for w in widgets if isinstance(w, QLabel) and w.text() == "操作")
     assert header.styleSheet() == operations.styleSheet()
     assert header.font().bold()
-    # follow-up: the two action buttons clicked least close the strip, under 「其他」
-    assert A.PALETTE_OTHER == ("cycle_candidate", "clear_edit")
+    # follow-up: the action buttons clicked least close the strip, under 「其他」
+    assert A.PALETTE_OTHER == ("flash_compare", "cycle_candidate", "clear_edit")
     assert not set(A.PALETTE_OTHER) & set(A.PALETTE_ACTIONS)
     other = window.palette.other_header
     assert other.text() == "其他" and other.styleSheet() == operations.styleSheet()
-    assert widgets[at + 6:at + 9] == [other] + [buttons[n] for n in A.PALETTE_OTHER]
+    assert widgets[at + 6:at + 10] == [other] + [buttons[n] for n in A.PALETTE_OTHER]
 
 
 def test_annotate_shows_the_group_review_and_steps_hide_it(window):
@@ -229,9 +229,10 @@ def test_annotate_shows_the_group_review_and_steps_hide_it(window):
     assert all(not palette.button(n).isHidden() for n in tail)
 
 
-@pytest.mark.parametrize("size", [(1920, 1080), (2560, 1440)])
+@pytest.mark.parametrize("size", [(1920, 1000), (1920, 1080), (2560, 1440)])
 def test_the_whole_group_is_in_view_unscrolled_at_1920x1080(qapp, tmp_path, size):
-    """The annotator's screen (follow-up): all five buttons without the wheel."""
+    """The annotator's screen (follow-up): all five buttons without the wheel --
+    1920x1000 is a maximized window's client area on a 1080p screen."""
     session = make_session(tmp_path)
     session.sweeper_enabled = False
     win = MainWindow(session, make_paths(tmp_path), "tester", sam_queue=StubSamQueue())
@@ -493,7 +494,7 @@ def test_the_documents_say_it():
     assert _squash("每个工具和提交/确认/撤销/状态键各一个按钮") in guide
     quick = _squash((repo / "docs" / "trial_quickstart.md").read_text(encoding="utf-8"))
     assert _squash("下面是操作和**状态**") in quick
-    assert _squash("最后是「其他」（换候选 `C`、放弃编辑 `Esc`）") in quick
+    assert _squash("最后是「其他」（对比上一帧 `Tab`、换候选 `C`、放弃编辑 `Esc`）") in quick
     spec = _squash((repo / "docs" / "superpowers" / "specs"
                     / "2026-09-17-teardown-annotator-design.md").read_text(encoding="utf-8"))
     assert _squash("**v1.13（2026-10-14）**：**状态键有了按钮**（U13）") in spec
