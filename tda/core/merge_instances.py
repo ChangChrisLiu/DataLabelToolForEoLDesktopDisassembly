@@ -24,8 +24,9 @@ What moves (all views)
   drawn) and the pair overrides (renamed; a pair with itself or a duplicate is
   dropped, and so is a ``keep`` pair the renamed one contradicts);
 * the actions (``target`` -> ``keep``);
-* the constraint edges (re-pointed; duplicates and self-edges dropped) and the
-  other instances' ``parent``/``mounted_on``/``fastens``/``socket_host``
+* the constraint edges (re-pointed; self-edges dropped; of two that become
+  one, the one a human made wins over a ``rule`` one) and the other instances'
+  ``parent``/``mounted_on``/``fastens``/``socket_host`` and ``attrs["of"]``
   pointing at ``gone`` (a pointer of ``keep`` itself at ``gone`` is cleared);
 * ``gone``'s hand-written state events, each only where ``keep`` has no
   hand-written event of that attribute at that step and the merged log still
@@ -50,7 +51,8 @@ deadlock the merge would create.
 Afterwards the automatic event log is recompiled, ``graph_version`` re-stamped,
 the digests of the frames ``gone`` reached cleared and every frozen frame the
 merged part touches queued for a re-check. :func:`undo_merge` applies the
-inverse; :func:`redo_merge` runs the merge again from the op.
+inverse -- refused once a frame it would rewrite has been confirmed since the
+merge -- and :func:`redo_merge` runs the merge again from the op.
 """
 from __future__ import annotations
 
@@ -76,7 +78,15 @@ from tda.core.states import (
 from tda.core.taxonomy import Taxonomy
 from tda.core.truth_inputs import events_of, merge_events, pose_segment_of
 # the vocabulary the importer shares, kept in the light module it imports
-from tda.core.merge_replay import OP_MERGE, OP_UNDO, OP_VIEW, POINTERS, ranges
+from tda.core.merge_replay import (
+    OF_ATTR,
+    OP_MERGE,
+    OP_UNDO,
+    OP_VIEW,
+    POINTERS,
+    ranges,
+    repointed,
+)
 
 __all__ = [
     "OP_MERGE", "OP_UNDO", "OP_VIEW", "MergeError", "MergePlan", "MergeReport",
@@ -84,6 +94,17 @@ __all__ = [
 ]
 
 VERIFIED = "verified"
+#: ``relation.source`` of a derived edge (:data:`tda.core.graph_derive.RULE`,
+#: which this module does not import at load time).
+RULE = "rule"
+#: The instance columns a merge does not carry over from ``gone`` (``keep``
+#: keeps its own); the confirmation names the ones that differ.
+GONE_COLUMNS = ("parent", "attached", "mounted_on", "fastens", "socket_host",
+                "removal_direction")
+#: How every refusal that wants the step table fixed first ends (round 3): a
+#: separate ``Apply`` would demote the confirmed frames the merge is about to
+#: keep (D2: 38-48), 「Apply 并合并」 writes both at once.
+THEN_MERGE = "（不用先 Apply），再「合并到…」：确认框会提供「Apply 并合并」，一次写入"
 
 
 class MergeError(ValueError):
@@ -233,6 +254,10 @@ class MergePlan:
         for label, n in simple:
             if n:
                 lines.append(f"  · {label} {n}")
+            if label == "约束边" and n:
+                rules = sum(1 for row, _t, _b in self.relations_renamed if row["source"] == RULE)
+                if rules:
+                    lines.append(f"    （其中 {rules} 条规则边将按保留实例 {self.keep} 的属性重算）")
         drops: list[str] = []
         if self.compiled_dropped:
             drops.append(f"  · 缓存行 {len(self.compiled_dropped)} 行（会重新编译）")
@@ -255,6 +280,13 @@ class MergePlan:
         tail = f"属性 {rest} " if rest else ""
         lines.append(f"{self.gone} 这一行会删除；它的{tail}不带过去（记在操作日志里）。"
                      f"{self.keep} 的属性不变。")
+        columns = [f"{name}={getattr(self.gone_record, name)}（{self.keep} 是 "
+                   f"{getattr(self.keep_record, name) or '空'}）"
+                   for name in GONE_COLUMNS
+                   if getattr(self.gone_record, name) not in (None, False, "")
+                   and getattr(self.gone_record, name) != getattr(self.keep_record, name)]
+        if columns:
+            lines.append(f"{self.gone} 的 {'、'.join(columns)} 也不带过去。")
         for text in self.warnings:
             lines.append(f"注意：{text}")
         if self.rechecks:
@@ -270,9 +302,11 @@ def _repoint(instances: dict[str, InstanceRec], gone: str, keep: str
              ) -> tuple[dict[str, InstanceRec], list[InstanceRec], list[InstanceRec]]:
     """The instance table without ``gone``, every pointer at it moved to ``keep``.
 
-    Returns ``(table, changed before, changed after)``. ``keep``'s own pointer
-    at ``gone`` would point at itself and is cleared (``parent`` takes
-    ``attached`` with it, as everywhere else).
+    Returns ``(table, changed before, changed after)``. The pointers are the
+    relational columns and a latch's ``attrs["of"]``
+    (:func:`tda.core.merge_replay.repointed`, which the forced re-import uses
+    too). ``keep``'s own pointer at ``gone`` would point at itself and is
+    cleared (``parent`` takes ``attached`` with it, as everywhere else).
     """
     table: dict[str, InstanceRec] = {}
     before: list[InstanceRec] = []
@@ -280,21 +314,12 @@ def _repoint(instances: dict[str, InstanceRec], gone: str, keep: str
     for key, rec in instances.items():
         if key == gone:
             continue
-        new = copy.deepcopy(rec)
-        touched = False
-        for name in POINTERS:
-            if getattr(new, name) != gone:
-                continue
-            touched = True
-            if key == keep:
-                setattr(new, name, None)
-                if name == "parent":
-                    new.attached = False
-            else:
-                setattr(new, name, keep)
-        if touched:
-            before.append(copy.deepcopy(rec))
-            after.append(new)
+        new = repointed(rec, gone, keep)
+        if new is None:
+            table[key] = copy.deepcopy(rec)
+            continue
+        before.append(copy.deepcopy(rec))
+        after.append(new)
         table[key] = new
     return table, before, after
 
@@ -416,7 +441,7 @@ def _plan_events(db: Db, tax: Taxonomy, plan: MergePlan, instances_post: dict,
     if extra:
         first = next(p for p in problems if _problem_key(p) in extra)
         raise MergeError(
-            f"合并后状态日志会出错：{first.text}。先在 Steps 把步骤改对、Apply，再合并")
+            f"合并后状态日志会出错：{first.text}。先在 Steps 把步骤改对{THEN_MERGE}")
     return merged
 
 
@@ -508,7 +533,7 @@ def _plan_frames(db: Db, tax: Taxonomy, plan: MergePlan, instances_post: dict,
             said.append(f"{_frames_text(breaks['gained'])}：确认时没有它，合并后按步骤表却要画它")
         raise MergeError(
             f"合并后 {keep} 和这些已确认帧对不上（{'；'.join(said)}）。先在 Steps 把步骤改对"
-            f"（例如那一步的动词）、Apply，再合并")
+            f"，例如那一步的动词{THEN_MERGE}")
     if stale:
         plan.warnings.append(
             f"这些已确认帧本来就和步骤表对不上，合并后仍要复核：{_frames_text(stale)}")
@@ -571,20 +596,32 @@ def _plan_layers(db: Db, plan: MergePlan) -> None:
             plan.pairs_dropped.append((row, f"与 {plan.gone} 的那条相反，保留 {plan.gone} 的"))
 
     relations = _rows(db, "SELECT * FROM relation WHERE desktop=? ORDER BY id", desktop)
-    taken = {(r["type"], r["target"], r["blocker"]) for r in relations
-             if gone not in (r["target"], r["blocker"])}
+    # triple -> the standing row (None once a renamed row of gone holds it)
+    taken: dict[tuple, Optional[dict]] = {
+        (r["type"], r["target"], r["blocker"]): r for r in relations
+        if gone not in (r["target"], r["blocker"])}
     for row in relations:
         if gone not in (row["target"], row["blocker"]):
             continue
         target = keep if row["target"] == gone else row["target"]
         blocker = keep if row["blocker"] == gone else row["blocker"]
+        triple = (row["type"], target, blocker)
         if target == blocker:
             plan.relations_dropped.append((row, f"合并后是 {keep} 和它自己"))
-        elif (row["type"], target, blocker) in taken:
-            plan.relations_dropped.append((row, "合并后与已有的一条重复"))
-        else:
-            plan.relations_renamed.append((row, target, blocker))
-            taken.add((row["type"], target, blocker))
+            continue
+        if triple in taken:
+            other = taken[triple]
+            if (other is not None and other["source"] == RULE
+                    and row["source"] != RULE):
+                # the same edge twice: a human's (gone's) beats a derived one
+                # (round 3) -- its necessity, mode and reason are a decision
+                plan.relations_dropped.append(
+                    (other, f"与 {gone} 的{row['source']}边重复，保留那条"))
+            else:
+                plan.relations_dropped.append((row, "合并后与已有的一条重复"))
+                continue
+        plan.relations_renamed.append((row, target, blocker))
+        taken[triple] = None
 
 
 def _deadlocks(db: Db, plan: MergePlan, instances_post: dict, tax: Taxonomy) -> None:
@@ -649,7 +686,7 @@ def plan_merge(db: Db, tax: Taxonomy, desktop: int, gone: str, keep: str) -> Mer
     if both:
         raise MergeError(
             f"第 {ranges(both)} 步 {gone} 和 {keep} 都有动作：合并后一步里会有同一个零件的两个"
-            f"动作。先在 Steps 删掉或改掉其中一个、Apply，再合并")
+            f"动作。先在 Steps 删掉或改掉其中一个{THEN_MERGE}")
     plan.actions = [(a.step, a.idx) for a in actions if a.target == gone]
     actions_post = [copy.copy(a) for a in actions]
     for action in actions_post:
@@ -855,9 +892,50 @@ def apply_merge(db: Db, tax: Taxonomy, plan: MergePlan, annotator: str = "") -> 
         c.execute("DELETE FROM state_event WHERE desktop=? AND target=? AND auto=1", (d, gone))
         c.execute('DELETE FROM instance WHERE desktop=? AND "key"=?', (d, gone))
         _settle(db, tax, d, plan.frames, plan.rechecks)
-        op_id = db.log_op(d, OP_VIEW, OP_MERGE, _payload(plan), _inverse(plan),
+        inverse = _inverse(plan)
+        # what the frames an undo would rewrite were confirmed with right
+        # after the merge: an undo finding more refuses (round 3)
+        inverse["confirmed"] = _confirmed(db, d, _undo_frames(inverse))
+        op_id = db.log_op(d, OP_VIEW, OP_MERGE, _payload(plan), inverse,
                           annotator or "ui:steps")
     return MergeReport(op_id=op_id, plan=plan)
+
+
+def _undo_frames(inverse: dict) -> list[tuple[str, int]]:
+    """``(view, step)`` of every frame an undo rewrites rows of."""
+    frames = {(str(v), int(s)) for v, s in inverse.get("frames") or []}
+    frames |= {(str(v), int(s)) for s, v in inverse.get("compiled_renamed") or []}
+    frames |= {(str(r["view"]), int(r["step"])) for r in inverse.get("compiled_dropped") or []}
+    return sorted(frames)
+
+
+def _confirmed(db: Db, desktop: int, frames) -> list[list]:
+    """``[view, step, review_status, [[instance, verified_at], ...]]`` per frame."""
+    out: list[list] = []
+    for view, step in frames:
+        row = db.get_frame(FrameKey(desktop, step, view)) or {}
+        signed = sorted([str(r["instance"]), r["verified_at"]] for r in db.conn.execute(
+            "SELECT instance, verified_at FROM compiled_mask WHERE desktop=? AND step=? "
+            "AND view=? AND status=?", (desktop, step, view, VERIFIED)))
+        out.append([view, step, row.get("review_status"), signed])
+    return out
+
+
+def _confirmed_since(db: Db, desktop: int, inverse: dict) -> dict[str, list[int]]:
+    """The frames an undo would rewrite that a human confirmed after the merge.
+
+    A frame whose flag went to ``verified``, or that holds a signed row the
+    merge did not leave there (a re-trace accepted with ``N``, a ``Space``).
+    An undo would put the pre-merge rows back over that signature.
+    """
+    since: dict[str, list[int]] = {}
+    for view, step, review, signed in inverse.get("confirmed") or []:
+        now = _confirmed(db, desktop, [(view, step)])[0]
+        then = {tuple(item) for item in signed}
+        if ((now[2] == VERIFIED and review != VERIFIED)
+                or any(tuple(item) not in then for item in now[3])):
+            since.setdefault(str(view), []).append(int(step))
+    return since
 
 
 def merge_instances(db: Db, tax: Taxonomy, desktop: int, gone: str, keep: str,
@@ -874,8 +952,11 @@ def undo_merge(db: Db, tax: Taxonomy, op: dict, annotator: str = "") -> int:
 
     ``op`` is a row as :meth:`tda.core.db.Db.get_op` returns it. ``gone`` comes
     back with its record, its rows, its events and every pointer and edge
-    that named it; the derived log is recompiled, the graph re-stamped and the
-    frames it reached queued again. Refused while ``gone`` exists again.
+    that named it; the derived log is recompiled, the graph re-stamped and
+    every frozen frame of the views involved queued again. Refused while
+    ``gone`` exists again, and once any frame the undo would rewrite has been
+    confirmed since the merge (round 3: the restored rows would replace a
+    signature given to the merged part).
     """
     if str(op.get("kind")) != OP_MERGE:
         raise MergeError(f"op {op.get('id')} 不是一次合并")
@@ -887,6 +968,10 @@ def undo_merge(db: Db, tax: Taxonomy, op: dict, annotator: str = "") -> int:
         raise MergeError(f"撤销不了：{gone} 又存在了")
     if keep not in stored:
         raise MergeError(f"撤销不了：{keep} 已经不在了")
+    since = _confirmed_since(db, d, inv)
+    if since:
+        raise MergeError(f"撤销不了：合并后又确认过这些帧（{_frames_text(since)}），撤销会把"
+                         f"合并前的行写回去、盖掉那次确认")
     c = db.conn
     try:
         with db.transaction():
@@ -933,9 +1018,18 @@ def undo_merge(db: Db, tax: Taxonomy, op: dict, annotator: str = "") -> int:
                 c.execute("UPDATE state_event SET target=? WHERE id=?", (gone, event_id))
             for row in inv.get("events_dropped") or []:
                 _insert(db, "state_event", row)
-            frames = [(str(v), int(s)) for v, s in inv.get("frames") or []]
-            payload = op.get("payload") or {}
-            _settle(db, tax, d, frames, payload.get("rechecks") or {})
+            frames = _undo_frames(inv)
+            _settle(db, tax, d, frames, {})
+            # every frozen frame the restored instance reaches, in every view
+            # it or keep is drawn or compiled in -- not just the merge-time
+            # list: frames were confirmed and demoted since (round 3)
+            views = {view for view, _step in frames}
+            views |= set((op.get("payload") or {}).get("rechecks") or {})
+            views |= {str(r["view"]) for r in c.execute(
+                "SELECT DISTINCT view FROM shape_keyframe WHERE desktop=? AND instance IN (?, ?)",
+                (d, gone, keep))}
+            for view in sorted(views):
+                db.queue_rechecks_for_view(d, view)
             return db.log_op(d, OP_VIEW, OP_UNDO,
                              {"undid": int(op["id"]), "gone": gone, "keep": keep},
                              {"redo": {"gone": gone, "keep": keep}},

@@ -275,12 +275,29 @@ def test_relations_are_re_pointed_and_deduplicated(scene):
     db.add_relation(DESKTOP, "blocked_by", GONE, KEEP, source="manual", mode="physical_path")
     db.add_relation(DESKTOP, "blocked_by", PSU, GONE, source="manual", mode="physical_path")
     report = _merge(scene)
-    triples = sorted((r["type"], r["target"], r["blocker"], r["source"])
-                     for r in db.relations(DESKTOP))
-    assert triples == [("blocked_by", PSU, KEEP, "manual"),
-                       ("covered_by", PSU, KEEP, "rule")]
-    whys = sorted(why for _row, why in report.plan.relations_dropped)
-    assert len(whys) == 2 and any("重复" in w for w in whys) and any("它自己" in w for w in whys)
+    rows = {(r["type"], r["target"], r["blocker"]): r for r in db.relations(DESKTOP)}
+    assert sorted((t, a, b, r["source"]) for (t, a, b), r in rows.items()) == [
+        ("blocked_by", PSU, KEEP, "manual"),
+        # round 3: covered_by(psu, cover.01) was a rule edge and cover.02's the
+        # same edge written by hand -- the human's one stays, reason and all
+        ("covered_by", PSU, KEEP, "manual")]
+    assert rows[("covered_by", PSU, KEEP)]["reason"] == "seen"
+    dropped = {(r["source"], r["blocker"]): why for r, why in report.plan.relations_dropped}
+    assert set(dropped) == {("rule", KEEP), ("manual", KEEP)}
+    assert "保留那条" in dropped[("rule", KEEP)] and "它自己" in dropped[("manual", KEEP)]
+    assert "    （其中 0 条" not in report.plan.summary_lines()
+
+
+def test_a_rule_edge_of_gone_gives_way_to_keeps_manual_one(scene):
+    db = scene.db
+    db.delete_relation(DESKTOP, "covered_by", PSU, GONE)
+    db.delete_relation(DESKTOP, "covered_by", PSU, KEEP)
+    db.add_relation(DESKTOP, "covered_by", PSU, KEEP, source="manual", reason="mine")
+    db.add_relation(DESKTOP, "covered_by", PSU, GONE, source="rule")
+    report = _merge(scene)
+    [row] = db.relations(DESKTOP)
+    assert (row["source"], row["reason"]) == ("manual", "mine")
+    assert [r["source"] for r, _why in report.plan.relations_dropped] == ["rule"]
 
 
 def test_pointers_at_gone_follow_and_a_self_pointer_is_cleared(scene):

@@ -14,9 +14,12 @@ the ``Shift+T`` verbs back:
   in the stored instance table (an undone merge brought it back, so it is not
   replayed); ``keep`` is followed through later merges (``a`` into ``b``, then
   ``b`` into ``c``: ``a``'s actions end up on ``c``);
-* **replayed** -- both keys are in the fresh parse with the merge's class: the
-  parsed actions of ``gone`` are retargeted to ``keep``, ``gone`` leaves the
-  parsed instance set and every parsed pointer at it follows to ``keep``;
+* **replayed** -- ``gone`` is in the fresh parse and ``keep`` too (or is a part
+  added in S1, which the import keeps), with the merge's class: the parsed
+  actions of ``gone`` are retargeted to ``keep``, ``gone`` leaves the parsed
+  instance set and every parsed pointer at it -- ``parent``, ``mounted_on``,
+  ``fastens``, ``socket_host`` and a latch's ``of`` (:func:`repointed`) --
+  follows to ``keep``;
 * **already** -- the sheet no longer names ``gone`` (the sheet was corrected):
   nothing to do;
 * **not matched** -- the sheet lost ``keep``, the class changed, or the sheet
@@ -28,15 +31,16 @@ import parses the same sheet and finds the same merges in effect. One
 """
 from __future__ import annotations
 
+import copy
 from dataclasses import asdict, dataclass, field
 from typing import Iterable, Optional
 
 from tda.core.db import Db
-from tda.core.model import ActionRec, InstanceRec
+from tda.core.model import ActionRec, InstanceRec, is_extra
 
-__all__ = ["OP_MERGE", "OP_REPLAY_MERGES", "OP_UNDO", "OP_VIEW", "POINTERS", "MergeReplay",
-           "effective_merges", "ranges", "renamed", "replay_merges",
-           "replay_merges_for_import"]
+__all__ = ["OF_ATTR", "OP_MERGE", "OP_REPLAY_MERGES", "OP_UNDO", "OP_VIEW", "POINTERS",
+           "MergeReplay", "effective_merges", "ranges", "renamed", "replay_merges",
+           "replay_merges_for_import", "repointed"]
 
 # The vocabulary :mod:`tda.core.merge_instances` shares with the importer. It
 # lives here because ``tda.pipeline_logs`` imports this module and must stay
@@ -48,8 +52,39 @@ OP_UNDO = "undo_merge_instances"
 OP_VIEW = "-"
 #: Instance fields that hold another instance's key.
 POINTERS = ("parent", "mounted_on", "fastens", "socket_host")
+#: The ``attrs`` entry that can hold one too: a latch's ``of``
+#: (``ram_latch.01`` of ``ram_module.02``), which the ``locked_by`` rule reads.
+OF_ATTR = "of"
 #: ``op_log.kind`` of the one row a forced re-import writes about the merges.
 OP_REPLAY_MERGES = "replay_merges"
+
+
+def repointed(rec: InstanceRec, gone: str, keep: str) -> Optional[InstanceRec]:
+    """A copy of ``rec`` with every pointer at ``gone`` moved to ``keep``.
+
+    ``None`` when ``rec`` names ``gone`` nowhere. The pointers are
+    :data:`POINTERS` and ``attrs["of"]`` (round 3: a latch ``of`` the merged-away
+    module would otherwise dangle, and the next rule derivation would drop its
+    ``locked_by`` edge in silence). ``keep``'s own pointer at ``gone`` would
+    point at itself, so it is cleared -- ``parent`` takes ``attached`` with it,
+    ``of`` leaves ``attrs``.
+    """
+    hits = [name for name in POINTERS if getattr(rec, name) == gone]
+    of_hit = (rec.attrs or {}).get(OF_ATTR) == gone
+    if rec.key == gone or not (hits or of_hit):
+        return None
+    new = copy.deepcopy(rec)
+    itself = rec.key == keep
+    for name in hits:
+        setattr(new, name, None if itself else keep)
+        if itself and name == "parent":
+            new.attached = False
+    if of_hit:
+        if itself:
+            new.attrs.pop(OF_ATTR, None)
+        else:
+            new.attrs[OF_ATTR] = keep
+    return new
 
 
 def ranges(steps: Iterable[int]) -> str:
@@ -147,12 +182,20 @@ def _resolve(key: str, rename: dict[str, str]) -> str:
 
 
 def replay_merges(merges: list[dict], instances: dict[str, InstanceRec],
-                  actions: list[ActionRec]) -> tuple[dict, list[ActionRec], MergeReplay]:
+                  actions: list[ActionRec],
+                  kept: Optional[dict[str, InstanceRec]] = None
+                  ) -> tuple[dict, list[ActionRec], MergeReplay]:
     """The parsed records with every merge in ``merges`` applied.
+
+    ``kept`` are the stored instances the import keeps although the sheet does
+    not name them -- the parts added in S1 (:mod:`tda.core.extra`). A merge
+    *into* one of them is as much in effect as one into a sheet part (round 3:
+    it used to be reported "the sheet no longer has cover.03").
 
     Returns new ``(instances, actions, report)``; the inputs are left alone.
     """
     table = dict(instances)
+    kept = dict(kept or {})
     out = list(actions)
     report = MergeReplay()
     for merge in merges:
@@ -160,21 +203,22 @@ def replay_merges(merges: list[dict], instances: dict[str, InstanceRec],
         keep = _resolve(merge["keep"], report.rename)
         entry = {"ops": list(merge["ops"]), "gone": gone, "keep": keep}
         report.rename[gone] = keep
+        keep_rec = table.get(keep) or kept.get(keep)
         if gone not in table:
-            if keep in table:
+            if keep_rec is not None:
                 report.already.append(entry)
             else:
                 report.unmatched.append(entry | {
                     "why": f"the sheet names neither {gone} nor {keep}"})
             continue
-        if keep not in table:
+        if keep_rec is None:
             report.unmatched.append(entry | {"why": f"the sheet no longer has {keep}"})
             continue
         wanted = merge.get("cls")
-        if table[gone].cls != table[keep].cls or (wanted and table[gone].cls != wanted):
+        if table[gone].cls != keep_rec.cls or (wanted and table[gone].cls != wanted):
             report.unmatched.append(entry | {
                 "why": f"the sheet makes {gone} a {table[gone].cls} and {keep} a "
-                       f"{table[keep].cls}"})
+                       f"{keep_rec.cls}"})
             continue
         both = sorted({a.step for a in out if a.target == gone}
                       & {a.step for a in out if a.target == keep})
@@ -192,20 +236,9 @@ def replay_merges(merges: list[dict], instances: dict[str, InstanceRec],
         report.inverse["instances"].append(asdict(table[gone]))
         del table[gone]
         for key, rec in list(table.items()):
-            if not any(getattr(rec, name) == gone for name in POINTERS):
-                continue
-            new = InstanceRec(**{**vars(rec), "attrs": dict(rec.attrs),
-                                 "raw_names": list(rec.raw_names)})
-            for name in POINTERS:
-                if getattr(new, name) != gone:
-                    continue
-                if key == keep:
-                    setattr(new, name, None)
-                    if name == "parent":
-                        new.attached = False
-                else:
-                    setattr(new, name, keep)
-            table[key] = new
+            new = repointed(rec, gone, keep)
+            if new is not None:
+                table[key] = new
         report.replayed.append(entry | {"steps": sorted(set(steps))})
     return table, out, report
 
@@ -216,12 +249,15 @@ def replay_merges_for_import(db: Db, desktop: int, instances: dict[str, Instance
     """:func:`replay_merges` with the merges in effect on ``desktop``.
 
     Must be called **before** the import writes: "in effect" is read off the
-    stored instance table it is about to replace.
+    stored instance table it is about to replace, and so are the parts added
+    in S1 that the import keeps (a merge may have gone into one of them).
     """
     merges = effective_merges(db, desktop)
     if not merges:
         return dict(instances), list(actions), MergeReplay()
-    return replay_merges(merges, instances, actions)
+    kept = {key: rec for key, rec in db.instances(int(desktop)).items()
+            if is_extra(rec) and key not in instances}
+    return replay_merges(merges, instances, actions, kept)
 
 
 def renamed(target: str, rename: Optional[dict[str, str]]) -> str:

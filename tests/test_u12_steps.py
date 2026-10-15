@@ -80,7 +80,7 @@ def test_choices_are_the_same_class_without_drafts(panel, scene):
     assert M.merge_choices(panel.data, GONE) == [KEEP]
     assert M.merge_choices(panel.data, "ls:Cover#1") == []
     assert M.choice_label(panel.data, KEEP) == \
-        "cover.01 — Screw Cover（第 3 步 open，第 5 步 remove）"
+        "cover.01 — Screw Cover（of=motherboard_screws；第 3 步 open，第 5 步 remove）"
 
 
 def test_pick_confirm_and_merge(panel, scene, monkeypatch):

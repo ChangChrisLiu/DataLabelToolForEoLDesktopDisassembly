@@ -62,11 +62,17 @@ def merge_choices(data: "StepTableData", key: str) -> list[str]:
 
 
 def choice_label(data: "StepTableData", key: str) -> str:
-    """``cover.01 — Screw Cover（第 38 步 open）`` for the picker."""
+    """``cover.01 — Screw Cover（of=motherboard_screws；第 38 步 open）`` for the picker.
+
+    The ``of`` is shown (round 3) because the one kept decides it -- and the
+    rule edges it derives -- for the merged part.
+    """
     rec = data.instances[key]
     names = "、".join(rec.raw_names) if rec.raw_names else "日志里没有"
     acts = [f"第 {a.step} 步 {a.verb}" for a in data.actions if a.target == key]
-    return f"{key} — {names}（{'，'.join(acts) if acts else '没有动作'}）"
+    of = (rec.attrs or {}).get("of")
+    head = f"of={of}；" if of else ""
+    return f"{key} — {names}（{head}{'，'.join(acts) if acts else '没有动作'}）"
 
 
 def staged_edits(data: "StepTableData", db: Db) -> list[str]:

@@ -48,7 +48,7 @@ def test_the_quickstart_walks_through_d2(tmp_path):
 
 def test_the_spec_has_the_rules_and_the_changelog():
     spec = _flat("docs", "superpowers", "specs", "2026-09-17-teardown-annotator-design.md")
-    assert "**合并两个实例（v1.9，U12）**" in spec
+    assert "**合并两个实例（v1.11，U12）**" in spec
     assert spec.count("「Apply 并合并」") == 2
     assert "`merge_instances` op" in spec and "`replay_merges` op" in spec
-    assert "**v1.9（2026-10-14）**：**合并实例**（U12）" in spec
+    assert "**v1.11（2026-10-14）**：**合并实例**（U12）" in spec
