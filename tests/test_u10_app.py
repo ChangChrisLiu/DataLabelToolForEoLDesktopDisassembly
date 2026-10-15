@@ -21,11 +21,14 @@ from test_app_actions import key_event
 from tda.core.db import Db
 from tda.core.taxonomy import load_taxonomy
 from tda.core.truth import TruthService
+from tda.core.truth_inputs import InputCache, instances_of, state_of
+from tda.core.verb_fix import offers
 from tda.ui import app_actions as A
 from tda.ui.app import MainWindow
-from tda.ui.gallery import GALLERY_REFUSALS
+from tda.ui.gallery import GALLERY_REFUSALS, NO_VERB
 from tda.ui.panels.taskcard import MENU_ABSENT, MENU_PRESENT
 from tda.ui.session import AnnotationSession
+from tda.ui.session_api import SessionRefusal
 
 import gallery_scene as GS
 
@@ -144,3 +147,55 @@ def test_status_words_count_shots(window):
     window.act_set_view("scan")
     QApplication.processEvents()
     assert window.frame_word(7) == "step 7"
+
+
+# --------------------------------------------------------------------------- #
+# review round 3
+# --------------------------------------------------------------------------- #
+def actions_of(win: MainWindow) -> list[tuple]:
+    return [(a.step, a.idx, a.verb, a.target) for a in win.db.actions(GS.DESKTOP)]
+
+
+def test_shift_t_and_the_verb_button_never_touch_the_step_table_from_a_shot(window):
+    """Blocker: shot 2 is not step 2 -- yet step 2 of D13 is where cover.01 opens.
+
+    Read as a step, shot 2 offered 「其实拆下来了」 for cover.01 and the button's
+    signal flipped step 2's ``open`` to ``remove``. On a shot nothing is
+    offered, no row lights the button, and the key, the slot, the signal and
+    the session all refuse: the step table and the op log stay as they were.
+    """
+    window.session.goto(2)
+    QApplication.processEvents()
+    assert window.in_gallery() and window.session.current().step == 2
+    tax = window.session.tax
+    cache = InputCache()
+    as_a_step = offers(tax, instances_of(window.db, GS.DESKTOP, cache),
+                       state_of(window.db, tax, GS.DESKTOP, 2, cache),
+                       window.db.actions(GS.DESKTOP), 2)
+    assert as_a_step == {"cover.01": "remove"}         # what the shot used to offer
+    before = actions_of(window)
+    assert window.session.verb_offers() == {}          # nothing to offer on a shot
+    window.instances.show_removed.setChecked(True)
+    QApplication.processEvents()
+    table = window.instances.table()
+    button = window.instances.verb_button
+    assert table.rowCount()
+    for row in range(table.rowCount()):                # kept rows and removed rows
+        table.setCurrentCell(row, 1)
+        QApplication.processEvents()
+        assert window.instances.verb_offer() == (None, None) and not button.isEnabled()
+    table.setCurrentCell(0, 1)
+    reported: list[str] = []
+    window.report = reported.append
+    window.handle_key(key_event("Shift+T"))             # the key: refused by dispatch
+    assert reported and GALLERY_REFUSALS["correct_verb"] in reported[-1]
+    window.act_correct_verb()                           # the slot itself
+    assert NO_VERB in reported[-1]
+    window.instances.sigCorrectVerb.emit("cover.01", "remove")   # the button's signal
+    assert NO_VERB in reported[-1]
+    with pytest.raises(SessionRefusal, match="零件合照不改步骤表"):
+        window.session.correct_verb("cover.01", "remove")
+    assert actions_of(window) == before
+    assert not window.db.ops_of_kind(GS.DESKTOP, "correct_verb")
+    # the card asks nothing about verbs either
+    assert all(not r.get("verb_fix") for r in window.task_card.rows())

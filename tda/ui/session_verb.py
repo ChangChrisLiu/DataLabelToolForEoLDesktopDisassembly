@@ -35,6 +35,7 @@ from tda.core.verb_fix import (
 )
 from tda.ui.class_names import state_zh
 from tda.ui.commands import Op
+from tda.ui.gallery import NO_VERB
 from tda.ui.session_api import SessionRefusal
 from tda.ui.session_ops import settle
 from tda.ui.session_tasks import _has_shape, bench_roi_of
@@ -142,8 +143,8 @@ class VerbMixin:
         state here is what its own ``open`` / ``remove`` left. ``state`` and
         ``instances`` are the frame's, when the caller has them already.
         """
-        if not self.is_open:
-            return {}
+        if not self.is_open or getattr(self, "gallery", False):
+            return {}     # a components-gallery shot is not a step of the log (U10)
         key = self.current()
         if state is None or instances is None:
             cache = InputCache()
@@ -168,6 +169,10 @@ class VerbMixin:
         """
         if not self.is_open:
             raise SessionRefusal("没有打开的帧")
+        if getattr(self, "gallery", False):
+            # its number is a shot, not a step: a verb would be changed at the
+            # wrong step of the teardown (U10)
+            raise SessionRefusal(NO_VERB)
         editing = self.layer.instance
         if editing == instance and self.layer.changed():
             raise SessionRefusal(f"{instance} 正在画、还没提交：先 Enter 提交或 Esc 放弃，再改")

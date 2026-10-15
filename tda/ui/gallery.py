@@ -25,7 +25,7 @@ from tda.core.model import COMPONENT_CAMERA, is_component_view
 
 __all__ = [
     "ABSENT", "ABSENT_CHIP", "ABSENT_KEY", "GALLERY_REFUSALS", "GALLERY_SENTENCE",
-    "NO_STATE", "camera_label", "gallery_header", "gallery_refusal", "gallery_title",
+    "NO_STATE", "NO_VERB", "camera_label", "gallery_header", "gallery_refusal", "gallery_title",
     "is_component_view", "view_label",
 ]
 
@@ -43,10 +43,15 @@ GALLERY_SENTENCE = (f"这张里看得到就画出它（整个零件）；不在�
                     f"（右键这一条，或按 {ABSENT_KEY}）")
 #: Why a gallery shot has no state to set (``T``, the state combo).
 NO_STATE = "零件合照里没有状态：桌上的零件都是拆下来的，只画它本身"
+#: Why a gallery shot does not change the step table (``Shift+T``, the 「其实…」 button):
+#: a shot's number is not a step, so the verb would change at the wrong step.
+NO_VERB = ("零件合照不改步骤表：「其实拆下来了 / 其实只是打开了」到拆解序列"
+           "（OAK1/OAK2/RS）里那一步的帧上用（Shift+T）")
 
 #: What the gallery refuses, per action name of :data:`tda.ui.app_actions.ACTIONS`.
 GALLERY_REFUSALS: dict[str, str] = {
     "cycle_state": NO_STATE,
+    "correct_verb": NO_VERB,
     "commit_split": "零件合照每张是独立的，没有「从这帧起新版本」：用 Enter 提交",
     "toggle_heat": "零件合照没有差异图：每张照片之间零件被重新摆过",
     "cycle_prompt_box": "零件合照没有差异图给的提示框：用 S 点选或 X 框选",

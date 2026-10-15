@@ -308,7 +308,7 @@ D:\Anaconda\envs\tda\python.exe -m tda.cli check --desktop 13 --view scan
 
 **零件合照（`F6`–`F8`）。** 拆完后摆在桌上拍的零件照，不是拆解步骤：每张自成一帧，
 卡上列最后拆下的零件（螺丝、接口、线不画），看得到就画整件；不在这张里右键选「看不见」或按 `I`。
-没有状态、✂、差异图，`Space` 到下一张。
+没有状态、✂、差异图、`Shift+T`，`Space` 到下一张。
 
 **SAM 用不了。** 状态栏写"SAM 加载失败：原因（F5 重试）"，先用 `Y`/`B`/`P`；权重在 `paths.yaml` 的 `weights_dir`。
 
