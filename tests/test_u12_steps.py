@@ -148,3 +148,22 @@ def test_the_view_model_half_alone(scene):
     assert report.plan.keep == KEEP and GONE not in scene.db.instances(DESKTOP)
     with pytest.raises(M.EditError, match="没有实例"):
         M.plan(StepTableData.load(scene.db, DESKTOP, scene.tax), scene.db, GONE, KEEP)
+
+
+@pytest.mark.parametrize("desktop", [13, 63])
+def test_a_freshly_loaded_or_applied_table_has_nothing_staged(tmp_path, desktop):
+    """No false 「先 Apply 或 Revert」 on the real fixture sheets."""
+    from steps_fixtures import seeded_db
+    from tda.core.taxonomy import load_taxonomy
+
+    tax = load_taxonomy()
+    db = seeded_db(tmp_path / "s.sqlite", tax)
+    data = StepTableData.load(db, desktop, tax)
+    assert M.staged_edits(data, db) == []
+    step = data.rows[0].number
+    data.apply_edit(step, "notes", "checked")
+    assert M.staged_edits(data, db) == ["步骤/动作"]
+    data.save(db)
+    assert M.staged_edits(data, db) == []
+    assert M.staged_edits(StepTableData.load(db, desktop, tax), db) == []
+    db.close()
