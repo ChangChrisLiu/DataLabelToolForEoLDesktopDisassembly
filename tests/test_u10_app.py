@@ -109,3 +109,38 @@ def test_i_outside_the_gallery_says_so(window):
     window.report = reported.append
     window.handle_key(key_event("I"))
     assert reported and "只用在零件合照里" in reported[-1]
+
+
+# --------------------------------------------------------------------------- #
+# review round
+# --------------------------------------------------------------------------- #
+def test_switching_family_lands_where_that_family_was_left(window):
+    """M5: a step number means nothing in the gallery and vice versa."""
+    window.session.goto(2)                       # shot 2 of cmp_oak1
+    window.act_set_view("scan")
+    QApplication.processEvents()
+    assert window.session.view == "scan"
+    assert window.session.current().step == max(window.session.available_steps())
+    window.session.goto(5)
+    window.act_set_view("cmp_oak2")              # back in the gallery: the shot left
+    QApplication.processEvents()
+    assert window.session.view == "cmp_oak2" and window.session.current().step == 2
+    window.act_set_view("scan")
+    QApplication.processEvents()
+    assert window.session.current().step == 5
+
+
+def test_the_timeline_lists_shots_forward_by_position(window):
+    """M7: ascending (Space walks forward), labelled 第 k 张."""
+    timeline = window.timeline.list_widget() if hasattr(window.timeline, "list_widget") \
+        else window.timeline._list
+    texts = [timeline.item(i).text() for i in range(timeline.count())]
+    assert [t.split(" · ")[0] for t in texts] == ["第 1 张", "第 2 张", "第 3 张"]
+
+
+def test_status_words_count_shots(window):
+    """M4: 「第 k 张」, not "step k"."""
+    assert window.frame_word(2) == "第 2 张"
+    window.act_set_view("scan")
+    QApplication.processEvents()
+    assert window.frame_word(7) == "step 7"

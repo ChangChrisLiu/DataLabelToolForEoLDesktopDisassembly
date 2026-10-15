@@ -278,6 +278,9 @@ def _d66_like(tmp_path):
     return db
 
 
+SHEET_SHOT = P.SHEET_SHOT_BASE + 3      # D66-like: the sheet row is step 3
+
+
 def test_an_all_components_row_moves_into_the_gallery(tmp_path):
     db = _d66_like(tmp_path)
     assert P.gallery_rows(db, 66) == [3]
@@ -286,9 +289,11 @@ def test_an_all_components_row_moves_into_the_gallery(tmp_path):
         assert db.get_frame(FrameKey(66, 3, view)) is None, view
         assert db.get_frame(FrameKey(66, 2, view)) is not None
     for view, camera in (("cmp_oak1", "oak1"), ("cmp_oak2", "oak2"), ("cmp_rs", "rs")):
-        row = db.get_frame(FrameKey(66, 1, view))
+        row = db.get_frame(FrameKey(66, SHEET_SHOT, view))
         assert row["path"] == f"F:/x/{camera}/003.png"
         assert row["aux"]["sheet_step"] == 3 and row["aux"]["depth_npy"] == "d.npy"
+        assert [(s["seg"], s["start_step"]) for s in db.pose_segments(66, view)] == [
+            (SHEET_SHOT, SHEET_SHOT)]
     assert out["shots"] == {"cmp_oak1": 1, "cmp_oak2": 1, "cmp_rs": 1}
     assert len(out["moved"]) == 4      # three photos and the scanner's empty row
     # the step keeps its number and its type
@@ -297,16 +302,42 @@ def test_an_all_components_row_moves_into_the_gallery(tmp_path):
     db.upsert_frame(FrameKey(66, 3, "oak1"), "F:/x/oak1/003.png", {}, None)
     P.settle_gallery(db, 66)
     assert db.get_frame(FrameKey(66, 3, "oak1")) is None
-    assert [r["step"] for r in db.frames_for(66, "cmp_oak1")] == [1]
+    assert [r["step"] for r in db.frames_for(66, "cmp_oak1")] == [SHEET_SHOT]
 
 
-def test_a_relocated_row_comes_after_the_folder_shots(tmp_path):
+def test_a_sheet_shot_never_collides_with_folder_shots(tmp_path):
+    """Folders before or after the relocation: 1..N for them, 1000+step for it."""
     db = _d66_like(tmp_path)
     for shot in (1, 2):
         db.upsert_frame(FrameKey(66, shot, "cmp_oak1"), f"F:/c/{shot}.jpg", {}, None)
     P.settle_gallery(db, 66)
-    assert [r["step"] for r in db.frames_for(66, "cmp_oak1")] == [1, 2, 3]
-    assert db.get_frame(FrameKey(66, 3, "cmp_oak1"))["aux"]["sheet_step"] == 3
+    assert [r["step"] for r in db.frames_for(66, "cmp_oak1")] == [1, 2, SHEET_SHOT]
+    assert db.get_frame(FrameKey(66, SHEET_SHOT, "cmp_oak1"))["aux"]["sheet_step"] == 3
+    assert db.get_frame(FrameKey(66, 1, "cmp_oak1"))["path"] == "F:/c/1.jpg"
+
+
+def test_a_sheet_shot_from_an_older_build_moves_to_its_key(tmp_path):
+    db = _d66_like(tmp_path)
+    db.upsert_frame(FrameKey(66, 1, "cmp_oak1"), "F:/x/oak1/003.png", {"sheet_step": 3},
+                    None)
+    P.settle_gallery(db, 66)
+    assert [r["step"] for r in db.frames_for(66, "cmp_oak1")] == [SHEET_SHOT]
+
+
+def test_the_measured_size_of_a_sheet_shot_survives_a_reload(tmp_path):
+    """M1: re-loading must not throw away hw / hw_source / cache_path."""
+    db = _d66_like(tmp_path)
+    P.settle_gallery(db, 66)
+    key = FrameKey(66, SHEET_SHOT, "cmp_oak1")
+    row = db.get_frame(key)
+    db.upsert_frame(key, row["path"], dict(row["aux"], hw=[3040, 4032], hw_source="measured",
+                                           cache_path="D:/c/s1003.jpg"), row["ts"])
+    db.upsert_frame(FrameKey(66, 3, "oak1"), "F:/x/oak1/003.png", {"depth_npy": "d.npy"},
+                    None)
+    P.settle_gallery(db, 66)
+    aux = db.get_frame(key)["aux"]
+    assert (aux["hw"], aux["hw_source"], aux["cache_path"]) == (
+        [3040, 4032], "measured", "D:/c/s1003.jpg")
 
 
 def test_an_annotated_row_is_never_moved(tmp_path):
@@ -659,7 +690,7 @@ def test_cli_check_and_export_coco_of_the_gallery(tmp_path, capsys):
     code = _run(env, "check", "--desktop", str(GS.DESKTOP), "--view", "cmp_oak1")
     out = capsys.readouterr().out
     # shots 2 and 3 are neither drawn nor marked absent: missing shapes
-    assert code == 1 and "D13 cmp_oak1: 3 steps" in out and "missing_shape:" in out
+    assert code == 1 and "D13 cmp_oak1: 3 shots" in out and "missing_shape:" in out
     assert "shape_predates_state" not in out
     out_json = tmp_path / "coco_gallery.json"
     code = _run(env, "export-coco", "--desktops", str(GS.DESKTOP), "--view", "cmp_oak1",
