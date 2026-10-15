@@ -47,7 +47,7 @@ __all__ = [
     "CUT", "CUT_COPY_IN_FORCE", "KIND_ADD_SHAPE", "KIND_SPLIT_KEYFRAME", "KIND_STATE_ONLY",
     "NOTHING_VISIBLE", "SHAPE_PREDATES_STATE", "SPLIT_TRANSITIONS", "STATE_ONLY_TRANSITIONS",
     "cut_copies_in_force", "cut_copy_at", "has_split", "keyframe_at", "kind_for",
-    "open_split_steps", "reverse_walk", "split_rows_at", "stale_split_rows",
+    "open_split_steps", "reverse_walk", "split_rows_at", "split_state", "stale_split_rows",
 ]
 
 #: The card's kinds this module decides between (the values of
@@ -124,9 +124,15 @@ def keyframe_at(db: Db, tax: Taxonomy, key: FrameKey, instance: str,
     return select_keyframe(chain, key.step)
 
 
-def has_split(db: Db, tax: Taxonomy, desktop: int, view: str, instance: str,
-              step: int, neighbour: int, cache: Optional[InputCache] = None) -> bool:
-    """Is there a shape boundary between ``step`` and ``neighbour`` (U2b round 2)?
+def split_state(db: Db, tax: Taxonomy, desktop: int, view: str, instance: str,
+                step: int, neighbour: int,
+                cache: Optional[InputCache] = None) -> tuple[bool, bool]:
+    """``(done, cut_copy)`` of the ✂ row between ``step`` and ``neighbour``.
+
+    ``done``: is there a shape boundary between them (U2b round 2)?
+    ``cut_copy``: the version in force here is a cut copy, which is what keeps
+    the row open (U11 round 2) -- answered from the same lookup, so the card
+    pays nothing extra for saying why.
 
     A ✂ row asks for a *new version* of a shape from this frame on.  The old
     version reaching this frame is exactly what the row is about, so "a shape
@@ -144,12 +150,20 @@ def has_split(db: Db, tax: Taxonomy, desktop: int, view: str, instance: str,
         override = None
     if override is not None and (override.visible_rle is not None
                                  or str(override.visibility) in NOTHING_VISIBLE):
-        return True
+        return True, False
     here = keyframe_at(db, tax, here_key, instance, cache)
-    if here is None or here.source == CUT:
-        return False        # a cut copy confines an edit; it answers nothing (U11 r2)
+    if here is None:
+        return False, False
+    if here.source == CUT:
+        return False, True  # a cut copy confines an edit; it answers nothing (U11 r2)
     there = keyframe_at(db, tax, FrameKey(desktop, neighbour, view), instance, cache)
-    return there is None or there.id != here.id
+    return there is None or there.id != here.id, False
+
+
+def has_split(db: Db, tax: Taxonomy, desktop: int, view: str, instance: str,
+              step: int, neighbour: int, cache: Optional[InputCache] = None) -> bool:
+    """Is the ✂ row between ``step`` and ``neighbour`` done? (:func:`split_state`)"""
+    return split_state(db, tax, desktop, view, instance, step, neighbour, cache)[0]
 
 
 def cut_copy_at(db: Db, tax: Taxonomy, key: FrameKey, instance: str,
