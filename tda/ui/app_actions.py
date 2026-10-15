@@ -271,6 +271,12 @@ ACTIONS: tuple[Action, ...] = (
            "a removed one: back to open)",
            "选中的盖板/卡扣其实拆下来了：日志里那一步的「打开」改成「拆下」"
            "（Removed 里的零件反过来：其实只是打开了）", "edit", (), _ANN),
+    # Task U11: the same over a span, "from here to step N" -- D2/scan walked
+    # 45 -> 37 with T at every frame.  Ctrl+T is free in every mode.
+    Action("state_range", ("Ctrl+T",), "act_state_range",
+           "Selected part's state from this frame to a given step (one op)",
+           "选中零件从这一帧到第 N 步都设成同一状态（一次撤销；切开的版本跟着边界走）",
+           "edit", (), _ANN),
     Action("zorder_up", ("Ctrl+Up",), "act_move_instance", "One layer up",
            "选中实例上移一层", "edit", (-1,), _ANN, repeat=True),
     Action("zorder_down", ("Ctrl+Down",), "act_move_instance", "One layer down",

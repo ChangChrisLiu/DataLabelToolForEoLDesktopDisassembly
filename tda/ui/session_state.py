@@ -37,19 +37,34 @@ from tda.core.state_assert import (
     write_events,
 )
 from tda.core.split_rows import open_split_steps, reverse_walk
-from tda.core.states import FrameState, needs_geom
+from tda.core.states import (
+    FrameState,
+    events_from_actions,
+    initial_overrides,
+    needs_geom,
+    state_at,
+)
 from tda.core.truth import TruthService
 from tda.core.truth_inputs import InputCache, annotatable_steps, instances_of, state_of
 from tda.ui.class_names import state_zh
 from tda.ui.commands import Op
 from tda.ui.gallery import NO_STATE
 from tda.ui.session_api import SessionRefusal
+from tda.ui.session_ops import FORWARD as FORWARD_WALK
 from tda.ui.session_ops import _apply_keyframe, frozen_among, keyframe_state, settle
 
 __all__ = ["OP_ASSERT_STATE", "StateMixin", "apply_assert_state", "commit_assertion",
            "gate", "move_cuts", "recheck_other_views", "run_around"]
 
 IN_CHASSIS = Placement.IN_CHASSIS.value
+
+
+def derived_log(db: Db, tax, desktop: int) -> list:
+    """The state log the step table alone gives (no hand-written correction on top)."""
+    instances = db.instances(desktop)
+    manual = [e for e in db.events(desktop) if not e.auto]
+    return events_from_actions(instances, db.actions(desktop), tax,
+                               initial=initial_overrides(manual))
 
 
 def gate(instances: dict, state: FrameState, tax, instance: str,
@@ -308,6 +323,59 @@ class StateMixin:
         ``restore_unseen`` in the result says the restore step has no image in
         this view: the log's value is kept there, and the window says so.
         """
+        key = self._state_gate_here(instance, state)
+        return self._commit_state(key, instance, state, None)
+
+    def assert_state_range(self, instance: str, state: str, to_step: int) -> dict:
+        """"From this frame to step ``to_step`` ``instance`` is ``state``" (U11, ``Ctrl+T``).
+
+        The span runs either way from the frame on screen (the annotator walks
+        backwards, so usually down to an earlier step). One op: the events at
+        its two ends, the part's hand-written state events inside it dropped,
+        and the cut keyframes that follow its lower edge -- one ``Ctrl+Z``.
+        Refused where ``T`` would be, and where the span crosses a step at
+        which the log itself changes the part's state (that is a Steps-mode
+        correction).
+        """
+        key = self._state_gate_here(instance, state)
+        return self._commit_state(key, instance, state, int(to_step))
+
+    def state_range_default(self, instance: str) -> tuple[Optional[str], int]:
+        """``(state, step)`` the ``Ctrl+T`` dialog opens with.
+
+        The state: the frame's own when it was set by hand (the run being
+        walked is to be extended), else the one ``T`` would set. The step: as
+        far as the span can go from here in the browsing direction without
+        crossing a step where the log changes the part's state -- walking
+        backwards, the step after the last such event at or below this frame
+        (the table's first step when there is none); forwards, the step before
+        the next one (the last step).
+        """
+        key = self.current()
+        rows = sorted(self.db.steps(key.desktop), key=lambda r: int(r.step))
+        table = [int(r.step) for r in rows]
+        if not table:
+            return None, key.step
+        dupli = {int(r.step) for r in rows if r.dupli or r.step_type == "dupli"}
+        log = derived_log(self.db, self.tax, key.desktop)
+        mine = [e.step for e in log if e.target == instance and e.step >= 1]
+        if self.browsing == FORWARD_WALK:
+            above = [s for s in mine if s > key.step]
+            step = (min(above) - 1) if above else table[-1]
+        else:
+            below = [s for s in mine if s <= key.step]
+            step = min((max(below) + 1) if below else table[0], key.step)
+            while step in dupli and step < key.step:
+                step += 1                  # a duplicate frame follows the one before it
+        held = state_of(self.db, self.tax, key.desktop, key.step).get(instance)
+        logged = state_at(self.db.instances(key.desktop), log, key.step,
+                          self.tax).get(instance)
+        if held is not None and logged is not None and held.state != logged.state:
+            return held.state, int(step)
+        return self.next_state(instance), int(step)
+
+    def _state_gate_here(self, instance: str, state: str) -> FrameKey:
+        """The frame both state gestures stand on, or the refusal of ``T`` there."""
         key = self.current()
         if getattr(self, "gallery", False):
             raise SessionRefusal(NO_STATE)   # task U10: refused before anything else
@@ -326,8 +394,12 @@ class StateMixin:
             raise SessionRefusal(
                 f"{instance} 在这里只能设为 {'、'.join(state_zh(c) for c in choices)}，"
                 f"不能设为 {state_zh(state)}")
+        return key
+
+    def _commit_state(self, key: FrameKey, instance: str, state: str,
+                      last: Optional[int]) -> dict:
         result = commit_assertion(self.db, self.truth, key, str(instance),
-                                  str(state), self.annotator)
+                                  str(state), self.annotator, last=last)
         if not result["changed"]:
             return result
         nxt = result["patch"].next_step
