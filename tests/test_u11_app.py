@@ -269,6 +269,14 @@ def test_the_quickstart_example_is_what_the_window_says(d13_window, monkeypatch)
     assert win.status_message() == ("已先在第 38 步切开旧版本（形状不变），"
                                     "这次修改只影响第 39–41 步")
     assert _squash(win.status_message()) in quick
+    # round 2: the copy at 38 is a placeholder, and the card says so as quoted
+    from tda.ui.panels.taskcard import row_view
+
+    goto(win, 38)
+    found = next(r for r in win.task_card.rows() if r["instance"] == latch)
+    assert found["cut_copy"] is True and not found["done"]
+    quoted = "待画：这帧上是另一状态的形状副本"
+    assert row_view(found)["sentence"].startswith(quoted) and _squash(quoted) in quick
     moved = press_t(win, 38, latch)
     assert "形状版本边界也随之移到第 37 步" in moved
     assert _squash("形状版本边界也随之移到第 37 步") in quick
