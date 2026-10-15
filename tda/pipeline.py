@@ -362,7 +362,11 @@ def _load_one(
                             {"missing": False})
         for key in di.missing:
             if key not in held:
-                db.upsert_frame(key, None, {}, None, {"missing": True})
+                # what the truth table wrote on the row stays, as on any frame:
+                # a re-load must leave a loaded desktop exactly as it was
+                kept = (db.get_frame(key) or {}).get("aux") or {}
+                db.upsert_frame(key, None, {k: kept[k] for k in TRUTH_AUX_KEYS if k in kept},
+                                None, {"missing": True})
         dropped = _drop_stale_shots(db, desktop, di) if di.gallery else []
         if di.n_steps < 1:
             counts["frames"] += len(frames)

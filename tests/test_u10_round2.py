@@ -537,3 +537,17 @@ def test_the_dialog_pre_fills_the_removal_step(tmp_path):
     assert elsewhere_text({"cmp_oak1": [1, 2], "oak1": [5], "scan": []}) == (
         "另外：oak1 1 帧、零件合照·OAK1 2 张 的已确认帧也会回到“需复核”。")
     assert elsewhere_text({}) == ""
+
+
+def test_a_reload_keeps_what_the_truth_table_wrote_on_a_missing_frame(tmp_path, fixes):
+    """The probe's one sequence difference: a missing row's inferred size was wiped."""
+    roots = build_tree(tmp_path, 97, oak1={"001": [TS[0]]}, oak2={})
+    db = Db(str(tmp_path / "tda.sqlite"))
+    index = {97: scan_desktop(97, roots, fixes)}
+    P.load_index_into_db(db, index)
+    key = FrameKey(97, 1, "oak2")
+    assert db.get_frame(key)["missing"]
+    db.upsert_frame(key, None, {"hw": [3040, 4032], "hw_source": "inferred"}, None,
+                    {"missing": True})
+    P.load_index_into_db(db, index)
+    assert db.get_frame(key)["aux"] == {"hw": [3040, 4032], "hw_source": "inferred"}
