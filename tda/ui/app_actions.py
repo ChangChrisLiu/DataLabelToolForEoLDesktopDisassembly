@@ -47,6 +47,7 @@ __all__ = [
     "MODE_REVIEW",
     "MODE_STEPS",
     "PALETTE_ACTIONS",
+    "PALETTE_OTHER",
     "PALETTE_REVIEW",
     "PALETTE_STATE",
     "PALETTE_TOOLS",
@@ -398,7 +399,7 @@ PALETTE_TOOLS: tuple[str, ...] = (
 )
 PALETTE_ACTIONS: tuple[str, ...] = (
     "commit", "commit_override", "commit_split", "confirm", "undo", "redo",
-    "toggle_heat", "flash_compare", "cycle_candidate", "clear_edit",
+    "toggle_heat", "flash_compare",
 )
 #: The 「状态」 group (task U13): the keys that say the log is wrong about a part
 #: -- its state here, over a span, its verb -- and the two that settle a frame
@@ -407,6 +408,10 @@ PALETTE_ACTIONS: tuple[str, ...] = (
 PALETTE_STATE: tuple[str, ...] = (
     "cycle_state", "state_range", "correct_verb", "confirm_cut_copy", "mark_absent",
 )
+#: The 「其他」 group at the foot of the strip (U13 follow-up): the two action
+#: buttons clicked least -- their keys are C and Esc -- so that the 「状态」 group
+#: above them fits a 1920x1080 window without scrolling.
+PALETTE_OTHER: tuple[str, ...] = ("cycle_candidate", "clear_edit")
 #: What the strip keeps in Review mode (U2b round 1): the canvas is read-only,
 #: so no tool and no brush -- only the difference map and the queue's keys.
 PALETTE_REVIEW: tuple[str, ...] = (

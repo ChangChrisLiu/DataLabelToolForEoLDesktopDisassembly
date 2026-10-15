@@ -177,7 +177,8 @@ def test_the_group_is_the_five_state_keys_in_order():
     assert A.PALETTE_STATE == GROUP
     assert [A.action_named(n).keys for n in GROUP] == [
         ("T",), ("Ctrl+T",), ("Shift+T",), ("Ctrl+Shift+K",), ("I",)]
-    others = set(A.PALETTE_TOOLS) | set(A.PALETTE_ACTIONS) | set(A.PALETTE_REVIEW)
+    others = (set(A.PALETTE_TOOLS) | set(A.PALETTE_ACTIONS) | set(A.PALETTE_REVIEW)
+              | set(A.PALETTE_OTHER))
     assert not others & set(GROUP)
     for name in GROUP:
         action = A.action_named(name)
@@ -204,20 +205,52 @@ def test_the_group_sits_under_its_own_heading_after_the_actions(window):
     operations = next(w for w in widgets if isinstance(w, QLabel) and w.text() == "操作")
     assert header.styleSheet() == operations.styleSheet()
     assert header.font().bold()
+    # follow-up: the two action buttons clicked least close the strip, under 「其他」
+    assert A.PALETTE_OTHER == ("cycle_candidate", "clear_edit")
+    assert not set(A.PALETTE_OTHER) & set(A.PALETTE_ACTIONS)
+    other = window.palette.other_header
+    assert other.text() == "其他" and other.styleSheet() == operations.styleSheet()
+    assert widgets[at + 6:at + 9] == [other] + [buttons[n] for n in A.PALETTE_OTHER]
 
 
 def test_annotate_shows_the_group_review_and_steps_hide_it(window):
     palette = window.palette
-    assert not palette.state_header.isHidden()
-    assert all(not palette.button(n).isHidden() for n in GROUP)
+    tail = GROUP + A.PALETTE_OTHER
+    assert not palette.state_header.isHidden() and not palette.other_header.isHidden()
+    assert all(not palette.button(n).isHidden() for n in tail)
     window.set_mode(A.MODE_REVIEW)
-    assert palette.state_header.isHidden()
-    assert all(palette.button(n).isHidden() for n in GROUP)
+    assert palette.state_header.isHidden() and palette.other_header.isHidden()
+    assert all(palette.button(n).isHidden() for n in tail)
     window.set_mode(A.MODE_STEPS)
     assert palette.isHidden()
     window.set_mode(A.MODE_ANNOTATE)
     assert not palette.isHidden() and not palette.state_header.isHidden()
-    assert all(not palette.button(n).isHidden() for n in GROUP)
+    assert not palette.other_header.isHidden()
+    assert all(not palette.button(n).isHidden() for n in tail)
+
+
+@pytest.mark.parametrize("size", [(1920, 1080), (2560, 1440)])
+def test_the_whole_group_is_in_view_unscrolled_at_1920x1080(qapp, tmp_path, size):
+    """The annotator's screen (follow-up): all five buttons without the wheel."""
+    session = make_session(tmp_path)
+    session.sweeper_enabled = False
+    win = MainWindow(session, make_paths(tmp_path), "tester", sam_queue=StubSamQueue())
+    try:
+        win.resize(*size)
+        win.show()
+        QApplication.processEvents()
+        answer_roi(win)
+        QApplication.processEvents()
+        scroll = win.palette.scroll
+        assert scroll.verticalScrollBar().value() == 0
+        inner = scroll.widget()
+        viewport = scroll.viewport().height()
+        for name in GROUP:
+            button = win.palette.button(name)
+            bottom = button.mapTo(inner, button.rect().bottomLeft()).y()
+            assert not button.isHidden() and bottom <= viewport, (name, bottom, viewport)
+    finally:
+        close_window(win)
 
 
 @pytest.mark.parametrize("name", GROUP)
@@ -459,7 +492,8 @@ def test_the_documents_say_it():
     guide = _squash((repo / "docs" / "annotation_guide.md").read_text(encoding="utf-8"))
     assert _squash("每个工具和提交/确认/撤销/状态键各一个按钮") in guide
     quick = _squash((repo / "docs" / "trial_quickstart.md").read_text(encoding="utf-8"))
-    assert _squash("下面是操作，最下面是**状态**") in quick
+    assert _squash("下面是操作和**状态**") in quick
+    assert _squash("最后是「其他」（换候选 `C`、放弃编辑 `Esc`）") in quick
     spec = _squash((repo / "docs" / "superpowers" / "specs"
                     / "2026-09-17-teardown-annotator-design.md").read_text(encoding="utf-8"))
     assert _squash("**v1.13（2026-10-14）**：**状态键有了按钮**（U13）") in spec

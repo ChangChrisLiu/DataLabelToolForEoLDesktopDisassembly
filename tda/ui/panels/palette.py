@@ -222,6 +222,9 @@ class PaletteButton(QAbstractButton):
     """
 
     PAD = 5
+    #: Above and below the text: one pixel less than at the sides, so that the
+    #: 「状态」 group fits a 1920x1080 window unscrolled (U13 follow-up).
+    VPAD = 4
     GAP = 4
 
     #: A press on the button while it is greyed out: say why (round 2).
@@ -299,8 +302,8 @@ class PaletteButton(QAbstractButton):
                                     int(Qt.TextFlag.TextWordWrap), self.name)
         one_line = name_rect.height() <= nm.height() + 1 and \
             nm.horizontalAdvance(self.name) + 6 + key_w <= room
-        height = self.PAD + max(name_rect.height(), key_h if one_line else 0)
-        key_top = self.PAD if one_line else height + 2
+        height = self.VPAD + max(name_rect.height(), key_h if one_line else 0)
+        key_top = self.VPAD if one_line else height + 2
         if not one_line:
             height = key_top + key_h
         note_rect = QRect()
@@ -312,10 +315,11 @@ class PaletteButton(QAbstractButton):
             note_top = height + 2 if one_line else key_top
             note_rect = QRect(note_x, note_top, note_room, note_rect.height())
             height = max(height, note_rect.bottom() + 1)
-        height += self.PAD
+        height += self.VPAD
         return {"left": left, "room": room, "one_line": one_line,
                 "name_h": name_rect.height(), "key_w": key_w, "key_h": key_h,
-                "key_top": key_top, "note": note_rect, "height": max(height, ICON_PX + 2 * self.PAD)}
+                "key_top": key_top, "note": note_rect,
+                "height": max(height, ICON_PX + 2 * self.VPAD)}
 
     def sizeHint(self) -> QSize:  # noqa: D102
         width = PALETTE_WIDTH - 12
@@ -358,13 +362,13 @@ class PaletteButton(QAbstractButton):
         painter.drawRoundedRect(QRectF(1, 1, self.width() - 2, self.height() - 2), 5, 5)
         if self._icon is not None:
             painter.setOpacity(1.0 if enabled else 0.35)
-            painter.drawPixmap(self.PAD, self.PAD + max(0, (lay["name_h"] - ICON_PX) // 2),
+            painter.drawPixmap(self.PAD, self.VPAD + max(0, (lay["name_h"] - ICON_PX) // 2),
                                self._icon)
             painter.setOpacity(1.0)
         left, room = lay["left"], lay["room"]
         painter.setFont(name_font)
         painter.setPen(fg)
-        painter.drawText(QRect(left, self.PAD, room, lay["name_h"]),
+        painter.drawText(QRect(left, self.VPAD, room, lay["name_h"]),
                          int(Qt.TextFlag.TextWordWrap | Qt.AlignmentFlag.AlignLeft), self.name)
         # the key, in a keycap: right of the name when it fits, under it if not
         painter.setFont(small_font)
@@ -391,8 +395,8 @@ class ToolPalette(QWidget):
     queue's keys; Review hides the tools and the brush size -- its canvas is
     read-only -- and keeps the difference map and the queue's four keys; Steps
     hides the whole strip (the window does that).  The 「状态」 group (task U13:
-    ``T``, ``Ctrl+T``, ``Shift+T``, ``Ctrl+Shift+K``, ``I``) is Annotate's, its
-    heading with it.
+    ``T``, ``Ctrl+T``, ``Shift+T``, ``Ctrl+Shift+K``, ``I``) and the 「其他」 one
+    at the foot (``C``, ``Esc``) are Annotate's, their headings with them.
 
     The buttons scroll (:attr:`scroll`) on a short screen; the minimap sits
     below them, outside the scroll area, so it is always in view (U2b round 2:
@@ -432,7 +436,8 @@ class ToolPalette(QWidget):
         inner.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         layout = QVBoxLayout(inner)
         layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(3)
+        # 2, not 3: with VPAD, what lets the 「状态」 group fit 1920x1080 (U13)
+        layout.setSpacing(2)
         self._buttons: dict[str, PaletteButton] = {}
         self._mode = ""
         #: The drawing half of the strip, hidden in Review (round 1, item 3).
@@ -496,6 +501,13 @@ class ToolPalette(QWidget):
                                      "零件合照里看不见")
         layout.addWidget(self.state_header)
         for name in A.PALETTE_STATE:
+            layout.addWidget(self._add(name, checkable=False))
+        # ... and the two action buttons clicked least, at the foot, so that
+        # the group above fits a 1920x1080 window unscrolled (U13 follow-up).
+        layout.addSpacing(4)
+        self.other_header = self._header("其他")
+        layout.addWidget(self.other_header)
+        for name in A.PALETTE_OTHER:
             layout.addWidget(self._add(name, checkable=False))
         layout.addStretch(1)
         self.scroll.setWidget(inner)
@@ -591,8 +603,9 @@ class ToolPalette(QWidget):
             if name in A.PALETTE_TOOLS:
                 continue
             button.setVisible(mode in button.action.modes)
-        self.state_header.setVisible(
-            any(mode in self._buttons[name].action.modes for name in A.PALETTE_STATE))
+        for header, group in ((self.state_header, A.PALETTE_STATE),
+                              (self.other_header, A.PALETTE_OTHER)):
+            header.setVisible(any(mode in self._buttons[n].action.modes for n in group))
 
     def mode(self) -> str:
         return self._mode
