@@ -14,7 +14,9 @@ Three tables behind a :class:`QTabWidget` (spec 4.1):
 Below them sits the list of open questions, re-derived after every edit. The
 context menus resolve them in place: split a compound row into N actions, add
 or remove an action, retarget a step at a new instance, delete an instance
-nothing points at any more. The ``＋ 添加零件 / Add parts`` button above the
+nothing points at any more, merge two instances that are one part
+(「合并到…」, :mod:`tda.ui.panels.merge_into`, written through). The
+``＋ 添加零件 / Add parts`` button above the
 Instances table stages parts the picture shows and the log never names
 (:mod:`tda.ui.panels.add_parts`, :mod:`tda.core.extra`). ``Apply`` writes
 everything back in one transaction and recompiles the automatic state-event log (emitting
@@ -52,6 +54,7 @@ from tda.ui.panels.add_parts import BUTTON as ADD_PARTS_BUTTON
 from tda.ui.panels.add_parts import HINT as ADD_PARTS_HINT
 from tda.ui.panels.add_parts import TIP as ADD_PARTS_TIP
 from tda.ui.panels.add_parts import AddPartsDialog
+from tda.ui.panels.merge_into import MergeIntoMixin
 from tda.ui.panels.relations import RelationsTab
 from tda.ui.panels.steptable_models import (
     BLANK,
@@ -122,7 +125,7 @@ def _default_cache_dir() -> str:
         return str(Path(__file__).resolve().parents[3] / "cache")
 
 
-class StepTablePanel(QWidget):
+class StepTablePanel(MergeIntoMixin, QWidget):
     """Stage S1: review one desktop's step table and instance table."""
 
     #: Emitted with the desktop id after ``Apply`` wrote the session back.
@@ -481,6 +484,7 @@ class StepTablePanel(QWidget):
         key = self.instances_model.key_at(view_row)
         if key is not None:
             menu.addAction(f"Delete {key}", lambda: self.delete_instance(key))
+            self.add_merge_action(menu, key)        # 「合并到…」 (task U12)
         return menu
 
     def _steps_context_menu(self, pos) -> None:

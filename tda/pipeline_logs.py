@@ -11,7 +11,8 @@ steps is skipped unless ``force`` is given, and even a forced run
 * says per desktop what it is about to replace,
 * carries the imported ``LS:`` note lines over to the new steps,
 * keeps the verb the step table carries on every action corrected with
-  ``Shift+T`` (:mod:`tda.core.verb_replay`), and
+  ``Shift+T`` (:mod:`tda.core.verb_replay`),
+* keeps the instances merged in S1 merged (:mod:`tda.core.merge_replay`), and
 * leaves the hand-written (``auto=False``) state events alone.
 
 One desktop is one transaction, and a sheet that cannot be read is recorded as
@@ -40,6 +41,7 @@ from tda.core.extra import extra_keys
 from tda.core.model import VIEWS, StepRec, StepType, is_extra
 from tda.core.states import INITIAL_STEP, events_from_actions, initial_overrides
 from tda.core.taxonomy import Taxonomy
+from tda.core.merge_replay import OP_REPLAY_MERGES, MergeReplay, replay_merges_for_import
 from tda.core.verb_replay import OP_REPLAY, Replay, replay_for_import
 from tda.pipeline import Log, merge_desktop_meta, split_pose_segments, wanted
 
@@ -189,7 +191,8 @@ class DesktopRun:
     #: One line per added instance ``--adopt-extras`` handed to the sheet.
     adopted: list[str] = field(default_factory=list)
     #: The ``Shift+T`` verb corrections a forced re-import kept (one line) and
-    #: the ones the new sheet no longer fits (one line each), task U9 round 2.
+    #: the ones the new sheet no longer fits (one line each), task U9 round 2;
+    #: then the same for the merges made in S1 (task U12).
     corrections: list[str] = field(default_factory=list)
 
 
@@ -735,13 +738,21 @@ def _write_import(
     db: Db, li: LogImport, tax: Taxonomy, previous: list[StepRec], plan: DropPlan,
     adopt: Optional[dict[str, str]] = None,
 ) -> tuple[int, int, int, list[str], list[str], list[str], list[str], list[str], list[str],
-           Replay]:
+           Replay, MergeReplay]:
     """Write one desktop's import atomically.
 
     Returns ``(events, steps with LS notes, notes dropped, fills, unresolved,
-    implied, dropped instances, drop issues, adopted, replay)``. ``adopt`` is
-    :func:`extra_clash` when ``--adopt-extras`` was given (see
+    implied, dropped instances, drop issues, adopted, replay, merges)``.
+    ``adopt`` is :func:`extra_clash` when ``--adopt-extras`` was given (see
     :func:`_adopt_extras`).
+
+    Every merge made with 「合并到…」 that is still in effect is applied to the
+    parsed records first (:mod:`tda.core.merge_replay`, task U12): the sheet
+    names both halves of a merged part, and without this the merged-away key
+    would come back with its step pointing at it again. One ``replay_merges``
+    row in the op log says which merges were replayed, which the sheet no
+    longer needs and which no longer fit it; the verb replay below follows the
+    merged keys.
 
     Every action corrected with ``Shift+T`` keeps the verb the replaced step
     table carries -- the annotator's last word, undo and redo included -- on
@@ -765,10 +776,15 @@ def _write_import(
     clip out with its board is part of the same log.
     """
     declined = db.declined_implied(li.desktop)  # read before the transaction writes
+    # the merges made in S1 (task U12), read off the instance table this
+    # replaces, before anything else looks at the parsed records
+    li.instances, li.actions, merges = replay_merges_for_import(
+        db, li.desktop, li.instances, li.actions)
     # the verbs of the actions corrected with Shift+T, read off the step table
     # this replaces and put back onto the parsed actions (task U9), so the
     # events and the relational inference below see the corrected verbs
-    li.actions, replay = replay_for_import(db, li.desktop, li.actions, li.instances, tax)
+    li.actions, replay = replay_for_import(db, li.desktop, li.actions, li.instances, tax,
+                                           rename=merges.rename)
     adopt = dict(adopt or {})
     extras = {key: rec for key, rec in db.instances(li.desktop).items()
               if is_extra(rec) and key not in li.instances and key not in adopt}
@@ -781,6 +797,9 @@ def _write_import(
         if replay:
             db.log_op(li.desktop, OP_VIEW, OP_REPLAY, replay.payload(),
                       {"actions": replay.inverse}, IMPLIED_ANNOTATOR)
+        if merges:
+            db.log_op(li.desktop, OP_VIEW, OP_REPLAY_MERGES, merges.payload(),
+                      merges.inverse, IMPLIED_ANNOTATOR)
         adopted = _adopt_extras(db, li.desktop, adopt)
         implied = add_implied_instances(db, li, tax)
         fills = infer_relational_fields(li.instances, tax, li.actions)
@@ -796,7 +815,7 @@ def _write_import(
         split_pose_segments(db, li.desktop)
     return (len(events), kept, dropped, fills,
             unresolved_relations(li.instances, tax, li.actions, declined), implied,
-            gone, drop_issues, adopted, replay)
+            gone, drop_issues, adopted, replay, merges)
 
 
 def dropped_notes_line(desktop: int, dropped: int) -> str:
@@ -827,7 +846,8 @@ def _force_warning(db: Db, desktop: int, previous: list[StepRec]) -> str:
     return (
         f"[import-logs] D{desktop:02d}: --force, replacing {len(previous)} steps / "
         f"{len(db.actions(desktop))} actions; {notes}the open/remove corrections made "
-        f"with Shift+T are replayed where the sheet still has that action; every other "
+        f"with Shift+T are replayed where the sheet still has that action, and so are "
+        f"the instances merged in S1 (合并到…); every other "
         f"manual edit to the step table is lost, and so is every relational field a "
         f"human set on an instance "
         f"(fastens, parent, mounted_on, socket_host): the instances are re-created from "
@@ -948,12 +968,13 @@ def _import_one(
             f"kept the file's number"
         )
     (events, kept, dropped, fills, unresolved, implied,
-     gone, drop_issues, adopted, replay) = _write_import(db, li, tax, previous, plan, clash)
+     gone, drop_issues, adopted, replay, merges) = _write_import(db, li, tax, previous, plan,
+                                                                 clash)
     extras_kept = extra_keys(db.instances(desktop))
     if dropped:
         issues.append(dropped_notes_line(desktop, dropped))
     corrections = ([replay.kept_line()] if replay.kept_line() else []) + \
-        replay.unmatched_lines()
+        replay.unmatched_lines() + merges.lines()
     issues.extend(drop_issues)
     if log:
         for text in adopted:

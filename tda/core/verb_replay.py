@@ -30,6 +30,7 @@ from dataclasses import dataclass, field, replace
 from typing import Optional
 
 from tda.core.db import Db
+from tda.core.merge_replay import renamed
 from tda.core.model import ActionRec, InstanceRec
 from tda.core.taxonomy import Taxonomy
 from tda.core.verb_fix import FLIP, OP_CORRECT_VERB
@@ -94,12 +95,16 @@ def _named_at(actions: list[ActionRec], step: int) -> str:
 
 def replay_corrections(ops: list[dict], stored: list[ActionRec], fresh: list[ActionRec],
                        instances: dict[str, InstanceRec],
-                       tax: Taxonomy) -> tuple[list[ActionRec], Replay]:
+                       tax: Taxonomy,
+                       rename: Optional[dict[str, str]] = None) -> tuple[list[ActionRec], Replay]:
     """The parsed actions with the stored verb of every corrected action copied over.
 
     ``ops`` are the desktop's ``correct_verb`` rows (payload decoded) and only
     say which ``(step, target)`` were corrected; ``stored`` is the step table
     the import is about to replace, ``fresh`` what the sheet parses to now.
+    ``rename`` is ``gone -> keep`` of the merges in effect (task U12,
+    :mod:`tda.core.merge_replay`): a correction made on ``cover.02`` before it
+    was merged into ``cover.01`` is about ``cover.01``'s action now.
     Pure: returns new action records and the :class:`Replay`.
     """
     out = list(fresh)
@@ -107,8 +112,8 @@ def replay_corrections(ops: list[dict], stored: list[ActionRec], fresh: list[Act
     touched: dict[tuple[int, str], list[int]] = {}
     for op in ops:
         payload = op.get("payload") or {}
-        touched.setdefault((int(payload["step"]), str(payload["target"])), []).append(
-            int(op["id"]))
+        target = renamed(str(payload["target"]), rename)
+        touched.setdefault((int(payload["step"]), target), []).append(int(op["id"]))
     for (step, target), ids in sorted(touched.items()):
         entry = {"step": step, "target": target, "ops": sorted(ids)}
         held = _find(stored, step, target)
@@ -145,13 +150,15 @@ def replay_corrections(ops: list[dict], stored: list[ActionRec], fresh: list[Act
 
 def replay_for_import(db: Db, desktop: int, fresh: list[ActionRec],
                       instances: dict[str, InstanceRec],
-                      tax: Taxonomy) -> tuple[list[ActionRec], Replay]:
+                      tax: Taxonomy,
+                      rename: Optional[dict[str, str]] = None) -> tuple[list[ActionRec], Replay]:
     """:func:`replay_corrections` for one desktop, read before the import writes.
 
     Must be called **before** the step table is replaced: the stored actions
-    are the annotator's last word on every corrected action.
+    are the annotator's last word on every corrected action. ``rename`` as in
+    :func:`replay_corrections`.
     """
     ops = db.ops_of_kind(int(desktop), OP_CORRECT_VERB)
     if not ops:
         return list(fresh), Replay()
-    return replay_corrections(ops, db.actions(int(desktop)), fresh, instances, tax)
+    return replay_corrections(ops, db.actions(int(desktop)), fresh, instances, tax, rename)
