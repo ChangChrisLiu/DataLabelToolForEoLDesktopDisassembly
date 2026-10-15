@@ -41,6 +41,14 @@ action itself is on the wrong step, which is a step-table correction.
 The wording takes a ``name`` function for the state values: the core has no
 display vocabulary, the session passes :func:`tda.ui.class_names.state_zh`.
 
+**"From step a to step b this part is in state s"** (task U11, ``Ctrl+T``) is
+the same gesture over a span, :func:`assert_range`: one event ``held -> s`` at
+the lower end, one ``s -> next`` at the first non-``dupli`` step after the upper
+end, and the target's manual state events inside the span dropped -- the same
+rules and refusals, plus one: a span that crosses a *derived* event of the
+target (the log changes its state somewhere inside it) is refused, because then
+it is the log that is wrong, and the log is the step table's.
+
 :func:`assert_state` writes and returns a :class:`StatePatch`, whose
 :meth:`~StatePatch.payload` and :meth:`~StatePatch.inverse` are two *states* of
 the same rows (the target's manual state events at the touched steps), so one
@@ -73,10 +81,12 @@ __all__ = [
     "OP_ASSERT_STATE",
     "StateAssertError",
     "StatePatch",
+    "assert_range",
     "assert_state",
     "assertable_states",
     "event_from_dict",
     "plan_assertion",
+    "plan_range",
     "write_events",
 ]
 
@@ -134,6 +144,11 @@ class StatePatch:
     so they carry the same state), ``next_step`` the restore step (``None``
     when the table ends first) and ``restores`` the state from there on, which
     the change leaves alone.
+
+    A span (:func:`assert_range`, task U11) has ``last`` -- its upper end, ``step``
+    being the lower -- and ``span``, its steps of the table; ``previous`` is then
+    the state at ``step`` and ``differs`` says whether any step of the span was
+    in another state.
     """
 
     desktop: int
@@ -148,21 +163,32 @@ class StatePatch:
     before: list[StateEvent] = field(default_factory=list)
     after: list[StateEvent] = field(default_factory=list)
     evidence_view: Optional[str] = None
+    last: Optional[int] = None
+    span: list[int] = field(default_factory=list)
+    differs: Optional[bool] = None
 
     @property
     def changed(self) -> bool:
         """Does the patch change anything at all? (Asserting what holds does not.)"""
+        if self.differs is not None:
+            return self.differs
         return self.previous != self.state
+
+    @property
+    def top(self) -> int:
+        """The upper end: ``last`` for a span, ``step`` for one frame."""
+        return self.step if self.last is None else self.last
 
     @property
     def reach(self) -> list[int]:
         """The steps whose frames have to be brought up to date after it.
 
-        The state moves at ``step`` and at the ``dupli`` steps that follow it;
-        ``next_step`` is in because its own events were rewritten, which is
-        cheap to re-check and keeps a frozen frame there honest.
+        The state moves at ``step`` (every step of a span) and at the ``dupli``
+        steps that follow it; ``next_step`` is in because its own events were
+        rewritten, which is cheap to re-check and keeps a frozen frame there
+        honest.
         """
-        return sorted({self.step, *self.inherits}
+        return sorted({self.step, *self.span, *self.inherits}
                       | ({self.next_step} if self.next_step is not None else set()))
 
     def _rows(self, events: list[StateEvent]) -> dict:
@@ -174,7 +200,8 @@ class StatePatch:
         return {"step": int(self.step), "state": state, "previous": previous,
                 "inherits": [int(s) for s in self.inherits],
                 "next_step": self.next_step, "restores": self.restores,
-                "evidence_view": self.evidence_view, "reach": self.reach}
+                "evidence_view": self.evidence_view, "reach": self.reach,
+                "last": self.last}
 
     def payload(self) -> dict:
         """The op-log payload: the rows after, plus what was asserted."""
@@ -238,7 +265,45 @@ def plan_assertion(db: Db, tax: Taxonomy, desktop: int, target: str, step: int,
                    new_state: str, evidence_view: Optional[str] = None,
                    name: Namer = _same) -> StatePatch:
     """Work out :func:`assert_state`'s patch without writing anything."""
-    desktop, step, new_state = int(desktop), int(step), str(new_state)
+    return _plan(db, tax, desktop, target, int(step), int(step), new_state,
+                 evidence_view, name, span=False)
+
+
+def plan_range(db: Db, tax: Taxonomy, desktop: int, target: str, first: int, last: int,
+               new_state: str, evidence_view: Optional[str] = None,
+               name: Namer = _same) -> StatePatch:
+    """Work out :func:`assert_range`'s patch without writing anything.
+
+    ``first`` and ``last`` in either order: the span is normalised.
+    """
+    low, high = sorted((int(first), int(last)))
+    return _plan(db, tax, desktop, target, low, high, new_state, evidence_view, name,
+                 span=True)
+
+
+def _crossed(derived: list[StateEvent], target: str, low: int, high: int,
+             name: Namer) -> Optional[str]:
+    """The refusal of a span over a derived event of the target, or ``None``.
+
+    An event *at* the lower end is fine -- the span starts after it, as a
+    single assertion there does -- and one at the restore step is the restore's
+    business. One strictly inside means the log changes the state there.
+    """
+    inside = [e for e in derived if e.target == target and low < e.step <= high]
+    if not inside:
+        return None
+    event = inside[0]
+    what = (f"「{name(event.old)}」→「{name(event.new)}」" if event.attr == ATTR_STATE
+            else f"{event.old} → {event.new}")
+    return (f"第 {low}–{high} 步跨过了日志第 {event.step} 步对 {target} 的动作（{what}），"
+            f"不能整段设成同一个状态。日志本身要改：动作发生在哪一步，请在 Steps 模式里改")
+
+
+def _plan(db: Db, tax: Taxonomy, desktop: int, target: str, low: int, high: int,
+          new_state: str, evidence_view: Optional[str], name: Namer,
+          span: bool) -> StatePatch:
+    """The planner of both gestures: one step (``low == high``) or a span."""
+    desktop, step, new_state = int(desktop), int(low), str(new_state)
     instances = db.instances(desktop)
     rec = instances.get(target)
     if rec is None:
@@ -255,8 +320,9 @@ def plan_assertion(db: Db, tax: Taxonomy, desktop: int, target: str, step: int,
             f"「{name(REMOVED)}」不能在这里设：零件哪一步被拆下由步骤表决定（在 Steps 模式里改）")
     rows = sorted(db.steps(desktop), key=lambda r: int(r.step))
     table = [int(r.step) for r in rows]
-    if step not in table:
-        raise StateAssertError(f"第 {step} 步不在 D{desktop:02d} 的步骤表里")
+    for end in (step, high):
+        if end not in table:
+            raise StateAssertError(f"第 {end} 步不在 D{desktop:02d} 的步骤表里")
     dupli = {int(r.step) for r in rows if r.dupli or r.step_type == StepType.DUPLI.value}
     if step in dupli:
         # a duplicate frame shows the step before it: that is where to say it
@@ -265,7 +331,8 @@ def plan_assertion(db: Db, tax: Taxonomy, desktop: int, target: str, step: int,
         raise StateAssertError(
             f"第 {step} 步在步骤表里是重复帧（dupli），和{where}是同一个样子，状态跟着它走："
             f"到{where}去改")
-    later = [s for s in table if s > step]
+    within = [s for s in table if step <= s <= high]
+    later = [s for s in table if s > high]
     inherits = []
     for s in later:
         if s not in dupli:
@@ -277,17 +344,25 @@ def plan_assertion(db: Db, tax: Taxonomy, desktop: int, target: str, step: int,
     derived = events_from_actions(instances, db.actions(desktop), tax,
                                   initial=initial_overrides(manual))
     current = merge_events(derived, manual)
-    cur = state_at(instances, current, step, tax)[target].state
+    now = {s: state_at(instances, current, s, tax)[target].state for s in within}
+    cur = now[step]
     restores = None if nxt is None else state_at(instances, current, nxt, tax)[target].state
-    if cur == REMOVED:
-        raise StateAssertError(f"{target} 在第 {step} 步已经拆下，没有状态可改")
+    for s in within:
+        if now[s] == REMOVED:
+            raise StateAssertError(f"{target} 在第 {s} 步已经拆下，没有状态可改")
+    if span:
+        crossed = _crossed(derived, target, step, high, name)
+        if crossed:
+            raise StateAssertError(crossed)
     patch = StatePatch(desktop=desktop, target=target, step=step, state=new_state,
                        previous=cur, next_step=nxt, restores=restores,
-                       inherits=inherits, evidence_view=evidence_view)
-    if cur == new_state:
+                       inherits=inherits, evidence_view=evidence_view,
+                       last=high if span else None, span=within if span else [],
+                       differs=any(v != new_state for v in now.values()) if span else None)
+    if not patch.changed:
         return patch      # asserting what already holds: nothing to write
 
-    touched = {step, *inherits} | ({nxt} if nxt is not None else set())
+    touched = set(within) | set(inherits) | ({nxt} if nxt is not None else set())
     kept = [e for e in manual if not _mine(e, target, touched)]
     added: list[StateEvent] = []
     held_k = _held(instances, derived, kept, step, target, tax)
@@ -301,7 +376,7 @@ def plan_assertion(db: Db, tax: Taxonomy, desktop: int, target: str, step: int,
         if held_n != restores:
             if held_n == REMOVED:
                 raise StateAssertError(
-                    f"{target} 在第 {nxt} 步已经拆下，第 {step} 步的状态接不回去")
+                    f"{target} 在第 {nxt} 步已经拆下，第 {high} 步的状态接不回去")
             added.append(StateEvent(desktop, nxt, target, ATTR_STATE, held_n, restores,
                                     evidence_view=evidence_view, auto=False))
     after_manual = kept + added
@@ -321,11 +396,13 @@ def plan_assertion(db: Db, tax: Taxonomy, desktop: int, target: str, step: int,
         first = next(p for p in after_problems if (id(p.event), p.code) in new)
         raise StateAssertError(_contradiction(first, name))
     merged_after = merge_events(derived, after_manual)
-    got = state_at(instances, merged_after, step, tax)[target].state
+    got = {s: state_at(instances, merged_after, s, tax)[target].state for s in within}
     back = None if nxt is None else state_at(instances, merged_after, nxt, tax)[target].state
-    if got != new_state or back != restores:   # pragma: no cover - an invariant
+    wrong = [s for s, v in got.items() if v != new_state]
+    if wrong or back != restores:   # pragma: no cover - an invariant
+        at = wrong[0] if wrong else step
         raise StateAssertError(
-            f"{target} 第 {step} 步的状态改不过来（得到 {got}，下一步 {back}）")
+            f"{target} 第 {at} 步的状态改不过来（得到 {got.get(at)}，下一步 {back}）")
 
     patch.steps = sorted(touched)
     patch.before = [e for e in manual if _mine(e, target, touched)]
@@ -363,6 +440,24 @@ def assert_state(db: Db, tax: Taxonomy, desktop: int, target: str, step: int,
     with db.transaction():
         patch = plan_assertion(db, tax, desktop, target, step, new_state, evidence_view,
                                name)
+        if patch.changed:
+            write_events(db, patch.desktop, patch.target, patch.steps, patch.after)
+    return patch
+
+
+def assert_range(db: Db, tax: Taxonomy, desktop: int, target: str, first: int, last: int,
+                 new_state: str, evidence_view: Optional[str] = None,
+                 name: Namer = _same) -> StatePatch:
+    """"From ``first`` to ``last`` ``target`` is in ``new_state``" (task U11).
+
+    One op where walking the span with :func:`assert_state` would be one per
+    frame; the two ends in either order. Written and returned like
+    :func:`assert_state`'s patch, nothing written when every step of the span
+    already holds the state.
+    """
+    with db.transaction():
+        patch = plan_range(db, tax, desktop, target, first, last, new_state,
+                           evidence_view, name)
         if patch.changed:
             write_events(db, patch.desktop, patch.target, patch.steps, patch.after)
     return patch

@@ -23,7 +23,8 @@ from tda.ui import app_actions as A
 from tda.ui import app_support as S
 from tda.ui.class_names import state_zh
 
-__all__ = ["NO_TARGET", "SPLIT_NOW", "StateMixin", "state_note"]
+__all__ = ["CUT_DROPPED", "CUT_KEPT", "CUT_MOVED", "NO_TARGET", "SPLIT_NOW", "StateMixin",
+           "cut_text", "state_note"]
 
 #: ``T`` with nothing selected and nothing being drawn.
 NO_TARGET = ("T 改的是实例表里选中的零件（或正在画的零件）：先在右下实例表点一行 / "
@@ -77,9 +78,34 @@ def cut_note(result: dict, steps_text) -> str:
     return "，".join(parts)
 
 
+#: After an assertion that moved a cut keyframe with its boundary (U11).
+CUT_MOVED = "形状版本边界也随之移到第 {step} 步"
+#: ... that dropped one: every frame of it joined the run, its shape is elsewhere.
+CUT_DROPPED = "第 {step} 步切开的旧版本用不着了，已删掉"
+#: ... that left one where it was although its boundary went: its shape is nowhere else.
+CUT_KEPT = "第 {step} 步切开时留下的旧形状没删（别处没有这份形状），请看一眼"
+
+
+def cut_text(cuts, view: Optional[str] = None) -> str:
+    """What became of the cut keyframes that followed the boundary (U11), or ``""``.
+
+    ``cuts`` are :class:`~tda.core.cut_follow.CutMove`; the view on screen is
+    named first when several views moved (they share the step numbers).
+    """
+    cuts = sorted(cuts or [], key=lambda m: (m.view != view, m.view))
+    parts = []
+    moved = [m for m in cuts if m.moved and not m.kept]
+    if moved:
+        parts.append(CUT_MOVED.format(step=moved[0].new))
+    parts += [CUT_DROPPED.format(step=m.old) for m in cuts if m.dropped][:1]
+    parts += [CUT_KEPT.format(step=m.old) for m in cuts if m.kept][:1]
+    return "；".join(parts)
+
+
 def state_note(label: str, patch, redraw=None,
                run: Optional[tuple[int, int]] = None,
-               after: Optional[tuple[int, str]] = None, unseen: bool = False) -> str:
+               after: Optional[tuple[int, str]] = None, unseen: bool = False,
+               cuts=None, view: Optional[str] = None) -> str:
     """The status line after an assertion, in the annotator's words.
 
     ``内存卡扣 ram_latch.01 在第 21 步：关上（之前为 打开）；第 22 步起恢复 打开``;
@@ -88,6 +114,7 @@ def state_note(label: str, patch, redraw=None,
     恢复 打开``.  ``unseen``: the restore step has no image in this view, so the
     log's value is kept there without anyone having looked.  ``redraw``: where
     the run still shows the other state's shape -- then :func:`redraw_text`.
+    ``cuts``: the cut keyframes that followed the boundary -- :func:`cut_text`.
     """
     text = (f"{label} 在第 {patch.step} 步：{state_zh(patch.state)}"
             f"（之前为 {state_zh(patch.previous)}）")
@@ -102,6 +129,9 @@ def state_note(label: str, patch, redraw=None,
     if unseen and patch.next_step is not None:
         text += (f"（第 {patch.next_step} 步在这个视角没有图像，那里按日志算"
                  f"{'' if patch.restores is None else ' ' + state_zh(patch.restores)}）")
+    moved = cut_text(cuts, view)
+    if moved:
+        text += f"。{moved}"
     redo = redraw_text(patch.state, run or (patch.step, patch.step), redraw)
     if redo:
         text += f"。{redo}"
@@ -187,7 +217,8 @@ class StateMixin:
         self.timeline.refresh_statuses()
         self.forget_card_hints()
         note = state_note(label, patch, result.get("redraw"), result.get("run"),
-                          result.get("after"), unseen=bool(result.get("restore_unseen")))
+                          result.get("after"), unseen=bool(result.get("restore_unseen")),
+                          cuts=result.get("cuts"), view=key.view)
         self.update_status()
         self.report(note, hold_ms=6000)
         self.flash_visibility_note(note)
