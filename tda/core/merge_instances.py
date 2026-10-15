@@ -201,8 +201,12 @@ class MergePlan:
         return {k: n for k, n in counts.items() if n}
 
     # -- what the confirmation says -------------------------------------- #
-    def summary_lines(self) -> list[str]:
-        """The confirmation dialog, one line per thing, in the annotator's words."""
+    def summary_lines(self, with_apply: bool = False) -> list[str]:
+        """The confirmation dialog, one line per thing, in the annotator's words.
+
+        ``with_apply``: the merge is written together with the staged S1 edits
+        (「Apply 并合并」), which the last line says instead of "不经 Apply".
+        """
         name = lambda rec: (f"{rec.key}（{'、'.join(rec.raw_names)}）"   # noqa: E731
                             if rec.raw_names else rec.key)
         lines = [f"把 {name(self.gone_record)} 合并到 {name(self.keep_record)}：",
@@ -256,7 +260,8 @@ class MergePlan:
         if self.rechecks:
             n = sum(len(v) for v in self.rechecks.values())
             lines.append(f"{n} 个已确认帧会在后台重新核对。")
-        lines.append("立即写入，不经 Apply（Revert 撤不回）。")
+        lines.append("和 Apply 一起立即写入（Revert 撤不回）。" if with_apply
+                     else "立即写入，不经 Apply（Revert 撤不回）。")
         return lines
 
 

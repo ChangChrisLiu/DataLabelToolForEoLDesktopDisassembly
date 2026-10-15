@@ -147,5 +147,17 @@ def blob(db: Db) -> bytes:
     return repr(dump(db)).encode("utf-8")
 
 
+def everything(db: Db) -> dict[str, list]:
+    """Every table, bookkeeping included, exactly as stored (ids and all).
+
+    For "nothing was written": a rolled-back 「Apply 并合并」 must leave no
+    op row, no queued re-check and no dropped digest behind either.
+    """
+    names = [r[0] for r in db.conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
+    return {name: sorted((tuple(r) for r in db.conn.execute(f"SELECT * FROM {name}")),
+                         key=repr) for name in names}
+
+
 __all__ = ["DESKTOP", "GONE", "KEEP", "PSU", "STEPS", "Scene", "VIEWS", "blob", "build",
-           "dump", "mask_kf", "rect"]
+           "dump", "everything", "mask_kf", "rect"]
