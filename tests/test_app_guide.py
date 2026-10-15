@@ -60,8 +60,8 @@ from tda.ui.panels.palette import (
 )
 from tda.ui.panels.taskcard import CHIP_EDITING, card_header, row_view
 
-#: The buttons that are live in Annotate mode.
-PALETTE = A.PALETTE_TOOLS + A.PALETTE_ACTIONS
+#: The buttons that are live in Annotate mode (「状态」 and 「其他」: task U13).
+PALETTE = A.PALETTE_TOOLS + A.PALETTE_ACTIONS + A.PALETTE_STATE + A.PALETTE_OTHER
 #: Every button on the strip, Review's included (round 1, item 3).
 EVERY_BUTTON = tuple(dict.fromkeys(PALETTE + A.PALETTE_REVIEW))
 

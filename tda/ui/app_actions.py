@@ -47,7 +47,9 @@ __all__ = [
     "MODE_REVIEW",
     "MODE_STEPS",
     "PALETTE_ACTIONS",
+    "PALETTE_OTHER",
     "PALETTE_REVIEW",
+    "PALETTE_STATE",
     "PALETTE_TOOLS",
     "Action",
     "action_for",
@@ -223,7 +225,7 @@ ACTIONS: tuple[Action, ...] = (
     Action("confirm_cut_copy", ("Ctrl+Shift+K",), "act_confirm_cut_copy",
            "This frame's shape is the cut copy on it (no pixels; the split row is done)",
            "这帧就是这个形状：切开时留下的形状副本就是这一帧的样子（不画像素，✂ 完成）",
-           "edit", (), _ANN),
+           "edit", (), _ANN, short="形状没变"),
     Action("commit_layering", ("L",), "act_commit_layering",
            "Change the layering the scope bar suggests (asks, then a second L)",
            "改层级：回答画布下方的层级建议（先显示影响哪些帧，再按一次 L 确定；Enter 只改形状）",
@@ -260,7 +262,8 @@ ACTIONS: tuple[Action, ...] = (
     # Task U10: ``I`` for invisible / 看不见 -- free in every mode.
     Action("mark_absent", ("I",), "act_mark_absent",
            "Components gallery: the card's part is not in this shot (again: take it back)",
-           "零件合照：任务卡上这个零件不在这张里（看不见；再按一次撤回）", "edit", (), _ANN),
+           "零件合照：任务卡上这个零件不在这张里（看不见；再按一次撤回）", "edit", (), _ANN,
+           short="看不见"),
     Action("cycle_visibility", ("V",), "act_cycle_visibility", "Cycle visibility",
            "循环切换可见性取值", "edit", (), _ANN),
     # Task U8: the state the picture shows when the log's is different (a clip
@@ -268,7 +271,7 @@ ACTIONS: tuple[Action, ...] = (
     Action("cycle_state", ("T",), "act_cycle_state",
            "Selected part's state at this frame: the next one (log correction)",
            "选中零件这一帧的状态换成下一个（如 打开→关上；下一帧起自动恢复；"
-           "之后按任务卡 ✂ 条用 Ctrl+K 画形状）", "edit", (), _ANN),
+           "之后按任务卡 ✂ 条用 Ctrl+K 画形状）", "edit", (), _ANN, short="换状态"),
     # Task U9: the open cover / latch the card asks for is on the pile.  Next to
     # T because it is the other half of "the log is wrong about this part";
     # ``Shift+T`` is free in every mode.
@@ -276,13 +279,13 @@ ACTIONS: tuple[Action, ...] = (
            "Selected cover/latch: taken out, not opened (the log's open -> remove; "
            "a removed one: back to open)",
            "选中的盖板/卡扣其实拆下来了：日志里那一步的「打开」改成「拆下」"
-           "（Removed 里的零件反过来：其实只是打开了）", "edit", (), _ANN),
+           "（Removed 里的零件反过来：其实只是打开了）", "edit", (), _ANN, short="其实拆下"),
     # Task U11: the same over a span, "from here to step N" -- D2/scan walked
     # 45 -> 37 with T at every frame.  Ctrl+T is free in every mode.
     Action("state_range", ("Ctrl+T",), "act_state_range",
            "Selected part's state from this frame to a given step (one op)",
            "选中零件从这一帧到第 N 步都设成同一状态（一次撤销；切开的版本跟着边界走）",
-           "edit", (), _ANN),
+           "edit", (), _ANN, short="一段状态"),
     Action("zorder_up", ("Ctrl+Up",), "act_move_instance", "One layer up",
            "选中实例上移一层", "edit", (-1,), _ANN, repeat=True),
     Action("zorder_down", ("Ctrl+Down",), "act_move_instance", "One layer down",
@@ -388,7 +391,7 @@ def _candidates(key, modifiers) -> list[int]:
     return out
 
 
-#: The palette's two columns of buttons (task U2b), top to bottom.  Names, not
+#: The palette's groups of buttons (task U2b), top to bottom.  Names, not
 #: copies: every caption, key and tooltip is read off :data:`ACTIONS`.
 PALETTE_TOOLS: tuple[str, ...] = (
     "tool_brush", "tool_eraser", "tool_polygon", "tool_circle",
@@ -396,8 +399,20 @@ PALETTE_TOOLS: tuple[str, ...] = (
 )
 PALETTE_ACTIONS: tuple[str, ...] = (
     "commit", "commit_override", "commit_split", "confirm", "undo", "redo",
-    "toggle_heat", "flash_compare", "cycle_candidate", "clear_edit",
+    "toggle_heat",
 )
+#: The 「状态」 group (task U13): the keys that say the log is wrong about a part
+#: -- its state here, over a span, its verb -- and the two that settle a frame
+#: without drawing (a cut copy that is right as it is, a part not in a gallery
+#: shot). Annotate mode only, like the keys.
+PALETTE_STATE: tuple[str, ...] = (
+    "cycle_state", "state_range", "correct_verb", "confirm_cut_copy", "mark_absent",
+)
+#: The 「其他」 group at the foot of the strip (U13 follow-up): the action
+#: buttons clicked least -- their keys are Tab (held), C and Esc -- so that the
+#: 「状态」 group above them fits a maximized 1920x1080 window (a client area of
+#: about 1920x1000) without scrolling.
+PALETTE_OTHER: tuple[str, ...] = ("flash_compare", "cycle_candidate", "clear_edit")
 #: What the strip keeps in Review mode (U2b round 1): the canvas is read-only,
 #: so no tool and no brush -- only the difference map and the queue's keys.
 PALETTE_REVIEW: tuple[str, ...] = (

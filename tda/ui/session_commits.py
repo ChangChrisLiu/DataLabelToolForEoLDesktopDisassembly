@@ -36,6 +36,8 @@ CUT_COPY_UNCHANGED = ("这帧上是另一状态的形状副本：画好这一帧
                       "形状确实没变就按 Ctrl+Shift+K（这帧就是这个形状）")
 #: ``Ctrl+Shift+K`` where the shape in force is not a cut copy.
 NOT_A_CUT_COPY = "{instance} 在这一帧的形状不是切开时留下的副本，不用确认"
+#: ``Ctrl+Shift+K`` with no part named and none being drawn.
+NO_CUT_TARGET = "先在实例表选中零件（或点任务卡上那一条）"
 #: ``Ctrl+Shift+K`` with pixels painted and not committed.
 CONFIRM_NEEDS_CLEAN_LAYER = ("正在画的像素还没提交：画的就是这一帧的样子按 Ctrl+K；"
                              "要确认副本先 Esc 放弃")
@@ -283,6 +285,22 @@ class CommitMixin:
         found = keyframe_at(self.db, self.tax, self.current(), str(instance))
         return found is not None and found.source == CUT
 
+    def cut_copy_gate(self, instance: Optional[str]) -> str:
+        """Why :meth:`confirm_cut_copy` would refuse ``instance`` here, ``""`` if not.
+
+        Its refusals that do not depend on the editing layer, in its own words,
+        writing nothing: what the palette's greyed 「形状没变」 button says (task
+        U13). The layer's gate is the window's, which knows it without a pass
+        over the pixels.
+        """
+        if getattr(self, "gallery", False):
+            return gallery_refusal(self.view, "confirm_cut_copy")
+        if not instance:
+            return NO_CUT_TARGET
+        if not self.cut_copy_here(instance):
+            return NOT_A_CUT_COPY.format(instance=instance)
+        return ""
+
     def confirm_cut_copy(self, instance: Optional[str] = None) -> dict:
         """「这帧就是这个形状」: the cut copy in force here *is* this frame's shape.
 
@@ -305,7 +323,7 @@ class CommitMixin:
             raise SessionRefusal(gallery_refusal(self.view, "confirm_cut_copy"))
         target = str(instance or self.layer.instance or "")
         if not target:
-            raise SessionRefusal("先在实例表选中零件（或点任务卡上那一条）")
+            raise SessionRefusal(NO_CUT_TARGET)
         key = self._editable_frame()
         if self.layer.active and self.layer.changed():
             raise SessionRefusal(CONFIRM_NEEDS_CLEAN_LAYER)

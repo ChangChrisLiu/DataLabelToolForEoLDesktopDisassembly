@@ -111,6 +111,9 @@ COMMIT_SCOPES: tuple[str, ...] = (SCOPE_KEYFRAME, SCOPE_FRAME_OVERRIDE, SCOPE_SP
 #: refusal, the greyed palette button and the key.
 OVERRIDE_NEEDS_SHAPE = ("这个零件在这一帧还没有形状：先用 Enter 画出它"
                         "（「只改这一帧」是在已有形状上的例外）")
+#: ``Shift+T`` on the part being drawn, with pixels not committed (U9): the
+#: session's refusal and the palette's greyed 「其实拆下」 button (U13).
+VERB_NEEDS_CLEAN_LAYER = "{instance} 正在画、还没提交：先 Enter 提交或 Esc 放弃，再改"
 
 # --------------------------------------------------------------------------- #
 # review mode (spec 4.4)

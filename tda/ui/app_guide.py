@@ -372,6 +372,10 @@ class GuideMixin:
         listed = review and facts.open_conflicts > 0
         states["review_accept_all_new"] = (bool(listed), False,
                                            not_review if not review else "这个视图没有开放的冲突")
+        # The 「状态」 group (task U13): each slot's own gates, in its words.
+        for name in A.PALETTE_STATE:
+            why = closed or self.state_button_refusal(name, bool(facts.layer_dirty))
+            states[name] = (not why, False, why)
         if facts.gallery:
             # what a components-gallery shot has not got (task U10): the
             # button greys with the reason the key gives

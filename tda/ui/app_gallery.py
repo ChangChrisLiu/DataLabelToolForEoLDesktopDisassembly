@@ -100,6 +100,35 @@ class GalleryMixin:
                 return str(found)
         return None
 
+    def _absent_check(self, instance: Optional[str],
+                      dirty: Optional[bool] = None) -> tuple[Optional[str], Optional[dict], str]:
+        """``(part, its card row, why not)`` of 「看不见」 -- ``why`` is ``""`` when it may.
+
+        One set of gates for ``I`` and its palette button (task U13). ``dirty``:
+        the editing layer has uncommitted pixels, when the caller knows it
+        already (the palette, from the guide's cached facts); ``None`` asks.
+        """
+        if not self.in_gallery():
+            return None, None, NOT_A_GALLERY
+        target = self._absent_target(instance)
+        row = next((r for r in self.task_card.rows()
+                    if str(r.get("instance", "")) == target), None)
+        if target is None or row is None or not row.get("gallery"):
+            return target, None, PICK_A_PART
+        label = instance_label(target, row.get("cls"), row.get("attrs"))
+        if row.get("done") and not row.get("absent"):
+            return target, row, (f"{label} 在这张里已经画好了：画过的零件就是在这张里 / "
+                                 f"it has a shape on this shot")
+        if getattr(self.session, "editing_instance", None) == target and (
+                self.has_uncommitted_edit() if dirty is None else dirty):
+            return target, row, f"{label} 正在画：先 Esc 放弃，再按 I / drop the edit first"
+        return target, row, ""
+
+    def absent_refusal(self, instance: Optional[str] = None,
+                       dirty: Optional[bool] = None) -> str:
+        """Why 「看不见」 (``I``) would do nothing now, ``""`` if it may (its button, U13)."""
+        return self._absent_check(instance, dirty)[2]
+
     @S.guard
     def act_mark_absent(self, instance: Optional[str] = None) -> None:
         """「看不见」: ``instance`` is not in this gallery shot -- or, again, it is.
@@ -108,24 +137,12 @@ class GalleryMixin:
         part that already has a shape here (a drawn part *is* in the shot), and
         while pixels of it are being drawn.
         """
-        if not self.in_gallery():
-            self.report(NOT_A_GALLERY)
-            return
-        target = self._absent_target(instance)
-        row = next((r for r in self.task_card.rows()
-                    if str(r.get("instance", "")) == target), None)
-        if target is None or row is None or not row.get("gallery"):
-            self.report(PICK_A_PART)
+        target, row, why = self._absent_check(instance)
+        if why:
+            self.report(why)
             return
         label = instance_label(target, row.get("cls"), row.get("attrs"))
-        if row.get("done") and not row.get("absent"):
-            self.report(f"{label} 在这张里已经画好了：画过的零件就是在这张里 / "
-                        f"it has a shape on this shot")
-            return
         editing = getattr(self.session, "editing_instance", None)
-        if editing == target and self.has_uncommitted_edit():
-            self.report(f"{label} 正在画：先 Esc 放弃，再按 I / drop the edit first")
-            return
         if editing == target:
             self.session.clear_edit()       # an untouched layer: nothing to lose
             self.set_sam_instance(None)

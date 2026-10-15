@@ -39,13 +39,23 @@ from tda.ui import app_support as S
 from tda.ui.class_names import state_zh
 
 __all__ = ["CONFIRM_DIRTY", "CUT_CONFIRMED", "CUT_DROPPED", "CUT_KEPT", "CUT_MOVED",
-           "HINT_LOG", "HINT_RANGE", "NO_TARGET",
+           "HINT_LOG", "HINT_RANGE", "NO_TARGET", "NO_TARGET_FOR", "REMOVED_ROW",
            "SPLIT_NOW", "StateMixin", "StateRangeDialog", "cut_text", "range_note",
            "state_note"]
 
 #: ``T`` with nothing selected and nothing being drawn.
 NO_TARGET = ("T 改的是实例表里选中的零件（或正在画的零件）：先在右下实例表点一行 / "
              "select a part in the instance table first")
+#: ... as each key of the selected part says it (``Ctrl+T``, ``Ctrl+Shift+K``).
+NO_TARGET_FOR = {
+    "cycle_state": NO_TARGET,
+    "state_range": NO_TARGET.replace("T 改的", "Ctrl+T 改的", 1),
+    "confirm_cut_copy": NO_TARGET.replace("T 改的", "Ctrl+Shift+K 确认的", 1),
+}
+#: A key that edits a part, on a row of the instance table's ``Removed`` list.
+REMOVED_ROW = "已移除的零件不可编辑 / this part has been removed"
+#: Answers about a part kept by the window at most (:meth:`StateMixin._why_once`).
+_WHY_KEPT = 64
 #: The tail of every "the shape has to be redrawn" sentence (U8 round 3): no
 #: order to remember, the commit cuts the version at the run's edges itself.
 SPLIT_NOW = "工具会自动在状态边界切开版本"
@@ -296,7 +306,7 @@ class StateMixin:
             return
         instance = self._state_target()
         if not instance:
-            self._refuse_state(NO_TARGET.replace("T 改的", "Ctrl+Shift+K 确认的", 1))
+            self._refuse_state(NO_TARGET_FOR["confirm_cut_copy"])
             return
         if not callable(getattr(self.session, "confirm_cut_copy", None)):
             self._refuse_state("这个会话不支持 / not supported by this session")
@@ -329,7 +339,7 @@ class StateMixin:
             return
         instance = self._state_target()
         if not instance:
-            self._refuse_state(NO_TARGET.replace("T 改的", "Ctrl+T 改的", 1))
+            self._refuse_state(NO_TARGET_FOR["state_range"])
             return
         if not callable(getattr(self.session, "assert_state_range", None)):
             self._refuse_state(f"{REFUSED}这个会话不支持 / not supported by this session")
@@ -343,6 +353,63 @@ class StateMixin:
         if answer is None:
             return
         self.assert_state_range_here(instance, *answer)
+
+    # ------------------------------------------------- the palette's 「状态」
+    def state_button_refusal(self, name: str, dirty: bool) -> str:
+        """Why the 「状态」 button ``name`` cannot run now, ``""`` if it may (task U13).
+
+        Its slot's gates in the slot's order and words, read off what the
+        panels already hold; ``dirty`` is the guide's cached "the editing layer
+        has uncommitted pixels". What only the session can judge -- a class
+        with no state to change, a part that is not a two-way cover, a shape
+        that is not a cut copy -- is asked once per frame, part and re-read of
+        the instance list (:meth:`_why_once`). A refusal found only when the
+        write is tried (the log's own action in the way, say) still is: the
+        button stays live and its click says it, as the key does.
+        """
+        if name == "mark_absent":
+            return self.absent_refusal(dirty=dirty)
+        if name == "correct_verb":
+            return self.verb_button_refusal(dirty)
+        if name not in NO_TARGET_FOR:
+            return ""
+        if self.instances.selected_is_removed():
+            return REMOVED_ROW
+        instance = self._state_target()
+        if not instance:
+            return NO_TARGET_FOR[name]
+        if name == "confirm_cut_copy":
+            if getattr(self.session, "editing_instance", None) is not None and dirty:
+                return CONFIRM_DIRTY
+            if self._card_cut_copy(instance):
+                return ""                         # the card's ✂ row says so already
+            gate = getattr(self.session, "cut_copy_gate", None)
+            return self._why_once("cut_copy", instance, gate) if callable(gate) else ""
+        row = self.instances.row_of(instance)
+        if row is not None and row.get("state_choices"):
+            return ""
+        gate = getattr(self.session, "state_gate", None)
+        return (self._why_once("state", instance, lambda part: gate(part)[1])
+                if callable(gate) else "")
+
+    def _why_once(self, kind: str, instance: str, ask) -> str:
+        """``ask(instance)`` -- a session's "why not" -- once per frame, part and rows.
+
+        The palette is refreshed on every status update; the session's answer
+        costs a read of the event log. It changes only with a write, and every
+        write ends in a re-read of the instance list
+        (:meth:`~tda.ui.panels.instances.InstanceListPanel.generation`).
+        """
+        key = (kind, str(instance), self.session.current(), self.instances.generation())
+        cache = self.__dict__.setdefault("_why_cache", {})
+        if key not in cache:
+            if len(cache) >= _WHY_KEPT:
+                cache.clear()
+            try:
+                cache[key] = str(ask(instance) or "")
+            except Exception:  # noqa: BLE001 - a grey button is never worth a failure
+                cache[key] = ""
+        return cache[key]
 
     def ask_state_range(self, instance: str, choices: list[str], state: Optional[str],
                         to_step: int) -> Optional[tuple[str, int]]:

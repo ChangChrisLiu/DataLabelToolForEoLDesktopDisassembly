@@ -142,6 +142,8 @@ class InstanceListPanel(QWidget):
         self._gone: list[dict] = []
         self._removed_source: Optional[Callable[[], list[dict]]] = None
         self._loading = False
+        #: Moves on every re-read of the rows (:meth:`generation`).
+        self._generation = 0
 
         self._table = QTableWidget(0, len(self.COLUMNS))
         self._table.setHorizontalHeaderLabels(list(self.COLUMNS))
@@ -253,6 +255,7 @@ class InstanceListPanel(QWidget):
         self._rows = (self._session.instance_rows()
                       if session_is_open(self._session) else [])
         self._gone = self._removed_rows()
+        self._generation += 1
         self._loading = True
         header = self._table.horizontalHeader()
         self._table.setUpdatesEnabled(False)
@@ -373,6 +376,20 @@ class InstanceListPanel(QWidget):
     def rows(self) -> list[dict]:
         """The instances of the frame, top layer first (never the removed ones)."""
         return [dict(r) for r in self._rows]
+
+    def row_of(self, instance: Optional[str]) -> Optional[dict]:
+        """The row of ``instance`` (a copy), or ``None`` when the frame lists none."""
+        found = next((r for r in self._rows if str(r.get("key", "")) == str(instance)), None)
+        return dict(found) if found is not None else None
+
+    def generation(self) -> int:
+        """How many times the rows were re-read: a key for answers worked out from them.
+
+        Every gesture that writes ends in a re-read (the session announces the
+        frame, or the window refreshes the list), so an answer about the
+        selected part holds until this moves (the palette's 「状态」 reasons, U13).
+        """
+        return self._generation
 
     def set_removed_source(self, source: Optional[Callable[[], list[dict]]]) -> None:
         """Install what lists the parts the frame no longer has.
