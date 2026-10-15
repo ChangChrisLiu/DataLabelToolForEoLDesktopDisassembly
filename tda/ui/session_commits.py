@@ -290,14 +290,19 @@ class CommitMixin:
         outline -- a latch seen edge-on -- and the copy a commit left on the
         far side of the boundary is then right as it is. This takes its mark
         off without touching a pixel, so its ✂ row is done and ``cli check``
-        stops counting the frames under it. One ``commit_keyframe`` op: the
-        row before and after, ``Ctrl+Z`` puts the mark back.
+        stops counting the frames under it. Like every manual-shape write it
+        stamps ``source="manual"`` and drops the draft reference. One
+        ``commit_keyframe`` op: the row before and after, ``Ctrl+Z`` puts the
+        mark (and the reference) back. Refused on a components-gallery shot.
 
         Refused when the shape in force is not a cut copy, and while painted
         pixels are waiting in the editing layer (they are either this frame's
         shape -- ``Ctrl+K`` -- or not wanted). An untouched layer on the same
         part is closed.
         """
+        if getattr(self, "gallery", False):
+            # a shot has no Ctrl+K, so no copy -- refused all the same (U10/U11)
+            raise SessionRefusal(gallery_refusal(self.view, "confirm_cut_copy"))
         target = str(instance or self.layer.instance or "")
         if not target:
             raise SessionRefusal("先在实例表选中零件（或点任务卡上那一条）")
@@ -312,7 +317,9 @@ class CommitMixin:
         ref = {"keyframe_id": kf.id}
         before = keyframe_state(kf, ref)
         with self.db.transaction():
-            kf.source = edit.SOURCE_MANUAL
+            # the annotator's shape now, like every other manual-shape path:
+            # source manual, no draft reference (spec 3.1 来源 / 初稿引用)
+            kf.source, kf.draft_id = edit.SOURCE_MANUAL, None
             self.db.update_keyframe(kf)
             after = keyframe_state(kf, ref)
             steps = annotatable_steps(

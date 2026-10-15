@@ -284,3 +284,133 @@ def test_the_window_banner_and_key(qapp, tmp_path: Path):
                              for kf in db.keyframes(DESKTOP, "scan", CLIP)]
     finally:
         close_window(win)
+
+
+# --------------------------------------------------------------------------- #
+# final round: review minors and the gallery
+# --------------------------------------------------------------------------- #
+def test_ctrl_shift_k_drops_the_draft_reference_like_any_manual_shape(scene):
+    """Review minor (a): the confirmed copy is the annotator's -- source and draft both."""
+    s = scene
+    seeded = next(kf for kf in s.db.keyframes(DESKTOP, VIEW, CLIP))
+    seeded.source, seeded.draft_id = "ls_adopted", 77
+    s.db.update_keyframe(seeded)
+    open_at_41_and_draw(s)                     # the cut keeps the parent's draft id
+    cut = next(kf for kf in s.db.keyframes(DESKTOP, VIEW, CLIP) if kf.anchor_step == 40)
+    assert (cut.source, cut.draft_id) == (CUT, 77)
+    s.goto(40, force=True)
+    s.confirm_cut_copy(CLIP)
+    cut = next(kf for kf in s.db.keyframes(DESKTOP, VIEW, CLIP) if kf.anchor_step == 40)
+    assert (cut.source, cut.draft_id) == ("manual", None)
+    assert s.undo() is True
+    cut = next(kf for kf in s.db.keyframes(DESKTOP, VIEW, CLIP) if kf.anchor_step == 40)
+    assert (cut.source, cut.draft_id) == (CUT, 77)
+
+
+def test_a_pose_recut_carries_a_cut_copy_as_a_cut_copy(tmp_path):
+    """Review minor (b): the duplicate across a new break is still a placeholder,
+    and it goes again with the break (an original cut copy never does)."""
+    from session_scene import seed_db
+    from tda.core import masks
+    from tda.core.db import Db
+    from tda.core.model import ShapeKeyframe, ShapePart
+    from tda.core.pose_breaks import CUT_SOURCE
+    from tda.core.split_rows import CUT as CARD_CUT
+    from tda.core.taxonomy import load_taxonomy
+
+    assert CUT_SOURCE == CARD_CUT == CUT
+    db = Db(str(tmp_path / "tda.sqlite"))
+    seed_db(db, load_taxonomy(), tmp_path / "cache", last_step=24, hw=(32, 32))
+    db.set_pose_segment(DESKTOP, VIEW, 1, 1, 24, 24, None, None)
+    shape = np.zeros((32, 32), dtype=bool)
+    shape[4:10, 4:12] = True
+    cut = ShapeKeyframe(id=None, instance=CLIP, desktop=DESKTOP, view=VIEW, pose_segment=1,
+                        anchor_step=20, placement="in_chassis", geom_type="mask",
+                        source=CUT, draft_id=5, version=3,
+                        parts=[ShapePart("main", masks.encode_rle(shape))])
+    db.add_keyframe(cut)
+    out = db.apply_recut(DESKTOP, VIEW, [10], 24, carry_at=[10])
+    assert len(out["carried"]) == 1
+    rows = sorted((kf.anchor_step, kf.pose_segment, kf.source, kf.draft_id)
+                  for kf in db.keyframes(DESKTOP, VIEW, CLIP))
+    assert rows == [(9, 1, CUT, 5), (20, 2, CUT, 5)]          # not "carried"
+    out = db.apply_recut(DESKTOP, VIEW, [], 24)                 # the break goes again
+    assert out["uncarried"] == []
+    assert [(kf.anchor_step, kf.source) for kf in db.keyframes(DESKTOP, VIEW, CLIP)] == [
+        (20, CUT)]
+    # a cut copy a commit made, anchored where a break disappears, is nobody's duplicate
+    db.apply_recut(DESKTOP, VIEW, [21], 24)
+    db.apply_recut(DESKTOP, VIEW, [], 24)
+    assert [(kf.anchor_step, kf.source) for kf in db.keyframes(DESKTOP, VIEW, CLIP)] == [
+        (20, CUT)]
+
+
+def test_the_three_keys_refuse_on_a_gallery_shot(qapp, tmp_path: Path):
+    """U10 + U11: T, Ctrl+T and Ctrl+Shift+K on a 零件合照 shot -- refused, nothing written."""
+    import gallery_scene as GS
+    from app_scene import StubSamQueue, close_window, make_paths
+    from test_app_actions import key_event
+    from tda.core.truth import TruthService
+    from tda.ui.app import MainWindow
+    from tda.ui.gallery import GALLERY_REFUSALS, NO_STATE
+    from tda.ui.session import AnnotationSession
+
+    cfg = make_paths(tmp_path)
+    Path(cfg["db_path"]).parent.mkdir(parents=True, exist_ok=True)
+    db, tax, cache_dir = GS.make_db(tmp_path, db_path=cfg["db_path"],
+                                    cache_dir=Path(cfg["cache_dir"]))
+    session = AnnotationSession(db, tax, TruthService(db, tax), str(cache_dir), "tester")
+    session.sweeper_enabled = False
+    session.open(GS.DESKTOP, "cmp_oak1")
+    win = MainWindow(session, cfg, "tester", sam_queue=StubSamQueue())
+    try:
+        win.set_mode(A.MODE_ANNOTATE)
+        part = win.task_card.current_instance()
+        assert part
+        win.instances.select_instance(part)
+        ops_before = len(db.ops(GS.DESKTOP, "cmp_oak1", limit=500))
+        events_before = [e for e in db.events(GS.DESKTOP) if not e.auto]
+        for key, name in (("T", "cycle_state"), ("Ctrl+T", "state_range"),
+                          ("Ctrl+Shift+K", "confirm_cut_copy")):
+            reported: list[str] = []
+            win.report = reported.append
+            win.handle_key(key_event(key))
+            assert reported and GALLERY_REFUSALS[name] in reported[-1], (key, reported)
+        # the session refuses the same gestures by itself
+        with pytest.raises(SessionRefusal, match=NO_STATE):
+            session.assert_state(part, "open")
+        with pytest.raises(SessionRefusal, match=NO_STATE):
+            session.assert_state_range(part, "open", 1)
+        with pytest.raises(SessionRefusal, match="零件合照"):
+            session.confirm_cut_copy(part)
+        assert len(db.ops(GS.DESKTOP, "cmp_oak1", limit=500)) == ops_before
+        assert [e for e in db.events(GS.DESKTOP) if not e.auto] == events_before
+    finally:
+        close_window(win)
+
+
+def test_the_automatic_cut_at_a_log_boundary_is_a_placeholder_too(qapp, tmp_path):
+    """Review minor (c): Enter inside the log's open run (D13: opened at 14) cuts at
+    the log's ✂ (13) and that row stays open until Ctrl+K / Ctrl+Shift+K."""
+    latch = "ram_latch.01"
+    s = make_session(tmp_path, last_step=24, hw=HW)
+    s.sweeper_enabled = False
+    try:
+        seed_shapes(s, 13, anchor=24)                 # one version over 13 and 14
+        s.goto(20, force=True)
+        result = draw(s, latch, rect(2, 2, 30, 12, HW), api.SCOPE_KEYFRAME)
+        s.clear_edit()
+        assert result["cut_below"] == 13
+        found = row(s, 13, latch)
+        assert found["done"] is False and found["cut_copy"] is True
+        s.confirm_cut_copy(latch)
+        assert row(s, 13, latch)["done"] is True
+    finally:
+        s.close(force=True)
+    repo = Path(__file__).resolve().parents[1]
+    squash = "".join
+    quick = squash((repo / "docs" / "trial_quickstart.md").read_text(encoding="utf-8").split())
+    guide = squash((repo / "docs" / "annotation_guide.md").read_text(encoding="utf-8").split())
+    assert squash("日志自己的边界也按这个规矩".split()) in quick
+    assert squash("第 13 帧的 ✂ 就写".split()) in quick
+    assert squash("日志自己的边界也一样，切开那一帧的 ✂ 待画".split()) in guide
