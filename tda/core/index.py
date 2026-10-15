@@ -47,7 +47,11 @@ from tda.core.sources import (
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_FIXES_PATH = "configs/index_fixes.yaml"
 DEFAULT_PATHS_PATH = "configs/paths.yaml"
-INDEX_VERSION = 1
+#: 2: the components gallery is indexed (task U10). A version-1 file is still
+#: read; its desktops say nothing about the gallery (``DesktopIndex.gallery``).
+INDEX_VERSION = 2
+#: The first version whose scan covers the components gallery.
+GALLERY_INDEX_VERSION = 2
 #: How far a RealSense file mtime may sit from its OAK cam1 capture time.
 RS_TIME_TOLERANCE_S = 30.0
 
@@ -80,6 +84,10 @@ class DesktopIndex:
     frames: dict[FrameKey, FrameFile] = field(default_factory=dict)
     missing: list[FrameKey] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
+    #: Did the scan look at the components gallery (task U10)? ``False`` for an
+    #: index file written before it existed (version 1): such an index says
+    #: nothing about the gallery, and ``load-index`` leaves the gallery alone.
+    gallery: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -140,9 +148,11 @@ def scan_desktop(desktop: int, roots: dict, fixes: dict) -> DesktopIndex:
     issues.extend(
         _add_oak_cam2(desktop, disassemble, oak_desktop, oak_fix, step_of_dir, step_of_ts, frames)
     )
+    rs_fix = (fixes.get("rs") or {}).get(desktop, {}) or {}
     issues.extend(_add_scanner(desktop, roots, step_of_dir, frames))
-    issues.extend(_add_realsense(desktop, roots, aliases, step_of_dir, frames))
-    issues.extend(_add_components(desktop, roots, oak_desktop, oak_fix, step_of_ts, frames))
+    issues.extend(_add_realsense(desktop, roots, aliases, step_of_dir, frames, rs_fix))
+    issues.extend(_add_components(desktop, roots, oak_desktop, oak_fix, step_of_ts, frames,
+                                  rs_fix))
 
     # the gallery's shots are not steps: a camera with fewer of them than
     # another misses nothing, so only the sequence views can miss a frame
@@ -368,6 +378,7 @@ def _add_realsense(
     aliases: list[str],
     step_of_dir: dict[str, int],
     frames: dict[FrameKey, FrameFile],
+    rs_fix: Optional[dict] = None,
 ) -> list[str]:
     """Add the RealSense frames, aligning by folder number *and* file time.
 
@@ -376,6 +387,10 @@ def _add_realsense(
     is a real capture time and can be checked against the OAK cam1 capture time
     of the step the folder number resolved to; a gap beyond
     :data:`RS_TIME_TOLERANCE_S` is reported rather than silently accepted.
+
+    ``rs_extra_from`` (``configs/index_fixes.yaml``, like ``cam2_extra_from``):
+    the last frame of the teardown filed under ``Components`` (D1 step 40, D24
+    step 43) fills its nominal step ``as_step``, time-checked like any other.
     """
     issues: list[str] = []
     rs_desktop = os.path.join(roots["rs_root"], f"Desktop {desktop}")
@@ -407,7 +422,38 @@ def _add_realsense(
             key=key, path=norm(main.path), aux=aux, ts=ts, src_step_dir=entry.name
         )
         issues.extend(_check_rs_time(desktop, step, entry.name, ts, frames))
+    issues.extend(_rs_extra(desktop, rs_desktop, rs_fix or {}, step_of_dir, frames))
     return issues
+
+
+def _rs_extra(desktop: int, rs_desktop: str, rs_fix: dict, step_of_dir: dict[str, int],
+              frames: dict[FrameKey, FrameFile]) -> list[str]:
+    """Apply a declared ``rs_extra_from`` fix; every outcome is an issue line."""
+    folder = rs_fix.get("rs_extra_from")
+    if not folder or "as_step" not in rs_fix:
+        return []
+    head = f"fix:rs[{desktop}] rs_extra_from {folder}"
+    nominal = int(rs_fix["as_step"])
+    step = step_of_dir.get(f"{nominal:03d}")
+    path = os.path.join(rs_desktop, *str(folder).split("/"))
+    main = os.path.join(path, "original_color.png")
+    if step is None:
+        return [f"{head} MISMATCH: nominal step {nominal} has no cam1 folder"]
+    key = FrameKey(desktop, step, "rs")
+    if key in frames:
+        return [f"{head} MISMATCH: logical step {step} already has folder "
+                f"{frames[key].src_step_dir}; not applied"]
+    if not os.path.isfile(main):
+        return [f"{head}: nothing found"]
+    aux = {}
+    depth = os.path.join(path, "depth_raw.npy")
+    if os.path.isfile(depth):
+        aux["depth_npy"] = norm(depth)
+    ts = iso_from_mtime(os.stat(main).st_mtime)
+    frames[key] = FrameFile(key=key, path=norm(main), aux=aux, ts=ts,
+                            src_step_dir=str(folder))
+    return [f"{head} -> logical step {step}"] + _check_rs_time(
+        desktop, step, str(folder), ts, frames)
 
 
 def _add_components(
@@ -417,22 +463,27 @@ def _add_components(
     oak_fix: dict,
     step_of_ts: dict[str, int],
     frames: dict[FrameKey, FrameFile],
+    rs_fix: Optional[dict] = None,
 ) -> list[str]:
     """Index the components gallery (task U10, spec 3.2b): one view per camera.
 
     Every capture in ``Components`` is a **shot** of the parts laid out after
-    the teardown, numbered ``1..N`` per camera in capture-time order; the
-    cameras are not matched against each other (the layout was re-arranged
-    between shots, and nothing needs a shot of one camera to be "the same" as
-    another's). The source folder is kept in ``src_step_dir`` and ``aux``.
+    the teardown, numbered ``1..N`` per camera in **capture-time** order (the
+    OAK filename token; the RealSense file time, folder name breaking a tie --
+    folder names are not in time order on five desktops). The cameras are not
+    matched against each other (the layout was re-arranged between shots, and
+    nothing needs a shot of one camera to be "the same" as another's). The
+    source folder is kept in ``src_step_dir``.
 
     What is **not** a shot: a capture of the teardown that was filed under
-    ``Components`` by mistake -- D24's last Camera_2 step (``cam2_extra_from``)
-    and its last RealSense frame. An OAK capture whose timestamp token is a
-    sequence capture's is one; a RealSense frame whose file time lies within
-    :data:`RS_TIME_TOLERANCE_S` of a sequence OAK capture is reported and left
-    out the same way.
+    ``Components`` by mistake. The declared ones fill their sequence step
+    (``cam2_extra_from`` for D24's Camera_2, ``rs_extra_from`` for the
+    RealSense of D1 and D24) and are skipped here; an undeclared OAK capture
+    whose timestamp token is a sequence capture's, or a RealSense frame whose
+    file time lies within :data:`RS_TIME_TOLERANCE_S` of a sequence OAK
+    capture, is reported and left out.
     """
+    rs_fix = rs_fix or {}
     issues: list[str] = []
     base = os.path.join(oak_desktop, COMPONENTS_DIR)
     extra = oak_fix.get("cam2_extra_from") or ""
@@ -461,11 +512,14 @@ def _add_components(
     rs_base = os.path.join(roots["rs_root"], f"Desktop {desktop}", COMPONENTS_DIR)
     if not os.path.isdir(rs_base):
         return issues
-    shot = 0
-    for entry in sorted(dirs(rs_base, issues), key=lambda e: e.name):
+    used = str(rs_fix.get("rs_extra_from") or "")
+    found_shots: list[tuple[str, str, FrameFile]] = []   # (ts, folder, frame)
+    for entry in dirs(rs_base, issues):
         if not STEP_DIR_RE.match(entry.name):
             continue
         rel = f"{COMPONENTS_DIR}/{entry.name}"
+        if rel == used:
+            continue          # the sequence's own frame (rs_extra_from, _add_realsense)
         found = {f.name: f for f in files(entry.path, issues)}
         main = found.get("original_color.png")
         if main is None:
@@ -478,13 +532,18 @@ def _add_components(
                           f"(tolerance {RS_TIME_TOLERANCE_S:.0f}s): a frame of the "
                           f"teardown, not a gallery shot; left out")
             continue
-        shot += 1
         aux = {}
         if "depth_raw.npy" in found:
             aux["depth_npy"] = norm(found["depth_raw.npy"].path)
-        key = FrameKey(desktop, shot, "cmp_rs")
-        frames[key] = FrameFile(key=key, path=norm(main.path), aux=aux, ts=ts,
-                                src_step_dir=rel)
+        found_shots.append((ts, entry.name, FrameFile(
+            key=FrameKey(desktop, 0, "cmp_rs"), path=norm(main.path), aux=aux, ts=ts,
+            src_step_dir=rel)))
+    # capture time first, folder name second: on D6, D7, D10, D12 and D18 the
+    # folder 005 holds the FIRST layout photo, so the names would rotate the shots
+    for shot, (_ts, _name, ff) in enumerate(sorted(found_shots, key=lambda s: s[:2]),
+                                             start=1):
+        ff.key = FrameKey(desktop, shot, "cmp_rs")
+        frames[ff.key] = ff
     return issues
 
 
@@ -613,6 +672,10 @@ def load_index(path: str) -> dict[int, DesktopIndex]:
     """Read back an index written by :func:`save_index`."""
     with open(path, "r", encoding="utf-8") as fh:
         payload = json.load(fh)
+    try:
+        gallery = int(payload.get("version", 1)) >= GALLERY_INDEX_VERSION
+    except (TypeError, ValueError):
+        gallery = False
     out: dict[int, DesktopIndex] = {}
     for d, raw in payload.get("desktops", {}).items():
         frames: dict[FrameKey, FrameFile] = {}
@@ -631,6 +694,7 @@ def load_index(path: str) -> dict[int, DesktopIndex]:
             frames=frames,
             missing=[FrameKey(*m) for m in raw["missing"]],
             issues=list(raw["issues"]),
+            gallery=gallery,
         )
     return out
 
