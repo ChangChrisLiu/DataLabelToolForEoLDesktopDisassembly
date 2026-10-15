@@ -53,7 +53,7 @@ import numpy as np
 from tda.core import masks
 from tda.core.db import Db
 from tda.core.model import FrameKey, Placement, ShapeKeyframe, ShapePart
-from tda.core.split_rows import reverse_walk
+from tda.core.split_rows import CUT, reverse_walk
 from tda.core.states import needs_geom
 from tda.core.taxonomy import Taxonomy
 from tda.core.truth_inputs import InputCache, instances_of, pose_segment_of, state_of
@@ -61,9 +61,10 @@ from tda.core.truth_inputs import InputCache, instances_of, pose_segment_of, sta
 __all__ = ["CUT", "CutMove", "cut_views", "is_cut", "mask_states", "plan_cut_moves",
            "same_parts", "same_shape"]
 
-#: ``ShapeKeyframe.source`` of a cut keyframe: the pre-edit shape copied to the
-#: far side of a state boundary by a commit that stopped there (U8 round 3).
-CUT = "cut"
+#: ``ShapeKeyframe.source`` of a cut keyframe (:data:`tda.core.split_rows.CUT`):
+#: the pre-edit shape copied to the far side of a state boundary by a commit
+#: that stopped there (U8 round 3). A placeholder until somebody draws over it
+#: or confirms it (U11 round 2).
 IN_CHASSIS = Placement.IN_CHASSIS.value
 _MASK = "mask"
 

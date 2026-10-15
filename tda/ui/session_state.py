@@ -36,7 +36,7 @@ from tda.core.state_assert import (
     assertable_states,
     write_events,
 )
-from tda.core.split_rows import open_split_steps, reverse_walk
+from tda.core.split_rows import cut_copy_at, open_split_steps, reverse_walk
 from tda.core.states import (
     FrameState,
     events_from_actions,
@@ -130,13 +130,19 @@ def redraw_needed(db: Db, tax, key: FrameKey, instance: str, first: int,
     frame just under it. Either means the run's shape has to be drawn; the
     commit rule of round 3 then cuts the version at those edges by itself, so
     the status line only has to say *which key* (:func:`tda.ui.app_state.state_note`).
+
+    A ✂ row below the run that is open only because its frame shows a cut copy
+    (U11 round 2) is the other state's work, not this run's: the copy is what
+    keeps the run's version off that frame, so it does not count here.
     """
     walk = reverse_walk(db, key.desktop, key.view)
     under = [s for s in walk if s < first]
     low = under[-1] if under else first
     opened = set(open_split_steps(db, tax, key.desktop, key.view, instance, low, last + 1,
                                   walk=walk))
-    return {"top": last in opened, "below": bool(under) and low in opened}
+    below = (bool(under) and low in opened
+             and not cut_copy_at(db, tax, FrameKey(key.desktop, low, key.view), instance))
+    return {"top": last in opened, "below": below}
 
 
 def move_cuts(db: Db, desktop: int, instance: str,

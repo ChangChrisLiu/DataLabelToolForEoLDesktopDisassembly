@@ -17,6 +17,14 @@ other:
 
 So the decisions live here once -- :func:`kind_for`, :func:`has_split`,
 :func:`keyframe_at` -- and the card calls them.
+
+**A cut copy is a placeholder, never an answer** (U11 round 2). The version a
+commit cuts at the boundary below it (``source="cut"``, :data:`CUT`) confines
+the edit to its own run; it is the *old* shape, drawn for whichever state it
+was drawn for. On D2/scan that was the open cover, left on the closed frames.
+So a ✂ row whose frame shows a cut copy is not done until somebody draws the
+frame (``Ctrl+K``, which re-traces the copy and clears its mark) or says the
+copy is right (``Ctrl+Shift+K``); :func:`cut_copy_at` is the question.
 """
 from __future__ import annotations
 
@@ -36,10 +44,10 @@ from tda.core.truth_inputs import (
 )
 
 __all__ = [
-    "KIND_ADD_SHAPE", "KIND_SPLIT_KEYFRAME", "KIND_STATE_ONLY", "NOTHING_VISIBLE",
-    "SHAPE_PREDATES_STATE", "SPLIT_TRANSITIONS", "STATE_ONLY_TRANSITIONS", "has_split",
-    "keyframe_at", "kind_for", "open_split_steps", "reverse_walk", "split_rows_at",
-    "stale_split_rows",
+    "CUT", "CUT_COPY_IN_FORCE", "KIND_ADD_SHAPE", "KIND_SPLIT_KEYFRAME", "KIND_STATE_ONLY",
+    "NOTHING_VISIBLE", "SHAPE_PREDATES_STATE", "SPLIT_TRANSITIONS", "STATE_ONLY_TRANSITIONS",
+    "cut_copies_in_force", "cut_copy_at", "has_split", "keyframe_at", "kind_for",
+    "open_split_steps", "reverse_walk", "split_rows_at", "stale_split_rows",
 ]
 
 #: The card's kinds this module decides between (the values of
@@ -65,6 +73,10 @@ STATE_ONLY_TRANSITIONS = frozenset({("loosened", "fastened")})
 NOTHING_VISIBLE = frozenset({Visibility.OUT_OF_VIEW.value, Visibility.OCCLUDED_FULL.value})
 #: The problem ``cli check`` reports for an open ✂ row on a confirmed frame.
 SHAPE_PREDATES_STATE = "shape_predates_state"
+#: ... and for a confirmed frame the placeholder copy is in force on (U11 r2).
+CUT_COPY_IN_FORCE = "cut_copy_in_force"
+#: ``ShapeKeyframe.source`` of a cut copy (:mod:`tda.core.cut_follow`).
+CUT = "cut"
 
 
 def kind_for(changes: dict, needs_neighbour: bool, needs_here: bool) -> str:
@@ -134,10 +146,17 @@ def has_split(db: Db, tax: Taxonomy, desktop: int, view: str, instance: str,
                                  or str(override.visibility) in NOTHING_VISIBLE):
         return True
     here = keyframe_at(db, tax, here_key, instance, cache)
-    if here is None:
-        return False
+    if here is None or here.source == CUT:
+        return False        # a cut copy confines an edit; it answers nothing (U11 r2)
     there = keyframe_at(db, tax, FrameKey(desktop, neighbour, view), instance, cache)
     return there is None or there.id != here.id
+
+
+def cut_copy_at(db: Db, tax: Taxonomy, key: FrameKey, instance: str,
+                cache: Optional[InputCache] = None) -> bool:
+    """Is the version of ``instance`` in force at ``key`` a cut copy (U11 r2)?"""
+    found = keyframe_at(db, tax, key, instance, cache)
+    return found is not None and found.source == CUT
 
 
 def _grouped(there: FrameState, here: FrameState) -> dict[str, dict]:
@@ -218,6 +237,43 @@ def open_split_steps(db: Db, tax: Taxonomy, desktop: int, view: str, instance: s
                              only=instance)
         if any(not done for _inst, _transition, done in rows):
             out.append(step)
+    return out
+
+
+def cut_copies_in_force(db: Db, tax: Taxonomy, desktop: int, view: str,
+                        skip: Iterable[tuple[int, str]] = ()) -> list[tuple[int, str]]:
+    """``(step, instance)`` of every confirmed frame a cut copy is in force on (U11 r2).
+
+    The copy is a placeholder: a frame confirmed under it was confirmed with a
+    shape nobody drew for it (on D2/scan the open cover over the closed frames
+    below the run). Only frames where the part is a mask in the chassis, and
+    not the pairs in ``skip`` -- :func:`stale_split_rows` reports the ✂ frame
+    itself. One query when the view has no cut copy at all.
+    """
+    rows = db.conn.execute(
+        "SELECT DISTINCT instance FROM shape_keyframe WHERE desktop=? AND view=? AND source=?",
+        (int(desktop), str(view), CUT)).fetchall()
+    instances = sorted(str(r["instance"]) for r in rows)
+    if not instances:
+        return []
+    cache = InputCache()
+    known = instances_of(db, desktop, cache)
+    skip = set(skip)
+    out: list[tuple[int, str]] = []
+    for step in reverse_walk(db, desktop, view):
+        frame = db.get_frame(FrameKey(desktop, step, view)) or {}
+        if frame.get("review_status") != _VERIFIED:
+            continue
+        state = state_of(db, tax, desktop, step, cache)
+        needs = needs_geom(known, state, tax)
+        for instance in instances:
+            if (step, instance) in skip or needs.get(instance) != "mask":
+                continue
+            held = state.get(instance)
+            if held is None or held.placement != IN_CHASSIS:
+                continue
+            if cut_copy_at(db, tax, FrameKey(desktop, step, view), instance, cache):
+                out.append((step, instance))
     return out
 
 

@@ -218,6 +218,12 @@ ACTIONS: tuple[Action, ...] = (
            short="从这帧起新版本"),
     # Task U6: the layering answer is not Enter's any more.  ``L`` for 层 /
     # layer -- free in every mode (no plain L, no Shift/Ctrl+L anywhere).
+    # Task U11 round 2: the cut copy on this frame is its shape after all (a
+    # state change that does not move the outline).  Ctrl+Shift+K is free.
+    Action("confirm_cut_copy", ("Ctrl+Shift+K",), "act_confirm_cut_copy",
+           "This frame's shape is the cut copy on it (no pixels; the split row is done)",
+           "这帧就是这个形状：切开时留下的形状副本就是这一帧的样子（不画像素，✂ 完成）",
+           "edit", (), _ANN),
     Action("commit_layering", ("L",), "act_commit_layering",
            "Change the layering the scope bar suggests (asks, then a second L)",
            "改层级：回答画布下方的层级建议（先显示影响哪些帧，再按一次 L 确定；Enter 只改形状）",

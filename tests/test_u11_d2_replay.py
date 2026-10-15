@@ -16,6 +16,10 @@ After U11: ``T`` at 41 + ``Enter``; ``T`` at 40, 39, 38; the moved shape at 38 +
 ``Ctrl+K``; ``T`` at 37, 36, 35, 34 -- two commits, and the moved shape is in
 force on 34-38 without a redraw, the first open shape on 39-41, the cut copy
 (the closed shape) at 33. ``Ctrl+T`` makes the same in three gestures.
+
+Round 2: the copy at 33 is a placeholder, so its ✂ row stays open until the
+closed shape is drawn there (``Ctrl+K``, which clears the mark) or the copy is
+said to be right (``Ctrl+Shift+K``).
 """
 from __future__ import annotations
 
@@ -30,12 +34,14 @@ from PySide6.QtWidgets import QApplication
 from session_scene import DESKTOP, VIEW, draw, make_session, rect, seed_shapes
 from tda.core.cut_follow import CUT
 from tda.ui import session_api as api
+from tda.ui.session_api import SessionRefusal
 
 LATCH = "ram_latch.04"
 LAST = 42
 HW = (256, 256)
 OPEN = rect(2, 2, 30, 12, HW)        # drawn at 41 (D2: 45)
 MOVED = rect(4, 4, 34, 14, HW)       # the cover swung further: drawn at 38 (D2: 42)
+CLOSED2 = rect(40, 40, 70, 60, HW)   # the closed shape, drawn at 33 at the end (D2: 37)
 
 
 @pytest.fixture(scope="module")
@@ -97,9 +103,29 @@ def check_the_result(s, closed: np.ndarray) -> None:
         assert (amodal(s, step) == OPEN).all(), step
     for step in (20, 33):
         assert (amodal(s, step) == closed).all(), step
+    row = card_row(s, 33)
+    assert row["kind"] == api.KIND_SPLIT_KEYFRAME
+    assert row["done"] is False and row["cut_copy"] is True   # a placeholder (round 2)
+
+
+def card_row(s, step: int) -> dict:
+    s.goto(step, force=True)
+    return next(r for r in s.task_card() if r["instance"] == LATCH)
+
+
+def draw_the_closed_shape_at_33(s) -> None:
+    """The end of both walks: the ✂ row at 33 asks, Ctrl+K answers."""
     s.goto(33, force=True)
-    row = [r for r in s.task_card() if r["instance"] == LATCH]
-    assert row and row[0]["kind"] == api.KIND_SPLIT_KEYFRAME and row[0]["done"]
+    s.begin_edit(LATCH)
+    with pytest.raises(SessionRefusal, match="另一状态的形状副本"):
+        s.commit_edit(api.SCOPE_SPLIT)          # untouched: it would sign the copy
+    s.clear_edit()
+    result = draw(s, LATCH, CLOSED2, api.SCOPE_SPLIT)
+    s.clear_edit()
+    assert result["no_split"] is True and result["cut_below"] is None
+    assert anchors(s) == [(33, "manual"), (38, "manual"), (42, "manual")]
+    assert card_row(s, 33)["done"] is True
+    assert (amodal(s, 20) == CLOSED2).all() and (amodal(s, 34) == MOVED).all()
 
 
 def test_the_t_walk_needs_no_redraw(scene):
@@ -123,6 +149,7 @@ def test_the_t_walk_needs_no_redraw(scene):
         assert (amodal(s, step) == MOVED).all(), step         # no redraw
     check_the_result(s, closed)
     assert commits(s) == 2
+    draw_the_closed_shape_at_33(s)
 
 
 def test_ctrl_t_then_enter_then_ctrl_k_is_the_same_in_three_gestures(scene):
@@ -141,6 +168,7 @@ def test_ctrl_t_then_enter_then_ctrl_k_is_the_same_in_three_gestures(scene):
     assert commits(s) == 2
     assert [op["kind"] for op in s.db.ops(DESKTOP, VIEW, limit=3)] == [
         "commit_keyframe", "commit_keyframe", "assert_state"]
+    draw_the_closed_shape_at_33(s)
 
 
 def test_without_a_closed_shape_the_copy_is_the_first_open_one(qapp, tmp_path):

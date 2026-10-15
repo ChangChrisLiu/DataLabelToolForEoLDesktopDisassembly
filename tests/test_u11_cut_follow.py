@@ -303,7 +303,9 @@ def test_t_on_the_cut_frame_moves_the_cut_with_the_boundary(scene):
     assert 40 in result["affected"]
     s.goto(39, force=True)
     card = [r for r in s.task_card() if r["instance"] == LATCH]
-    assert card and card[0]["kind"] == api.KIND_SPLIT_KEYFRAME and card[0]["done"]
+    # round 2: the copy is a placeholder -- the row asks for the frame's shape
+    assert card and card[0]["kind"] == api.KIND_SPLIT_KEYFRAME
+    assert card[0]["done"] is False and card[0]["cut_copy"] is True
 
 
 def test_shrinking_the_run_moves_it_back_up(scene):

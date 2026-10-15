@@ -40,6 +40,7 @@ from tda.core.split_rows import (  # noqa: F401 - re-exported, the card's vocabu
     SHAPE_PREDATES_STATE,
     SPLIT_TRANSITIONS,
     STATE_ONLY_TRANSITIONS,
+    cut_copy_at,
     has_split,
     keyframe_at,
     kind_for,
@@ -310,6 +311,11 @@ def task_card_for(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
             done = _has_shape(db, tax, desktop, view, instance, step, cache,
                               GEOM_BOX if wants_box else None)
         items.append(_item(instance, kind, changes, done, rec_i, span))
+        if (kind == api.KIND_SPLIT_KEYFRAME and not done
+                and cut_copy_at(db, tax, FrameKey(desktop, step, view), instance, cache)):
+            # the frame shows a cut copy of the other state's shape: a
+            # placeholder, drawn over with Ctrl+K or confirmed (U11 round 2)
+            items[-1]["cut_copy"] = True
         if (bench and changes.get("placement") == (ON_BENCH, IN_CHASSIS)
                 and _has_bench_chain(db, desktop, view, instance)):
             # the part is back in the chassis here, so its on_bench chain ended

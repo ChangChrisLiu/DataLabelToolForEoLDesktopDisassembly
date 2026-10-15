@@ -38,7 +38,8 @@ from tda.ui import app_actions as A
 from tda.ui import app_support as S
 from tda.ui.class_names import state_zh
 
-__all__ = ["CUT_DROPPED", "CUT_KEPT", "CUT_MOVED", "HINT_LOG", "HINT_RANGE", "NO_TARGET",
+__all__ = ["CONFIRM_DIRTY", "CUT_CONFIRMED", "CUT_DROPPED", "CUT_KEPT", "CUT_MOVED",
+           "HINT_LOG", "HINT_RANGE", "NO_TARGET",
            "SPLIT_NOW", "StateMixin", "StateRangeDialog", "cut_text", "range_note",
            "state_note"]
 
@@ -50,6 +51,11 @@ NO_TARGET = ("T 改的是实例表里选中的零件（或正在画的零件）�
 SPLIT_NOW = "工具会自动在状态边界切开版本"
 #: Prefix of a refusal.
 REFUSED = "改不了状态："
+#: ``Ctrl+Shift+K`` done (U11 round 2).
+CUT_CONFIRMED = ("{label}：切开时留下的形状就是这几帧的样子（到第 {step} 步），✂ 完成"
+                 "（Ctrl+Z 撤销）")
+#: ``Ctrl+Shift+K`` over painted, uncommitted pixels.
+CONFIRM_DIRTY = ("正在画的像素还没提交：画的就是这一帧的样子按 Ctrl+K；要确认副本先 Esc 放弃")
 #: ``T`` on the walk's next frame, same part, same state (U11): there is a key for a run.
 HINT_RANGE = "同一状态持续多帧？Ctrl+T 一次设到某一步"
 #: ... from the third frame on: perhaps it is the log that misses the action.
@@ -282,6 +288,39 @@ class StateMixin:
             self._refuse_state(f"{REFUSED}只在标注模式可用 / Annotate mode only")
             return
         self.assert_state_here(instance, state)
+
+    @S.guard
+    def act_confirm_cut_copy(self) -> None:
+        """``Ctrl+Shift+K``: the cut copy on this frame is its shape (U11 round 2)."""
+        if not self._editable_row():
+            return
+        instance = self._state_target()
+        if not instance:
+            self._refuse_state(NO_TARGET.replace("T 改的", "Ctrl+Shift+K 确认的", 1))
+            return
+        if not callable(getattr(self.session, "confirm_cut_copy", None)):
+            self._refuse_state("这个会话不支持 / not supported by this session")
+            return
+        editing = getattr(self.session, "editing_instance", None)
+        if editing is not None:
+            self._note_edit_facts(refresh=False)
+            if self.layer_facts()[2]:
+                self._refuse_state(CONFIRM_DIRTY)
+                return
+            if editing == instance:
+                self.act_clear_edit()            # the untouched layer goes first
+        try:
+            result = self.session.confirm_cut_copy(instance)
+        except ValueError as refused:            # SessionRefusal is one
+            self._refuse_state(str(refused))
+            return
+        label = self._label_of(instance)[0] or instance
+        self.task_card.refresh()
+        self.timeline.refresh_statuses()
+        self.forget_card_hints()
+        self.update_status()
+        self.report(CUT_CONFIRMED.format(label=label, step=result.get("confirmed_cut")),
+                    hold_ms=6000)
 
     @S.guard
     def act_state_range(self) -> None:

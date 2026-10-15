@@ -42,7 +42,8 @@ from tda.ui.class_names import instance_label
 from tda.ui.gallery import gallery_refusal
 from tda.ui.panels.palette import RADIUS_MAX, RADIUS_MIN
 
-__all__ = ["BANNER_CIRCLE", "BANNER_EMPTY", "BANNER_PIXELS", "BANNER_POLYGON",
+__all__ = ["BANNER_CIRCLE", "BANNER_CUT_COPY", "BANNER_EMPTY", "BANNER_PIXELS",
+           "BANNER_POLYGON",
            "GuideMixin", "HINT_DWELL_MS", "VIS_NOTE_MS"]
 
 #: The banner's two endings (ruling U2b-4).
@@ -54,6 +55,9 @@ BANNER_SPLIT = "Ctrl+K 从这帧起新版本 / Esc 放弃"
 #: A stored shape, loaded and untouched: Enter has nothing to write (item 2).
 BANNER_LOADED = "这是已存的形状：要改就画，改完 Enter；不改按 Esc"
 BANNER_LOADED_SPLIT = "这是前一版的形状：画出这一帧的样子，Ctrl+K 提交；不改按 Esc"
+#: A ✂ row whose frame shows a cut copy (U11 round 2): the row's own sentence.
+BANNER_CUT_COPY = ("待画：这帧上是另一状态的形状副本，画好后 Ctrl+K"
+                   "（形状确实没变：Ctrl+Shift+K）/ Esc 放弃")
 #: A ``P`` polygon or a ``Y`` circle half drawn (task U5a): Enter and Esc are
 #: the shape's until it is filled or dropped.
 BANNER_POLYGON = "多边形 {n} 个点：Enter / 双击 / 点回起点 填上，Backspace 删点，Esc 取消"
@@ -510,6 +514,11 @@ class GuideMixin:
             retrace_frozen=self._edit_reach if editing else (),
         )
 
+    def _card_cut_copy(self, instance: Optional[str]) -> bool:
+        """Is ``instance``'s card row an open ✂ over a cut copy (U11 round 2)?"""
+        return any(str(row.get("instance")) == str(instance) and row.get("cut_copy")
+                   and not row.get("done") for row in self.task_card.rows())
+
     def _card_kind(self, instance: Optional[str]) -> str:
         """The task-card kind of ``instance`` on this frame, ``""`` when not listed."""
         if not instance:
@@ -633,6 +642,8 @@ class GuideMixin:
             if facts.shape == "circle":
                 return f"{head}— {BANNER_CIRCLE}"
             split = facts.editing_kind == api.KIND_SPLIT_KEYFRAME
+            if split and not facts.layer_dirty and self._card_cut_copy(instance):
+                return f"{head}— {BANNER_CUT_COPY}"
             if facts.layer_dirty:
                 # The key a ✂ row is committed with; Enter would rewrite the
                 # neighbour's version too (U2b round 2, I1).
