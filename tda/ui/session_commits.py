@@ -18,15 +18,27 @@ from typing import Optional
 import numpy as np
 
 from tda.core.model import FrameKey, is_provisional
+from tda.core.split_rows import CUT, keyframe_at
 from tda.core.truth_inputs import frame_hw
 from tda.ui import session_api as api
+from tda.ui.commands import Op
 from tda.ui.gallery import gallery_refusal
 from tda.ui.session_api import SessionRefusal
 from tda.ui import session_edit as edit
-from tda.ui.session_ops import GEOM_BOX, ON_BENCH
+from tda.ui.session_ops import GEOM_BOX, ON_BENCH, annotatable_steps, keyframe_state, settle
 from tda.ui.session_tasks import has_bench_roi
 
-__all__ = ["CommitMixin"]
+__all__ = ["CUT_COPY_UNCHANGED", "CommitMixin", "NOT_A_CUT_COPY"]
+
+#: ``Ctrl+K`` with nothing drawn on a frame that shows a cut copy (U11 round 2):
+#: it would confirm a placeholder, so it is refused and the explicit key named.
+CUT_COPY_UNCHANGED = ("这帧上是另一状态的形状副本：画好这一帧的样子再 Ctrl+K；"
+                      "形状确实没变就按 Ctrl+Shift+K（这帧就是这个形状）")
+#: ``Ctrl+Shift+K`` where the shape in force is not a cut copy.
+NOT_A_CUT_COPY = "{instance} 在这一帧的形状不是切开时留下的副本，不用确认"
+#: ``Ctrl+Shift+K`` with pixels painted and not committed.
+CONFIRM_NEEDS_CLEAN_LAYER = ("正在画的像素还没提交：画的就是这一帧的样子按 Ctrl+K；"
+                             "要确认副本先 Esc 放弃")
 
 
 def _loggable_extra(extra: Optional[dict]) -> Optional[dict]:
@@ -214,6 +226,10 @@ class CommitMixin:
             if not (scope == api.SCOPE_SPLIT and self.open_split_here(instance)):
                 return {"changed": False, "affected": [], "conflicts": 0, "problems": {},
                         "scope": scope}
+            if self.cut_copy_here(instance):
+                # the row is open *because* the frame shows a placeholder:
+                # an untouched Ctrl+K would sign it as this frame's shape
+                raise SessionRefusal(CUT_COPY_UNCHANGED)
             # An open ✂ row whose shape is already right on this side (U8
             # round 2b): the clip closed at 39-41 before the board takes it out
             # at 42 leaves the ✂ at 38, where the open shape loaded is the open
@@ -258,6 +274,73 @@ class CommitMixin:
             self.layer.settle()
         if unchanged_split:
             result["unchanged_split"] = True
+        return self._after_edit(result)
+
+    def cut_copy_here(self, instance: Optional[str]) -> bool:
+        """Is the version of ``instance`` in force on this frame a cut copy (U11 r2)?"""
+        if not instance or not self.is_open:
+            return False
+        found = keyframe_at(self.db, self.tax, self.current(), str(instance))
+        return found is not None and found.source == CUT
+
+    def confirm_cut_copy(self, instance: Optional[str] = None) -> dict:
+        """「这帧就是这个形状」: the cut copy in force here *is* this frame's shape.
+
+        ``Ctrl+Shift+K`` (U11 round 2). Some state changes do not move the
+        outline -- a latch seen edge-on -- and the copy a commit left on the
+        far side of the boundary is then right as it is. This takes its mark
+        off without touching a pixel, so its ✂ row is done and ``cli check``
+        stops counting the frames under it. Like every manual-shape write it
+        stamps ``source="manual"`` and drops the draft reference. One
+        ``commit_keyframe`` op: the row before and after, ``Ctrl+Z`` puts the
+        mark (and the reference) back. Refused on a components-gallery shot.
+
+        Refused when the shape in force is not a cut copy, and while painted
+        pixels are waiting in the editing layer (they are either this frame's
+        shape -- ``Ctrl+K`` -- or not wanted). An untouched layer on the same
+        part is closed.
+        """
+        if getattr(self, "gallery", False):
+            # a shot has no Ctrl+K, so no copy -- refused all the same (U10/U11)
+            raise SessionRefusal(gallery_refusal(self.view, "confirm_cut_copy"))
+        target = str(instance or self.layer.instance or "")
+        if not target:
+            raise SessionRefusal("先在实例表选中零件（或点任务卡上那一条）")
+        key = self._editable_frame()
+        if self.layer.active and self.layer.changed():
+            raise SessionRefusal(CONFIRM_NEEDS_CLEAN_LAYER)
+        kf = keyframe_at(self.db, self.tax, key, target)
+        if kf is None or kf.source != CUT:
+            raise SessionRefusal(NOT_A_CUT_COPY.format(instance=target))
+        if self.layer.active:
+            self.layer.clear()
+        ref = {"keyframe_id": kf.id}
+        before = keyframe_state(kf, ref)
+        with self.db.transaction():
+            # the annotator's shape now, like every other manual-shape path:
+            # source manual, no draft reference (spec 3.1 来源 / 初稿引用)
+            kf.source, kf.draft_id = edit.SOURCE_MANUAL, None
+            self.db.update_keyframe(kf)
+            after = keyframe_state(kf, ref)
+            steps = annotatable_steps(
+                self.db, key.desktop, key.view,
+                set(self.truth.affected_steps(key.desktop, key.view, target, kf))
+                | {key.step})
+            common = {"desktop": key.desktop, "view": key.view, "step": key.step,
+                      "instance": target, "scope": "confirm_cut_copy",
+                      "direction": self.browsing, "steps": steps,
+                      "zorder": None, "pair": None}
+            payload = common | {"keyframes": [after]}
+            inverse = common | {"keyframes": [before]}
+            self.db.log_op(key.desktop, key.view, "commit_keyframe",
+                           edit._loggable(payload), edit._loggable(inverse),
+                           self.annotator)
+        stats = settle(self.db, self.truth, key.desktop, key.view, steps, key.step)
+        result = {"changed": True, "confirmed_cut": int(kf.anchor_step),
+                  "affected": steps, "compiled": stats["compiled"],
+                  "rechecks": stats["rechecks"], "conflicts": stats["conflicts"],
+                  "problems": stats["problems"], "frame": stats["frame"],
+                  "op": Op("commit_keyframe", payload, inverse)}
         return self._after_edit(result)
 
     def open_split_here(self, instance: Optional[str]) -> bool:

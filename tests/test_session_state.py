@@ -161,6 +161,11 @@ def test_the_corrected_frames_get_their_split_rows_and_ctrl_k_makes_the_versions
     assert result["anchor_step"] == 21 and not result["no_split"]
     assert result["cut_below"] == 19 and result["edit_reach"] == [20, 21]
     assert card_row(session, 21)["done"] is True
+    # U11 round 2: the copy at 19 is a placeholder -- the open shape happens to
+    # be right there, which is said explicitly (Ctrl+Shift+K), not assumed
+    row = card_row(session, 19)
+    assert row["done"] is False and row["cut_copy"] is True
+    session.confirm_cut_copy(LATCH)
     assert card_row(session, 19)["done"] is True
 
     anchors = sorted(kf.anchor_step for kf in session.db.keyframes(DESKTOP, VIEW, LATCH))
@@ -238,6 +243,10 @@ def test_confirmed_frames_that_still_owe_a_split_are_listed(qapp, tmp_path):
         assert latch_rows() == [(19, LATCH), (21, LATCH)]
         made.goto(21, force=True)
         draw(made, LATCH, cell(60), api.SCOPE_SPLIT)     # cuts 19 by itself (round 3)
+        # U11 round 2: 19 now shows the cut copy, a placeholder, until confirmed
+        assert latch_rows() == [(19, LATCH)]
+        made.goto(19, force=True)
+        made.confirm_cut_copy(LATCH)
         assert latch_rows() == []
     finally:
         made.close(force=True)
@@ -362,7 +371,8 @@ def test_a_end_of_life_enter_cuts_the_old_version_by_itself(frozen):
     for step in (39, 40, 41):
         assert (_amodal(s, step) == closed).all(), step
     assert _conflict_steps(s) == [39, 40, 41]       # only the frozen frames of the run
-    assert card_row(s, 38)["done"] is True
+    # U11 round 2: the copy at 38 is a placeholder until drawn or confirmed
+    assert card_row(s, 38)["done"] is False and card_row(s, 38)["cut_copy"] is True
 
     # (e) one op: one undo takes the cut and the edit back, one redo both again
     assert s.undo() is True
@@ -391,7 +401,8 @@ def test_b_middle_run_ctrl_k_cuts_the_lower_edge(frozen):
     for step in (36, 37):
         assert (_amodal(s, step) == closed).all(), step
     assert _conflict_steps(s) == [36, 37]
-    assert card_row(s, 35)["done"] is True and card_row(s, 37)["done"] is True
+    assert card_row(s, 37)["done"] is True
+    assert card_row(s, 35)["done"] is False and card_row(s, 35)["cut_copy"] is True
 
 
 def test_b_enter_on_the_top_boundary_is_refused(frozen):

@@ -29,6 +29,7 @@ from tda.core.model import StepType
 from tda.core.pose_breaks import (
     ACCEPTED,
     CARRIED,
+    CUT_SOURCE,
     STATUSES,
     RecutPlan,
     boundaries,
@@ -954,14 +955,19 @@ class PoseSegmentMixin:
 
     def _insert_carried(self, desktop: int, view: str, plan: RecutPlan,
                         keyframe_id: int, boundary: int) -> int:
-        """Duplicate one keyframe into the segment before ``boundary``; its new id."""
+        """Duplicate one keyframe into the segment before ``boundary``; its new id.
+
+        A cut copy (U11, ``source="cut"``) stays one on the other side: the
+        duplicate is the same placeholder, not the carried shape of a drawing.
+        """
         segment = plan.segment_of(boundary - 1)
         self.conn.execute(
             "INSERT INTO shape_keyframe(desktop, view, instance, pose_segment, anchor_step, "
             "placement, geom_type, amodal_complete, source, draft_id, version, edit_count, "
             "edit_time_ms) SELECT desktop, view, instance, ?, ?, placement, geom_type, "
-            "amodal_complete, ?, draft_id, 1, 0, 0 FROM shape_keyframe WHERE id=?",
-            (segment, int(boundary) - 1, CARRIED, int(keyframe_id)))
+            "amodal_complete, CASE WHEN source=? THEN source ELSE ? END, draft_id, 1, 0, 0 "
+            "FROM shape_keyframe WHERE id=?",
+            (segment, int(boundary) - 1, CUT_SOURCE, CARRIED, int(keyframe_id)))
         new_id = int(self.conn.execute("SELECT last_insert_rowid()").fetchone()[0])
         self.conn.execute(
             "INSERT INTO shape_part(keyframe_id, idx, name, rle_json, box_json) "
@@ -980,10 +986,14 @@ class PoseSegmentMixin:
         """
         kept: list[dict] = []
         for boundary in gone:
+            # a carried cut copy keeps its own mark (U11): version 1 and no edit
+            # is the duplicate; a cut copy of any other version was made by a
+            # commit, is nobody's duplicate, and is left alone
             rows = self.conn.execute(
-                "SELECT id, instance, anchor_step, version, edit_count FROM shape_keyframe "
-                "WHERE desktop=? AND view=? AND source=? AND anchor_step=?",
-                (desktop, view, CARRIED, int(boundary) - 1)).fetchall()
+                "SELECT id, instance, anchor_step, version, edit_count, source "
+                "FROM shape_keyframe WHERE desktop=? AND view=? AND anchor_step=? AND "
+                "(source=? OR (source=? AND version=1 AND edit_count=0))",
+                (desktop, view, int(boundary) - 1, CARRIED, CUT_SOURCE)).fetchall()
             for row in rows:
                 if int(row["version"]) > 1 or int(row["edit_count"]) > 0:
                     kept.append({"id": int(row["id"]), "instance": row["instance"],

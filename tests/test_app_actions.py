@@ -188,8 +188,9 @@ def test_annotation_guide_embeds_the_generated_table():
     # put back. Raised to 7,500 for U9 (Shift+T, taken out not opened): one
     # line in section 3, the section 8 answer rewritten, U7/U8 tightened.
     # Raised to 7,600 for U10 (the components gallery: what it is, how to open
-    # it, 「看不见」 -- three lines).
-    assert sum(len(l) for l in prose) <= 7600, (
+    # it, 「看不见」 -- three lines). Raised to 7,700 for U11 (Ctrl+T, the cut
+    # that follows its boundary): two lines.
+    assert sum(len(l) for l in prose) <= 7700, (
         "the prose is the part that has to stay readable")
 
 

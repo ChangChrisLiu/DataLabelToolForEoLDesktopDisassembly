@@ -110,6 +110,10 @@ KIND_SENTENCES: dict[str, str] = {
     api.KIND_REMOVE_BENCH_BOX: "它回到机箱里了：台面框到这一帧为止，不用画",
     api.KIND_CONFIRM: "这一帧不用画，直接 Space",
 }
+#: A ✂ row whose frame shows a cut copy -- the other state's shape left there
+#: by a commit that stopped at the boundary (U11 round 2): a placeholder.
+CUT_COPY_SENTENCE = ("待画：这帧上是另一状态的形状副本，画好后 Ctrl+K"
+                     "（形状确实没变：Ctrl+Shift+K）")
 #: Kinds a click starts work on; the others only explain themselves.  A ⌫
 #: row (the bench box ends here) is not a mask to draw (U2b round 2).
 EDITABLE_KINDS = (api.KIND_ADD_SHAPE, api.KIND_SPLIT_KEYFRAME, api.KIND_ADD_BENCH_BOX)
@@ -311,6 +315,8 @@ def row_view(row: dict, editing: Optional[str] = None, bench: bool = False,
         sentence = f"这一帧不用画，{space_or_blocked(blockers)}"
     elif kind == api.KIND_CONFIRM and confirmed:
         sentence = f"这一帧不用画，{CONFIRMED_TAIL}"
+    if kind == api.KIND_SPLIT_KEYFRAME and row.get("cut_copy") and not done:
+        sentence = CUT_COPY_SENTENCE
     transition = row.get("transition")
     if kind == api.KIND_SPLIT_KEYFRAME and transition:
         sentence += f"（{state_zh(transition[0])} → {state_zh(transition[1])}）"

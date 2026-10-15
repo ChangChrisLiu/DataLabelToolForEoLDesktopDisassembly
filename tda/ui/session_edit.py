@@ -35,6 +35,7 @@ import numpy as np
 
 from tda.core import masks
 from tda.core.compiler import marked_absent, select_keyframe
+from tda.core.cut_follow import CUT, is_cut, same_parts
 from tda.core.db import Db
 from tda.core.model import (
     FrameKey,
@@ -304,8 +305,11 @@ def _commit_shape(db: Db, truth: TruthService, key: FrameKey, instance: str,
         elif chosen is not None and chosen.geom_type == geom_type:
             ref["keyframe_id"] = chosen.id
             before.append(keyframe_state(chosen, ref))
+            # a cut copy stays one only while its pixels are the copy (U11)
+            still_copy = is_cut(chosen) and same_parts(chosen.parts, parts)
             chosen.parts = parts
-            _stamp_source(chosen, source, draft_id)
+            if not still_copy:
+                _stamp_source(chosen, source, draft_id)
             db.update_keyframe(chosen)
             after.append(keyframe_state(chosen, ref))
             kf = chosen
@@ -387,7 +391,9 @@ def _copy_keyframe(chosen: ShapeKeyframe, key: FrameKey, anchor: int) -> ShapeKe
                       parts, chosen.geom_type)
     kf.version = int(chosen.version) + 1
     kf.amodal_complete = chosen.amodal_complete
-    _stamp_source(kf, chosen.source, chosen.draft_id)
+    # marked as the copy it is, so it can follow its boundary (U11); the draft
+    # reference of the shape it was cut from goes with the pixels
+    _stamp_source(kf, CUT, chosen.draft_id)
     return kf
 
 

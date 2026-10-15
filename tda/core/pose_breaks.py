@@ -44,6 +44,10 @@ KINDS: tuple[str, ...] = (KIND_CAMERA, KIND_CHASSIS, KIND_MANUAL)
 
 #: ``shape_keyframe.source`` of a keyframe duplicated across a new boundary.
 CARRIED = "carried"
+#: ... except a cut copy's duplicate, which stays a cut copy (U11): the value
+#: of :data:`tda.core.split_rows.CUT`, spelled here because the database layer
+#: cannot import the card's module.
+CUT_SOURCE = "cut"
 
 
 def boundaries(n_steps: int, reorients: Iterable[int], accepted: Iterable[int]) -> list[int]:

@@ -43,6 +43,7 @@ from tda.core.split_rows import (  # noqa: F401 - re-exported, the card's vocabu
     has_split,
     keyframe_at,
     kind_for,
+    split_state,
     stale_split_rows,
 )
 from tda.core.taxonomy import Taxonomy
@@ -299,17 +300,23 @@ def task_card_for(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
             continue  # on the bench, and this view cannot see one: not its work
         rec_i = instances.get(instance)
         kind = _kind_for(changes, instance in needs_there, instance in needs_here)
+        cut_copy = False
         wants_box = needs_here.get(instance) in BENCH_KINDS
         if wants_box and kind == api.KIND_ADD_SHAPE:
             kind = api.KIND_ADD_BENCH_BOX
         if kind == api.KIND_STATE_ONLY:
             done = True
         elif kind == api.KIND_SPLIT_KEYFRAME:
-            done = _has_split(db, tax, desktop, view, instance, step, neighbour, cache)
+            done, cut_copy = split_state(db, tax, desktop, view, instance, step, neighbour,
+                                         cache)
         else:
             done = _has_shape(db, tax, desktop, view, instance, step, cache,
                               GEOM_BOX if wants_box else None)
         items.append(_item(instance, kind, changes, done, rec_i, span))
+        if kind == api.KIND_SPLIT_KEYFRAME and cut_copy:
+            # the frame shows a cut copy of the other state's shape: a
+            # placeholder, drawn over with Ctrl+K or confirmed (U11 round 2)
+            items[-1]["cut_copy"] = True
         if (bench and changes.get("placement") == (ON_BENCH, IN_CHASSIS)
                 and _has_bench_chain(db, desktop, view, instance)):
             # the part is back in the chassis here, so its on_bench chain ended

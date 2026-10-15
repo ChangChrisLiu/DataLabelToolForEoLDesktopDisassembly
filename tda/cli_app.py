@@ -354,11 +354,21 @@ def _check_one(db, tax, args: argparse.Namespace, desktop: int, view: str) -> in
     standing = _open_conflicts(stats["truth"], db, [desktop], view)
     # a confirmed frame whose card still has an open ✂ row ships the new state
     # next to the old shape (U8 round 2): visible here, not only on the card
-    from tda.core.split_rows import SHAPE_PREDATES_STATE, stale_split_rows
+    from tda.core.split_rows import (
+        CUT_COPY_IN_FORCE,
+        SHAPE_PREDATES_STATE,
+        cut_copies_in_force,
+        stale_split_rows,
+    )
 
     stale = stale_split_rows(db, tax, desktop, view)
     problems.extend(f"{SHAPE_PREDATES_STATE}:{instance} (step {step})"
                     for step, instance in stale)
+    # ... and every other confirmed frame a cut copy -- a placeholder, never an
+    # answer -- is in force on (U11 round 2); the ✂ frame itself is the line above
+    copies = cut_copies_in_force(db, tax, desktop, view, skip=stale)
+    problems.extend(f"{CUT_COPY_IN_FORCE}:{instance} (step {step})"
+                    for step, instance in copies)
     if is_component_view(view):
         # a relocated sheet photo whose sheet row was retyped later (U10):
         # first, a per-shot list of missing shapes would hide it past --limit
@@ -379,6 +389,11 @@ def _check_one(db, tax, args: argparse.Namespace, desktop: int, view: str) -> in
         print(f"[check] {len(stale)} confirmed frame(s) still carry the shape from "
               f"before their state changed ({SHAPE_PREDATES_STATE}, Ctrl+K there): "
               + ", ".join(f"{instance}@{step}" for step, instance in stale[:10]))
+    if copies:
+        print(f"[check] {len(copies)} confirmed frame(s) show a cut copy -- the other "
+              f"state's shape kept off the run -- nobody has drawn or confirmed "
+              f"({CUT_COPY_IN_FORCE}; Ctrl+K or Ctrl+Shift+K at the ✂ frame): "
+              + ", ".join(f"{instance}@{step}" for step, instance in copies[:10]))
     for text in problems[: int(args.limit)]:
         print(f"  - {text}")
     if len(problems) > int(args.limit):

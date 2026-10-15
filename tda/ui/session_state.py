@@ -7,6 +7,12 @@ row with its inverse, the undo/redo handler, and :func:`settle` -- the same
 rule every other write goes through, so the frame in hand is recompiled and a
 frozen frame the change reaches is queued for a re-check.
 
+**A cut keyframe follows its boundary** (task U11): the version a commit cut at
+the run's lower edge (U8 round 3, ``source="cut"``) moves when an assertion
+moves that edge -- :func:`tda.core.cut_follow.plan_cut_moves` says where, in
+every view, and the moves are written in the assertion's own op, so one
+``Ctrl+Z`` takes back both.
+
 Nothing the session keeps goes stale behind it: the merged event log is read
 fresh by every reader (:func:`tda.core.truth_inputs.events_of` builds an
 :class:`~tda.core.truth_inputs.InputCache` per call or per sweep), the task
@@ -19,29 +25,46 @@ from __future__ import annotations
 
 from typing import Optional
 
+from tda.core.cut_follow import CutMove, cut_views, mask_states, plan_cut_moves
 from tda.core.db import Db
 from tda.core.model import FrameKey, Placement, is_provisional
 from tda.core.state_assert import (
     OP_ASSERT_STATE,
     StateAssertError,
+    assert_range,
     assert_state,
     assertable_states,
     write_events,
 )
-from tda.core.split_rows import open_split_steps, reverse_walk
-from tda.core.states import FrameState, needs_geom
+from tda.core.split_rows import cut_copy_at, open_split_steps, reverse_walk
+from tda.core.states import (
+    FrameState,
+    events_from_actions,
+    initial_overrides,
+    needs_geom,
+    state_at,
+)
 from tda.core.truth import TruthService
 from tda.core.truth_inputs import InputCache, annotatable_steps, instances_of, state_of
 from tda.ui.class_names import state_zh
 from tda.ui.commands import Op
 from tda.ui.gallery import NO_STATE
 from tda.ui.session_api import SessionRefusal
-from tda.ui.session_ops import settle
+from tda.ui.session_ops import FORWARD as FORWARD_WALK
+from tda.ui.session_ops import _apply_keyframe, frozen_among, keyframe_state, settle
 
 __all__ = ["OP_ASSERT_STATE", "StateMixin", "apply_assert_state", "commit_assertion",
-           "gate", "run_around"]
+           "gate", "move_cuts", "recheck_other_views", "run_around"]
 
 IN_CHASSIS = Placement.IN_CHASSIS.value
+
+
+def derived_log(db: Db, tax, desktop: int) -> list:
+    """The state log the step table alone gives (no hand-written correction on top)."""
+    instances = db.instances(desktop)
+    manual = [e for e in db.events(desktop) if not e.auto]
+    return events_from_actions(instances, db.actions(desktop), tax,
+                               initial=initial_overrides(manual))
 
 
 def gate(instances: dict, state: FrameState, tax, instance: str,
@@ -107,53 +130,148 @@ def redraw_needed(db: Db, tax, key: FrameKey, instance: str, first: int,
     frame just under it. Either means the run's shape has to be drawn; the
     commit rule of round 3 then cuts the version at those edges by itself, so
     the status line only has to say *which key* (:func:`tda.ui.app_state.state_note`).
+
+    A ✂ row below the run that is open only because its frame shows a cut copy
+    (U11 round 2) is the other state's work, not this run's: the copy is what
+    keeps the run's version off that frame, so it does not count here.
     """
     walk = reverse_walk(db, key.desktop, key.view)
     under = [s for s in walk if s < first]
     low = under[-1] if under else first
     opened = set(open_split_steps(db, tax, key.desktop, key.view, instance, low, last + 1,
                                   walk=walk))
-    return {"top": last in opened, "below": bool(under) and low in opened}
+    below = (bool(under) and low in opened
+             and not cut_copy_at(db, tax, FrameKey(key.desktop, low, key.view), instance))
+    return {"top": last in opened, "below": below}
+
+
+def move_cuts(db: Db, desktop: int, instance: str,
+              moves: list[CutMove]) -> tuple[list[dict], list[dict], dict[str, list[int]]]:
+    """Write :func:`~tda.core.cut_follow.plan_cut_moves`'s answer.
+
+    Returns the keyframe states before and after (the rows of the op, shared
+    ``ref`` holders as in a ``commit_keyframe`` op, so a redo re-inserts a
+    dropped cut under its own id) and each view's frames to re-check. A cut
+    that is ``kept`` writes nothing. **Joins the caller's transaction.**
+    """
+    before: list[dict] = []
+    after: list[dict] = []
+    reach: dict[str, set[int]] = {}
+    with db.transaction():
+        for move in moves:
+            if move.kept or not (move.moved or move.dropped):
+                continue
+            kf = next((k for k in db.keyframes(desktop, move.view, instance)
+                       if k.id == move.keyframe_id), None)
+            if kf is None:
+                continue
+            ref = {"keyframe_id": kf.id}
+            before.append(keyframe_state(kf, ref))
+            if move.dropped:
+                db.delete_keyframe(kf.id)
+                after.append(keyframe_state(None, ref, template=kf))
+            else:
+                kf.anchor_step = int(move.new)
+                db.update_keyframe(kf)
+                after.append(keyframe_state(kf, ref))
+            reach.setdefault(move.view, set()).update(move.reach)
+    return before, after, {view: sorted(steps) for view, steps in reach.items()}
+
+
+def _flat(payload: dict) -> dict:
+    """The op-log copy of a payload: the shared ``ref`` holders flattened away."""
+    return payload | {"keyframes": [
+        {k: v for k, v in state.items() if k != "ref"}
+        | {"keyframe_id": state["ref"].get("keyframe_id")}
+        for state in payload.get("keyframes", ())]}
+
+
+def recheck_other_views(db: Db, truth: TruthService, desktop: int, view: str,
+                        cut_reach: dict) -> None:
+    """Queue the frozen frames a moved cut reaches in the views not on screen.
+
+    Their compiled rows are a cache every reader rebuilds; a frozen one is the
+    only thing that has to be compared, and the persisted queue is drained when
+    that view is opened (or by the sweeper).
+    """
+    for other, steps in (cut_reach or {}).items():
+        if other == view or not steps:
+            continue
+        wanted = annotatable_steps(db, desktop, other, steps)
+        truth.queue_rechecks(desktop, other, frozen_among(db, desktop, other, wanted))
 
 
 def apply_assert_state(db: Db, truth: TruthService, payload: dict,
                        current: Optional[int] = None) -> dict:
-    """Both directions of an ``assert_state`` op: write its rows, then settle."""
+    """Both directions of an ``assert_state`` op: write its rows, then settle.
+
+    The rows are the target's manual state events and, since U11, the cut
+    keyframes that followed the boundary (``keyframes``, in any view).
+    """
     with db.transaction():
         write_events(db, payload["desktop"], payload["target"], payload["steps"],
                      payload["events"])
-    return settle(db, truth, payload["desktop"], payload["view"], payload["reach"], current)
+        for state in payload.get("keyframes", ()):
+            _apply_keyframe(db, state)
+    cut_reach = payload.get("cut_reach") or {}
+    steps = set(payload["reach"]) | set(cut_reach.get(payload["view"], ()))
+    stats = settle(db, truth, payload["desktop"], payload["view"], steps, current)
+    recheck_other_views(db, truth, payload["desktop"], payload["view"], cut_reach)
+    return stats
 
 
 def commit_assertion(db: Db, truth: TruthService, key: FrameKey, instance: str,
-                     state: str, annotator: str) -> dict:
+                     state: str, annotator: str, last: Optional[int] = None) -> dict:
     """Write "at this frame ``instance`` is ``state``" and log it with its inverse.
 
+    ``last`` makes it a span (task U11, ``Ctrl+T``): "from this frame to step
+    ``last``", either side of it.
+
     Returns what every edit returns (``affected``, ``rechecks``, ``problems``,
-    ``frame``, ``op``) plus ``changed``, the :class:`StatePatch` as ``patch``
-    and :func:`run_around`'s answer as ``run`` / ``after``. Asserting the
-    state that already holds writes nothing and has no op. A refusal of the
-    core is a :class:`SessionRefusal` here, so the window shows its sentence
-    instead of a traceback.
+    ``frame``, ``op``) plus ``changed``, the :class:`StatePatch` as ``patch``,
+    :func:`run_around`'s answer as ``run`` / ``after`` and ``cuts``, the
+    :class:`~tda.core.cut_follow.CutMove` of every cut keyframe that followed
+    the boundary (or stayed, ``kept``). Asserting the state that already holds
+    writes nothing and has no op. A refusal of the core is a
+    :class:`SessionRefusal` here, so the window shows its sentence instead of a
+    traceback.
     """
     try:
         with db.transaction():
-            patch = assert_state(db, truth.tax, key.desktop, instance, key.step, state,
-                                 evidence_view=key.view, name=state_zh)
+            # a part with no cut keyframe anywhere has nothing to follow: the
+            # states are read (twice, every step) only when there is one
+            follow = bool(cut_views(db, key.desktop, instance))
+            before = mask_states(db, truth.tax, key.desktop, instance) if follow else {}
+            if last is None:
+                patch = assert_state(db, truth.tax, key.desktop, instance, key.step, state,
+                                     evidence_view=key.view, name=state_zh)
+            else:
+                patch = assert_range(db, truth.tax, key.desktop, instance, key.step,
+                                     int(last), state, evidence_view=key.view,
+                                     name=state_zh)
             if not patch.changed:
                 return {"changed": False, "patch": patch, "affected": [], "problems": {},
-                        "rechecks": [], "conflicts": 0, "frame": None}
-            payload = patch.payload() | {"view": key.view}
-            inverse = patch.inverse() | {"view": key.view}
-            db.log_op(key.desktop, key.view, OP_ASSERT_STATE, payload, inverse, annotator)
+                        "rechecks": [], "conflicts": 0, "frame": None, "cuts": []}
+            moves = [] if not follow else plan_cut_moves(
+                db, truth.tax, key.desktop, instance, before,
+                mask_states(db, truth.tax, key.desktop, instance))
+            kf_before, kf_after, cut_reach = move_cuts(db, key.desktop, instance, moves)
+            common = {"view": key.view, "cut_reach": cut_reach}
+            payload = patch.payload() | common | {"keyframes": kf_after}
+            inverse = patch.inverse() | common | {"keyframes": list(reversed(kf_before))}
+            db.log_op(key.desktop, key.view, OP_ASSERT_STATE, _flat(payload),
+                      _flat(inverse), annotator)
     except StateAssertError as refused:
         raise SessionRefusal(str(refused)) from refused
-    affected = annotatable_steps(db, key.desktop, key.view, patch.reach)
+    affected = annotatable_steps(db, key.desktop, key.view,
+                                 set(patch.reach) | set(cut_reach.get(key.view, ())))
     stats = settle(db, truth, key.desktop, key.view, affected, key.step)
-    first, last, after = run_around(db, truth.tax, key.desktop, instance, key.step)
+    recheck_other_views(db, truth, key.desktop, key.view, cut_reach)
+    first, last_step, after = run_around(db, truth.tax, key.desktop, instance, key.step)
     return {"changed": True, "patch": patch, "affected": affected,
-            "run": (first, last), "after": after,
-            "redraw": redraw_needed(db, truth.tax, key, instance, first, last),
+            "run": (first, last_step), "after": after,
+            "redraw": redraw_needed(db, truth.tax, key, instance, first, last_step),
+            "cuts": moves,
             "compiled": stats["compiled"], "rechecks": stats["rechecks"],
             "conflicts": stats["conflicts"], "problems": stats["problems"],
             "frame": stats["frame"], "op": Op(OP_ASSERT_STATE, payload, inverse)}
@@ -214,6 +332,59 @@ class StateMixin:
         ``restore_unseen`` in the result says the restore step has no image in
         this view: the log's value is kept there, and the window says so.
         """
+        key = self._state_gate_here(instance, state)
+        return self._commit_state(key, instance, state, None)
+
+    def assert_state_range(self, instance: str, state: str, to_step: int) -> dict:
+        """"From this frame to step ``to_step`` ``instance`` is ``state``" (U11, ``Ctrl+T``).
+
+        The span runs either way from the frame on screen (the annotator walks
+        backwards, so usually down to an earlier step). One op: the events at
+        its two ends, the part's hand-written state events inside it dropped,
+        and the cut keyframes that follow its lower edge -- one ``Ctrl+Z``.
+        Refused where ``T`` would be, and where the span crosses a step at
+        which the log itself changes the part's state (that is a Steps-mode
+        correction).
+        """
+        key = self._state_gate_here(instance, state)
+        return self._commit_state(key, instance, state, int(to_step))
+
+    def state_range_default(self, instance: str) -> tuple[Optional[str], int]:
+        """``(state, step)`` the ``Ctrl+T`` dialog opens with.
+
+        The state: the frame's own when it was set by hand (the run being
+        walked is to be extended), else the one ``T`` would set. The step: as
+        far as the span can go from here in the browsing direction without
+        crossing a step where the log changes the part's state -- walking
+        backwards, the step after the last such event at or below this frame
+        (the table's first step when there is none); forwards, the step before
+        the next one (the last step).
+        """
+        key = self.current()
+        rows = sorted(self.db.steps(key.desktop), key=lambda r: int(r.step))
+        table = [int(r.step) for r in rows]
+        if not table:
+            return None, key.step
+        dupli = {int(r.step) for r in rows if r.dupli or r.step_type == "dupli"}
+        log = derived_log(self.db, self.tax, key.desktop)
+        mine = [e.step for e in log if e.target == instance and e.step >= 1]
+        if self.browsing == FORWARD_WALK:
+            above = [s for s in mine if s > key.step]
+            step = (min(above) - 1) if above else table[-1]
+        else:
+            below = [s for s in mine if s <= key.step]
+            step = min((max(below) + 1) if below else table[0], key.step)
+            while step in dupli and step < key.step:
+                step += 1                  # a duplicate frame follows the one before it
+        held = state_of(self.db, self.tax, key.desktop, key.step).get(instance)
+        logged = state_at(self.db.instances(key.desktop), log, key.step,
+                          self.tax).get(instance)
+        if held is not None and logged is not None and held.state != logged.state:
+            return held.state, int(step)
+        return self.next_state(instance), int(step)
+
+    def _state_gate_here(self, instance: str, state: str) -> FrameKey:
+        """The frame both state gestures stand on, or the refusal of ``T`` there."""
         key = self.current()
         if getattr(self, "gallery", False):
             raise SessionRefusal(NO_STATE)   # task U10: refused before anything else
@@ -232,8 +403,12 @@ class StateMixin:
             raise SessionRefusal(
                 f"{instance} 在这里只能设为 {'、'.join(state_zh(c) for c in choices)}，"
                 f"不能设为 {state_zh(state)}")
+        return key
+
+    def _commit_state(self, key: FrameKey, instance: str, state: str,
+                      last: Optional[int]) -> dict:
         result = commit_assertion(self.db, self.truth, key, str(instance),
-                                  str(state), self.annotator)
+                                  str(state), self.annotator, last=last)
         if not result["changed"]:
             return result
         nxt = result["patch"].next_step

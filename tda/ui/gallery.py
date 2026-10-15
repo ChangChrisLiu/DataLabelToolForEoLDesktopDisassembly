@@ -51,6 +51,9 @@ NO_VERB = ("零件合照不改步骤表：「其实拆下来了 / 其实只是�
 #: What the gallery refuses, per action name of :data:`tda.ui.app_actions.ACTIONS`.
 GALLERY_REFUSALS: dict[str, str] = {
     "cycle_state": NO_STATE,
+    "state_range": NO_STATE,                       # Ctrl+T (U11)
+    "confirm_cut_copy": ("零件合照没有切开的形状副本：每张是独立的一段，"
+                         "画好就 Enter"),            # Ctrl+Shift+K (U11 round 2)
     "correct_verb": NO_VERB,
     "commit_split": "零件合照每张是独立的，没有「从这帧起新版本」：用 Enter 提交",
     "toggle_heat": "零件合照没有差异图：每张照片之间零件被重新摆过",

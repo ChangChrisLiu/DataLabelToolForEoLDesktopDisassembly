@@ -218,6 +218,12 @@ ACTIONS: tuple[Action, ...] = (
            short="从这帧起新版本"),
     # Task U6: the layering answer is not Enter's any more.  ``L`` for 层 /
     # layer -- free in every mode (no plain L, no Shift/Ctrl+L anywhere).
+    # Task U11 round 2: the cut copy on this frame is its shape after all (a
+    # state change that does not move the outline).  Ctrl+Shift+K is free.
+    Action("confirm_cut_copy", ("Ctrl+Shift+K",), "act_confirm_cut_copy",
+           "This frame's shape is the cut copy on it (no pixels; the split row is done)",
+           "这帧就是这个形状：切开时留下的形状副本就是这一帧的样子（不画像素，✂ 完成）",
+           "edit", (), _ANN),
     Action("commit_layering", ("L",), "act_commit_layering",
            "Change the layering the scope bar suggests (asks, then a second L)",
            "改层级：回答画布下方的层级建议（先显示影响哪些帧，再按一次 L 确定；Enter 只改形状）",
@@ -271,6 +277,12 @@ ACTIONS: tuple[Action, ...] = (
            "a removed one: back to open)",
            "选中的盖板/卡扣其实拆下来了：日志里那一步的「打开」改成「拆下」"
            "（Removed 里的零件反过来：其实只是打开了）", "edit", (), _ANN),
+    # Task U11: the same over a span, "from here to step N" -- D2/scan walked
+    # 45 -> 37 with T at every frame.  Ctrl+T is free in every mode.
+    Action("state_range", ("Ctrl+T",), "act_state_range",
+           "Selected part's state from this frame to a given step (one op)",
+           "选中零件从这一帧到第 N 步都设成同一状态（一次撤销；切开的版本跟着边界走）",
+           "edit", (), _ANN),
     Action("zorder_up", ("Ctrl+Up",), "act_move_instance", "One layer up",
            "选中实例上移一层", "edit", (-1,), _ANN, repeat=True),
     Action("zorder_down", ("Ctrl+Down",), "act_move_instance", "One layer down",
