@@ -231,6 +231,8 @@ def logs_report(run: L.LogsRun, expected: Optional[dict[int, int]] = None) -> st
         # the drops first: they are the only thing here that removed a row
         lines.extend(f"- {text}" for text in r.dropped)
         lines.extend(f"- {text}" for text in r.adopted)
+        # the Shift+T corrections a forced re-import kept, and the ones it could not
+        lines.extend(f"- {text}" for text in getattr(r, "corrections", ()))
         if r.extras_kept:
             lines.append(f"- kept {len(r.extras_kept)} instance(s) added in S1 (not in "
                          f"the sheet): {', '.join(r.extras_kept)}")

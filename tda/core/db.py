@@ -827,6 +827,13 @@ class Db(ConnectionMixin, PoseSegmentMixin, StatusMixin, DeleteMixin,
         row = self.conn.execute("SELECT * FROM op_log WHERE id=?", (op_id,)).fetchone()
         return None if row is None else R.json_row(row, "payload", "inverse")
 
+    def ops_of_kind(self, desktop: int, kind: str) -> list[dict]:
+        """Every operation of one kind on one desktop, any view, oldest first."""
+        rows = self.conn.execute(
+            "SELECT * FROM op_log WHERE desktop=? AND kind=? ORDER BY id", (desktop, kind),
+        ).fetchall()
+        return [R.json_row(r, "payload", "inverse") for r in rows]
+
     def ops(self, desktop: int, view: str, limit: int = 100) -> list[dict]:
         """Most recent operations of one (desktop, view), newest first."""
         rows = self.conn.execute(

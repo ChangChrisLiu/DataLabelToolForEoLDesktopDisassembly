@@ -255,6 +255,14 @@ ACTIONS: tuple[Action, ...] = (
            "Selected part's state at this frame: the next one (log correction)",
            "选中零件这一帧的状态换成下一个（如 打开→关上；下一帧起自动恢复；"
            "之后按任务卡 ✂ 条用 Ctrl+K 画形状）", "edit", (), _ANN),
+    # Task U9: the open cover / latch the card asks for is on the pile.  Next to
+    # T because it is the other half of "the log is wrong about this part";
+    # ``Shift+T`` is free in every mode.
+    Action("correct_verb", ("Shift+T",), "act_correct_verb",
+           "Selected cover/latch: taken out, not opened (the log's open -> remove; "
+           "a removed one: back to open)",
+           "选中的盖板/卡扣其实拆下来了：日志里那一步的「打开」改成「拆下」"
+           "（Removed 里的零件反过来：其实只是打开了）", "edit", (), _ANN),
     Action("zorder_up", ("Ctrl+Up",), "act_move_instance", "One layer up",
            "选中实例上移一层", "edit", (-1,), _ANN, repeat=True),
     Action("zorder_down", ("Ctrl+Down",), "act_move_instance", "One layer down",

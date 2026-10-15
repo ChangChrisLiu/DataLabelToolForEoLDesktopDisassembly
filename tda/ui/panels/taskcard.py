@@ -55,6 +55,7 @@ from tda.core.truth_refusals import (
     is_blocking,
 )
 from tda.core.model import EXTRA_ATTR
+from tda.ui import app_actions as A
 from tda.ui import session_api as api
 from tda.ui.class_names import instance_label, state_zh, visibility_zh
 from tda.ui.panels import session_is_open
@@ -232,6 +233,16 @@ def card_header(step: Optional[int], neighbour: Optional[int],
     return f"第 {step} 帧（对照第 {neighbour} 帧）：" + "、".join(counts)
 
 
+#: On the row of an open cover / latch (task U9): it may be on the components
+#: pile instead, and the key that says so. The key is read off the key map.
+TAKEN_OUT_HINT = "画面里没有它了？{key}：其实拆下来了"
+
+
+def taken_out_hint() -> str:
+    """:data:`TAKEN_OUT_HINT` with the key ``correct_verb`` is bound to."""
+    return TAKEN_OUT_HINT.format(key=A.action_named("correct_verb").keys[0])
+
+
 #: What "完整形状" means, said once -- in the start frame's header -- where
 #: every part is drawn for the first time (round 1 item 6, round 1b).
 START_NOTE = "（被别的零件挡住的部分也算它的，层级程序会处理）"
@@ -268,6 +279,8 @@ def row_view(row: dict, editing: Optional[str] = None, bench: bool = False,
     span = row.get("span")
     if span:
         sentence += f"（这一条跨了第 {span[0]}–{span[-1]} 步：中间的帧没有图像）"
+    if row.get("verb_fix") == "remove" and kind != api.KIND_CONFIRM:
+        sentence += f"（{taken_out_hint()}）"
     invisible = row.get("invisible")
     if invisible:
         # A shape exists and a label hides it on this frame (round 3): the trial

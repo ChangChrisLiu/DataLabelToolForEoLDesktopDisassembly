@@ -134,6 +134,24 @@ class StepRow:
 # --------------------------------------------------------------------------- #
 # the edit session
 # --------------------------------------------------------------------------- #
+def table_signature(steps: list[StepRec], actions: list[ActionRec]) -> tuple:
+    """What a step table *is*, comparable between a load and the database (task U9).
+
+    The Steps panel keeps its own copy of the table; a correction made from
+    Annotate mode (``Shift+T``) moves the database under it. Comparing this
+    signature of the panel's copy, of what it loaded, and of what is stored
+    says whether the database moved and whether the panel has edits of its own.
+    """
+    return (tuple((s.step, s.step_type, s.raw_name, s.notes) for s in steps),
+            tuple((a.step, a.idx, a.target, a.verb, a.tool, a.direction, a.result,
+                   a.failure_reason, a.difficulty) for a in actions))
+
+
+def stored_signature(db: Db, desktop: int) -> tuple:
+    """:func:`table_signature` of what the database holds for one desktop."""
+    return table_signature(db.steps(desktop), db.actions(desktop))
+
+
 def _reorients_moved(before: list[StepRec], after: list[StepRec]) -> bool:
     """Did any step become, or stop being, a ``reorient``?
 
@@ -585,8 +603,13 @@ class StepTableData:
             return
         delete_instance(self, db, key)
 
-    def save(self, db: Db) -> list[str]:
+    def save(self, db: Db, *, graph: bool = True) -> list[str]:
         """Write the session back and recompile the automatic state events.
+
+        ``graph=False`` leaves the constraint graph alone (no re-derivation,
+        no edge write, no ``relations`` op): for a caller whose edit cannot
+        move it, the verb correction of task U9 -- the graph is derived from
+        the instances and the edges, never from a verb.
 
         Steps, actions, instances and the automatic event log land in one
         transaction, so a failure part-way through leaves the database exactly
@@ -636,10 +659,12 @@ class StepTableData:
                 _queue_verified(db, self.desktop)
             if moved:
                 self.recut = split_pose_segments(db, self.desktop)
-            self.relations.write(db)
+            if graph:
+                self.relations.write(db)
         self.extras = []
         self.stored_initial = _stored_initial(db, self.desktop)
-        self.relations.committed()
+        if graph:
+            self.relations.committed()
         # the merged log, in the order every reader folds it -- manual events
         # after the derived ones of their step (task U8: a re-close at the step
         # of a derived open read as two problems in stored-id order)

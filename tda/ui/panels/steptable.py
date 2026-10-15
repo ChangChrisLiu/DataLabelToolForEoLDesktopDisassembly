@@ -70,6 +70,8 @@ from tda.ui.steps_model import (
     DEFAULT_PARENT,
     EditError,
     StepTableData,
+    stored_signature,
+    table_signature,
     thumb_path,
 )
 from tda.ui.steps_values import DISCRIMINATORS
@@ -156,6 +158,7 @@ class StepTablePanel(QWidget):
         # from any caller (or test) that forgot to pass one.
         self.cache_dir = Path(cache_dir if cache_dir else _default_cache_dir())
         self.data = StepTableData.load(db, desktop, self.tax, self.annotator)
+        self._remember()
         #: The class the "＋ 添加零件" dialog opened on last time.
         self.last_extra_class: Optional[str] = None
         self.add_parts_dialog: Optional[AddPartsDialog] = None
@@ -256,10 +259,31 @@ class StepTablePanel(QWidget):
         """Load another desktop (or reload this one), dropping unsaved edits."""
         self.desktop = desktop
         self.data = StepTableData.load(self.db, desktop, self.tax, self.annotator)
+        self._remember()
         self.steps_model.set_data(self.data)
         self.instances_model.set_data(self.data)
         self.relations_tab.set_data(self.data)
         self._refresh_issues()
+
+    # -- what moved since the last load / Apply (task U9) ------------------ #
+    def _remember(self) -> None:
+        """Snapshot the database and this panel's copy, which agree right now.
+
+        Taken at every load and after every successful Apply. A correction
+        made in Annotate mode (``Shift+T``) moves the database without the
+        panel; the two snapshots tell that apart from the panel's own edits.
+        """
+        self.loaded_db = stored_signature(self.db, self.desktop)
+        self.loaded_data = table_signature(self.data.steps, self.data.actions)
+
+    def database_moved(self) -> bool:
+        """Has the stored step table changed since this panel loaded or applied it?"""
+        return stored_signature(self.db, self.desktop) != self.loaded_db
+
+    def has_unapplied_edits(self) -> bool:
+        """Does the panel hold steps, actions, parts or edges not written yet?"""
+        return (table_signature(self.data.steps, self.data.actions) != self.loaded_data
+                or bool(self.data.extras) or bool(self.data.relations.dirty))
 
     def show_step(self, step: int) -> None:
         """Select one logical step in the Steps table and bring it into view."""
@@ -291,6 +315,7 @@ class StepTablePanel(QWidget):
             # a refused Apply names an edge; put the annotator in front of it
             self.show_deadlock_edge()
             return
+        self._remember()
         self.relations_tab.refresh()
         self._refresh_issues()
         # A step that became (or stopped being) a `reorient` moved a pose
@@ -308,19 +333,24 @@ class StepTablePanel(QWidget):
         self.sigSaved.emit(self.desktop)
 
     # -- commands ---------------------------------------------------------- #
+    # The four structural commands below wait for ``Apply`` like a cell edit,
+    # but rebuild the models (no ``dataChanged``): they are ``staged`` so that
+    # :attr:`sigEdited` tells the window, and leaving Steps mode asks first
+    # (task U9 review -- an added or removed action used to vanish silently).
     def split_step(self, step: int, n: int) -> None:
         """Split a compound row into ``n`` actions/instances (spec 2.3)."""
         self._command(lambda: self.data.split_compound(step, n),
-                      f"Split step {step} into {n} actions.")
+                      f"Split step {step} into {n} actions.", staged=True)
 
     def add_action(self, step: int) -> None:
         """Append one more action to a step."""
-        self._command(lambda: self.data.add_action(step), f"Added an action to step {step}.")
+        self._command(lambda: self.data.add_action(step), f"Added an action to step {step}.",
+                      staged=True)
 
     def remove_action(self, step: int, action_idx: int) -> None:
         """Drop one action of a step."""
         self._command(lambda: self.data.remove_action(step, action_idx),
-                      f"Removed action {action_idx + 1} of step {step}.")
+                      f"Removed action {action_idx + 1} of step {step}.", staged=True)
 
     def retarget_new(self, step: int, cls: str, disc: str = BLANK, action_idx: int = 0) -> None:
         """Point a step at a brand-new instance of ``cls``.
@@ -336,7 +366,7 @@ class StepTablePanel(QWidget):
             attrs[name or DISCRIMINATORS[0]] = disc
         self._command(
             lambda: self.data.change_target(step, action_idx=action_idx, cls=cls, attrs=attrs),
-            f"Retargeted step {step}.",
+            f"Retargeted step {step}.", staged=True,
         )
 
     def delete_instance(self, key: str) -> None:

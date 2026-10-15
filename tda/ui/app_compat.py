@@ -441,6 +441,9 @@ def removed_rows(session: Any) -> list[dict]:
     here = {str(row.get("key")) for row in session.instance_rows()}
     state = state_of(db, tax, key.desktop, key.step)
     known = instances_of(db, key.desktop)
+    # a cover / latch taken out by its own action may only have been opened (U9)
+    offers = getattr(session, "verb_offers", None)
+    offered = offers(state, known) if callable(offers) else {}
     rows = []
     for instance, held in sorted(state.items()):
         # ``known`` keeps the pseudo-nodes out: a state map also carries the
@@ -452,7 +455,8 @@ def removed_rows(session: Any) -> list[dict]:
         rec = known.get(instance)
         rows.append({"key": instance, "cls": "" if rec is None else rec.cls,
                      "state": held.state, "placement": held.placement,
-                     "visibility": "", "z": "", "hidden": False})
+                     "visibility": "", "z": "", "hidden": False,
+                     "verb_fix": offered.get(instance)})
     return rows
 
 

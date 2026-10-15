@@ -34,6 +34,7 @@ KINDS: frozenset[str] = frozenset(
         "set_occluder",  # OccluderMask of one occluder_type on a frame
         "commit_keyframe",  # write/split a ShapeKeyframe
         "assert_state",  # manual StateEvents: a part's state at one frame (U8)
+        "correct_verb",  # an action's open <-> remove: opened, or taken out (U9)
     }
 )
 
