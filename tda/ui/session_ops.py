@@ -35,6 +35,7 @@ from tda.core.model import (
     ShapeKeyframe,
     ShapePart,
     ZOrderRec,
+    is_component_view,
 )
 from tda.core.compiler import select_keyframe
 from tda.core.states import needs_geom
@@ -47,6 +48,7 @@ from tda.core.truth_inputs import (
     instances_of,
     pose_segment_of,
     state_of,
+    view_steps,
 )
 
 __all__ = [
@@ -168,10 +170,15 @@ def as_mask(mask: np.ndarray, hw: tuple[int, int]) -> np.ndarray:
     return arr.astype(bool, copy=False)
 
 
+def _bench_roi(db: Db, key: FrameKey, seg: int):
+    """The staging area of this view's segment; never one on a gallery shot (U10)."""
+    return None if is_component_view(key.view) else db.bench_roi(key.desktop, key.view, seg)
+
+
 def placement_of(db: Db, tax: Taxonomy, key: FrameKey, instance: str,
                  cache: Optional[InputCache] = None) -> str:
     """Where the instance is at this step; the chassis chain when it is unknown."""
-    inst = state_of(db, tax, key.desktop, key.step, cache).get(instance)
+    inst = state_of(db, tax, key.desktop, key.step, cache, view=key.view).get(instance)
     return IN_CHASSIS if inst is None else inst.placement
 
 
@@ -211,13 +218,12 @@ def default_anchor(db: Db, tax: Taxonomy, key: FrameKey, instance: str, seg: int
     geometry nowhere (a shape drawn against the rules is still kept).
     """
     instances = instances_of(db, key.desktop, cache)
-    bench_roi = db.bench_roi(key.desktop, key.view, seg)
+    bench_roi = _bench_roi(db, key, seg)
     best: Optional[int] = None
-    for rec in db.steps(key.desktop):
-        step = rec.step
+    for step in view_steps(db, key.desktop, key.view):
         if pose_segment_of(db, FrameKey(key.desktop, step, key.view), cache) != seg:
             continue
-        state = state_of(db, tax, key.desktop, step, cache)
+        state = state_of(db, tax, key.desktop, step, cache, view=key.view)
         held = state.get(instance)
         if held is None or held.placement != placement:
             continue
@@ -236,13 +242,12 @@ def chain_steps(db: Db, tax: Taxonomy, key: FrameKey, instance: str, seg: int,
     answer "影响 N 帧" (spec 4.3) before anything is written.
     """
     instances = instances_of(db, key.desktop, cache)
-    bench_roi = db.bench_roi(key.desktop, key.view, seg)
+    bench_roi = _bench_roi(db, key, seg)
     out: list[int] = []
-    for rec in db.steps(key.desktop):
-        step = rec.step
+    for step in view_steps(db, key.desktop, key.view):
         if pose_segment_of(db, FrameKey(key.desktop, step, key.view), cache) != seg:
             continue
-        state = state_of(db, tax, key.desktop, step, cache)
+        state = state_of(db, tax, key.desktop, step, cache, view=key.view)
         held = state.get(instance)
         if held is None or held.placement != placement:
             continue
@@ -262,13 +267,13 @@ def segment_steps(db: Db, tax: Taxonomy, key: FrameKey, instance: str, seg: int,
     is a *layer*, which is the only place the layering can be argued about.
     """
     instances = instances_of(db, key.desktop, cache)
-    bench_roi = db.bench_roi(key.desktop, key.view, seg)
+    bench_roi = _bench_roi(db, key, seg)
     out = []
-    for rec in db.steps(key.desktop):
-        step = rec.step
+    for step in view_steps(db, key.desktop, key.view):
         if pose_segment_of(db, FrameKey(key.desktop, step, key.view), cache) != seg:
             continue
-        needs = needs_geom(instances, state_of(db, tax, key.desktop, step, cache), tax,
+        needs = needs_geom(instances, state_of(db, tax, key.desktop, step, cache,
+                                               view=key.view), tax,
                            bench_roi=bench_roi)
         if instance in needs and (geom is None or needs[instance] == geom):
             out.append(step)

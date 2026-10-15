@@ -10,6 +10,11 @@ Layout (spec 2.1)::
     oak_root/Desktop <n>/<Disassemble>/Camera_<1|2>/<NNN>/<ts>_camera_<c>_<role>
     scanner_root/TAMU_B2.3_<a>-<b>_RGB/<subdir>/<n>/RGB<step>1/P_<k>.png
     rs_root/Desktop <n>/<Disassemble|Disassembly>/<NNN>/original_color.png
+
+and the components gallery (task U10)::
+
+    oak_root/Desktop <n>/Components/<Camera_1|C1|Camera_2|C2>/<NNN>/<ts>_camera_<c>_<role>
+    rs_root/Desktop <n>/Components/<NNN>/original_color.png
 """
 from __future__ import annotations
 
@@ -33,6 +38,19 @@ OAK_ROLES = {
 }
 #: The disassembly section folder is spelled both ways across the dataset.
 DEFAULT_FOLDER_ALIASES = ("Disassemble", "Disassembly")
+
+#: The components gallery (task U10): after the teardown every removed part was
+#: laid out and photographed, into a ``Components`` folder next to the
+#: disassembly one -- ``Desktop <n>/Components/<camera>/<NNN>/...`` for the two
+#: OAK cameras, ``Desktop <n>/Components/<NNN>/original_color.png`` for the
+#: RealSense.
+COMPONENTS_DIR = "Components"
+#: The OAK camera folders inside ``Components``, spelled two ways: ``Camera_1``
+#: from desktop 25 on, ``C1`` before it (and on desktops 1-24 only).
+COMPONENT_CAMERA_DIRS: dict[str, tuple[str, ...]] = {
+    "cmp_oak1": ("Camera_1", "C1"),
+    "cmp_oak2": ("Camera_2", "C2"),
+}
 
 
 def iso_from_oak_token(token: str) -> str:

@@ -58,7 +58,21 @@ from tda.core.model import EXTRA_ATTR
 from tda.ui import app_actions as A
 from tda.ui import session_api as api
 from tda.ui.class_names import instance_label, state_zh, visibility_zh
+from tda.ui.gallery import (
+    ABSENT_CHIP,
+    ABSENT_KEY,
+    GALLERY_SENTENCE,
+    gallery_header,
+    is_component_view,
+)
 from tda.ui.panels import session_is_open
+
+#: A components-gallery row marked 「看不见」 (task U10).
+GALLERY_ABSENT_SENTENCE = (f"不在这张里（看不见）；其实在的话：右键这一条「撤回看不见」"
+                           f"或再按 {ABSENT_KEY}")
+#: The right-click menu of a gallery row.
+MENU_ABSENT = "看不见（不在这张里）"
+MENU_PRESENT = "撤回「看不见」（它在这张里，要画）"
 
 __all__ = ["CHIP_DONE", "CHIP_EDITING", "CHIP_TODO", "KIND_ICONS", "KIND_SENTENCES",
            "TaskCardPanel", "card_header", "row_view", "unlisted_problems"]
@@ -115,7 +129,8 @@ ICON_LEGEND = (
     "▭ 零件放在台面上：用台面框 R 拖一个框\n"
     "⌫ 零件回到机箱：台面框到这里结束\n"
     "✔ 这一帧没有要画的：Space 确认（任务卡下面列着挡住 Space 的问题时，先处理它们）\n"
-    "单击一条就开始画它；鼠标停在一条上，画面上会用虚线框标出它大概在哪。"
+    "单击一条就开始画它；鼠标停在一条上，画面上会用虚线框标出它大概在哪。\n"
+    "零件合照：不在这张里的零件右键选「看不见」（或按 I）。"
 )
 
 
@@ -162,10 +177,26 @@ _KIND_COUNTS: tuple[tuple[str, str], ...] = (
 )
 
 
+def _gallery_header(text: str, kinds: list[str], done: list[bool], blockers: int,
+                    confirmed: bool) -> str:
+    """A components-gallery shot's header (task U10): the shot's own sentence.
+
+    ``text`` is :func:`tda.ui.gallery.gallery_header`; what follows it is what
+    is left -- a row is done when its part is drawn or 「看不见」.
+    """
+    left = sum(1 for k, d in zip(kinds, done) if k != api.KIND_CONFIRM and not d)
+    handled = sum(1 for k, d in zip(kinds, done) if k != api.KIND_CONFIRM and d)
+    if not left and confirmed and not blockers:
+        return f"{text}。{CONFIRMED_TEXT}"
+    if not left:
+        return f"{text}。这张都处理好了，{space_or_blocked(blockers, '直接 Space 确认')}"
+    return f"{text}。还剩 {left} 个" + (f"，{handled} 个处理好了（排在最后）" if handled else "")
+
+
 def card_header(step: Optional[int], neighbour: Optional[int],
                 kinds: Optional[list[str]] = None, first: Optional[int] = None,
                 last: Optional[int] = None, done: Optional[list[bool]] = None,
-                blockers: int = 0, confirmed: bool = False) -> str:
+                blockers: int = 0, confirmed: bool = False, gallery: str = "") -> str:
     """The sentence above the list: what *this* frame's list is (ruling U2b-3).
 
     Built from the rows' kinds (round 2): "多了…要画回去" over rows that only
@@ -180,6 +211,9 @@ def card_header(step: Optional[int], neighbour: Optional[int],
     ``confirmed`` is a frame already confirmed: with nothing blocking, where
     the header would send the annotator to Space it says :data:`CONFIRMED_TEXT`,
     as the guide does (U2e round 2).
+    ``gallery`` is a components-gallery shot's sentence (task U10,
+    :func:`tda.ui.gallery.gallery_header`): such a shot has no neighbour and no
+    start frame, only its parts, and its header says so.
     """
     if step is None:
         return ""
@@ -187,6 +221,8 @@ def card_header(step: Optional[int], neighbour: Optional[int],
     flags = [bool(d) for d in (done if done is not None else [False] * len(kinds))]
     flags += [False] * (len(kinds) - len(flags))
     work = [k for k in kinds if k != api.KIND_CONFIRM]
+    if gallery:
+        return _gallery_header(gallery, kinds, flags, blockers, confirmed)
     if neighbour is None:
         if last is not None and int(step) == int(last):
             where = "起点，已经拆完的样子"
@@ -267,6 +303,10 @@ def row_view(row: dict, editing: Optional[str] = None, bench: bool = False,
         title = instance_label(instance, row.get("cls"), row.get("attrs"))
     raw = " / ".join(dict.fromkeys(str(n) for n in (row.get("raw_names") or []) if n))
     sentence = KIND_SENTENCES.get(kind, str(row.get("text", "")))
+    gallery = bool(row.get("gallery")) and kind == api.KIND_ADD_SHAPE
+    if gallery:
+        # a components-gallery row (task U10): drawn, or not in this shot
+        sentence = (GALLERY_ABSENT_SENTENCE if row.get("absent") else GALLERY_SENTENCE)
     if kind == api.KIND_CONFIRM and blockers:
         sentence = f"这一帧不用画，{space_or_blocked(blockers)}"
     elif kind == api.KIND_CONFIRM and confirmed:
@@ -289,6 +329,8 @@ def row_view(row: dict, editing: Optional[str] = None, bench: bool = False,
                      f"形状；选中后按 1 改回可见，或 Ctrl+Z 撤销")
     if editing is not None and instance == editing:
         chip = CHIP_BOXING if bench else CHIP_EDITING
+    elif gallery and row.get("absent"):
+        chip = ABSENT_CHIP
     elif kind in (api.KIND_STATE_ONLY, api.KIND_REMOVE_BENCH_BOX):
         # Neither is drawing: a state that changed, a bench box that ends.
         chip = CHIP_NOTHING
@@ -630,6 +672,8 @@ class TaskCardPanel(QWidget):
     sigPickInstance = Signal(str)
     #: A conflict line in the pane was clicked: open Review on this conflict (U2e).
     sigOpenConflict = Signal(int)
+    #: 「看不见」 / its undo was chosen on a components-gallery row (task U10).
+    sigMarkAbsent = Signal(str)
 
     def __init__(self, session: Optional[api.SessionLike] = None,
                  parent: Optional[QWidget] = None) -> None:
@@ -680,6 +724,9 @@ class TaskCardPanel(QWidget):
         self._list.itemEntered.connect(self._on_item_entered)
         self._list.viewportEntered.connect(lambda: self._set_hover(""))
         self._list.viewport().installEventFilter(self)
+        # a components-gallery row's one control: 「看不见」 (task U10)
+        self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._list.customContextMenuRequested.connect(self._on_context_menu)
 
         self._problems_label = QLabel(REFUSAL_TITLE)
         self._problems_list = QListWidget()
@@ -752,7 +799,8 @@ class TaskCardPanel(QWidget):
         self._header_args = (dict(step=step, neighbour=neighbour, kinds=kinds,
                                   first=min(steps) if steps else None,
                                   last=max(steps) if steps else None, done=done,
-                                  confirmed=self._confirmed)
+                                  confirmed=self._confirmed,
+                                  gallery=self._gallery_text(step))
                              if opened else {})
         self._blockers = self.problem_count()
         self._paint_header()
@@ -778,6 +826,15 @@ class TaskCardPanel(QWidget):
             item.setFont(font)
             self._list.addItem(item)
         self._list.setCurrentRow(first_open)
+
+    def _gallery_text(self, step: Optional[int]) -> str:
+        """The components-gallery shot's sentence (task U10), ``""`` elsewhere."""
+        view = str(getattr(self._session, "view", "") or "")
+        if step is None or not is_component_view(view):
+            return ""
+        shots = self._session.available_steps() if hasattr(
+            self._session, "available_steps") else self._session.steps()
+        return gallery_header(view, int(step), list(shots))
 
     def _frame_pair(self) -> tuple[int, Optional[int]]:
         """``(step on screen, the step the card is diffed against or None)``."""
@@ -1030,6 +1087,34 @@ class TaskCardPanel(QWidget):
             self.sigRequestEdit.emit(instance)
             return
         self._explain(item, instance)
+
+    def absent_menu_text(self, instance: str) -> str:
+        """The right-click entry a gallery row offers, ``""`` for any other row.
+
+        「看不见」 on a part not drawn yet, 「撤回」 on one marked so; a drawn
+        part is in the shot and offers nothing (task U10).
+        """
+        row = next((r for r in self._card if str(r.get("instance", "")) == instance), None)
+        if row is None or not row.get("gallery") or row.get("kind") != api.KIND_ADD_SHAPE:
+            return ""
+        if row.get("absent"):
+            return MENU_PRESENT
+        return "" if row.get("done") else MENU_ABSENT
+
+    def _on_context_menu(self, pos) -> None:
+        """Right-click on a gallery row: 「看不见」 (or take it back)."""
+        from PySide6.QtWidgets import QMenu
+
+        item = self._list.itemAt(pos)
+        instance = "" if item is None else str(item.data(INSTANCE_ROLE) or "")
+        text = self.absent_menu_text(instance) if instance else ""
+        if not text:
+            return
+        menu = QMenu(self)
+        action = menu.addAction(text)
+        chosen = menu.exec(self._list.viewport().mapToGlobal(pos))
+        if chosen is action:
+            self.sigMarkAbsent.emit(instance)
 
     def _explain(self, item: QListWidgetItem, instance: str) -> None:
         """Say what a row that is not work means (a click, or a double-click)."""

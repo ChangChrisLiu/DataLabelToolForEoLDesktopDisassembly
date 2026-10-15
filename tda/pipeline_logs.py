@@ -38,12 +38,12 @@ from tda.core.log_report import _expected_steps
 from tda.core.logs import LogImport, import_log, iter_desktop_csvs, read_desktop_csv
 from tda.core import extra as X
 from tda.core.extra import extra_keys
-from tda.core.model import VIEWS, StepRec, StepType, is_extra
+from tda.core.model import ALL_VIEWS, StepRec, StepType, is_extra
 from tda.core.states import INITIAL_STEP, events_from_actions, initial_overrides
 from tda.core.taxonomy import Taxonomy
 from tda.core.merge_replay import OP_REPLAY_MERGES, MergeReplay, replay_merges_for_import
 from tda.core.verb_replay import OP_REPLAY, Replay, replay_for_import
-from tda.pipeline import Log, merge_desktop_meta, split_pose_segments, wanted
+from tda.pipeline import Log, merge_desktop_meta, settle_gallery, split_pose_segments, wanted
 
 #: Mirrors :data:`tda.core.ls_import.NOTES_PREFIX`; repeated so importing the
 #: pipeline does not pull in numpy/pycocotools. ``tests/test_cli.py`` pins them
@@ -416,7 +416,7 @@ def _references(db: Db, desktop: int, key: str) -> dict[str, int]:
     a reason -- it was derived from the instance and is re-derived without it.
     """
     counts = dict(db.instance_reference_counts(desktop, key))
-    shapes = sum(len(db.keyframes(desktop, view, key)) for view in VIEWS)
+    shapes = sum(len(db.keyframes(desktop, view, key)) for view in ALL_VIEWS)
     if shapes:
         counts["shape_keyframe"] = shapes
     held = [r for r in db.relations(desktop)
@@ -710,26 +710,30 @@ def _adopt_extras(db: Db, desktop: int, taken_by: dict[str, str]) -> list[str]:
     """Hand added instances to the sheet. **Inside the caller's transaction.**
 
     The row itself is overwritten by the upsert that follows (the log's record:
-    no provenance, the log's raw names); what has to go here is the step-0
-    initial state the annotator set, which would otherwise apply to the log's
-    part. The shapes stay on the key. One ``op_log`` row records the added
-    records and events as they were, as the inverse
+    no provenance, the log's raw names); what has to go here is what the
+    addition wrote -- the step-0 initial state the annotator set and the removal
+    「拆下于第 k 步」 (:func:`tda.core.extra.initial_events`, task U10) -- which
+    would otherwise apply to the log's part, whose actions now say when it
+    leaves. Any other hand-set state stays. The shapes stay on the key. One
+    ``op_log`` row records the added records and events as they were, as the inverse
     :func:`tda.core.extra.undo_op` applies.
     """
     if not taken_by:
         return []
     stored = db.instances(desktop)
     records = [stored[key] for key in sorted(taken_by)]
-    events = [e for e in db.events(desktop)
-              if e.target in taken_by and not e.auto and e.step <= INITIAL_STEP]
+    # what the addition wrote: its initial state and the removal
+    # 「拆下于第 k 步」 (U10) -- the sheet's part is taken out by the sheet
+    events = [e for key in sorted(taken_by) for e in X.initial_events(db, desktop, key)]
     for key in taken_by:
-        db.delete_manual_events(desktop, key, up_to_step=INITIAL_STEP)
+        db.delete_manual_events(desktop, key, up_to_step=INITIAL_STEP,
+                                evidence_view=X.ADDED_EVIDENCE)
     payload, inverse = X.adopt_patch(records, events, taken_by)
     db.log_op(desktop, OP_VIEW, X.OP_ADOPT, payload, inverse, IMPLIED_ANNOTATOR)
     return [
         f"adopted {key}: added in S1, now produced by the "
         f"{'sheet' if taken_by[key] == 'log' else 'implied-instance rule'} "
-        f"(provenance and hand-set initial state dropped, shapes kept)"
+        f"(provenance, hand-set initial state and removal step dropped, shapes kept)"
         for key in sorted(taken_by)
     ]
 
@@ -812,6 +816,8 @@ def _write_import(
         events = events_from_actions({**extras, **li.instances}, li.actions, tax,
                                      initial=initial)
         db.replace_events(li.desktop, events, auto_only=True)
+        # a sheet row of the laid-out parts leaves the sequence (task U10)
+        settle_gallery(db, li.desktop)
         split_pose_segments(db, li.desktop)
     return (len(events), kept, dropped, fills,
             unresolved_relations(li.instances, tax, li.actions, declined), implied,

@@ -51,11 +51,13 @@ from tda.core.db import Db
 from tda.core.dbrows import now_iso
 from tda.core.log_identity import CHASSIS_KEY, instance_key
 from tda.core.model import (
+    ALL_VIEWS,
     EXTRA_ATTR,
-    VIEWS,
     FrameKey,
     InstanceRec,
     StateEvent,
+    StepType,
+    is_component_view,
     is_extra,
     is_provisional,
 )
@@ -67,7 +69,8 @@ __all__ = [
     "OP_UNDO", "OP_VIEW", "REASON", "REASON_ATTR", "ExtraBatch",
     "ExtraError", "adopt_patch", "default_parent", "delete_patch", "extra_keys",
     "host_instances", "initial_events", "is_extra", "next_ordinal", "parent_choices",
-    "plan_extras", "planned_keys", "recompile_events", "relation_rows",
+    "plan_extras", "planned_keys", "recompile_events", "relation_rows", "removal_refusal",
+    "removal_step_refusal", "removal_steps",
     "restamp_graph", "state_choices", "undo_op", "verified_frames_gaining", "write_batch",
 ]
 
@@ -94,6 +97,10 @@ OP_VIEW = "-"
 
 #: How many instances one batch may add (the dialog's spin box range).
 MIN_COUNT, MAX_COUNT = 1, 16
+#: ``StateEvent.evidence_view`` of the hand-written removal an added part can
+#: carry (「拆下于第 k 步」, task U10): it belongs to the addition, like the
+#: initial state, and goes (and comes back) with it.
+ADDED_EVIDENCE = "s1:added"
 #: ``relation.source`` of an edge derived from the instance table (mirrors
 #: :data:`tda.core.graph_derive.RULE`, which this module may not import: the
 #: graph stack sits above the database layer).
@@ -234,14 +241,20 @@ def plan_extras(
     annotator: str = "",
     attrs: Optional[dict] = None,
     now: Optional[str] = None,
+    removed_at: Optional[int] = None,
 ) -> ExtraBatch:
     """Build ``count`` extra instances of ``cls`` without registering them.
 
     ``parent`` is taken as given -- the caller pre-fills it with
     :func:`default_parent` -- and ticks ``attached`` when set, so the part
     leaves the chassis with it. ``state`` defaults to the class's
-    ``default_state``. Raises :class:`ExtraError` for anything the taxonomy or
-    the instance table refuses.
+    ``default_state``. ``removed_at`` (「拆下于第 k 步」, task U10) is the step
+    the part was taken out at, written as a hand-made removal
+    (:func:`removal_events`): the sequence asks for it until then and the
+    components gallery lists it afterwards; ``None`` -- the default -- keeps
+    it in the machine (or lets it leave with its parent). Raises
+    :class:`ExtraError` for anything the taxonomy or the instance table
+    refuses; whether the removal fits the log is :func:`removal_refusal`'s.
     """
     if cls not in tax.classes:
         raise ExtraError(f"{cls!r} is not a taxonomy class")
@@ -265,6 +278,17 @@ def plan_extras(
             raise ExtraError(f"D{desktop:02d} has no instance {parent!r}")
         if is_provisional(parent):
             raise ExtraError(f"{parent!r} is a Label Studio draft, not a part")
+    if removed_at is not None:
+        try:
+            removed_at = int(removed_at)
+        except (TypeError, ValueError):
+            raise ExtraError(f"the removal step must be a step number, got "
+                             f"{removed_at!r}") from None
+        if removed_at <= INITIAL_STEP:
+            raise ExtraError(f"拆下于第 {removed_at} 步：拆下的步号从 1 开始 / the removal "
+                             f"step starts at 1")
+        if REMOVED not in tax.states_of(cls):
+            raise ExtraError(f"{cls!r} has no 'removed' state: it cannot be taken out")
     stamp = now or now_iso()
     base = {k: v for k, v in dict(attrs or {}).items() if v not in (None, "")}
     batch = ExtraBatch(desktop=desktop)
@@ -278,14 +302,126 @@ def plan_extras(
             rec_attrs[NOTE_ATTR] = note.strip()
         batch.records.append(InstanceRec(
             key=key, desktop=desktop, cls=cls, attrs=rec_attrs,
-            parent=parent, attached=parent is not None, raw_names=[],
+            # a part taken out on its own (removed_at) rides on its parent
+            # until then but does not leave with it: it is out already
+            parent=parent, attached=parent is not None and removed_at is None,
+            raw_names=[],
         ))
         if state != default:
             batch.events.append(StateEvent(
                 desktop=desktop, step=INITIAL_STEP, target=key, attr=ATTR_STATE,
                 old=default, new=state, evidence_view=None, auto=False,
             ))
+        if removed_at is not None:
+            batch.events.extend(removal_events(desktop, key, removed_at, state))
     return batch
+
+
+def removal_events(desktop: int, key: str, step: int, held: str) -> list[StateEvent]:
+    """The hand-written removal of an added part at ``step`` (task U10).
+
+    ``held -> removed`` and ``in_chassis -> on_bench``, as a ``remove`` action
+    would derive them, both marked :data:`ADDED_EVIDENCE` so they belong to the
+    addition. A removal is legal from any state but ``removed`` (U8 round 2).
+    """
+    return [
+        StateEvent(desktop=desktop, step=int(step), target=key, attr=ATTR_STATE,
+                   old=held, new=REMOVED, evidence_view=ADDED_EVIDENCE, auto=False),
+        StateEvent(desktop=desktop, step=int(step), target=key, attr="placement",
+                   old="in_chassis", new="on_bench", evidence_view=ADDED_EVIDENCE,
+                   auto=False),
+    ]
+
+
+def _shows_nothing_new(rec) -> bool:
+    """A step whose frame is not a moment a part can leave at (initial / dupli)."""
+    return (str(rec.step_type) in (StepType.INITIAL.value, StepType.DUPLI.value)
+            or bool(getattr(rec, "dupli", False)))
+
+
+def removal_steps(steps: Iterable) -> list[int]:
+    """The steps 「拆下于第 k 步」 may name: not the initial frame, not a ``dupli``."""
+    return sorted(int(r.step) for r in steps if not _shows_nothing_new(r))
+
+
+def removal_step_refusal(step: int, steps: Iterable) -> str:
+    """Why step ``step`` of the table (``StepRec`` rows) cannot be a removal; or ``""``.
+
+    The initial frame is the machine before anything was done: a part taken
+    out there was never in it. A ``dupli`` frame shows the frame before it, so
+    the part is either already gone there (that step, or earlier) or still in
+    it (a later step) -- the refusal names both.
+    """
+    rows = sorted(steps, key=lambda r: int(r.step))
+    found = next((r for r in rows if int(r.step) == int(step)), None)
+    if found is None:
+        return f"拆下于第 {step} 步：步骤表里没有第 {step} 步 / no step {step} in the table"
+    if not _shows_nothing_new(found):
+        return ""
+    allowed = removal_steps(rows)
+    if str(found.step_type) == StepType.INITIAL.value:
+        first = next((s for s in allowed if s > step), None)
+        earliest = f"；最早填第 {first} 步" if first is not None else ""
+        return (f"拆下于第 {step} 步不成立：第 {step} 步是起始帧（拆之前的样子），零件那时都还在"
+                f"{earliest} / step {step} is the initial frame")
+    shown = next((s for s in reversed(allowed) if s < step), None)
+    later = next((s for s in allowed if s > step), None)
+    where = f"第 {shown} 步" if shown is not None else "它前面那一帧"
+    text = (f"拆下于第 {step} 步不成立：第 {step} 步是重复帧（dupli），和{where}是同一个样子；"
+            f"{where}的照片里已经没有它就填{where}或更早")
+    if later is not None:
+        text += f"，还在就填第 {later} 步"
+    return text + f" / step {step} duplicates " + (f"step {shown}" if shown else "the frame before")
+
+
+def removal_refusal(instances: dict[str, InstanceRec], actions: list,
+                    events: Iterable[StateEvent], tax: Taxonomy, batch: ExtraBatch,
+                    last_step: Optional[int] = None, steps: Optional[Iterable] = None) -> str:
+    """Why the batch's removal step does not fit the log; ``""`` when it does.
+
+    ``events`` are the hand-written events already stored or staged (not the
+    batch's). The removal has to lie within the step table, on a step whose
+    frame shows something new (:func:`removal_step_refusal`, when ``steps``
+    -- the table's ``StepRec`` rows -- are given), and come before the part
+    would leave with its parent: a part already gone cannot be taken out again
+    (the validator S1 Apply runs says so in English; this says it in the
+    annotator's words).
+    """
+    from tda.core.states import event_problems, events_from_actions, initial_overrides
+    from tda.core.truth_inputs import merge_events
+
+    removals = [e for e in batch.events if e.evidence_view == ADDED_EVIDENCE]
+    if not removals:
+        return ""
+    step = int(removals[0].step)
+    if last_step is not None and step > int(last_step):
+        return (f"拆下于第 {step} 步：这台机器只有 {int(last_step)} 步 / the log has "
+                f"{int(last_step)} steps")
+    if steps is not None:
+        why = removal_step_refusal(step, steps)
+        if why:
+            return why
+    table = dict(instances)
+    table.update({rec.key: rec for rec in batch.records})
+    manual = list(events) + list(batch.events)
+    derived = events_from_actions(table, list(actions), tax,
+                                  initial=initial_overrides(manual))
+    merged = merge_events(derived, manual)
+    for rec in batch.records:
+        if not rec.parent:
+            continue
+        # it rides on its parent until it is taken out: the parent must still
+        # be there (a part that leaves WITH it is left blank instead)
+        left = next((e.step for e in sorted(merged, key=lambda e: e.step)
+                     if e.target == rec.parent and e.attr == ATTR_STATE
+                     and e.new == REMOVED), None)
+        if left is not None and int(left) <= step:
+            return (f"拆下于第 {step} 步不成立：{rec.parent} 在第 {left} 步就离开机箱了，"
+                    f"{rec.key} 跟它一起离开的话这里留空；单独拆下的要早于第 {left} 步 / "
+                    f"{rec.parent} leaves at step {left}")
+    problems = [p for p in event_problems(table, merged, tax)
+                if p.event.target in set(batch.keys)]
+    return f"拆下于第 {step} 步不成立 / {problems[0].text}" if problems else ""
 
 
 def verified_frames_gaining(
@@ -316,7 +452,14 @@ def verified_frames_gaining(
     ``events`` the hand-written initial states the batch carries on top of the
     stored ones.  Pure reads; returns the steps ascending.
     """
-    from tda.core.states import events_from_actions, initial_overrides, needs_geom, state_at
+    from tda.core.model import GALLERY_EXCLUDED_CLASSES
+    from tda.core.states import (
+        events_from_actions,
+        gallery_state,
+        initial_overrides,
+        needs_geom,
+        state_at,
+    )
     from tda.core.truth_inputs import merge_events, pose_segment_of
 
     new = {rec.key: rec for rec in records}
@@ -333,6 +476,13 @@ def verified_frames_gaining(
                                   tax, initial=initial_overrides(manual))
     # exactly the log truth_inputs.events_of folds (round 2: one implementation)
     merged = merge_events(derived, manual)
+    if is_component_view(view):
+        # a components-gallery shot (task U10) asks for the parts removed by the
+        # end -- an added part taken out at 「拆下于第 k 步」 among them -- and
+        # every confirmed shot of the view gains it alike
+        needs = needs_geom(table, gallery_state(table, merged, tax,
+                                                GALLERY_EXCLUDED_CLASSES), tax)
+        return sorted(frozen) if any(key in needs for key in new) else []
     out: list[int] = []
     rois: dict[int, object] = {}
     for step in frozen:
@@ -364,9 +514,15 @@ def write_batch(db: Db, batch: ExtraBatch, annotator: str) -> int:
 # deletion and undo
 # --------------------------------------------------------------------------- #
 def initial_events(db: Db, desktop: int, key: str) -> list[StateEvent]:
-    """The hand-written events of ``key`` at or before :data:`INITIAL_STEP`."""
+    """The hand-written events that belong to ``key``'s addition.
+
+    Its initial state (at or before :data:`INITIAL_STEP`) and the removal
+    「拆下于第 k 步」 wrote (:data:`ADDED_EVIDENCE`, task U10): what a delete
+    takes with the part and an undo of that delete puts back.
+    """
     return [e for e in db.events(desktop)
-            if e.target == key and not e.auto and e.step <= INITIAL_STEP]
+            if e.target == key and not e.auto
+            and (e.step <= INITIAL_STEP or e.evidence_view == ADDED_EVIDENCE)]
 
 
 #: The ``relation`` columns an inverse carries, so an edge comes back as it was.
@@ -411,7 +567,7 @@ def adopt_patch(records: Iterable[InstanceRec], events: Iterable[StateEvent],
 
 def _refusal(db: Db, desktop: int, key: str) -> str:
     """Why ``key`` may not be removed by an undo, or ``""``."""
-    views = [view for view in VIEWS if db.keyframes(desktop, view, key)]
+    views = [view for view in ALL_VIEWS if db.keyframes(desktop, view, key)]
     if views:
         return f"{key} already has shapes in {', '.join(views)}"
     steps = sorted({a.step for a in db.actions(desktop) if a.target == key})
@@ -424,7 +580,8 @@ def _refusal(db: Db, desktop: int, key: str) -> str:
     counts = {table: n for table, n in db.instance_reference_counts(desktop, key).items()
               if table != "state_event"}
     later = [e for e in db.events(desktop)
-             if e.target == key and not e.auto and e.step > INITIAL_STEP]
+             if e.target == key and not e.auto and e.step > INITIAL_STEP
+             and e.evidence_view != ADDED_EVIDENCE]
     if later:
         counts["state_event"] = len(later)
     decided = [r for r in db.relations(desktop)
@@ -543,7 +700,9 @@ def undo_op(db: Db, op: dict, annotator: str = "", tax: Optional[Taxonomy] = Non
                     if key in (row["target"], row["blocker"]) and row["source"] == _RULE:
                         db.delete_relation(desktop, row["type"], row["target"],
                                            row["blocker"])
-                db.delete_manual_events(desktop, key, up_to_step=INITIAL_STEP)
+                # every hand-written event left is the addition's own (its
+                # initial state, its removal step): `_refusal` refused the rest
+                db.delete_manual_events(desktop, key)
                 db.delete_auto_events(desktop, key)
                 db.delete_instance(desktop, key)
             recompile_events(db, desktop, tax)

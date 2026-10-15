@@ -203,6 +203,10 @@ class StepTableData:
     #: (:func:`tda.core.states.initial_overrides`), read at load and after
     #: every save; :meth:`initial_states` adds the staged ones.
     stored_initial: dict[str, str] = field(default_factory=dict)
+    #: Every hand-written event the database holds, read with
+    #: :attr:`stored_initial`: what an added part's removal step is checked
+    #: against (task U10, :func:`tda.core.extra.removal_refusal`).
+    stored_manual: list = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.relations is None:
@@ -221,7 +225,8 @@ class StepTableData:
         data = cls(desktop=desktop, tax=tax, rows=rows, instances=db.instances(desktop),
                    declined=set(db.declined_implied(desktop)),
                    annotator=str(annotator or ANNOTATOR),
-                   stored_initial=_stored_initial(db, desktop))
+                   stored_initial=_stored_initial(db, desktop),
+                   stored_manual=[e for e in db.events(desktop) if not e.auto])
         data.relations.reload(db)
         data.refresh_issues()
         return data
@@ -405,12 +410,26 @@ class StepTableData:
         """
         if cls not in self.tax.classes:
             raise EditError(f"{cls!r} is not a taxonomy class")
+        parent = X.default_parent(self.instances, self.tax, cls)
+        # the default removal is the last step a part can leave at (not a dupli)
+        latest = max(X.removal_steps(self.steps), default=0)
+        removable = "removed" in self.tax.states_of(cls)
         return {
-            "parent": X.default_parent(self.instances, self.tax, cls),
+            "parent": parent,
             "parents": X.parent_choices(self.instances, self.tax, cls),
             "state": self.tax.default_state(cls),
             "states": X.state_choices(self.tax, cls),
+            # 「拆下于第 k 步」 (task U10): a part riding on nothing was taken out
+            # by the end (it is in the components gallery); one riding on a
+            # parent leaves with it, so it is left blank
+            "removed_at": latest if (removable and parent is None and latest) else None,
+            "last_step": latest,
+            "removable": removable,
         }
+
+    def last_step(self) -> int:
+        """The step table's last step (0 for an empty table)."""
+        return max((row.number for row in self.rows), default=0)
 
     def preview_extras(self, cls: str, count: int, attrs: dict | None = None) -> list[str]:
         """The keys :meth:`add_extras` would create, without creating them."""
@@ -421,7 +440,8 @@ class StepTableData:
 
     def frames_demoted_by_extras(self, db: Db, view: str, cls: str, count: int = 1,
                                  parent: Any = DEFAULT_PARENT, state: str | None = None,
-                                 attrs: dict | None = None) -> list[int]:
+                                 attrs: dict | None = None,
+                                 removed_at: int | None = None) -> list[int]:
         """The confirmed frames of ``view`` that :meth:`add_extras` would demote (U7).
 
         The batch is planned exactly as :meth:`add_extras` would plan it --
@@ -438,10 +458,14 @@ class StepTableData:
         try:
             batch = X.plan_extras(self.instances, self.tax, self.desktop, cls, count,
                                   parent=parent or None, state=state,
-                                  annotator=self.annotator, attrs=attrs)
+                                  annotator=self.annotator, attrs=attrs,
+                                  removed_at=removed_at)
         except X.ExtraError:
             return []
         staged = [event for done in self.extras for event in done.events]
+        if X.removal_refusal(self.instances, self.actions, self.stored_manual + staged,
+                             self.tax, batch, self.last_step(), self.steps):
+            return []
         return X.verified_frames_gaining(db, self.tax, self.desktop, view, batch.records,
                                          staged + list(batch.events),
                                          instances=self.instances, actions=self.actions)
@@ -454,6 +478,7 @@ class StepTableData:
         state: str | None = None,
         note: str = "",
         attrs: dict | None = None,
+        removed_at: int | None = None,
     ) -> list[str]:
         """Stage ``count`` instances of ``cls`` the log never names.
 
@@ -461,8 +486,11 @@ class StepTableData:
         questions and the Relations tab see them -- and :meth:`save` writes
         them with their initial state and one ``op_log`` row for the batch;
         ``Revert`` drops them with every other unsaved edit. ``parent`` left
-        out follows the class's host rule; ``None`` means none. Returns the new
-        keys.
+        out follows the class's host rule; ``None`` means none.
+        ``removed_at`` is the step the part was taken out at (task U10,
+        「拆下于第 k 步」; ``None``: never, or with its parent), refused when it
+        does not fit the log (:func:`tda.core.extra.removal_refusal`). Returns
+        the new keys.
         """
         attrs = {k: v for k, v in dict(attrs or {}).items() if v not in (None, "")}
         if cls in self.tax.classes:
@@ -473,9 +501,15 @@ class StepTableData:
         try:
             batch = X.plan_extras(self.instances, self.tax, self.desktop, cls, count,
                                   parent=parent or None, state=state, note=note,
-                                  annotator=self.annotator, attrs=attrs)
+                                  annotator=self.annotator, attrs=attrs,
+                                  removed_at=removed_at)
         except X.ExtraError as error:
             raise EditError(str(error)) from None
+        staged = [event for done in self.extras for event in done.events]
+        why = X.removal_refusal(self.instances, self.actions, self.stored_manual + staged,
+                                self.tax, batch, self.last_step(), self.steps)
+        if why:
+            raise EditError(why)
         for rec in batch.records:
             self.instances[rec.key] = rec
         self.extras.append(batch)
@@ -663,6 +697,7 @@ class StepTableData:
                 self.relations.write(db)
         self.extras = []
         self.stored_initial = _stored_initial(db, self.desktop)
+        self.stored_manual = [e for e in db.events(self.desktop) if not e.auto]
         if graph:
             self.relations.committed()
         # the merged log, in the order every reader folds it -- manual events

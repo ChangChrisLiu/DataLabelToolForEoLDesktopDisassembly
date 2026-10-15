@@ -407,15 +407,21 @@ class Db(ConnectionMixin, PoseSegmentMixin, StatusMixin, DeleteMixin,
             )
 
     def delete_manual_events(self, desktop: int, target: str,
-                             up_to_step: Optional[int] = None) -> int:
+                             up_to_step: Optional[int] = None,
+                             evidence_view: Optional[str] = None) -> int:
         """Drop the hand-written events of one target; returns how many went.
 
         ``up_to_step`` keeps the ones after that step: deleting an instance
-        added in S1 takes its initial state (step 0) with it and nothing else.
+        added in S1 takes its initial state (step 0) with it and nothing else
+        -- except, with ``evidence_view``, the later ones that carry it too
+        (the removal 「拆下于第 k 步」 wrote, :func:`tda.core.extra.initial_events`).
         """
         sql = "DELETE FROM state_event WHERE desktop=? AND target=? AND auto=0"
         args: list[Any] = [desktop, target]
-        if up_to_step is not None:
+        if up_to_step is not None and evidence_view is not None:
+            sql += " AND (step<=? OR evidence_view=?)"
+            args += [int(up_to_step), str(evidence_view)]
+        elif up_to_step is not None:
             sql += " AND step<=?"
             args.append(int(up_to_step))
         with self._tx():

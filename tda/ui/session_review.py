@@ -76,8 +76,14 @@ class ReviewMixin:
         # that reloads on every emit must not reload the frame being left
         # force: the layer was committed or empty before verify_frame let this
         # frame through, so there is nothing left for the gate to protect
-        if not self._step_to([s for s in self._available if s < key.step], last=True,
-                             force=True):
+        # the components gallery (task U10) has no reverse walk: Space goes on
+        # to the next shot
+        moved = (self._step_to([s for s in self._available if s > key.step], last=False,
+                               force=True)
+                 if getattr(self, "gallery", False) else
+                 self._step_to([s for s in self._available if s < key.step], last=True,
+                               force=True))
+        if not moved:
             self._announce()
         return True
 

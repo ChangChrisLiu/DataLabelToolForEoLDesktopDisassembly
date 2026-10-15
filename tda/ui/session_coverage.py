@@ -17,9 +17,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
-from tda.core.compiler import select_keyframe
+from tda.core.compiler import marked_absent, select_keyframe
 from tda.core.db import Db
-from tda.core.model import FrameKey, ShapeKeyframe
+from tda.core.model import FrameKey, ShapeKeyframe, is_component_view
 from tda.core.states import needs_geom
 from tda.core.taxonomy import Taxonomy
 from tda.core.truth_inputs import InputCache, instances_of, pose_segment_of, state_of
@@ -58,17 +58,22 @@ def coverage(db: Db, tax: Taxonomy, desktop: int, view: str, steps: Iterable[int
     cache = cache if cache is not None else InputCache()
     instances = instances_of(db, desktop, cache)
     chains = _chains(db, desktop, view)
+    gallery = is_component_view(view)
     out: dict[int, FrameCoverage] = {}
     for step in steps:
         step = int(step)
         key = FrameKey(desktop, step, view)
         seg = pose_segment_of(db, key, cache)
-        state = state_of(db, tax, desktop, step, cache)
+        state = state_of(db, tax, desktop, step, cache, view=view)
         hw = _known_hw(db, key)  # once per frame, and never off the image file
         # the very call the compiler's inputs make, with this frame's staging
         # area (spec 3.3 step 2): the queues and the timeline are then talking
         # about the same set of instances as the truth table
-        bench_roi = db.bench_roi(desktop, view, seg)
+        bench_roi = None if gallery else db.bench_roi(desktop, view, seg)
+        # a gallery part said not to be in this shot (看不见, task U10) is
+        # settled, exactly as the compiler has it (marked_absent)
+        absent = ({name for name, fo in db.frame_overrides(key).items()
+                   if marked_absent(fo)} if gallery else set())
         found = FrameCoverage(step=step)
         needs = needs_geom(instances, state, tax, bench_roi=bench_roi)
         for instance, kind in sorted(needs.items()):
@@ -77,6 +82,8 @@ def coverage(db: Db, tax: Taxonomy, desktop: int, view: str, steps: Iterable[int
             chosen = select_keyframe(chains.get((instance, seg, placement), []), step)
             if chosen is not None and _usable(chosen, hw):
                 found.drawn += 1
+            elif instance in absent:
+                continue
             elif kind == "box":
                 found.bench_missing.append(instance)
             else:

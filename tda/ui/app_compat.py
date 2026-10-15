@@ -439,7 +439,8 @@ def removed_rows(session: Any) -> list[dict]:
         return []
     key = session.current()
     here = {str(row.get("key")) for row in session.instance_rows()}
-    state = state_of(db, tax, key.desktop, key.step)
+    # a components-gallery shot (task U10) has the gallery's one state
+    state = state_of(db, tax, key.desktop, key.step, view=key.view)
     known = instances_of(db, key.desktop)
     # a cover / latch taken out by its own action may only have been opened (U9)
     offers = getattr(session, "verb_offers", None)

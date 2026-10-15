@@ -58,7 +58,7 @@ from tda.core import masks
 from tda.core.cache import configured_cache_dir
 from tda.core.compiler import CompiledFrame, compile_frame, select_keyframe
 from tda.core.db import RESOLUTIONS, Db
-from tda.core.model import FrameKey, FrameOverride, ShapeKeyframe
+from tda.core.model import FrameKey, FrameOverride, ShapeKeyframe, is_component_view
 from tda.core.states import needs_geom
 from tda.core.taxonomy import Taxonomy
 from tda.core.truth_fresh import FreshMixin, digest_of
@@ -87,6 +87,7 @@ from tda.core.truth_inputs import (
     instances_of,
     pose_segment_of,
     state_of,
+    view_steps,
 )
 
 __all__ = ["AGREE_AGAIN", "BLOCKING_PROBLEMS", "BOX_TOL_PX", "BY_HAND", "DUPLICATE",
@@ -615,19 +616,20 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
         cache = InputCache()
         instances = instances_of(self.db, desktop, cache)
         events = events_of(self.db, self.tax, desktop, cache)
-        bench_roi = self.db.bench_roi(desktop, view, keyframe.pose_segment)
+        bench_roi = (None if is_component_view(view)
+                     else self.db.bench_roi(desktop, view, keyframe.pose_segment))
         chain = [
             kf
             for kf in self.db.keyframes(desktop, view, instance)
             if kf.pose_segment == keyframe.pose_segment and kf.placement == keyframe.placement
         ]
         out: list[int] = []
-        for rec in self.db.steps(desktop):
-            step = rec.step
+        # shots, not steps, on a components-gallery view (task U10)
+        for step in view_steps(self.db, desktop, view):
             key = FrameKey(desktop, step, view)
             if pose_segment_of(self.db, key, cache) != keyframe.pose_segment:
                 continue
-            state = state_of(self.db, self.tax, desktop, step, cache)
+            state = state_of(self.db, self.tax, desktop, step, cache, view=view)
             if instance not in needs_geom(instances, state, self.tax,
                                           bench_roi=bench_roi):
                 continue

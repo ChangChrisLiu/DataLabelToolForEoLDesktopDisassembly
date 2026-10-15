@@ -41,6 +41,7 @@ from tda.ui.app_adopt import AdoptMixin
 from tda.ui.app_assist import AssistMixin
 from tda.ui.app_commit import CommitMixin
 from tda.ui.app_edit import EditMixin
+from tda.ui.app_gallery import GalleryMixin
 from tda.ui.app_guide import GuideMixin
 from tda.ui.app_keys import FLASH_UNNAMED, KeysMixin
 from tda.ui.app_pose import PoseMixin
@@ -77,7 +78,7 @@ STEPS_UNSAVED = ("Steps 里有没 Apply 的修改（例如刚加的零件）：�
 
 
 class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateMixin,
-                 VerbMixin, AssistMixin, GuideMixin, KeysMixin, RawDataMixin,
+                 VerbMixin, AssistMixin, GuideMixin, KeysMixin, RawDataMixin, GalleryMixin,
                  ToolsMixin, StatusMixin, ShellMixin, QMainWindow):
     """One annotator, one desktop/view, three modes."""
 
@@ -121,6 +122,7 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateM
         self._init_verb()
         self._init_assist(sam_queue)
         self._init_rawdata()
+        self._init_gallery()
         self._init_guide()      # last: it reads the bars and the raw-drive state
         self._connect_session()
 
@@ -233,6 +235,7 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateM
         self.on_frame_changed_pose(key)
         self.on_frame_changed_assist(key)
         self.mark_view_buttons()          # once per machine, not per frame
+        self._set_title()                 # 「零件合照 OAK1 第 k/N 张」 in the gallery
         self.update_status()
 
     def _render_nothing(self) -> None:
@@ -410,6 +413,10 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateM
             self._sync_view_buttons()
             return
         step = self.session.current().step if compat.is_open(self.session) else None
+        # a step number means nothing in the components gallery and a shot
+        # number nothing in the sequence (U10): across the two, land where this
+        # machine was last left in the other family (first time: its start)
+        step = self.landing_step(view, step)
 
         def switch() -> None:
             self.session.open(int(self.session.desktop), view, force=True)
@@ -686,6 +693,14 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateM
 
     @S.guard
     def _on_dirty(self, dirty: bool) -> None:
+        self._set_title(dirty)
+
+    def _set_title(self, dirty: Optional[bool] = None) -> None:
+        """``Teardown Annotator — chang[ — 零件合照 OAK1 第 2/5 张] *``."""
+        if dirty is None:
+            dirty = bool(getattr(self.session, "dirty", False))
+        gallery = self.gallery_title_text()
+        where = f" — {gallery}" if gallery else ""
         mark = " *" if dirty else ""
-        self.setWindowTitle(f"Teardown Annotator — {self.annotator}{mark}")
+        self.setWindowTitle(f"Teardown Annotator — {self.annotator}{where}{mark}")
 

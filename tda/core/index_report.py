@@ -5,12 +5,17 @@ import os
 from datetime import datetime
 from typing import Any
 
-from tda.core.model import VIEWS
+from tda.core.model import VIEWS, is_component_view
 
 _HEADER = (
     "| desktop | n_steps | frames | missing scan | missing oak1 | "
-    "missing oak2 | missing rs | issues |"
+    "missing oak2 | missing rs | gallery shots | issues |"
 )
+
+
+def _gallery(di: Any) -> int:
+    """How many components-gallery shots (task U10) the desktop has, all cameras."""
+    return sum(1 for key in di.frames if is_component_view(key.view))
 
 
 def compact(steps: list[int]) -> str:
@@ -33,7 +38,8 @@ def compact(steps: list[int]) -> str:
 def write_report(idx: dict[int, Any], path: str) -> None:
     """Write a per-desktop markdown report: step counts, missing frames, issues."""
     n_steps = sum(di.n_steps for di in idx.values())
-    n_frames = sum(len(di.frames) for di in idx.values())
+    n_gallery = sum(_gallery(di) for di in idx.values())
+    n_frames = sum(len(di.frames) for di in idx.values()) - n_gallery
     lines = [
         "# Frame index report",
         "",
@@ -41,11 +47,12 @@ def write_report(idx: dict[int, Any], path: str) -> None:
         f"- desktops: {len(idx)}",
         f"- logical steps: {n_steps}",
         f"- frames: {n_frames}",
+        f"- components gallery shots: {n_gallery}",
         "",
         "## Per desktop",
         "",
         _HEADER,
-        "|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     totals = {v: 0 for v in VIEWS}
     for d, di in sorted(idx.items()):
@@ -53,12 +60,13 @@ def write_report(idx: dict[int, Any], path: str) -> None:
         for v in VIEWS:
             totals[v] += per[v]
         lines.append(
-            f"| {d} | {di.n_steps} | {len(di.frames)} | {per['scan']} | {per['oak1']} | "
-            f"{per['oak2']} | {per['rs']} | {len(di.issues)} |"
+            f"| {d} | {di.n_steps} | {len(di.frames) - _gallery(di)} | {per['scan']} | "
+            f"{per['oak1']} | {per['oak2']} | {per['rs']} | {_gallery(di)} | "
+            f"{len(di.issues)} |"
         )
     lines.append(
         f"| **total** | {n_steps} | {n_frames} | {totals['scan']} | {totals['oak1']} | "
-        f"{totals['oak2']} | {totals['rs']} | "
+        f"{totals['oak2']} | {totals['rs']} | {n_gallery} | "
         f"{sum(len(di.issues) for di in idx.values())} |"
     )
 

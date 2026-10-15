@@ -37,6 +37,9 @@ SPLIT_PREFIX = "split+"
 #: re-traces that version instead (``_cannot_split``), and said nothing -- the
 #: D13 annotator believed they had split (task U6).
 NO_SPLIT = "这一帧就是这版形状的起点：Ctrl+K 等于重画这一版，没有拆分"
+#: A shape committed on a components-gallery part marked 「看不见」 (task U10).
+ABSENT_CLEARED = ("画好了；它在这张里，「看不见」已取消（Ctrl+Z 一起撤回）/ drawn: it is in "
+                  "this shot, so 'not in this shot' was taken back")
 #: ``Ctrl+K`` on an open ✂ row with the layer untouched (U8 round 2b): the
 #: version boundary is cut here and the shape on this side stays as it is.
 SPLIT_UNCHANGED = ("已在这帧切出新版本（形状不变）：另一侧的帧现在单独一版，到那边用 Enter "
@@ -340,6 +343,10 @@ class CommitMixin:
                              instance, key.step)
             self.report(SPLIT_UNCHANGED, hold_ms=6000)
             return
+        if result.get("cleared_absent"):
+            # a shape drawn on a part marked 「看不见」 on a gallery shot (U10)
+            self.report(ABSENT_CLEARED, hold_ms=6000)
+            return
         self.report(f"committed ({scope}): {result.get('changed', '')}".strip())
 
     def _commit_extra(self, key, instance: str,
@@ -453,13 +460,13 @@ class CommitMixin:
             # One more frame is done: both places that count say so.
             self.timeline.refresh_statuses()
             self.refresh_desktop_counts()
-            self.report(f"step {step} confirmed")
+            self.report(f"{self.frame_word(step)} confirmed")
         else:
             # One line, whatever the frame is missing.  A real start frame has
             # 60+ missing shapes, which put 2,550 characters into the one-line
             # status bar and asked the window to be 30,612 px wide.
             count = self.task_card.problem_count()
-            self.report(f"step {step} is not complete: {count} problem(s) — "
+            self.report(f"{self.frame_word(step)} is not complete: {count} problem(s) — "
                         f"见任务卡 / see the task card")
             self.refresh_guidance()      # the pane now says what blocks Space
         return bool(ok)

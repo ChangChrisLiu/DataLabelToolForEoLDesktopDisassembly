@@ -149,6 +149,10 @@ ACTIONS: tuple[Action, ...] = (
     _view("oak1", "F2", "切换到 OAK 正面视图"),
     _view("oak2", "F3", "切换到 OAK 侧面视图"),
     _view("rs", "F4", "切换到 RealSense 视图"),
+    # Task U10: the components gallery (零件合照), one view per camera.
+    _view("cmp_oak1", "F6", "切换到零件合照 OAK1（拆下来的零件摆在桌上拍的照片）"),
+    _view("cmp_oak2", "F7", "切换到零件合照 OAK2"),
+    _view("cmp_rs", "F8", "切换到零件合照 RealSense"),
     *[_visibility(i) for i in range(7)],
     # -- frame navigation ---------------------------------------------------
     Action("step_back", ("PgDown",), "act_step", "Previous step (k-1)",
@@ -247,6 +251,10 @@ ACTIONS: tuple[Action, ...] = (
            short="重做"),
     Action("toggle_hidden", ("H",), "act_toggle_hidden", "Hide/show instance",
            "隐藏或显示选中实例", "edit", (), _ANN),
+    # Task U10: ``I`` for invisible / 看不见 -- free in every mode.
+    Action("mark_absent", ("I",), "act_mark_absent",
+           "Components gallery: the card's part is not in this shot (again: take it back)",
+           "零件合照：任务卡上这个零件不在这张里（看不见；再按一次撤回）", "edit", (), _ANN),
     Action("cycle_visibility", ("V",), "act_cycle_visibility", "Cycle visibility",
            "循环切换可见性取值", "edit", (), _ANN),
     # Task U8: the state the picture shows when the log's is different (a clip

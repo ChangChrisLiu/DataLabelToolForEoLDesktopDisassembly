@@ -70,6 +70,33 @@ PREVIEW_SHOWN = 6
 #: What adding them does to the confirmed frames of the open view (task U7).
 DEMOTION = ("{who}出现在 {n} 个已确认帧（{steps}）里；添加后这些帧会回到“需复核”，"
             "补画后逐帧按 Space 即可。")
+#: The same for the other views (task U10: the components gallery is a family
+#: of its own, and a part taken out joins every confirmed shot of it).
+DEMOTION_ELSEWHERE = "另外：{views} 的已确认帧也会回到“需复核”。"
+#: 「拆下于第 k 步」's blank value (task U10).
+NEVER_REMOVED = "（不拆 / 跟着装它的零件走）"
+#: The removal field's tooltip.
+REMOVED_TIP = ("这个零件在第几步被拆下来（之后在零件合照里列出、序列里不再要它）；"
+               "装在别的零件上、跟着它一起离开的，留空 / the step it was taken out at")
+
+
+def elsewhere_text(others: dict) -> str:
+    """The sentence for the confirmed frames of the *other* views; ``""`` for none.
+
+    ``others`` is ``{view: [steps]}``; a gallery view is named as the window
+    names it (零件合照·OAK1) and counted in shots.
+    """
+    from tda.core.model import ALL_VIEWS
+    from tda.ui.gallery import is_component_view, view_label
+
+    order = {view: i for i, view in enumerate(ALL_VIEWS)}
+    parts = []
+    for view, steps in sorted(others.items(), key=lambda kv: (order.get(kv[0], 99), kv[0])):
+        if not steps:
+            continue
+        unit = "张" if is_component_view(view) else "帧"
+        parts.append(f"{view_label(view)} {len(steps)} {unit}")
+    return DEMOTION_ELSEWHERE.format(views="、".join(parts)) if parts else ""
 
 
 def class_choices(data: StepTableData) -> list[tuple[str, str]]:
@@ -113,10 +140,13 @@ class AddPartsDialog(QDialog):
 
     def __init__(self, data: StepTableData, parent: Optional[QWidget] = None,
                  cls: Optional[str] = None,
-                 demotion: Optional[Callable[[dict], list[int]]] = None) -> None:
+                 demotion: Optional[Callable[[dict], list[int]]] = None,
+                 elsewhere: Optional[Callable[[dict], dict]] = None) -> None:
         super().__init__(parent)
         self.data = data
         self._demotion = demotion
+        #: ``{view: [steps]}`` the parts would demote in the other views (U10).
+        self._elsewhere = elsewhere
         self.setWindowTitle(TITLE)
         self.class_combo = QComboBox(self)
         for label, name in class_choices(data):
@@ -128,6 +158,11 @@ class AddPartsDialog(QDialog):
         self.count_spin.setValue(1)
         self.parent_combo = QComboBox(self)
         self.state_combo = QComboBox(self)
+        #: 「拆下于第 k 步」 (task U10); 0 is "never" (its special text).
+        self.removed_spin = QSpinBox(self)
+        self.removed_spin.setRange(0, max(int(data.last_step()), 0))
+        self.removed_spin.setSpecialValueText(NEVER_REMOVED)
+        self.removed_spin.setToolTip(REMOVED_TIP)
         self.note_edit = QLineEdit(self)
         self.note_edit.setPlaceholderText("可选 / optional，例如：空槽的卡扣")
         self.preview = QLabel("", self)
@@ -152,8 +187,9 @@ class AddPartsDialog(QDialog):
         self.class_combo.currentIndexChanged.connect(self._on_class)
         self.disc_combo.currentIndexChanged.connect(self._refresh_preview)
         self.count_spin.valueChanged.connect(self._refresh_preview)
-        self.parent_combo.currentIndexChanged.connect(self._refresh_preview)
+        self.parent_combo.currentIndexChanged.connect(self._on_parent)
         self.state_combo.currentIndexChanged.connect(self._refresh_preview)
+        self.removed_spin.valueChanged.connect(self._refresh_preview)
         self._on_class()
 
     def _build(self) -> None:
@@ -165,6 +201,7 @@ class AddPartsDialog(QDialog):
         form.addRow("数量 / count", self.count_spin)
         form.addRow("装在 / rides on", self.parent_combo)
         form.addRow("画面里的状态 / state", self.state_combo)
+        form.addRow("拆下于第 __ 步 / taken out at", self.removed_spin)
         form.addRow("备注 / note", self.note_edit)
         layout = QVBoxLayout(self)
         layout.addWidget(intro)
@@ -200,7 +237,28 @@ class AddPartsDialog(QDialog):
             "state": str(self.state_combo.currentData() or "") or None,
             "note": self.note_edit.text().strip(),
             "attrs": self._attrs(),
+            "removed_at": self._removed_at(),
         }
+
+    def _removed_at(self) -> Optional[int]:
+        """「拆下于第 k 步」, or ``None`` for never / with its parent."""
+        value = int(self.removed_spin.value())
+        return value if value > 0 and self.removed_spin.isEnabled() else None
+
+    def _default_removal(self) -> None:
+        """Pre-fill 「拆下于」: the last step for a part riding on nothing, else blank."""
+        defaults = (self.data.extra_defaults(self.cls) if self.cls else
+                    {"removable": False, "last_step": 0})
+        removable = bool(defaults.get("removable"))
+        self.removed_spin.blockSignals(True)
+        self.removed_spin.setEnabled(removable)
+        self.removed_spin.setValue(int(defaults.get("last_step") or 0)
+                                   if removable and self._parent() is None else 0)
+        self.removed_spin.blockSignals(False)
+
+    def _on_parent(self, *_args) -> None:
+        self._default_removal()
+        self._refresh_preview()
 
     # -- keeping the form consistent --------------------------------------- #
     def _on_class(self, *_args) -> None:
@@ -230,6 +288,7 @@ class AddPartsDialog(QDialog):
             self.state_combo.addItem(f"{state_zh(state)}  {state}", state)
         index = self.state_combo.findData(defaults["state"])
         self.state_combo.setCurrentIndex(max(index, 0))
+        self._default_removal()
         self._refresh_preview()
 
     def demoted_frames(self) -> list[int]:
@@ -241,10 +300,30 @@ class AddPartsDialog(QDialog):
         except Exception:  # noqa: BLE001 - a warning is never worth a failure
             return []
 
+    def demoted_elsewhere(self) -> dict:
+        """``{view: [steps]}`` the parts would demote in the other views (U10)."""
+        if self._elsewhere is None or not self.keys():
+            return {}
+        try:
+            return {str(v): sorted(int(s) for s in steps)
+                    for v, steps in (self._elsewhere(self.values()) or {}).items() if steps}
+        except Exception:  # noqa: BLE001 - a warning is never worth a failure
+            return {}
+
     def _refresh_preview(self, *_args) -> None:
         keys = self.keys()
-        self.preview.setText(preview_text(keys, self._parent()))
+        removed = self._removed_at()
+        if keys and removed is not None:
+            # taken out on its own: it does not leave with what it rides on
+            text = preview_text(keys, None).splitlines()[0]
+            text += (f"\n第 {removed} 步拆下：之前的帧要画它，之后列在零件合照里 / "
+                     f"taken out at step {removed}")
+        else:
+            text = preview_text(keys, self._parent())
+        self.preview.setText(text)
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(bool(keys))
         text = demotion_text(self.demoted_frames(), self.count_spin.value())
+        elsewhere = elsewhere_text(self.demoted_elsewhere())
+        text = "".join(t for t in (text, elsewhere) if t)
         self.warning.setText(text)
         self.warning.setVisible(bool(text))

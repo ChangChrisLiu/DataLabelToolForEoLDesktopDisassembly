@@ -21,6 +21,7 @@ from typing import Optional
 
 from tda.ui import app_actions as A
 from tda.ui import app_support as S
+from tda.ui.gallery import NO_VERB
 
 __all__ = ["NO_VERB_TARGET", "STEPS_MOVED", "VerbMixin", "verb_note"]
 
@@ -73,6 +74,8 @@ class VerbMixin:
     @S.guard
     def act_correct_verb(self) -> None:
         """``Shift+T``: the selected open part was taken out (a removed one: only opened)."""
+        if self._gallery_verb_refused():
+            return
         instance = self._verb_target()
         if not instance:
             self._refuse_state(NO_VERB_TARGET)
@@ -88,7 +91,23 @@ class VerbMixin:
         if self.mode != A.MODE_ANNOTATE:
             self._refuse_state(f"{REFUSED}只在标注模式可用 / Annotate mode only")
             return
+        if self._gallery_verb_refused():
+            return
         self.correct_verb_here(instance, verb)
+
+    def _gallery_verb_refused(self) -> bool:
+        """A components-gallery shot is open: its number is a shot, not a step (U10).
+
+        The step table is never changed from there -- the verb would flip at
+        the step that happens to carry the shot's number. The key and the
+        button both stop here; :meth:`tda.ui.session_verb.VerbMixin.verb_offers`
+        offers nothing on a shot, so the button never shows a verb there.
+        """
+        in_gallery = getattr(self, "in_gallery", None)
+        if in_gallery is None or not in_gallery():
+            return False
+        self._refuse_state(f"{REFUSED}{NO_VERB}")
+        return True
 
     def correct_verb_here(self, instance: str, to: Optional[str] = None) -> Optional[dict]:
         """Flip the verb, repaint what reads it, and say what changed."""

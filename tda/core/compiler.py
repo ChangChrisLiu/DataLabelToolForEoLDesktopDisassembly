@@ -73,7 +73,9 @@ occluded, and it is reported with ``visible=None``, ``amodal=None``,
 Problems reported in :attr:`CompiledFrame.problems`
 ---------------------------------------------------
 * ``missing_shape:<instance>`` -- an instance inside the chassis needs geometry
-  but has no keyframe for this step; this blocks confirming the frame.
+  but has no keyframe for this step; this blocks confirming the frame. On a
+  components-gallery shot (task U10) every part asked for is such an instance,
+  unless the annotator said it is not in that shot (:func:`marked_absent`).
 * ``bench_missing:<instance>`` -- the same for an instance on the bench, which
   only makes the frame's ``bench_annotated`` false and must **not** block.
 * ``zorder_missing:<instance>/<part>`` -- that layer is absent from the z-order;
@@ -103,6 +105,7 @@ from tda.core.model import (
     Similarity,
     Visibility,
     ZOrderRec,
+    is_component_view,
 )
 
 __all__ = [
@@ -110,6 +113,7 @@ __all__ = [
     "CompiledInstance",
     "above",
     "compile_frame",
+    "marked_absent",
     "warp_slack",
     "derive_visibility",
     "placements_for",
@@ -121,6 +125,17 @@ GEOM_BOX = "box"
 IN_CHASSIS = Placement.IN_CHASSIS.value
 ON_BENCH = Placement.ON_BENCH.value
 OUT_OF_VIEW = Visibility.OUT_OF_VIEW.value
+
+
+def marked_absent(override: Optional[FrameOverride]) -> bool:
+    """Has the annotator said a part is not in this picture at all (「看不见」)?
+
+    An ``out_of_view`` label with no pixels of its own. On a components-gallery
+    shot (task U10) that settles a part with no shape: the layout was
+    re-arranged between shots and not every part is in every one.
+    """
+    return (override is not None and override.visible_rle is None
+            and str(override.visibility) == OUT_OF_VIEW)
 
 _MISSING = "missing"
 
@@ -770,11 +785,17 @@ def compile_frame(
     #: measured inside this and nowhere else.
     windows: dict[str, Optional[Window]] = {}
     boxes: dict[str, Optional[tuple]] = {}
+    gallery = is_component_view(key.view)
     for inst in instances:
         kf = selected[inst]
         if kf is None:
             kinds[inst] = _MISSING
-            if placement_of[inst] != ON_BENCH:
+            if gallery:
+                # a components-gallery shot (task U10): every part asked for is
+                # either drawn or said not to be in this shot (看不见)
+                if not marked_absent(frame_overrides.get(inst)):
+                    problems.append(f"missing_shape:{inst}")
+            elif placement_of[inst] != ON_BENCH:
                 problems.append(f"missing_shape:{inst}")
             elif bench_roi is not None:
                 # a part on the bench is only annotated -- and only missing --

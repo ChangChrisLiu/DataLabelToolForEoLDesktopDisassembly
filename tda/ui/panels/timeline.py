@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from tda.core.model import is_component_view
 from tda.ui import session_api as api
 from tda.ui.panels import session_is_open
 
@@ -140,6 +141,8 @@ STATUS_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 #: not carry across it, so where the boundary sits is worth seeing while
 #: scrolling rather than only in the split dialog.
 BREAK_ROLE = int(Qt.ItemDataRole.UserRole) + 2
+#: A components-gallery row's position among the shots (task U10); 0 elsewhere.
+SHOT_ROLE = int(Qt.ItemDataRole.UserRole) + 3
 
 #: Colour of that boundary mark.
 BREAK_COLOR = QColor(120, 170, 235)
@@ -173,13 +176,19 @@ SKIPPED_TIP = ("这一步在步骤表里标了 ignore：不用做，也不算进
                "marked ignore in the step table: nothing to do here, and not counted")
 
 
-def row_text(step: int, status: str, skipped: bool = False) -> str:
-    """A row's label: the step, then "无图像" or "跳过" when it is not work."""
+def row_text(step: int, status: str, skipped: bool = False, shot: int = 0) -> str:
+    """A row's label: the step, then "无图像" or "跳过" when it is not work.
+
+    ``shot``: on a components-gallery view (task U10) the row's position among
+    the shots, whose frames are photos of the laid-out parts rather than steps
+    -- ``第 2 张``; ``0`` on the sequence.
+    """
+    name = f"第 {int(shot)} 张" if shot else f"Step {step}"
     if status == api.STATUS_MISSING:
-        return f"Step {step} · {NO_IMAGE_TEXT}"
+        return f"{name} · {NO_IMAGE_TEXT}"
     if skipped:
-        return f"Step {step} · {SKIPPED_TEXT}"
-    return f"Step {step}"
+        return f"{name} · {SKIPPED_TEXT}"
+    return name
 
 
 def status_brush(status: str) -> QBrush:
@@ -320,9 +329,15 @@ class TimelinePanel(QWidget):
         try:
             self._list.clear()
             skipped = self._skipped_steps()
+            # a gallery shot is named by its position (第 k 张), task U10: a sheet
+            # row's photo is shot 1013 in the database and the 1st on screen
+            shots = is_component_view((self._context or (0, ""))[1])
+            ordinal = ({s: i for i, s in enumerate(sorted(self._session.steps()), start=1)}
+                       if shots else {})
             for step in self._ordered_steps():
                 item = QListWidgetItem(f"Step {step}")
                 item.setData(STEP_ROLE, step)
+                item.setData(SHOT_ROLE, ordinal.get(step, 0))
                 self._set_status(item, step, self._status(step), step in skipped)
                 item.setData(BREAK_ROLE, step in self._breaks)
                 item.setSizeHint(
@@ -540,6 +555,8 @@ class TimelinePanel(QWidget):
         if not session_is_open(self._session):
             return []
         steps = sorted(self._session.steps())
+        if is_component_view((self._context or (0, ""))[1]):
+            return steps    # the gallery walks forwards (Space -> next shot), U10
         return list(reversed(steps)) if self._descending else steps
 
     def _current_context(self) -> Optional[tuple[int, str]]:
@@ -607,7 +624,7 @@ class TimelinePanel(QWidget):
         step typed ``ignore`` that has an image says 跳过 the same way (U2d).
         """
         item.setData(STATUS_ROLE, status)
-        item.setText(row_text(step, status, skipped))
+        item.setText(row_text(step, status, skipped, int(item.data(SHOT_ROLE) or 0)))
         missing = status == api.STATUS_MISSING
         tip = NO_IMAGE_TIP if missing else SKIPPED_TIP if skipped else None
         # ``None`` clears the role: an empty QBrush would paint no text at all

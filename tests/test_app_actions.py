@@ -78,7 +78,9 @@ def test_action_names_and_bindings_are_unique():
 def test_views_are_f1_to_f4_and_digits_set_visibility():
     """The ruling of the brief: ``F1..F4`` are views, ``1..7`` visibility."""
     views = {a.args[0]: a.keys[0] for a in A.ACTIONS if a.slot == "act_set_view"}
-    assert views == {"scan": "F1", "oak1": "F2", "oak2": "F3", "rs": "F4"}
+    assert views == {"scan": "F1", "oak1": "F2", "oak2": "F3", "rs": "F4",
+                     # the components gallery (task U10); F5 stays "recompile"
+                     "cmp_oak1": "F6", "cmp_oak2": "F7", "cmp_rs": "F8"}
     digits = sorted(a.keys[0] for a in A.ACTIONS if a.slot == "act_set_visibility")
     assert digits == [str(i) for i in range(1, 8)]
 
@@ -185,7 +187,9 @@ def test_annotation_guide_embeds_the_generated_table():
     # workflows (conflicts, state correction) and the hints trimmed for them
     # put back. Raised to 7,500 for U9 (Shift+T, taken out not opened): one
     # line in section 3, the section 8 answer rewritten, U7/U8 tightened.
-    assert sum(len(l) for l in prose) <= 7500, (
+    # Raised to 7,600 for U10 (the components gallery: what it is, how to open
+    # it, 「看不见」 -- three lines).
+    assert sum(len(l) for l in prose) <= 7600, (
         "the prose is the part that has to stay readable")
 
 

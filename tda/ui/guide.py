@@ -150,6 +150,9 @@ class GuideFacts:
     #: (``AnnotationSession.retrace_reach``), computed once when the edit
     #: starts; empty for a new shape (task U7).
     retrace_frozen: tuple[int, ...] = ()
+    #: A components-gallery shot (task U10): its title, ``零件合照 OAK1 第 2/5
+    #: 张``; ``""`` on the teardown sequence.
+    gallery: str = ""
 
 
 @dataclass(frozen=True)
@@ -175,6 +178,8 @@ ROI_NOW = "回答机箱范围（ROI）：拖紫红框的白色小方块调整，
 #: A stored ROI opened to check it: Esc keeps it, it skips nothing (round 2).
 ROI_EDIT_NOW = "机箱范围（ROI）：拖白色小方块调整，Enter 保存 / Esc 不改"
 ROI_DONE = "机箱范围（ROI）✓"
+#: A components-gallery shot's first line (task U10): no ROI question at all.
+ROI_GALLERY = "零件合照：整张图都是工作范围 ✓"
 ROI_NONE = "机箱范围（ROI）：这一段不用 ✓"
 ROI_WARN = ("机箱范围（ROI）还没确认：画布下方点「确认建议框」，或 Shift+R 重画"
             "（不挡你继续）")
@@ -195,6 +200,10 @@ COMMIT_SPLIT = "Ctrl+K 提交（从这帧起新版本）— 这一条不要按 E
 #: Step ④ while a layering suggestion is on the bar (task U6).
 LAYERING_COMMIT = "层级建议：Enter 只改形状 / L 改层级（先看影响哪些帧，再按 L）"
 CONFIRM = "全部画完：Space 确认整帧，自动退到上一帧"
+#: Steps ④ and ⑤ on a components-gallery shot (task U10): no Ctrl+K, and Space
+#: walks forwards.
+COMMIT_GALLERY = "Enter 提交；不在这张里的零件：任务卡上右键「看不见」或按 I"
+CONFIRM_GALLERY = "每个零件都画了或「看不见」：Space 确认这张，自动到下一张"
 #: The same line while the card's pane lists what stops Space (U2d).
 CONFIRM_BLOCKED = "先处理任务卡下面的 {n} 个问题（它们挡住 Space）"
 NOTHING_TO_DRAW = "这一帧不用画"
@@ -240,6 +249,8 @@ def _title(facts: GuideFacts) -> str:
     step = facts.step
     if step is None:
         return "现在做什么"
+    if facts.gallery:
+        return facts.gallery          # 零件合照 OAK1 第 k/N 张 (task U10)
     if facts.neighbour is None:
         look = "还没开始拆的样子" if facts.forward_start else "已经拆完的样子"
         return f"第 {step} 帧（起点：{look}）"
@@ -247,6 +258,8 @@ def _title(facts: GuideFacts) -> str:
 
 
 def _roi_line(facts: GuideFacts) -> tuple[str, str]:
+    if facts.gallery:
+        return (DONE, ROI_GALLERY)
     if facts.roi_editing:
         return (NOW, ROI_EDIT_NOW if facts.roi_stored else ROI_NOW)
     if facts.roi_stored:
@@ -272,8 +285,9 @@ def _steps(facts: GuideFacts, at: int, *, pick_text: str = "", draw_text: str = 
         None,
         pick_text or PICK,
         draw_text or (DRAW_NO_SAM if facts.sam_failed else DRAW),
-        commit_text or COMMIT,
-        CONFIRM_BLOCKED.format(n=facts.blockers) if facts.blockers else CONFIRM,
+        commit_text or (COMMIT_GALLERY if facts.gallery else COMMIT),
+        CONFIRM_BLOCKED.format(n=facts.blockers) if facts.blockers else (
+            CONFIRM_GALLERY if facts.gallery else CONFIRM),
     ]
     if nothing:
         texts[1] = texts[2] = texts[3] = NOTHING_TO_DRAW
@@ -300,7 +314,8 @@ def plan_for(facts: GuideFacts) -> GuidePlan:
                          "Annotate 回到画布")
     if not facts.is_open:
         return GuidePlan(PHASE_CLOSED, "现在做什么",
-                         "这台机器的这个视角没有帧：在顶部换一台机器或换视角（F1–F4）")
+                         "这台机器的这个视角没有帧：在顶部换一台机器或换视角"
+                         "（F1–F4，零件合照 F6–F8）")
     if not facts.has_image and facts.raw_missing:
         # The resolver's own sentence already says what to plug in and that
         # F5 looks again; saying it twice was noise (round 2).  It is
@@ -368,9 +383,11 @@ def _annotate_plan(facts: GuideFacts) -> GuidePlan:
     if facts.scope:
         said = facts.scope_text or facts.scope
         # Task U6: Enter writes the shape; the layering is L's and asks first.
+        tail = ("" if facts.gallery else
+                "；Alt+Enter 只改这一帧，Ctrl+K 从这帧起新版本")
         return GuidePlan(PHASE_SCOPE, title,
-                         f"现在：看画布下方的提示条 — Enter 只改形状；要改层级（{said}）按 L；"
-                         f"Alt+Enter 只改这一帧，Ctrl+K 从这帧起新版本",
+                         f"现在：看画布下方的提示条 — Enter 只改形状；要改层级（{said}）按 L"
+                         f"{tail}",
                          _steps(facts, 3, pick_text=f"已选中：{editing}" if editing else "",
                                 commit_text=LAYERING_COMMIT),
                          "commit")
@@ -453,10 +470,14 @@ def _annotate_plan(facts: GuideFacts) -> GuidePlan:
                f"Space：单击一条去处理")
         return GuidePlan(PHASE_BLOCKED, title, now, _steps(facts, 4, nothing=nothing), "")
     if facts.frame_confirmed:
+        # the components gallery walks forwards (task U10)
+        move = "按 PgUp 去下一张继续" if facts.gallery else "按 PgDn 去上一帧继续"
         return GuidePlan(PHASE_CONFIRMED, title,
-                         "这一帧已经确认 ✓ — 按 PgDn 去上一帧继续；要改哪个零件就在"
-                         "任务卡上单击它",
+                         f"这一{'张' if facts.gallery else '帧'}已经确认 ✓ — {move}；"
+                         f"要改哪个零件就在任务卡上单击它",
                          _steps(facts, -1, nothing=nothing), "")
     return GuidePlan(PHASE_CONFIRM, title,
-                     "现在：任务卡都做完了 — 按 Space 确认整帧，自动退到上一帧",
+                     ("现在：任务卡都做完了 — 按 Space 确认这张，自动到下一张"
+                      if facts.gallery else
+                      "现在：任务卡都做完了 — 按 Space 确认整帧，自动退到上一帧"),
                      _steps(facts, 4, nothing=nothing), "confirm")

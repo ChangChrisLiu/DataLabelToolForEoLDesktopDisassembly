@@ -385,17 +385,19 @@ class StepTablePanel(MergeIntoMixin, QWidget):
 
     def add_parts(self, cls: str, count: int = 1, parent=DEFAULT_PARENT,
                   state: Optional[str] = None, note: str = "",
-                  attrs: Optional[dict] = None) -> list[str]:
+                  attrs: Optional[dict] = None,
+                  removed_at: Optional[int] = None) -> list[str]:
         """Stage ``count`` parts of ``cls`` the log never names (task U5b).
 
         Written by ``Apply`` with one ``op_log`` row, dropped by ``Revert``.
-        Returns the new keys; empty when the addition was refused (the reason
-        is in the status line).
+        ``removed_at`` is 「拆下于第 k 步」 (task U10). Returns the new keys;
+        empty when the addition was refused (the reason is in the status line).
         """
         made: list[str] = []
 
         def run() -> None:
-            made.extend(self.data.add_extras(cls, count, parent, state, note, attrs))
+            made.extend(self.data.add_extras(cls, count, parent, state, note, attrs,
+                                             removed_at=removed_at))
 
         self._command(run, "", staged=True)
         if made:
@@ -414,7 +416,7 @@ class StepTablePanel(MergeIntoMixin, QWidget):
         without blocking -- and returned, so a caller (or a test) can fill it in.
         """
         dialog = AddPartsDialog(self.data, self, cls=self.last_extra_class,
-                                demotion=self._demotion())
+                                demotion=self._demotion(), elsewhere=self._elsewhere())
         dialog.accepted.connect(lambda: self.add_parts(**dialog.values()))
         dialog.finished.connect(dialog.deleteLater)
         self.add_parts_dialog = dialog
@@ -430,7 +432,30 @@ class StepTablePanel(MergeIntoMixin, QWidget):
         def frames(values: dict) -> list[int]:
             return self.data.frames_demoted_by_extras(
                 self.db, view, values["cls"], values["count"], values.get("parent"),
-                values.get("state"), values.get("attrs"))
+                values.get("state"), values.get("attrs"), values.get("removed_at"))
+
+        return frames
+
+    def _elsewhere(self) -> Optional[Callable[[dict], dict]]:
+        """The confirmed frames of every *other* view the parts would demote (U10).
+
+        Both families: the teardown's views and the components gallery's (a
+        part taken out at 「拆下于第 k 步」 joins every confirmed shot). Only
+        views that hold a confirmed frame are asked; with no open view the
+        dialog says nothing at all, as :meth:`_demotion` does.
+        """
+        from tda.core.model import ALL_VIEWS
+
+        here = str(self.view_of() or "") if self.view_of is not None else ""
+        if not here:
+            return None
+
+        def frames(values: dict) -> dict:
+            confirmed = {v for v, _s in self.db.verified_frames(int(self.data.desktop))}
+            return {view: self.data.frames_demoted_by_extras(
+                        self.db, view, values["cls"], values["count"], values.get("parent"),
+                        values.get("state"), values.get("attrs"), values.get("removed_at"))
+                    for view in ALL_VIEWS if view != here and view in confirmed}
 
         return frames
 

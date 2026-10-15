@@ -24,7 +24,7 @@ from typing import Iterable, Optional
 
 from tda.core.compiler import select_keyframe
 from tda.core.db import Db
-from tda.core.model import FrameKey, Placement, Visibility
+from tda.core.model import FrameKey, Placement, Visibility, is_component_view
 from tda.core.states import FrameState, diff_states, needs_geom
 from tda.core.taxonomy import Taxonomy
 from tda.core.truth_inputs import (
@@ -105,7 +105,7 @@ def keyframe_at(db: Db, tax: Taxonomy, key: FrameKey, instance: str,
     at that step -- what the compiler selects from.
     """
     seg = pose_segment_of(db, key, cache)
-    held = state_of(db, tax, key.desktop, key.step, cache).get(instance)
+    held = state_of(db, tax, key.desktop, key.step, cache, view=key.view).get(instance)
     placement = IN_CHASSIS if held is None else held.placement
     chain = [kf for kf in db.keyframes(key.desktop, key.view, instance)
              if kf.pose_segment == seg and kf.placement == placement]
@@ -158,6 +158,8 @@ def split_rows_at(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
     confirmation -- the same gates :func:`tda.ui.session_tasks.task_card_for`
     has.
     """
+    if is_component_view(view):
+        return []   # a gallery shot has no state, so no boundary (task U10)
     cache = cache if cache is not None else InputCache()
     records = {rec.step: rec for rec in db.steps(desktop)}
     rec = records.get(step)

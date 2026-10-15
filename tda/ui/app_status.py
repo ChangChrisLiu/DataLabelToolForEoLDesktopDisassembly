@@ -20,6 +20,7 @@ from PySide6.QtWidgets import QLabel, QSizePolicy
 
 from tda.ui import app_compat as compat
 from tda.ui.app_widgets import ClickLabel
+from tda.ui.gallery import is_component_view, view_label
 
 __all__ = ["KNOWN_FAILURES", "StatusMixin", "explain_exception"]
 
@@ -148,6 +149,12 @@ class StatusMixin:
         # ... and what a queue signal compares against to decide whether the
         # frame on screen moved (U2h): out of the memo the status just filled.
         self._conflicts_seen = self._open_conflicts_here(key.step)
+        if is_component_view(key.view):
+            # the components gallery (task U10): shots, not steps
+            shots = sorted(steps)
+            index = shots.index(key.step) + 1 if key.step in shots else key.step
+            return (f"D{key.desktop} · {view_label(key.view)} · 第 {index}/{len(shots)} 张"
+                    f" · {status}")
         return f"D{key.desktop} · {key.view} · step {key.step}/{total} · {status}"
 
     def _open_conflicts_here(self, step: int) -> Optional[int]:

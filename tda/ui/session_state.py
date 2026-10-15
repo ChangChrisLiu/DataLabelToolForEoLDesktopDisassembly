@@ -34,6 +34,7 @@ from tda.core.truth import TruthService
 from tda.core.truth_inputs import InputCache, annotatable_steps, instances_of, state_of
 from tda.ui.class_names import state_zh
 from tda.ui.commands import Op
+from tda.ui.gallery import NO_STATE
 from tda.ui.session_api import SessionRefusal
 from tda.ui.session_ops import settle
 
@@ -169,6 +170,8 @@ class StateMixin:
         """:func:`gate` for the open frame: ``(choices, why not)``."""
         if not self.is_open:
             return [], "没有打开的帧"
+        if getattr(self, "gallery", False):
+            return [], NO_STATE   # a components-gallery shot has no state (U10)
         key = self.current()
         cache = InputCache()
         return gate(instances_of(self.db, key.desktop, cache),
@@ -179,6 +182,10 @@ class StateMixin:
                             instances: dict) -> list[dict]:
         """Add ``state_choices`` to instance-list rows (``[]`` where not offered)."""
         step = self.current().step
+        if getattr(self, "gallery", False):
+            for row in rows:
+                row["state_choices"] = []   # no state on a gallery shot (U10)
+            return rows
         needs = needs_geom(instances, state, self.tax)
         for row in rows:
             row["state_choices"] = gate(instances, state, self.tax,
@@ -208,6 +215,8 @@ class StateMixin:
         this view: the log's value is kept there, and the window says so.
         """
         key = self.current()
+        if getattr(self, "gallery", False):
+            raise SessionRefusal(NO_STATE)   # task U10: refused before anything else
         if not self._has_picture(key.step):
             seen = [s for s in self._available if self._has_picture(s)]
             near = min(seen, key=lambda s: (abs(s - key.step), s)) if seen else None

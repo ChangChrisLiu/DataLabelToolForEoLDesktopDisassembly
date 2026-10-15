@@ -537,8 +537,10 @@ def add_thumb_args(parser) -> None:
     parser.add_argument("--no-auto-roi", dest="auto_roi", action="store_false",
                         help="do not measure a chassis ROI; keep the whole frame")
     parser.add_argument("--db", default=None,
-                        help="annotation DB, opened READ-ONLY, whose pose_segment ROIs "
-                             "crop the thumbnails instead of the measured ones")
+                        help="annotation DB, opened READ-ONLY: its pose_segment ROIs "
+                             "crop the thumbnails instead of the measured ones, and the "
+                             "components gallery's frames are read from it (it holds "
+                             "the sheet-row photos the index lists as steps)")
 
 
 def run_thumb_cli(args, cache_dir, views, desktops, emit=None) -> int:

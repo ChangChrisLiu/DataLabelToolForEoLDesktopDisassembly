@@ -34,7 +34,7 @@ from typing import Optional, Sequence
 import numpy as np
 
 from tda.core import masks
-from tda.core.compiler import select_keyframe
+from tda.core.compiler import marked_absent, select_keyframe
 from tda.core.db import Db
 from tda.core.model import (
     FrameKey,
@@ -43,7 +43,9 @@ from tda.core.model import (
     PairOverride,
     ShapeKeyframe,
     ShapePart,
+    Visibility,
     ZOrderRec,
+    is_component_view,
 )
 from tda.core.truth import TruthService
 from tda.core.split_rows import open_split_steps, reverse_walk
@@ -118,6 +120,7 @@ __all__ = [
     "require_instance",
     "split_zorder_scope",
     "splits_the_shape",
+    "clear_visibility",
     "set_visibility",
     "set_zorder_move",
     "suggest_scope",
@@ -125,8 +128,12 @@ __all__ = [
     "task_card_for",
 ]
 
-def _result(db: Db, truth: TruthService, key: FrameKey, steps: Sequence[int], op: Op,
-            extra: Optional[dict] = None) -> dict:
+#: The label 「看不见」 writes on a components-gallery part (task U10).
+ABSENT_LABEL = Visibility.OUT_OF_VIEW.value
+
+
+def _result(db: Db, truth: TruthService, key: FrameKey, steps: Sequence[int],
+            op: Optional[Op], extra: Optional[dict] = None) -> dict:
     """Bring the truth table up to date with one edit, and report what it cost.
 
     Only the frame the annotator is looking at is compiled here.  The compiled
@@ -326,6 +333,12 @@ def _commit_shape(db: Db, truth: TruthService, key: FrameKey, instance: str,
             pair_state = {"pose_segment": seg, "above": instance, "below": pair,
                           "existed": existed}
         steps = annotatable_steps(db, key.desktop, key.view, reach)
+        # a shape drawn on a gallery part marked 「看不见」 says it IS in this
+        # shot (task U10): the label goes, in this same op
+        absent = (is_component_view(key.view)
+                  and marked_absent(db.frame_overrides(key).get(instance)))
+        if absent:
+            db.delete_frame_override(key, instance)
         common = {"desktop": key.desktop, "view": key.view, "step": key.step,
                   "instance": instance, "scope": scope, "direction": direction,
                   "steps": steps}
@@ -335,6 +348,9 @@ def _commit_shape(db: Db, truth: TruthService, key: FrameKey, instance: str,
         inverse = common | {"keyframes": list(reversed(before)),
                             "zorder": None if zorder is None else zorder["before"],
                             "pair": _pair_payload(pair_state, False)}
+        if absent:
+            payload["label"] = {"step": key.step, "visibility": None}
+            inverse["label"] = {"step": key.step, "visibility": ABSENT_LABEL}
         db.log_op(key.desktop, key.view, "commit_keyframe",
                   _loggable(payload), _loggable(inverse), annotator)
 
@@ -343,6 +359,7 @@ def _commit_shape(db: Db, truth: TruthService, key: FrameKey, instance: str,
                    {"keyframe_id": kf.id, "anchor_step": kf.anchor_step, "scope": scope,
                     "changed": True, "no_split": bool(no_split),
                     "cut_below": cuts["below"], "cut_top": cuts["top"],
+                    "cleared_absent": bool(absent),
                     "edit_reach": annotatable_steps(db, key.desktop, key.view,
                                                     edit_reach | {key.step})})
 
@@ -469,15 +486,25 @@ def apply_keyframes(db: Db, truth: TruthService, payload: dict,
     re-entrant), so the inner writes commit with it or not at all.
     """
     pair = payload.get("pair")
-    if pair is None:
+    label = payload.get("label")
+    if pair is None and label is None:
         return _apply_keyframe_rows(db, truth, payload, current)
-    po = PairOverride(payload["desktop"], payload["view"], pair["pose_segment"],
-                      pair["above"], pair["below"])
     with db.transaction():
-        if pair["exists"]:
-            db.set_pair_override(po)
-        else:
-            db.delete_pair_override(po)
+        if pair is not None:
+            po = PairOverride(payload["desktop"], payload["view"], pair["pose_segment"],
+                              pair["above"], pair["below"])
+            if pair["exists"]:
+                db.set_pair_override(po)
+            else:
+                db.delete_pair_override(po)
+        if label is not None:
+            # the 「看不见」 label a gallery commit took back (task U10)
+            key = FrameKey(payload["desktop"], int(label["step"]), payload["view"])
+            if label["visibility"] is None:
+                db.delete_frame_override(key, payload["instance"])
+            else:
+                db.set_frame_override(FrameOverride(key, payload["instance"], None,
+                                                    label["visibility"]))
         return _apply_keyframe_rows(db, truth, payload, current)
 
 
@@ -784,6 +811,33 @@ def set_visibility(db: Db, truth: TruthService, key: FrameKey, instance: str, vi
                         "visible_rle": None if previous is None else previous.visible_rle}
     with db.transaction():
         db.set_frame_override(FrameOverride(key, instance, payload["visible_rle"], vis))
+        db.log_op(key.desktop, key.view, "set_frame_override", payload, inverse, annotator)
+    return _result(db, truth, key, [key.step], Op("set_frame_override", payload, inverse))
+
+
+def clear_visibility(db: Db, truth: TruthService, key: FrameKey, instance: str,
+                     annotator: str = "system") -> dict:
+    """Take a hand-set ``visibility`` label of this frame back (undoable).
+
+    A single-frame mask in the same override stays; the row goes only when it
+    held nothing else. What a second 「看不见」 on a components-gallery shot
+    does (task U10): the part is to be drawn again, with no label of its own.
+    """
+    previous = db.frame_overrides(key).get(instance)
+    if previous is None or previous.visibility is None:
+        return _result(db, truth, key, [key.step], None)
+    common = {"desktop": key.desktop, "view": key.view, "step": key.step,
+              "instance": instance, "steps": [key.step]}
+    keep = previous.visible_rle is not None
+    payload = common | {"exists": keep, "visibility": None,
+                        "visible_rle": previous.visible_rle}
+    inverse = common | {"exists": True, "visibility": previous.visibility,
+                        "visible_rle": previous.visible_rle}
+    with db.transaction():
+        if keep:
+            db.set_frame_override(FrameOverride(key, instance, previous.visible_rle, None))
+        else:
+            db.delete_frame_override(key, instance)
         db.log_op(key.desktop, key.view, "set_frame_override", payload, inverse, annotator)
     return _result(db, truth, key, [key.step], Op("set_frame_override", payload, inverse))
 

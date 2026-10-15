@@ -49,8 +49,7 @@ from tda.core.graph_rules import HARD_TYPES, active_edges
 from tda.core.implied import is_implied
 from tda.core.logs import CHASSIS_KEY
 from tda.core.ls_import import SOURCE as LS_SOURCE
-from tda.core.model import VIEWS, InstanceRec, is_extra, is_provisional
-from tda.core.states import INITIAL_STEP
+from tda.core.model import ALL_VIEWS, InstanceRec, is_extra, is_provisional
 from tda.ui.steps_values import RELATION_FIELDS, EditError
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle at runtime, fine for typing
@@ -90,7 +89,7 @@ def check_deletable(data: "StepTableData", db: Db, key: str) -> None:
     if steps:
         raise EditError(f"{key!r} is still the target of step(s) {', '.join(map(str, steps))}")
     draft = is_provisional(key)
-    for view in VIEWS:
+    for view in ALL_VIEWS:
         held = db.keyframes(data.desktop, view, key)
         if draft:
             # a draft's own draft keyframes go with it (see `delete_instance`);
@@ -262,7 +261,9 @@ def delete_instance(data: "StepTableData", db: Db, key: str) -> None:
                 # nobody adopted leaves nothing behind but orphaned pixels
                 db.delete_keyframes_by_source(LS_SOURCE, [data.desktop], key)
             if patch is not None:
-                db.delete_manual_events(data.desktop, key, up_to_step=INITIAL_STEP)
+                # the addition's own events -- its initial state and its
+                # removal step (U10); check_deletable refused anything else
+                db.delete_manual_events(data.desktop, key)
             db.delete_auto_events(data.desktop, key)
             db.delete_instance(data.desktop, key)
             for rec in neighbours:
