@@ -203,3 +203,78 @@ def test_the_range_note_reads_as_the_brief():
 
     assert range_note("cover.02", Patch(), run=(38, 45), after=(46, "removed")) == (
         "cover.02 第 38–45 步都是 打开；第 46 步起 拆下（Ctrl+Z 撤销）")
+
+
+# --------------------------------------------------------------------------- #
+# D: the documents quote what the window says
+# --------------------------------------------------------------------------- #
+def _squash(text: str) -> str:
+    return "".join(text.split())
+
+
+@pytest.fixture
+def d13_window(qapp, tmp_path: Path):
+    """The whole D13 sheet: ram_latch.01 opened at 14, out with the board at 42."""
+    session = make_session(tmp_path, last_step=42)
+    session.sweeper_enabled = False
+    db = session.db
+    for key, rec in db.instances(DESKTOP).items():
+        if key.startswith("ram_latch."):
+            rec.parent, rec.attached = "motherboard.01", True
+            db.upsert_instance(rec)
+    shape = np.zeros((64, 64), dtype=bool)
+    shape[40:50, 40:50] = True                    # the open clip
+    db.add_keyframe(ShapeKeyframe(
+        id=None, instance="ram_latch.01", desktop=DESKTOP, view="scan", pose_segment=1,
+        anchor_step=42, placement="in_chassis", geom_type="mask",
+        parts=[ShapePart("main", masks.encode_rle(shape))]))
+    session._invalidate()
+    win = MainWindow(session, make_paths(tmp_path), "tester", sam_queue=StubSamQueue())
+    if win.roi_editing:
+        win.wait_for_roi_proposal()
+        win.act_commit()
+    if win.roi_editing:
+        win.act_clear_edit()
+    yield win
+    close_window(win)
+
+
+def test_the_quickstart_example_is_what_the_window_says(d13_window, monkeypatch):
+    win, latch = d13_window, "ram_latch.01"
+    repo = Path(__file__).resolve().parents[1]
+    quick = _squash((repo / "docs" / "trial_quickstart.md").read_text(encoding="utf-8"))
+    said = press_t(win, 41, latch)
+    assert _squash("在第 41 步：关上（之前为 打开）；第 42 步起是 拆下") in quick
+    assert _squash("在第 41 步：关上（之前为 打开）；第 42 步起是 拆下") in _squash(said)
+    asked = {}
+
+    def answer(instance, choices, state, to_step):
+        asked.update(state=state, to_step=to_step)
+        return "closed", 39
+
+    monkeypatch.setattr(win, "ask_state_range", answer)
+    win.act_state_range()
+    assert asked == {"state": "closed", "to_step": 15}       # hand-set; the log opens at 14
+    line = win.status_message().removesuffix("（Ctrl+Z 撤销）")
+    assert line.startswith("内存卡扣 ram_latch.01 第 39–41 步都是 关上；第 42 步起 拆下")
+    assert _squash(line) in quick, line
+    goto(win, 41)
+    win.session.begin_edit(latch)
+    closed = np.zeros((64, 64), dtype=bool)
+    closed[40:44, 40:56] = True
+    win.session.set_editing_mask(closed)
+    win.act_commit()
+    if win._pending_warning is not None:                    # "too big" for a clip
+        win.act_commit()
+    assert win.status_message() == ("已先在第 38 步切开旧版本（形状不变），"
+                                    "这次修改只影响第 39–41 步")
+    assert _squash(win.status_message()) in quick
+    moved = press_t(win, 38, latch)
+    assert "形状版本边界也随之移到第 37 步" in moved
+    assert _squash("形状版本边界也随之移到第 37 步") in quick
+    guide = _squash((repo / "docs" / "annotation_guide.md").read_text(encoding="utf-8"))
+    assert _squash("`Ctrl+T` 选状态、填\"一直到第 N 步\"，一次设完") in guide
+    assert _squash(A.action_named("state_range").label_zh) in guide        # the key table
+    spec = _squash((repo / "docs" / "superpowers" / "specs"
+                    / "2026-09-17-teardown-annotator-design.md").read_text(encoding="utf-8"))
+    assert _squash("**v1.12（2026-10-14）**：**切开的版本跟着状态边界走") in spec

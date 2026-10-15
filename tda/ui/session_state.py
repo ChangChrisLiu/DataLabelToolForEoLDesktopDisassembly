@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from tda.core.cut_follow import CutMove, mask_states, plan_cut_moves
+from tda.core.cut_follow import CutMove, cut_views, mask_states, plan_cut_moves
 from tda.core.db import Db
 from tda.core.model import FrameKey, Placement, is_provisional
 from tda.core.state_assert import (
@@ -232,7 +232,10 @@ def commit_assertion(db: Db, truth: TruthService, key: FrameKey, instance: str,
     """
     try:
         with db.transaction():
-            before = mask_states(db, truth.tax, key.desktop, instance)
+            # a part with no cut keyframe anywhere has nothing to follow: the
+            # states are read (twice, every step) only when there is one
+            follow = bool(cut_views(db, key.desktop, instance))
+            before = mask_states(db, truth.tax, key.desktop, instance) if follow else {}
             if last is None:
                 patch = assert_state(db, truth.tax, key.desktop, instance, key.step, state,
                                      evidence_view=key.view, name=state_zh)
@@ -243,9 +246,9 @@ def commit_assertion(db: Db, truth: TruthService, key: FrameKey, instance: str,
             if not patch.changed:
                 return {"changed": False, "patch": patch, "affected": [], "problems": {},
                         "rechecks": [], "conflicts": 0, "frame": None, "cuts": []}
-            after_states = mask_states(db, truth.tax, key.desktop, instance)
-            moves = plan_cut_moves(db, truth.tax, key.desktop, instance, before,
-                                   after_states)
+            moves = [] if not follow else plan_cut_moves(
+                db, truth.tax, key.desktop, instance, before,
+                mask_states(db, truth.tax, key.desktop, instance))
             kf_before, kf_after, cut_reach = move_cuts(db, key.desktop, instance, moves)
             common = {"view": key.view, "cut_reach": cut_reach}
             payload = patch.payload() | common | {"keyframes": kf_after}
