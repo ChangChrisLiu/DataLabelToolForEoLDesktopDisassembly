@@ -217,7 +217,10 @@ class MergePlan:
                 by_view.setdefault(view, []).append(step)
             lines.append(f"  · 已确认的行 {len(self.compiled_renamed)} 行（"
                          f"{_frames_text(by_view)}）")
-        simple = [("动作", len(self.actions)), ("单帧覆盖", len(self.overrides)),
+        if self.actions:
+            lines.append(f"  · 动作 {len(self.actions)}（第 {ranges(s for s, _i in self.actions)} "
+                         f"步改成 {self.keep}）")
+        simple = [("单帧覆盖", len(self.overrides)),
                   ("逐帧标记", len(self.flags)), ("冲突记录", len(self.conflicts)),
                   ("层级", len(self.zorder)), ("成对层级", len(self.pairs_renamed)),
                   ("约束边", len(self.relations_renamed)),
@@ -226,8 +229,6 @@ class MergePlan:
         for label, n in simple:
             if n:
                 lines.append(f"  · {label} {n}")
-        if self.actions:
-            lines.append(f"    （第 {ranges(s for s, _i in self.actions)} 步的动作改成 {self.keep}）")
         drops: list[str] = []
         if self.compiled_dropped:
             drops.append(f"  · 缓存行 {len(self.compiled_dropped)} 行（会重新编译）")

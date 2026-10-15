@@ -234,9 +234,10 @@ def test_actions_and_overrides_and_conflicts_follow(db):
                     (DESKTOP, 2, "oak1", GONE, '["blurry"]'))
     db.conn.commit()
 
-    _merge(scene)
+    report = _merge(scene)
 
     assert [(a.step, a.target) for a in db.actions(DESKTOP)] == [(3, KEEP), (5, KEEP)]
+    assert "  · 动作 1（第 5 步改成 cover.01）" in report.plan.summary_lines()
     assert set(db.frame_overrides(scene.key(2))) == {KEEP}
     assert db.get_conflict(cid)["instance"] == KEEP
     assert [tuple(r) for r in db.conn.execute(
