@@ -413,6 +413,10 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateM
             self._sync_view_buttons()
             return
         step = self.session.current().step if compat.is_open(self.session) else None
+        # a step number means nothing in the components gallery and a shot
+        # number nothing in the sequence (U10): across the two, land where this
+        # machine was last left in the other family (first time: its start)
+        step = self.landing_step(view, step)
 
         def switch() -> None:
             self.session.open(int(self.session.desktop), view, force=True)

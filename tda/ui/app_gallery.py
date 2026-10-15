@@ -55,6 +55,34 @@ class GalleryMixin:
             return ""
         return gallery_refusal(str(self.session.view), name)
 
+    def landing_step(self, view: str, step: Optional[int]) -> Optional[int]:
+        """The step a switch to ``view`` should land on, from ``step`` now.
+
+        Within one family (the four sequence views, or the three gallery ones)
+        the number is the same moment and is kept. Across them it means
+        nothing, so the frame this machine was last left on in the *other*
+        family is remembered per desktop and returned instead -- ``None`` the
+        first time, which opens the view on its own start (shot 1 in the
+        gallery, the last step in the sequence).
+        """
+        memory = self.__dict__.setdefault("_family_step", {})
+        if not compat.is_open(self.session):
+            return step
+        here = str(self.session.view)
+        desktop = int(self.session.desktop)
+        memory[(desktop, is_component_view(here))] = step
+        if is_component_view(view) == is_component_view(here):
+            return step
+        return memory.get((desktop, is_component_view(view)))
+
+    def frame_word(self, step: int) -> str:
+        """``step 12`` on the sequence, ``第 2 张`` on a gallery shot (by position)."""
+        if not self.in_gallery():
+            return f"step {step}"
+        shots = sorted(self.session.available_steps())
+        index = shots.index(step) + 1 if step in shots else step
+        return f"第 {index} 张"
+
     def gallery_title_text(self) -> str:
         """``零件合照 OAK1 第 2/5 张`` for the title bar, ``""`` outside the gallery."""
         if not self.in_gallery():
