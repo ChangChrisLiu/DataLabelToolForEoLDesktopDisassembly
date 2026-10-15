@@ -231,9 +231,11 @@ class ShapeKeyframe:
     geom_type: str = "mask"  # mask | box
     parts: list[ShapePart] = field(default_factory=list)
     amodal_complete: bool = True
-    # manual | sam | model:<name>@<ver> | labelstudio | ls_adopted
+    # manual | sam | model:<name>@<ver> | labelstudio | ls_adopted | carried | cut
     # ``labelstudio`` is the importer's own untouched draft row; ``ls_adopted``
     # is an annotator's shape built from one (``draft_id`` names which).
+    # ``cut`` is the pre-edit shape copied to the far side of a state boundary
+    # (tda.core.cut_follow), until somebody redraws its pixels.
     source: str = "manual"
     draft_id: Optional[int] = None
     version: int = 1
