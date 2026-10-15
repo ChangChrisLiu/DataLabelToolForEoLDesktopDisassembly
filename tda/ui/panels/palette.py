@@ -390,7 +390,9 @@ class ToolPalette(QWidget):
     Per mode (:meth:`set_mode`): Annotate shows everything but the Review
     queue's keys; Review hides the tools and the brush size -- its canvas is
     read-only -- and keeps the difference map and the queue's four keys; Steps
-    hides the whole strip (the window does that).
+    hides the whole strip (the window does that).  The 「状态」 group (task U13:
+    ``T``, ``Ctrl+T``, ``Shift+T``, ``Ctrl+Shift+K``, ``I``) is Annotate's, its
+    heading with it.
 
     The buttons scroll (:attr:`scroll`) on a short screen; the minimap sits
     below them, outside the scroll area, so it is always in view (U2b round 2:
@@ -484,6 +486,17 @@ class ToolPalette(QWidget):
         review_first = tuple(n for n in A.PALETTE_REVIEW if n not in A.PALETTE_ACTIONS)
         for name in dict.fromkeys(review_first + A.PALETTE_ACTIONS + A.PALETTE_REVIEW):
             layout.addWidget(self._add(name, checkable=(name == "toggle_heat")))
+
+        # The keys that say the log is wrong about a part, and the two that
+        # settle a frame without drawing (task U13): they had keys only.
+        layout.addSpacing(4)
+        self.state_header = self._header("状态")
+        self.state_header.setToolTip("日志和画面对不上时用：这一帧的状态、一段帧的状态、"
+                                     "其实拆下 / 其实只是打开；切开的形状副本没变；"
+                                     "零件合照里看不见")
+        layout.addWidget(self.state_header)
+        for name in A.PALETTE_STATE:
+            layout.addWidget(self._add(name, checkable=False))
         layout.addStretch(1)
         self.scroll.setWidget(inner)
         self.set_radius(8)
@@ -578,6 +591,8 @@ class ToolPalette(QWidget):
             if name in A.PALETTE_TOOLS:
                 continue
             button.setVisible(mode in button.action.modes)
+        self.state_header.setVisible(
+            any(mode in self._buttons[name].action.modes for name in A.PALETTE_STATE))
 
     def mode(self) -> str:
         return self._mode

@@ -36,7 +36,7 @@ from tda.core.verb_fix import (
 from tda.ui.class_names import state_zh
 from tda.ui.commands import Op
 from tda.ui.gallery import NO_VERB
-from tda.ui.session_api import SessionRefusal
+from tda.ui.session_api import VERB_NEEDS_CLEAN_LAYER, SessionRefusal
 from tda.ui.session_ops import settle
 from tda.ui.session_tasks import _has_shape, bench_roi_of
 from tda.ui.steps_model import ANNOTATOR, EditError, StepTableData
@@ -159,6 +159,26 @@ class VerbMixin:
             row["verb_fix"] = found.get(str(row.get("key", "")))
         return rows
 
+    def verb_gate(self, instance: str) -> str:
+        """Why :meth:`correct_verb` would refuse ``instance`` here, ``""`` if not.
+
+        The core's plan as a dry run, writing nothing: what the palette's
+        greyed 「其实拆下」 button says (task U13). The editing layer's gate is
+        the window's, which knows it without a pass over the pixels; a refusal
+        of the step table itself is still only found by the write.
+        """
+        if not self.is_open:
+            return "没有打开的帧"
+        if getattr(self, "gallery", False):
+            return NO_VERB
+        key = self.current()
+        try:
+            plan_verb_fix(self.db, self.tax, key.desktop, str(instance), key.step,
+                          name=state_zh)
+        except VerbFixError as refused:
+            return str(refused)
+        return ""
+
     def correct_verb(self, instance: str, to: Optional[str] = None) -> dict:
         """「其实拆下来了」 (``to="remove"``) / 「其实只是打开了」 (``"open"``); undoable.
 
@@ -175,7 +195,7 @@ class VerbMixin:
             raise SessionRefusal(NO_VERB)
         editing = self.layer.instance
         if editing == instance and self.layer.changed():
-            raise SessionRefusal(f"{instance} 正在画、还没提交：先 Enter 提交或 Esc 放弃，再改")
+            raise SessionRefusal(VERB_NEEDS_CLEAN_LAYER.format(instance=instance))
         result = commit_verb_fix(self.db, self.truth, self.current(), str(instance), to,
                                  self.annotator)
         if editing == instance:

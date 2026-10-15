@@ -18,7 +18,7 @@ from tda.ui import app_compat as compat
 from tda.ui import app_priors
 from tda.ui import app_support as S
 from tda.ui import session_api as api
-from tda.ui.app_state import cut_note
+from tda.ui.app_state import REMOVED_ROW, cut_note
 from tda.ui.class_names import instance_label, visibility_zh
 # the frame-range wording lives with the guide's other sentences now (U7: the
 # add-parts dialog and the bulk accept say ranges too); importable from here
@@ -660,7 +660,7 @@ class CommitMixin:
         all -- which reads exactly like the key not working.
         """
         if self.instances.selected_is_removed():
-            self.report("已移除的零件不可编辑 / this part has been removed")
+            self.report(REMOVED_ROW)
             return False
         return True
 

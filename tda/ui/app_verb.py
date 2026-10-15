@@ -21,6 +21,7 @@ from typing import Optional
 
 from tda.ui import app_actions as A
 from tda.ui import app_support as S
+from tda.ui import session_api as api
 from tda.ui.gallery import NO_VERB
 
 __all__ = ["NO_VERB_TARGET", "STEPS_MOVED", "VerbMixin", "verb_note"]
@@ -94,6 +95,28 @@ class VerbMixin:
         if self._gallery_verb_refused():
             return
         self.correct_verb_here(instance, verb)
+
+    def verb_button_refusal(self, dirty: bool) -> str:
+        """Why 「其实拆下」 (``Shift+T``) cannot run now, ``""`` if it may (task U13).
+
+        The slot's gates in its order and words; ``dirty`` is the guide's cached
+        "the editing layer has uncommitted pixels". The row's ``verb_fix`` --
+        the list's own offer -- answers for a part it offers; for any other the
+        core's plan is asked once (:meth:`StateMixin._why_once`).
+        """
+        in_gallery = getattr(self, "in_gallery", None)
+        if in_gallery is not None and in_gallery():
+            return NO_VERB
+        instance = self._verb_target()
+        if not instance:
+            return NO_VERB_TARGET
+        if dirty and getattr(self.session, "editing_instance", None) == instance:
+            return api.VERB_NEEDS_CLEAN_LAYER.format(instance=instance)
+        row = self.instances.row_of(instance)
+        if row is not None and row.get("verb_fix"):
+            return ""
+        gate = getattr(self.session, "verb_gate", None)
+        return self._why_once("verb", instance, gate) if callable(gate) else ""
 
     def _gallery_verb_refused(self) -> bool:
         """A components-gallery shot is open: its number is a shot, not a step (U10).
