@@ -47,9 +47,6 @@ from tda.core.model import (
     ZOrderRec,
     is_component_view,
 )
-
-#: The label 「看不见」 writes on a components-gallery part (task U10).
-ABSENT_LABEL = Visibility.OUT_OF_VIEW.value
 from tda.core.truth import TruthService
 from tda.core.split_rows import open_split_steps, reverse_walk
 from tda.core.truth_inputs import InputCache, frame_hw, pose_segment_of, state_of
@@ -130,6 +127,10 @@ __all__ = [
     "item_text",
     "task_card_for",
 ]
+
+#: The label 「看不见」 writes on a components-gallery part (task U10).
+ABSENT_LABEL = Visibility.OUT_OF_VIEW.value
+
 
 def _result(db: Db, truth: TruthService, key: FrameKey, steps: Sequence[int],
             op: Optional[Op], extra: Optional[dict] = None) -> dict:

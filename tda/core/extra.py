@@ -56,6 +56,7 @@ from tda.core.model import (
     FrameKey,
     InstanceRec,
     StateEvent,
+    StepType,
     is_component_view,
     is_extra,
     is_provisional,
@@ -68,7 +69,8 @@ __all__ = [
     "OP_UNDO", "OP_VIEW", "REASON", "REASON_ATTR", "ExtraBatch",
     "ExtraError", "adopt_patch", "default_parent", "delete_patch", "extra_keys",
     "host_instances", "initial_events", "is_extra", "next_ordinal", "parent_choices",
-    "plan_extras", "planned_keys", "recompile_events", "relation_rows",
+    "plan_extras", "planned_keys", "recompile_events", "relation_rows", "removal_refusal",
+    "removal_step_refusal", "removal_steps",
     "restamp_graph", "state_choices", "undo_op", "verified_frames_gaining", "write_batch",
 ]
 
@@ -331,16 +333,59 @@ def removal_events(desktop: int, key: str, step: int, held: str) -> list[StateEv
     ]
 
 
+def _shows_nothing_new(rec) -> bool:
+    """A step whose frame is not a moment a part can leave at (initial / dupli)."""
+    return (str(rec.step_type) in (StepType.INITIAL.value, StepType.DUPLI.value)
+            or bool(getattr(rec, "dupli", False)))
+
+
+def removal_steps(steps: Iterable) -> list[int]:
+    """The steps 「拆下于第 k 步」 may name: not the initial frame, not a ``dupli``."""
+    return sorted(int(r.step) for r in steps if not _shows_nothing_new(r))
+
+
+def removal_step_refusal(step: int, steps: Iterable) -> str:
+    """Why step ``step`` of the table (``StepRec`` rows) cannot be a removal; or ``""``.
+
+    The initial frame is the machine before anything was done: a part taken
+    out there was never in it. A ``dupli`` frame shows the frame before it, so
+    the part is either already gone there (that step, or earlier) or still in
+    it (a later step) -- the refusal names both.
+    """
+    rows = sorted(steps, key=lambda r: int(r.step))
+    found = next((r for r in rows if int(r.step) == int(step)), None)
+    if found is None:
+        return f"拆下于第 {step} 步：步骤表里没有第 {step} 步 / no step {step} in the table"
+    if not _shows_nothing_new(found):
+        return ""
+    allowed = removal_steps(rows)
+    if str(found.step_type) == StepType.INITIAL.value:
+        first = next((s for s in allowed if s > step), None)
+        earliest = f"；最早填第 {first} 步" if first is not None else ""
+        return (f"拆下于第 {step} 步不成立：第 {step} 步是起始帧（拆之前的样子），零件那时都还在"
+                f"{earliest} / step {step} is the initial frame")
+    shown = next((s for s in reversed(allowed) if s < step), None)
+    later = next((s for s in allowed if s > step), None)
+    where = f"第 {shown} 步" if shown is not None else "它前面那一帧"
+    text = (f"拆下于第 {step} 步不成立：第 {step} 步是重复帧（dupli），和{where}是同一个样子；"
+            f"{where}的照片里已经没有它就填{where}或更早")
+    if later is not None:
+        text += f"，还在就填第 {later} 步"
+    return text + f" / step {step} duplicates " + (f"step {shown}" if shown else "the frame before")
+
+
 def removal_refusal(instances: dict[str, InstanceRec], actions: list,
                     events: Iterable[StateEvent], tax: Taxonomy, batch: ExtraBatch,
-                    last_step: Optional[int] = None) -> str:
+                    last_step: Optional[int] = None, steps: Optional[Iterable] = None) -> str:
     """Why the batch's removal step does not fit the log; ``""`` when it does.
 
     ``events`` are the hand-written events already stored or staged (not the
-    batch's). The removal has to lie within the step table and come before
-    the part would leave with its parent: a part already gone cannot be taken
-    out again (the validator S1 Apply runs says so in English; this says it in
-    the annotator's words).
+    batch's). The removal has to lie within the step table, on a step whose
+    frame shows something new (:func:`removal_step_refusal`, when ``steps``
+    -- the table's ``StepRec`` rows -- are given), and come before the part
+    would leave with its parent: a part already gone cannot be taken out again
+    (the validator S1 Apply runs says so in English; this says it in the
+    annotator's words).
     """
     from tda.core.states import event_problems, events_from_actions, initial_overrides
     from tda.core.truth_inputs import merge_events
@@ -352,6 +397,10 @@ def removal_refusal(instances: dict[str, InstanceRec], actions: list,
     if last_step is not None and step > int(last_step):
         return (f"拆下于第 {step} 步：这台机器只有 {int(last_step)} 步 / the log has "
                 f"{int(last_step)} steps")
+    if steps is not None:
+        why = removal_step_refusal(step, steps)
+        if why:
+            return why
     table = dict(instances)
     table.update({rec.key: rec for rec in batch.records})
     manual = list(events) + list(batch.events)

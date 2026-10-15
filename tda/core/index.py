@@ -48,7 +48,9 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 DEFAULT_FIXES_PATH = "configs/index_fixes.yaml"
 DEFAULT_PATHS_PATH = "configs/paths.yaml"
 #: 2: the components gallery is indexed (task U10). A version-1 file is still
-#: read; its desktops say nothing about the gallery (``DesktopIndex.gallery``).
+#: read (``DesktopIndex.gallery`` unset), but ``load-index`` refuses it
+#: (:func:`tda.pipeline.stale_index`): it predates the gallery and the
+#: RealSense ``rs_extra_from`` fixes.
 INDEX_VERSION = 2
 #: The first version whose scan covers the components gallery.
 GALLERY_INDEX_VERSION = 2
@@ -86,7 +88,7 @@ class DesktopIndex:
     issues: list[str] = field(default_factory=list)
     #: Did the scan look at the components gallery (task U10)? ``False`` for an
     #: index file written before it existed (version 1): such an index says
-    #: nothing about the gallery, and ``load-index`` leaves the gallery alone.
+    #: nothing about the gallery, and ``load-index`` refuses it (build-index again).
     gallery: bool = True
 
 

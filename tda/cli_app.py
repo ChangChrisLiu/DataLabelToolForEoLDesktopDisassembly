@@ -359,6 +359,10 @@ def _check_one(db, tax, args: argparse.Namespace, desktop: int, view: str) -> in
     stale = stale_split_rows(db, tax, desktop, view)
     problems.extend(f"{SHAPE_PREDATES_STATE}:{instance} (step {step})"
                     for step, instance in stale)
+    if is_component_view(view):
+        # a relocated sheet photo whose sheet row was retyped later (U10):
+        # first, a per-shot list of missing shapes would hide it past --limit
+        problems[:0] = P.orphan_sheet_shots(db, desktop, view)
     unit = "shots" if is_component_view(view) else "steps"   # the gallery's frames (U10)
     print(f"[check] D{desktop:02d} {view}: {stats['steps']} {unit}, "
           f"{stats['updated']} rows written, {stats['conflicts']} conflicts")
@@ -416,11 +420,15 @@ def cmd_build_cache(args: argparse.Namespace) -> int:
         extra.append("--recompute")
     if args.force:
         extra.append("--force")
-    db_path = str(paths.get("db_path") or "")
+    # the components gallery's frames come from the database (task U10): it
+    # holds the sheet-row photos the index still lists as steps. ``--db``
+    # wins over paths.yaml, as for every other command.
+    db_path = str(getattr(args, "db", None) or paths.get("db_path") or "")
     if db_path and Path(db_path).is_file():
-        # the components gallery's frames come from the database (task U10):
-        # it holds the sheet-row photos the index still lists as steps
         extra += ["--db", db_path]
+    elif getattr(args, "db", None):
+        print(f"[build-cache] no database at {db_path}: the components gallery is "
+              f"copied as the index lists it (without the step-table photos, e.g. D66)")
 
     worst = 0
     views = ",".join(_view_list(args.views))

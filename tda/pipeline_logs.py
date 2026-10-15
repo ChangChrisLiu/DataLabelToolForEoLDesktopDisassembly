@@ -710,26 +710,30 @@ def _adopt_extras(db: Db, desktop: int, taken_by: dict[str, str]) -> list[str]:
     """Hand added instances to the sheet. **Inside the caller's transaction.**
 
     The row itself is overwritten by the upsert that follows (the log's record:
-    no provenance, the log's raw names); what has to go here is the step-0
-    initial state the annotator set, which would otherwise apply to the log's
-    part. The shapes stay on the key. One ``op_log`` row records the added
-    records and events as they were, as the inverse
+    no provenance, the log's raw names); what has to go here is what the
+    addition wrote -- the step-0 initial state the annotator set and the removal
+    「拆下于第 k 步」 (:func:`tda.core.extra.initial_events`, task U10) -- which
+    would otherwise apply to the log's part, whose actions now say when it
+    leaves. Any other hand-set state stays. The shapes stay on the key. One
+    ``op_log`` row records the added records and events as they were, as the inverse
     :func:`tda.core.extra.undo_op` applies.
     """
     if not taken_by:
         return []
     stored = db.instances(desktop)
     records = [stored[key] for key in sorted(taken_by)]
-    events = [e for e in db.events(desktop)
-              if e.target in taken_by and not e.auto and e.step <= INITIAL_STEP]
+    # what the addition wrote: its initial state and the removal
+    # 「拆下于第 k 步」 (U10) -- the sheet's part is taken out by the sheet
+    events = [e for key in sorted(taken_by) for e in X.initial_events(db, desktop, key)]
     for key in taken_by:
-        db.delete_manual_events(desktop, key, up_to_step=INITIAL_STEP)
+        db.delete_manual_events(desktop, key, up_to_step=INITIAL_STEP,
+                                evidence_view=X.ADDED_EVIDENCE)
     payload, inverse = X.adopt_patch(records, events, taken_by)
     db.log_op(desktop, OP_VIEW, X.OP_ADOPT, payload, inverse, IMPLIED_ANNOTATOR)
     return [
         f"adopted {key}: added in S1, now produced by the "
         f"{'sheet' if taken_by[key] == 'log' else 'implied-instance rule'} "
-        f"(provenance and hand-set initial state dropped, shapes kept)"
+        f"(provenance, hand-set initial state and removal step dropped, shapes kept)"
         for key in sorted(taken_by)
     ]
 

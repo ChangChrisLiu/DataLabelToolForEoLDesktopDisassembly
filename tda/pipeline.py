@@ -40,7 +40,7 @@ from tda.core.model import (
     StepType,
     is_component_view,
 )
-from tda.core.truth_inputs import TRUTH_AUX_KEYS, infer_hw
+from tda.core.truth_inputs import HW_INFERRED, TRUTH_AUX_KEYS, infer_hw
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PATHS_PATH = "configs/paths.yaml"
@@ -63,7 +63,7 @@ __all__ = [
     "backup_dest", "backup_keep", "cache_file", "desktops_without_steps", "drive_dir", "index_path",
     "load_index_into_db", "load_paths", "ls_export_path", "merge_desktop_meta", "open_db",
     "parse_desktops", "read_index", "ready_backup_dest", "require", "split_pose_segments",
-    "status_rows", "gallery_rows", "settle_gallery",
+    "status_rows", "gallery_rows", "settle_gallery", "STALE_INDEX", "StaleIndex", "stale_index",
 ]
 
 
@@ -262,6 +262,22 @@ def add_desktop_issues(db: Db, desktop: int, key: str, lines: Iterable[str]) -> 
 # --------------------------------------------------------------------------- #
 # load-index
 # --------------------------------------------------------------------------- #
+#: Why ``load-index`` refuses an index file older than the gallery (task U10).
+STALE_INDEX = ("is a version-1 index, written before the components gallery and the "
+               "RealSense fixes (rs_extra_from: D1 step 40, D24 step 43): loading it would "
+               "mark frames the current index has as missing again. Nothing was loaded. "
+               "Run build-index first, then load-index again.")
+
+
+class StaleIndex(ValueError):
+    """An index file written before the components gallery (version 1, task U10)."""
+
+
+def stale_index(index: dict[int, DesktopIndex]) -> list[int]:
+    """The desktops of ``index`` read from a version-1 file (``gallery`` unset)."""
+    return sorted(d for d, di in index.items() if not getattr(di, "gallery", True))
+
+
 def load_index_into_db(
     db: Db,
     index: dict[int, DesktopIndex],
@@ -286,7 +302,14 @@ def load_index_into_db(
     rolls its own desktop back and is listed in ``failed``, rather than ending a
     66-desktop run at number 40 and leaving the caller to guess which ones
     landed. The caller exits non-zero when ``failed`` is non-empty.
+
+    An index file written before the components gallery (version 1) is refused
+    outright with :class:`StaleIndex` before anything is written: it lacks the
+    frames the index fixes added since (the RealSense ``rs_extra_from`` steps of
+    D1 and D24), and loading it would mark them missing again (task U10).
     """
+    if stale_index(index):
+        raise StaleIndex(f"the index {STALE_INDEX}")
     counts: dict = {"desktops": 0, "frames": 0, "missing": 0, "segments": 0,
                     "skipped": 0, "failed": []}
     for desktop in sorted(index):
@@ -316,15 +339,34 @@ def _merged_aux(db: Db, ff) -> dict:
     compile went to the source drive again -- and inferred the view's nominal
     size instead whenever that drive was detached, which silently changes the
     canvas every compiled mask is in.
+
+    Only while the row still names the same file, in every view: a measurement
+    is of a photo, not of a frame key. A gallery shot re-pointed at another
+    photo, a sequence frame the index fixes now take from elsewhere, and a row
+    that was missing (its path is gone, see :func:`_missing_aux`) all start
+    over, and :func:`~tda.core.truth_inputs.frame_hw` measures the new file
+    (task U10) -- keeping ``hw_source = measured`` there would never let it.
     """
     row = db.get_frame(ff.key) or {}
-    if is_component_view(ff.key.view) and row and row.get("path") != ff.path:
-        # a gallery shot re-pointed at another photo (task U10): what was
-        # measured belongs to the old one
+    if not row or row.get("path") != ff.path:
         return dict(ff.aux or {})
     held = row.get("aux") or {}
     kept = {k: held[k] for k in TRUTH_AUX_KEYS if k in held}
     return dict(ff.aux or {}) | kept
+
+
+def _missing_aux(row: Optional[dict]) -> dict:
+    """What a row that turns ``missing`` keeps of the truth table's keys.
+
+    Only an inferred size (the view's nominal one, which does not depend on a
+    file): a measured size and the copy it was read off belong to a photo the
+    row no longer names, and a later index that has a photo there again --
+    perhaps another one -- must have it measured (task U10).
+    """
+    held = (row or {}).get("aux") or {}
+    if held.get("hw_source") == HW_INFERRED and "hw" in held:
+        return {"hw": held["hw"], "hw_source": HW_INFERRED}
+    return {}
 
 
 def _load_one(
@@ -362,11 +404,10 @@ def _load_one(
                             {"missing": False})
         for key in di.missing:
             if key not in held:
-                # what the truth table wrote on the row stays, as on any frame:
-                # a re-load must leave a loaded desktop exactly as it was
-                kept = (db.get_frame(key) or {}).get("aux") or {}
-                db.upsert_frame(key, None, {k: kept[k] for k in TRUTH_AUX_KEYS if k in kept},
-                                None, {"missing": True})
+                # an inferred size stays (a re-load leaves a loaded desktop as
+                # it was); a measured one goes with the photo it was read off
+                db.upsert_frame(key, None, _missing_aux(db.get_frame(key)), None,
+                                {"missing": True})
         dropped = _drop_stale_shots(db, desktop, di) if di.gallery else []
         if di.n_steps < 1:
             counts["frames"] += len(frames)
@@ -435,6 +476,31 @@ def gallery_rows(db: Db, desktop: int) -> list[int]:
     return [int(rec.step) for rec in db.steps(desktop)
             if rec.step_type == StepType.IGNORE.value
             and ALL_COMPONENTS_RE.search(str(rec.raw_name or ""))]
+
+
+#: ``cli check``'s word for a relocated sheet shot whose sheet row was retyped.
+ORPHAN_SHEET_SHOT = "sheet_shot_without_its_row"
+
+
+def orphan_sheet_shots(db: Db, desktop: int, view: str) -> list[str]:
+    """Gallery shots of ``view`` whose sheet row is no longer a layout photo (U10).
+
+    A sheet row's photo moved into the gallery (``aux.sheet_step``) stays there
+    when the row is later retyped or renamed in S1 -- nothing moves a shot
+    back: the step has no sequence frame until the next ``load-index`` puts
+    one back, and from then on the photo is in both. ``cli check`` says so;
+    the remedy is to retype the row back (it is the photo of the laid-out
+    parts). Kept as a report, not repaired: the shot may carry work.
+    """
+    rows = set(gallery_rows(db, desktop))
+    out = []
+    for row in db.frames_for(desktop, view):
+        step = (row.get("aux") or {}).get(SHEET_STEP_KEY)
+        if step is not None and int(step) not in rows:
+            out.append(f"{ORPHAN_SHEET_SHOT}:{view} shot {int(row['step'])} (sheet step "
+                       f"{int(step)} is no longer an ignore \"All components\" row, but "
+                       f"its photo is still this shot -- retype the row back in S1)")
+    return out
 
 
 def shot_work(db: Db, key: FrameKey) -> list[str]:

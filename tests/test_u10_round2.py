@@ -261,10 +261,12 @@ def test_an_appended_shot_changes_nothing_else(tmp_path, fixes):
     assert {k: after[k] for k in before} == before and len(after) == 4
 
 
-def test_an_index_from_before_the_gallery_leaves_it_alone(tmp_path, fixes):
+def test_an_index_from_before_the_gallery_is_refused(tmp_path, fixes):
+    """Round 3: a version-1 file is refused outright (it predates rs_extra_from too)."""
     db = Db(str(tmp_path / "tda.sqlite"))
     roots = _gallery_tree(tmp_path)
     _load(db, roots, fixes)
+    before = {view: db.frames_for(99, view) for view in ("oak1", "rs", "cmp_oak1")}
     old = {99: scan_desktop(99, sequence_tree(tmp_path / "bare"), fixes)}
     path = tmp_path / "old_index.json"
     save_index(old, str(path))
@@ -272,9 +274,10 @@ def test_an_index_from_before_the_gallery_leaves_it_alone(tmp_path, fixes):
     payload["version"] = 1
     path.write_text(json.dumps(payload), encoding="utf-8")
     loaded = load_index(str(path))
-    assert loaded[99].gallery is False
-    counts = P.load_index_into_db(db, loaded)
-    assert not counts["failed"] and len(db.frames_for(99, "cmp_oak1")) == 3
+    assert loaded[99].gallery is False and P.stale_index(loaded) == [99]
+    with pytest.raises(P.StaleIndex, match="Run build-index first"):
+        P.load_index_into_db(db, loaded)
+    assert {view: db.frames_for(99, view) for view in before} == before
 
 
 def _d66_tree(tmp_path, components: bool) -> dict:

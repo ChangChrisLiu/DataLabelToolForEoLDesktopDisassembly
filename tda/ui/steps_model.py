@@ -411,7 +411,8 @@ class StepTableData:
         if cls not in self.tax.classes:
             raise EditError(f"{cls!r} is not a taxonomy class")
         parent = X.default_parent(self.instances, self.tax, cls)
-        last = self.last_step()
+        # the default removal is the last step a part can leave at (not a dupli)
+        latest = max(X.removal_steps(self.steps), default=0)
         removable = "removed" in self.tax.states_of(cls)
         return {
             "parent": parent,
@@ -421,8 +422,8 @@ class StepTableData:
             # 「拆下于第 k 步」 (task U10): a part riding on nothing was taken out
             # by the end (it is in the components gallery); one riding on a
             # parent leaves with it, so it is left blank
-            "removed_at": last if (removable and parent is None and last) else None,
-            "last_step": last,
+            "removed_at": latest if (removable and parent is None and latest) else None,
+            "last_step": latest,
             "removable": removable,
         }
 
@@ -463,7 +464,7 @@ class StepTableData:
             return []
         staged = [event for done in self.extras for event in done.events]
         if X.removal_refusal(self.instances, self.actions, self.stored_manual + staged,
-                             self.tax, batch, self.last_step()):
+                             self.tax, batch, self.last_step(), self.steps):
             return []
         return X.verified_frames_gaining(db, self.tax, self.desktop, view, batch.records,
                                          staged + list(batch.events),
@@ -506,7 +507,7 @@ class StepTableData:
             raise EditError(str(error)) from None
         staged = [event for done in self.extras for event in done.events]
         why = X.removal_refusal(self.instances, self.actions, self.stored_manual + staged,
-                                self.tax, batch, self.last_step())
+                                self.tax, batch, self.last_step(), self.steps)
         if why:
             raise EditError(why)
         for rec in batch.records:

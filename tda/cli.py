@@ -145,6 +145,9 @@ def cmd_load_index(args: argparse.Namespace) -> int:
         except OSError as exc:
             print(f"[load-index] cannot read {target}: {exc}; run build-index first")
             return EXIT_ERROR
+        if P.stale_index(index):
+            print(f"[load-index] {target} {P.STALE_INDEX}")
+            return EXIT_ERROR
         if not _safety_backup(paths, db, "load-index",
                               "it re-cuts the pose segments"):
             return EXIT_ERROR
