@@ -38,6 +38,7 @@ from tda.core.model import (
     VIEWS,
     FrameKey,
     StepType,
+    is_component_view,
 )
 from tda.core.truth_inputs import TRUTH_AUX_KEYS, infer_hw
 
@@ -316,7 +317,12 @@ def _merged_aux(db: Db, ff) -> dict:
     size instead whenever that drive was detached, which silently changes the
     canvas every compiled mask is in.
     """
-    held = (db.get_frame(ff.key) or {}).get("aux") or {}
+    row = db.get_frame(ff.key) or {}
+    if is_component_view(ff.key.view) and row and row.get("path") != ff.path:
+        # a gallery shot re-pointed at another photo (task U10): what was
+        # measured belongs to the old one
+        return dict(ff.aux or {})
+    held = row.get("aux") or {}
     kept = {k: held[k] for k in TRUTH_AUX_KEYS if k in held}
     return dict(ff.aux or {}) | kept
 
@@ -324,17 +330,40 @@ def _merged_aux(db: Db, ff) -> dict:
 def _load_one(
     db: Db, desktop: int, di: DesktopIndex, counts: dict, log: Optional[Log]
 ) -> None:
-    """One desktop's frames and pose segments, in one transaction."""
+    """One desktop's frames and pose segments, in one transaction.
+
+    The components gallery (task U10) is checked first: a shot whose photo the
+    new index changes or no longer has, while somebody's work sits on it, fails
+    the desktop (:class:`GalleryConflict`) before anything is written.
+    """
     with db.transaction():
+        refused = gallery_refusals(db, desktop, di)
+        if refused:
+            raise GalleryConflict(
+                "the new index would move annotated components-gallery shots: "
+                + "; ".join(refused) + " -- re-check the Components folders, or move the "
+                "work off those shots first")
         merge_desktop_meta(
             db, desktop, {"index_issues": list(di.issues), "index_n_steps": di.n_steps}
         )
         frames = di.frames
+        # a sheet row of the laid-out parts the gallery already holds is not
+        # put back into the sequence just to be moved out again (U10)
+        held = _held_by_gallery(db, desktop, di)
+        repointed: list[str] = []
         for ff in frames.values():
+            if ff.key in held:
+                continue
+            if is_component_view(ff.key.view):
+                old = (db.get_frame(ff.key) or {}).get("path")
+                if old and old != ff.path:
+                    repointed.append(f"{ff.key.view} shot {ff.key.step}")
             db.upsert_frame(ff.key, ff.path, _merged_aux(db, ff), ff.ts,
                             {"missing": False})
         for key in di.missing:
-            db.upsert_frame(key, None, {}, None, {"missing": True})
+            if key not in held:
+                db.upsert_frame(key, None, {}, None, {"missing": True})
+        dropped = _drop_stale_shots(db, desktop, di) if di.gallery else []
         if di.n_steps < 1:
             counts["frames"] += len(frames)
             counts["missing"] += len(di.missing)
@@ -362,6 +391,13 @@ def _load_one(
         )
         for line in gallery["moved"]:
             log(f"[load-index] D{desktop:02d}: {line}")
+        if repointed:
+            log(f"[load-index] D{desktop:02d}: gallery shot(s) now on another photo: "
+                f"{', '.join(repointed)} (nobody had worked on them); build-cache "
+                f"copies the new photo")
+        if dropped:
+            log(f"[load-index] D{desktop:02d}: gallery shot(s) no longer in the index, "
+                f"dropped: {', '.join(dropped)}")
 
 
 # --------------------------------------------------------------------------- #
@@ -377,6 +413,17 @@ GALLERY_OF: dict[str, str] = {camera: view for view, camera in COMPONENT_CAMERA.
 GALLERY_ANNOTATOR = "cli:load-index"
 #: ``aux`` key naming the sheet step a relocated gallery shot came from.
 SHEET_STEP_KEY = "sheet_step"
+#: A sheet row's photo is shot ``SHEET_SHOT_BASE + sheet step`` (D66: 1013) of
+#: its camera's gallery. Keyed by the sheet step it never moves, and the
+#: Components folders' own shots (1..N, a handful per camera) can never reach
+#: it -- a folder that appears on the drive later cannot collide with it, and a
+#: relocated photo is never renumbered under the shapes drawn on it. The window
+#: and the guide count shots by position (第 k/N 张), not by this number.
+SHEET_SHOT_BASE = 1000
+
+
+class GalleryConflict(ValueError):
+    """A re-index would move a components-gallery shot somebody worked on."""
 
 
 def gallery_rows(db: Db, desktop: int) -> list[int]:
@@ -384,6 +431,117 @@ def gallery_rows(db: Db, desktop: int) -> list[int]:
     return [int(rec.step) for rec in db.steps(desktop)
             if rec.step_type == StepType.IGNORE.value
             and ALL_COMPONENTS_RE.search(str(rec.raw_name or ""))]
+
+
+def shot_work(db: Db, key: FrameKey) -> list[str]:
+    """What sits on one gallery shot: the frame's own work and its segment's shapes.
+
+    :meth:`tda.core.db.Db.frame_work` plus every keyframe of the shot's pose
+    segment (a gallery shot is a segment of its own, so a shape drawn there may
+    be anchored anywhere in it).
+    """
+    work = list(db.frame_work(key))
+    seg = (db.pose_segment_for(key) or {}).get("seg")
+    if seg:
+        n = db.conn.execute(
+            "SELECT COUNT(*) FROM shape_keyframe WHERE desktop=? AND view=? "
+            "AND pose_segment=? AND anchor_step<>?",
+            (key.desktop, key.view, int(seg), key.step)).fetchone()[0]
+        if n:
+            work.append(f"{n} shape keyframe(s) in its segment")
+    return work
+
+
+def _sheet_shot_row(db: Db, desktop: int, view: str, sheet_step: int) -> Optional[dict]:
+    """The gallery row holding a sheet step's photo in ``view``, or ``None``."""
+    return next((row for row in db.frames_for(desktop, view)
+                 if (row.get("aux") or {}).get(SHEET_STEP_KEY) == sheet_step), None)
+
+
+def gallery_refusals(db: Db, desktop: int, di: DesktopIndex) -> list[str]:
+    """Why loading ``di`` would move work on a gallery shot; ``[]`` when it would not.
+
+    A shot changes its photo when the index has another file at its number (a
+    folder removed or added in front of it), and loses it when the index has
+    none (the last shots of a shorter folder). Either is fine on a shot nobody
+    touched -- it is re-pointed or dropped -- and refused on one with work
+    (:func:`shot_work`). A sheet row's photo (shot ``SHEET_SHOT_BASE + step``)
+    is the sheet step's sequence photo in the index, held to the same rule.
+    An index written before the gallery existed says nothing about it and is
+    never a reason.
+    """
+    if not getattr(di, "gallery", True):
+        return []
+    out: list[str] = []
+    for view in COMPONENT_VIEWS:
+        index = {k.step: ff for k, ff in di.frames.items() if k.view == view}
+        for row in db.frames_for(desktop, view):
+            if (row.get("aux") or {}).get(SHEET_STEP_KEY) is not None:
+                continue
+            shot = int(row["step"])
+            ff = index.get(shot)
+            if ff is not None and ff.path == row.get("path"):
+                continue
+            work = shot_work(db, FrameKey(desktop, shot, view))
+            if not work:
+                continue
+            what = (f"the index has another photo there ({ff.path})" if ff is not None
+                    else "its photo is no longer in the index")
+            out.append(f"D{desktop:02d} {view} shot {shot} ({row.get('path')}): {what}, "
+                       f"and it holds {', '.join(work)}")
+    for step in gallery_rows(db, desktop):
+        for camera, view in GALLERY_OF.items():
+            row = _sheet_shot_row(db, desktop, view, step)
+            ff = di.frames.get(FrameKey(desktop, step, camera))
+            if row is None or ff is None or ff.path == row.get("path"):
+                continue
+            work = shot_work(db, FrameKey(desktop, int(row["step"]), view))
+            if work:
+                out.append(f"D{desktop:02d} {view} shot {row['step']} (sheet step {step}): "
+                           f"the index has another photo for it ({ff.path}), and it holds "
+                           f"{', '.join(work)}")
+    return out
+
+
+def _held_by_gallery(db: Db, desktop: int, di: DesktopIndex) -> set[FrameKey]:
+    """Sequence keys of sheet steps whose photo the gallery already holds as is.
+
+    Loading them again would only put the row back for :func:`settle_gallery`
+    to move out again -- and say so on every run.
+    """
+    held: set[FrameKey] = set()
+    for step in gallery_rows(db, desktop):
+        relocated = False
+        for camera, view in GALLERY_OF.items():
+            row = _sheet_shot_row(db, desktop, view, step)
+            if row is None:
+                continue
+            relocated = True
+            ff = di.frames.get(FrameKey(desktop, step, camera))
+            if ff is None or ff.path == row.get("path"):
+                held.add(FrameKey(desktop, step, camera))
+        if relocated:
+            held |= {FrameKey(desktop, step, v) for v in VIEWS if v not in GALLERY_OF}
+    return held
+
+
+def _drop_stale_shots(db: Db, desktop: int, di: DesktopIndex) -> list[str]:
+    """Drop the gallery rows the index no longer has (folder shots only).
+
+    Only ever called once :func:`gallery_refusals` found nothing, so every row
+    dropped here is one nobody worked on; its empty segment goes with it.
+    """
+    dropped: list[str] = []
+    for view in COMPONENT_VIEWS:
+        index = {k.step for k in di.frames if k.view == view}
+        for row in db.frames_for(desktop, view):
+            shot = int(row["step"])
+            if shot in index or (row.get("aux") or {}).get(SHEET_STEP_KEY) is not None:
+                continue
+            if db.delete_unannotated_frame(FrameKey(desktop, shot, view)):
+                db.delete_empty_pose_segment(desktop, view, shot)
+                dropped.append(f"{view} shot {shot}")
+    return dropped
 
 
 def settle_gallery(db: Db, desktop: int) -> dict:
@@ -394,16 +552,18 @@ def settle_gallery(db: Db, desktop: int) -> dict:
 
     1. **A sheet row of the parts** (:func:`gallery_rows`): its step keeps its
        number and its ``ignore`` type, but its frames are not frames of the
-       teardown -- each sequence view's photo of it becomes the next shot of
-       its camera's gallery view (scanner: none; ``aux["sheet_step"]`` says
-       where it came from) and the sequence rows are dropped. A row somebody
-       annotated is never dropped (it is reported instead).
+       teardown -- each sequence view's photo of it becomes shot
+       ``SHEET_SHOT_BASE + step`` of its camera's gallery view (scanner: none;
+       ``aux["sheet_step"]`` says where it came from) and the sequence rows are
+       dropped. A row somebody annotated is never dropped (it is reported
+       instead). The measured size of a photo already there is kept.
     2. **One pose segment per shot**, ``[k, k]``, with the whole image as its
        ROI. The layout was re-arranged between shots, so a shape drawn on one
        must reach no other -- and a pose segment is exactly the scope a shape,
        a layer order and a pairwise layering live in.
 
-    Returns ``{"moved": [lines], "shots": {view: n}}``.
+    Returns ``{"moved": [lines], "shots": {view: n}}``; ``moved`` names only
+    what actually moved this time.
     """
     moved: list[str] = []
     with db.transaction():
@@ -420,13 +580,19 @@ def settle_gallery(db: Db, desktop: int) -> dict:
                 target = GALLERY_OF.get(view)
                 if target is not None and row.get("path") and not row.get("missing"):
                     shot = _gallery_shot(db, desktop, target, step)
+                    there = FrameKey(desktop, shot, target)
+                    held = db.get_frame(there) or {}
                     aux = dict(row.get("aux") or {})
                     aux[SHEET_STEP_KEY] = step
-                    db.upsert_frame(FrameKey(desktop, shot, target), row["path"], aux,
-                                    row.get("ts"), {"missing": False})
+                    if held.get("path") == row["path"]:
+                        # the same photo: keep what the truth table measured on it
+                        kept = held.get("aux") or {}
+                        aux |= {k: kept[k] for k in TRUTH_AUX_KEYS if k in kept}
+                    db.upsert_frame(there, row["path"], aux, row.get("ts"),
+                                    {"missing": False})
                     where = f"{target} shot {shot}"
                 else:
-                    where = "nowhere (no image)"
+                    where = "nowhere (no gallery for this camera)"
                 db.delete_unannotated_frame(key)
                 moved.append(f"step {step} ({view}) is a photo of the laid-out parts: "
                              f"moved to {where}")
@@ -435,12 +601,22 @@ def settle_gallery(db: Db, desktop: int) -> dict:
 
 
 def _gallery_shot(db: Db, desktop: int, view: str, sheet_step: int) -> int:
-    """The shot a sheet row's photo has, or gets: after the folder's own shots."""
-    rows = db.frames_for(desktop, view)
-    for row in rows:
-        if (row.get("aux") or {}).get(SHEET_STEP_KEY) == sheet_step:
-            return int(row["step"])
-    return max((int(row["step"]) for row in rows), default=0) + 1
+    """The shot a sheet row's photo has: ``SHEET_SHOT_BASE + sheet_step``.
+
+    A photo an earlier build put at another number moves there when nobody
+    worked on it (its empty segment goes with it); one with work stays where
+    it is.
+    """
+    want = SHEET_SHOT_BASE + int(sheet_step)
+    row = _sheet_shot_row(db, desktop, view, sheet_step)
+    if row is None or int(row["step"]) == want:
+        return want
+    old = FrameKey(desktop, int(row["step"]), view)
+    if shot_work(db, old):
+        return old.step
+    db.delete_unannotated_frame(old)
+    db.delete_empty_pose_segment(desktop, view, old.step)
+    return want
 
 
 def _seed_gallery_segments(db: Db, desktop: int, view: str) -> int:

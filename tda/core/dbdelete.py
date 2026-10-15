@@ -122,30 +122,61 @@ class DeleteMixin:
     FRAME_CACHE_TABLES = ("compiled_mask", "frame_digest", "recheck_queue",
                           "frame_transform")
 
-    def frame_is_annotated(self, key: FrameKey) -> bool:
-        """Has anybody written anything about this frame beyond its caches?
+    #: Frame review statuses that are somebody's work: confirmed, and a frame the
+    #: Label Studio import put a draft on.
+    ANNOTATED_STATUSES = ("verified", "ls_draft")
 
-        A frame row a human confirmed, a confirmed compiled row, or any row of
-        :data:`FRAME_WORK_TABLES`.
+    def frame_work(self, key: FrameKey) -> list[str]:
+        """What somebody wrote about this frame, one phrase per kind; ``[]`` for none.
+
+        The same test as :meth:`frame_is_annotated`, worded for a refusal that
+        has to say what would be lost.
         """
         args = (key.desktop, key.step, key.view)
         where = "WHERE desktop=? AND step=? AND view=?"
+        out: list[str] = []
         row = self.conn.execute(f"SELECT review_status FROM frame {where}", args).fetchone()
-        if row is not None and row["review_status"] == "verified":
-            return True
-        if self.conn.execute(f"SELECT 1 FROM compiled_mask {where} AND status='verified'",
-                             args).fetchone() is not None:
-            return True
-        return any(self.conn.execute(f"SELECT 1 FROM {table} {where}", args).fetchone()
-                   is not None for table in self.FRAME_WORK_TABLES)
+        if row is not None and row["review_status"] in self.ANNOTATED_STATUSES:
+            out.append(f"review status {row['review_status']}")
+        anchored = self.conn.execute(
+            "SELECT COUNT(*) FROM shape_keyframe WHERE desktop=? AND view=? AND anchor_step=?",
+            (key.desktop, key.view, key.step)).fetchone()[0]
+        if anchored:
+            out.append(f"{anchored} shape keyframe(s) anchored here")
+        frozen = self.conn.execute(
+            f"SELECT COUNT(*) FROM compiled_mask {where} AND status='verified'",
+            args).fetchone()[0]
+        if frozen:
+            out.append(f"{frozen} confirmed compiled row(s)")
+        for table in self.FRAME_WORK_TABLES:
+            n = self.conn.execute(f"SELECT COUNT(*) FROM {table} {where}", args).fetchone()[0]
+            if n:
+                out.append(f"{n} {table} row(s)")
+        return out
+
+    def frame_is_annotated(self, key: FrameKey) -> bool:
+        """Has anybody written anything about this frame beyond its caches?
+
+        Yes for: a frame whose ``review_status`` is confirmed or an LS draft
+        (:data:`ANNOTATED_STATUSES`); a confirmed compiled row; a shape keyframe
+        of this view **anchored on this step**, whatever its source (a hand-drawn
+        shape, an imported draft) -- dropping the frame would orphan it; any row
+        of :data:`FRAME_WORK_TABLES`. An *unconfirmed* compiled row, the digest
+        and the re-check request are caches the truth service rebuilds from the
+        inputs, so they do not count: :meth:`delete_unannotated_frame` drops them
+        with the frame.
+        """
+        return bool(self.frame_work(key))
 
     def delete_unannotated_frame(self, key: FrameKey) -> bool:
         """Drop one frame row and its caches; ``False`` (nothing dropped) if annotated.
 
         The one way a frame row ever leaves the database: the components
         gallery (task U10) takes the frames of a sheet row that photographed the
-        laid-out parts out of the teardown sequence. A frame somebody worked on
-        (:meth:`frame_is_annotated`) is never dropped.
+        laid-out parts out of the teardown sequence, and drops a gallery shot
+        whose photo is gone from the index. A frame somebody worked on
+        (:meth:`frame_is_annotated`) is never dropped; its unconfirmed compiled
+        rows, digest, re-check request and transform go with it (caches).
         """
         if self.frame_is_annotated(key):
             return False
@@ -154,6 +185,23 @@ class DeleteMixin:
             for table in self.FRAME_CACHE_TABLES + ("frame",):
                 self.conn.execute(
                     f"DELETE FROM {table} WHERE desktop=? AND step=? AND view=?", args)
+        return True
+
+    def delete_empty_pose_segment(self, desktop: int, view: str, seg: int) -> bool:
+        """Drop one pose segment that no shape, layer order or override refers to.
+
+        ``False`` (nothing dropped) when anything does: a gallery shot's segment
+        ``[k, k]`` (task U10) goes with the shot only when it is empty.
+        """
+        held = any(self.conn.execute(
+            f"SELECT 1 FROM {table} WHERE desktop=? AND view=? AND pose_segment=?",
+            (desktop, view, seg)).fetchone() is not None
+            for table in ("shape_keyframe", "zorder", "pair_override"))
+        if held:
+            return False
+        with self._tx():
+            self.conn.execute("DELETE FROM pose_segment WHERE desktop=? AND view=? AND seg=?",
+                              (desktop, view, seg))
         return True
 
     def delete_occluder(self, key: FrameKey, occluder_type: str) -> None:

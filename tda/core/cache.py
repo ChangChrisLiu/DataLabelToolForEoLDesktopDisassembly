@@ -594,6 +594,19 @@ def _metrics_stale(record: Optional[dict], view: str) -> bool:
     return int(record.get("metrics_version", 1)) != METRICS_VERSION
 
 
+def _source_moved(record: Optional[dict], frame: FrameFile, view: str) -> bool:
+    """Is the cached copy of a single-image view from another file than the frame's?
+
+    A components-gallery shot re-pointed by ``load-index`` (task U10) keeps its
+    frame key, so its cached copy must be replaced even though it has the
+    right name. The scanner chooses among a burst, so its ``src`` is not the
+    frame's own path and is left to :func:`_redecide`.
+    """
+    if not record or view == "scan" or not frame.path:
+        return False
+    return record.get("src") != _norm(frame.path)
+
+
 def _redecide(record: dict, view: str) -> Optional[dict]:
     """Re-run the choice on the metrics already in ``record``; None if unchanged.
 
@@ -690,7 +703,8 @@ def build_cache(index: dict[int, DesktopIndex], cache_dir: str, views=("scan",),
                 step = str(key.step)
                 try:
                     record = manifest.get(step)
-                    measure = force or recompute or _metrics_stale(record, view)
+                    measure = (force or recompute or _metrics_stale(record, view)
+                               or _source_moved(record, frames[key], view))
                     if record and not measure and _up_to_date(record.get("src", ""), dest):
                         again = _redecide(record, view)
                         if again is None:
@@ -749,6 +763,51 @@ def build_cache(index: dict[int, DesktopIndex], cache_dir: str, views=("scan",),
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+def gallery_frames_from_db(index: dict[int, DesktopIndex], db_path: str,
+                           views: Iterable[str], desktops: Iterable[int]) -> int:
+    """Take the components gallery's frames from the database, in place.
+
+    The gallery (task U10) is the one place the database knows more than the
+    index: a sheet row of the laid-out parts (D66 step 13) is moved into the
+    gallery by ``load-index``/``import-logs`` because only the step table says
+    what it is, and the index -- built before the step table exists -- still
+    lists it as a sequence step. So for every gallery view asked for, the
+    frames are the database's rows (read-only), which is exactly what the
+    session will open. Returns how many gallery frames were taken.
+    """
+    import sqlite3
+
+    from tda.core.model import is_component_view
+
+    wanted = [v for v in views if is_component_view(v)]
+    if not wanted or not db_path or not os.path.isfile(db_path):
+        return 0
+    uri = "file:" + _norm(os.path.abspath(db_path)) + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    taken = 0
+    try:
+        for desktop in desktops:
+            di = index.get(int(desktop))
+            if di is None:
+                continue
+            for view in wanted:
+                for key in [k for k in di.frames if k.view == view]:
+                    del di.frames[key]
+                rows = conn.execute(
+                    "SELECT step, path, aux_json, ts FROM frame WHERE desktop=? AND view=? "
+                    "AND COALESCE(missing, 0)=0 AND path IS NOT NULL AND path<>'' "
+                    "ORDER BY step", (int(desktop), view)).fetchall()
+                for step, path, aux_json, ts in rows:
+                    key = FrameKey(int(desktop), int(step), view)
+                    aux = json.loads(aux_json) if aux_json else {}
+                    di.frames[key] = FrameFile(key=key, path=path, aux=aux, ts=ts,
+                                               src_step_dir="")
+                    taken += 1
+    finally:
+        conn.close()
+    return taken
+
+
 def _default_cache_dir(paths_path: str = DEFAULT_PATHS_PATH) -> str:
     """``cache_dir`` from configs/paths.yaml."""
     import yaml
@@ -799,6 +858,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     help="measure every burst again instead of reusing the stored metrics")
     ap.add_argument("--force", action="store_true",
                     help="rebuild: measure again and re-copy every file")
+    # ``--db`` (add_thumb_args) is read for the components gallery's frames too
     add_thumb_args(ap)
     args = ap.parse_args(argv)
 
@@ -811,6 +871,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     raw = _configure_raw()
     index = load_index(index_path)
+    gallery_frames_from_db(index, args.db or "", views, desktops)
     total = sum(1 for d in desktops if d in index
                 for k in index[d].frames if k.view in views)
     log = open(args.log, "a", encoding="utf-8", buffering=1) if args.log else None
