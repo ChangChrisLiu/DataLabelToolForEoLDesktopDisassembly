@@ -75,19 +75,14 @@ from tda.core.states import (
 )
 from tda.core.taxonomy import Taxonomy
 from tda.core.truth_inputs import events_of, merge_events, pose_segment_of
+# the vocabulary the importer shares, kept in the light module it imports
+from tda.core.merge_replay import OP_MERGE, OP_UNDO, OP_VIEW, POINTERS, ranges
 
 __all__ = [
     "OP_MERGE", "OP_UNDO", "OP_VIEW", "MergeError", "MergePlan", "MergeReport",
-    "apply_merge", "merge_instances", "plan_merge", "redo_merge", "undo_merge",
+    "apply_merge", "merge_instances", "plan_merge", "ranges", "redo_merge", "undo_merge",
 ]
 
-#: ``op_log.kind`` of one merge, and of its undo.
-OP_MERGE = "merge_instances"
-OP_UNDO = "undo_merge_instances"
-#: ``op_log`` is scoped per ``(desktop, view)``; a merge belongs to every view.
-OP_VIEW = "-"
-#: Instance fields that hold another instance's key.
-POINTERS = ("parent", "mounted_on", "fastens", "socket_host")
 VERIFIED = "verified"
 
 
@@ -98,24 +93,6 @@ class MergeError(ValueError):
 # --------------------------------------------------------------------------- #
 # small helpers
 # --------------------------------------------------------------------------- #
-def ranges(steps: Iterable[int]) -> str:
-    """``[37, 38, 39, 41]`` -> ``"37–39、41"``."""
-    nums = sorted({int(s) for s in steps})
-    out: list[str] = []
-    start = prev = None
-    for n in nums:
-        if start is None:
-            start = prev = n
-        elif n == prev + 1:
-            prev = n
-        else:
-            out.append(f"{start}" if start == prev else f"{start}–{prev}")
-            start = prev = n
-    if start is not None:
-        out.append(f"{start}" if start == prev else f"{start}–{prev}")
-    return "、".join(out)
-
-
 def _frames_text(frames: dict[str, list[int]]) -> str:
     """``{"scan": [38, 39]}`` -> ``"scan 第 38–39 帧"``."""
     return "；".join(f"{view} 第 {ranges(steps)} 帧"
