@@ -34,6 +34,12 @@ os.environ["TDA_PROMPT_GATE"] = "off"
 # window a stub model with ``MainWindow.enable_detector``.
 os.environ["TDA_DETECTOR"] = "off"
 
+# SAM's fine-tuned head (task U19, ``tda.models.sam_heads``) as well: a window
+# that loads SAM in a test loads the stock head alone, wherever the suite runs
+# and whatever is in the weights directory.  The tests that are about the head
+# load ``configs/sam.yaml`` (or a file of their own) by path.
+os.environ["TDA_SAM_HEAD"] = "off"
+
 
 @pytest.fixture
 def tmp_db_path(tmp_path: Path) -> str:

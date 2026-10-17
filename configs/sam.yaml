@@ -1,0 +1,74 @@
+# SAM 2.1's two decoder heads (task U19; tda/models/sam_heads.py).
+#
+# L5 (experiments/l5_sam/REPORT.md) fine-tuned SAM 2.1's prompt encoder and
+# mask decoder on the annotator's verified scan masks; the image encoder stayed
+# frozen.  Blind on D5 (recipe v2, trained on D2/D3/D4/D13), prompt-averaged
+# IoU / boundary F of the candidate the app shows, stock -> tuned:
+#
+#   small parts < 400 px   0.640 / 0.746 -> 0.727 / 0.866
+#   screws                 0.720 / 0.816 -> 0.800 / 0.929   (no longer 13-30 % too big)
+#   connectors             0.554 / 0.581 -> 0.718 / 0.771   (single click 0.30 -> 0.58)
+#   latches                0.645 / 0.676 -> 0.716 / 0.764
+#   large parts > 20k px   0.526 / 0.193 -> 0.570 / 0.166
+#   loose (diff-map) box   small 0.639 -> 0.750, large 0.435 -> 0.529
+#   one corrective click   small 0.766 -> 0.828
+#   decode 8.27 -> 8.26 ms, image embedding 29.8 -> 29.9 ms
+#
+# Every gate passed but one: a single click with no box on a large part,
+# -0.021 IoU on D5 (-0.012 ... -0.021 over L5's models), in a cell where
+# neither head is usable (IoU 0.12-0.25).  The controller's ruling (REPORT.md
+# section 0) keeps both heads -- one image encoder, one embedding -- and routes
+# each prompt so that cell cannot get worse:
+#
+#   a box (detector, difference map, a drag, point+box)    -> box_prompts
+#   no box, the part is of a `large_classes` class         -> point_only.large
+#   no box, any other class, or no class known             -> point_only.other
+#   a corrective click (the layer goes back as mask_input) -> the head that
+#                                                             produced that mask
+#
+# `C` walks the answering head's three candidates, as before.
+#
+# Anything wrong here -- a missing or malformed file, a head file that is not
+# there or does not load, a head made for another SAM checkpoint -- is one
+# WARNING in the log and the stock head everywhere: the app opens and SAM
+# answers exactly as it did before U19.  TDA_SAM_HEAD=off (or =<another file>)
+# overrides this file for one process.
+
+enabled: true
+
+# The tuned head: the 141 tensors of sam2.1_hiera_large_tda_f5_v2.pt that
+# differ from sam2.1_hiera_large.pt (4.09 M parameters, 16 MB), exported by
+# experiments/l5_sam/export_head.py with its manifest (.json) beside it.  It is
+# a delta on the stock checkpoint of paths.yaml's weights_dir and refuses any
+# other one.  The weights are not in git.
+head: D:/DataSet/models/weights/sam2.1_tda_head_f5_v2.pt
+
+route:
+  box_prompts: tuned
+  point_only:
+    large: stock
+    other: tuned
+
+# The classes whose scan band in prompt_box_bands.yaml reaches above 20 000 px
+# (hi_px; L5's "large" group is masks above 20 000 px), computed 2026-10-17:
+#   motherboard 412 597, optical_drive 157 329, drive_cage 137 914,
+#   cpu_cooler 130 779, psu 113 563, storage_drive 83 974,
+#   cpu_socket_lever 23 090
+# plus the two large classes the scan bands do not cover, named in the
+# ruling: chassis (no band; every L5 chassis mask is above 20 000 px) and
+# expansion_card (unbanded, one part).
+# Not here: cover -- its scan band tops out at 17 004 px (median 16 274; 14 %
+# of L5's cover masks are above 20 000 px), and on a single click the tuned
+# head was better on both held-out desktops (D5 +0.08, D13 +0.35 IoU).
+# This list, not the bands, is what the app reads; tests/test_u19_heads.py
+# says so when a re-fit of the bands no longer agrees with it.
+large_classes:
+  - chassis
+  - cpu_cooler
+  - cpu_socket_lever
+  - drive_cage
+  - expansion_card
+  - motherboard
+  - optical_drive
+  - psu
+  - storage_drive
