@@ -1,0 +1,86 @@
+# SAM 2.1's two decoder heads (task U19; tda/models/sam_heads.py).
+#
+# L5 (experiments/l5_sam/REPORT.md) fine-tuned SAM 2.1's prompt encoder and
+# mask decoder on the annotator's verified scan masks; the image encoder stayed
+# frozen.  Blind on D5 (recipe v2, trained on D2/D3/D4/D13), prompt-averaged
+# IoU / boundary F of the candidate the app shows, stock -> tuned:
+#
+#   small parts < 400 px   0.640 / 0.746 -> 0.727 / 0.866
+#   screws                 0.720 / 0.816 -> 0.800 / 0.929   (no longer 13-30 % too big)
+#   connectors             0.554 / 0.581 -> 0.718 / 0.771   (single click 0.31 -> 0.58)
+#   latches                0.645 / 0.676 -> 0.716 / 0.764
+#   large parts > 20k px   0.526 / 0.193 -> 0.570 / 0.166
+#   loose (diff-map) box   small 0.639 -> 0.750, large 0.435 -> 0.529
+#   one corrective click   small 0.766 -> 0.828
+#   decode 8.27 -> 8.26 ms, image embedding 29.8 -> 29.9 ms
+#
+# Every gate passed but one: a single click with no box on a large part,
+# -0.021 IoU on D5 (-0.012 ... -0.021 over L5's models), in a cell where
+# neither head is usable (IoU 0.12-0.25).  The controller's ruling (REPORT.md
+# section 0) keeps both heads -- one image encoder, one embedding -- and routes
+# each prompt so that cell cannot get worse:
+#
+#   a box (detector, difference map, a drag, point+box)    -> box_prompts
+#   no box, the part is of a `stock_point_classes` class   -> point_only.stock_point_classes
+#   no box, any other class, or no class known             -> point_only.other
+#   a corrective click (the layer goes back as mask_input) -> the head that
+#                                                             produced that mask
+#
+# `C` walks the answering head's three candidates, as before.
+#
+# Anything wrong here -- a missing or malformed file, a head file that is not
+# there or does not load, a head made for another SAM checkpoint -- is one
+# WARNING in the log and the stock head everywhere: the app opens and SAM
+# answers exactly as it did before U19.  TDA_SAM_HEAD=off (or =<another file>)
+# overrides this file for one process.
+
+enabled: true
+
+# The tuned head: the 141 tensors of sam2.1_hiera_large_tda_f5_v2.pt that
+# differ from sam2.1_hiera_large.pt (4.09 M parameters, 16 MB), exported by
+# experiments/l5_sam/export_head.py with its manifest (.json) beside it.  It is
+# a delta on the stock checkpoint SAM loads -- the one in the weights_dir of the
+# paths the app was started with (paths.yaml / --paths) -- and refuses any
+# other one by its fingerprint.  An absolute path, as here, is used as it is; a
+# bare file name (or any relative path) is looked for in that same weights_dir,
+# so the head follows a --paths that moves the weights.  The weights are not
+# in git.
+head: D:/DataSet/models/weights/sam2.1_tda_head_f5_v2.pt
+
+route:
+  box_prompts: tuned
+  point_only:
+    stock_point_classes: stock
+    other: tuned
+
+# The classes whose single-click prompts (no box) the stock head answers.
+# Each member says why it is here, one of three reasons:
+#   band > 20 000 px     its scan band in prompt_box_bands.yaml reaches above
+#                        20 000 px (hi_px; L5's "large" group is the masks
+#                        above 20 000 px) -- the cell the ruling protects.
+#                        tda.models.sam_heads.large_classes_from_bands derives
+#                        exactly these seven (computed 2026-10-17)
+#   named by the ruling  a large class the scan bands do not cover
+#   measured worse       on a single click the tuned head was worse on both of
+#                        L5's held-out desktops, each with its own fold's model
+#                        (per-class point IoU of the shown candidate: D5 with
+#                        f5_v2, blind; D13 with f13_v2, not blind; one or two
+#                        instances each)
+# Not here: cover -- its scan band tops out at 17 004 px (median 16 274; 14 %
+# of L5's cover masks are above 20 000 px), and on a single click the tuned
+# head was better on both held-out desktops (each with its own fold's model;
+# D5 +0.08, D13 +0.35 IoU).
+# This list, not the bands, is what the app reads; tests/test_u19_heads.py
+# says so when a re-fit of the bands no longer agrees with it.
+stock_point_classes:
+  - motherboard        # band > 20 000 px (hi 412 597)
+  - optical_drive      # band > 20 000 px (hi 157 329)
+  - drive_cage         # band > 20 000 px (hi 137 914)
+  - cpu_cooler         # band > 20 000 px (hi 130 779)
+  - psu                # band > 20 000 px (hi 113 563)
+  - storage_drive      # band > 20 000 px (hi 83 974)
+  - cpu_socket_lever   # band > 20 000 px (hi 23 090)
+  - chassis            # named by the ruling: no scan band; every L5 chassis mask > 20 000 px
+  - expansion_card     # named by the ruling: unbanded (one part)
+  - ram_module         # measured worse: tuned single click -0.096 (D5) / -0.023 (D13) IoU
+  - drive_latch        # measured worse: tuned single click -0.027 (D5) / -0.191 (D13) IoU

@@ -54,10 +54,9 @@ def test_the_quickstart_has_one_short_section_with_the_example():
     assert len(section) < 900                                # short
 
 
-def test_the_spec_has_section_3_2c_and_v1_18_on_top():
+def test_the_spec_has_section_3_2c_and_v1_18():
     body = SPEC.read_text(encoding="utf-8")
     assert "### 3.2c 框外零件（context object，v1.18）" in body
     assert body.index("### 3.2b") < body.index("### 3.2c") < body.index("### 3.3")
     changes = body.split("## 14. 修订记录", 1)[1]
-    first = next(line for line in changes.splitlines() if line.startswith("- "))
-    assert first.startswith("- **v1.18（2026-10-17）**：**框外零件**（U18")
+    assert "\n- **v1.18（2026-10-17）**：**框外零件**（U18" in changes

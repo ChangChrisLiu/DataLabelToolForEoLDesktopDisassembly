@@ -124,9 +124,19 @@ class ToolsMixin:
             self.report(CANDIDATES_DROPPED)
         self.cancel_roi_edit()
         self.note_tool_switch(name, via="key")
+        # ``S`` <-> ``X`` (task U19 review, M1): the layer holds the answer of
+        # the SAM tool being left, and a correcting click is a refinement of it,
+        # so the head that gave it goes over with the switch -- the detach in
+        # ``_attach_tool`` would drop it.  Any other switch drops it as before.
+        sam_tools = ("sam_point", "sam_box")
+        carried = (self._tool_for(self._tool_name).answer_head
+                   if name in sam_tools and self._tool_name in sam_tools
+                   and name != self._tool_name else None)
         self._tool_name = name
         self.note_draw_tool(name)
         self._attach_tool()
+        if carried is not None:
+            self._tool_for(name).take_answer_head(carried)
         self.update_status()
 
     def note_tool_switch(self, name: str, via: str) -> None:

@@ -17,8 +17,8 @@ from typing import Optional
 
 from tda.core.model import CONTEXT_LABEL, CONTEXT_PREFIX
 
-__all__ = ["CLASS_ZH", "STATE_ZH", "VISIBILITY_ZH", "class_zh", "instance_label",
-           "state_zh", "visibility_zh"]
+__all__ = ["CLASS_ZH", "STATE_ZH", "VISIBILITY_ZH", "class_of_key", "class_zh",
+           "instance_label", "state_zh", "visibility_zh"]
 
 #: The taxonomy's states as an annotator says them (U2b round 2): a ✂ row read
 #: ``open → closed``, which is the state machine's vocabulary, not theirs.
@@ -116,7 +116,7 @@ _REFINED: dict[tuple[str, str], dict[str, str]] = {
 }
 
 
-def _class_of_key(instance: str) -> str:
+def class_of_key(instance: str) -> str:
     """``screw.cpu_cooler.03`` -> ``screw``: what a key says when nothing else does.
 
     A 框外零件's key (``ctx.<class>.NN``, task U18) says its class after the prefix.
@@ -130,7 +130,7 @@ def _class_of_key(instance: str) -> str:
 def class_zh(cls: Optional[str], attrs: Optional[dict] = None,
              instance: str = "") -> str:
     """The Chinese name of a part; the class itself when there is none."""
-    name = str(cls or _class_of_key(instance) or "")
+    name = str(cls or class_of_key(instance) or "")
     for (klass, attr), names in _REFINED.items():
         if klass == name:
             value = (attrs or {}).get(attr)
