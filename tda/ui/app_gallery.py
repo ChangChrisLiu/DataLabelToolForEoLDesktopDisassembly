@@ -132,8 +132,12 @@ class GalleryMixin:
                        dirty: Optional[bool] = None) -> str:
         """Why 「看不见」 (``I``) would do nothing now, ``""`` if it may (its button, U13).
 
-        On a sequence frame ``I`` is 「被线挡住」 (task U15), with its own gates.
+        On a sequence frame ``I`` is 「被线挡住」 (task U15), with its own gates;
+        on a 框外零件 (task U18) it is 「不在这张里」 in both families.
         """
+        target = self.context_target(instance) if compat.is_open(self.session) else None
+        if target is not None:
+            return self.context_absent_refusal(target, dirty)
         if compat.is_open(self.session) and not self.in_gallery():
             return self.cable_refusal(instance, dirty)
         return self._absent_check(instance, dirty)[2]
@@ -145,8 +149,13 @@ class GalleryMixin:
         Refused on a part the card does not ask for, on a part that already
         has a shape here (a drawn part *is* in the shot), and while pixels of
         it are being drawn. On a sequence frame the key is 「被线挡住」 instead
-        (task U15, :meth:`tda.ui.app_cable.CableMixin.act_cable`).
+        (task U15, :meth:`tda.ui.app_cable.CableMixin.act_cable`). On a 框外零件
+        (task U18) it is 「不在这张里」 wherever it is pressed.
         """
+        target = self.context_target(instance) if compat.is_open(self.session) else None
+        if target is not None:
+            self.act_context_absent(target)
+            return
         if compat.is_open(self.session) and not self.in_gallery():
             self.act_cable(instance)
             return

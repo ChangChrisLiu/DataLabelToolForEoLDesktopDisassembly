@@ -68,7 +68,7 @@ from tda.core.db import Db
 from tda.core.extra import extra_keys
 from tda.core.index import build_index, load_index, respell_paths, save_index
 from tda.core.index_report import write_report
-from tda.core.model import ALL_VIEWS, COMPONENT_VIEWS, VIEWS
+from tda.core.model import ALL_VIEWS, COMPONENT_VIEWS, VIEWS, is_context
 from tda.core.taxonomy import load_taxonomy
 
 __all__ = ["main"]
@@ -564,6 +564,12 @@ def format_desktop(db: Db, row: dict) -> str:
         # counted among the instances above; said apart because no sheet
         # names them, so nothing but this line says they exist (task U5b)
         lines.append(f"  added in S1 (not in the log): {len(added)} - {', '.join(added)}")
+    outside = (sorted(key for key, rec in db.instances(row["desktop"]).items()
+                      if is_context(rec)) if row.get("context") else [])
+    if outside:
+        # 框外零件 (task U18): not among the instances above, not in any count of
+        # the machine's work; drawn on their own
+        lines.append(f"  框外零件 / outside the machine: {len(outside)} - {', '.join(outside)}")
     lines.append(
         f"  {'view':<6}{'frames':>8}{'missing':>9}{'keyframes':>11}{'done/work':>12}")
     for view in VIEWS:

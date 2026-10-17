@@ -39,8 +39,10 @@ import numpy as np
 
 from tda.core import ls_adopt
 from tda.core import masks as _masks
+from tda.core.model import is_context_key
 from tda.ui import app_compat as compat
 from tda.ui import app_support as S
+from tda.ui.context_text import NO_ADOPT as NO_ADOPT_CONTEXT
 
 __all__ = ["ADOPT_BENCH", "ADOPT_BUSY", "ADOPT_FIRST", "ADOPT_NEEDS_INSTANCE",
            "ADOPT_NO_IMAGE", "ADOPT_RESTORE", "ADOPT_REVIVED",
@@ -161,6 +163,8 @@ class AdoptMixin:
             return ADOPT_BENCH
         if getattr(self.session, "editing_instance", None) is None:
             return ADOPT_NEEDS_INSTANCE
+        if is_context_key(self.session.editing_instance):
+            return NO_ADOPT_CONTEXT     # the drafts are the machine's parts (task U18)
         if self.overlay is None:
             return ADOPT_NO_IMAGE
         if self.roi_editing or self._pending_scope is not None \

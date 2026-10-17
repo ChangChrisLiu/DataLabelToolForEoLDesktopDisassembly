@@ -28,6 +28,16 @@ writes them relative to the frame's ROI (``pose_segment.roi_json``): masks are
 cropped, boxes shifted and clipped, the image entry records ``roi`` and its
 width/height are the ROI's. A row falling entirely outside the ROI is dropped.
 
+框外零件 (task U18)
+-------------------
+A context object -- something in the picture outside the machine, drawn on its
+own -- is exported with the rest of the frame: its class as the category (one
+no taxonomy class describes goes under ``other``, id ``len(classes) + 1``,
+listed only in a file that has one), ``attributes.context = true``, its
+``label``, ``instance_key``, and ``state`` / ``placement`` ``null``. Under
+``roi_crop`` it is kept **only when it intersects the ROI** (cropped to it like
+any row); one lying wholly outside is dropped.
+
 This module also owns the identity helpers shared with
 :mod:`tda.core.export.vlm` -- image ids, cache-relative file names, frame size,
 the per-desktop state context and the keyframe lookup -- so that both exports
@@ -54,6 +64,8 @@ from tda.core.db import Db
 from tda.core.implied import is_implied
 from tda.core.model import (
     ALL_VIEWS,
+    CONTEXT_LABEL,
+    CONTEXT_OTHER,
     NO_CHANGE_STEP_TYPES,
     SKIP_STEP_TYPES,
     VIEWS,  # noqa: F401 - read off this module by tda.core.export.vlm
@@ -66,6 +78,7 @@ from tda.core.model import (
     StepType,
     Visibility,
     is_component_view,
+    is_context,
     is_provisional,
     step_is_annotatable,
 )
@@ -245,6 +258,10 @@ class DesktopCtx:
     rather than at each call site is the point: the drafts are not in the
     mapping, so a loop cannot walk past the rule. What was dropped is kept in
     :attr:`drafts` for a caller that has to say so.
+
+    The 框外零件 (task U18) are taken out the same way, into :attr:`context`:
+    no VLM question may count, name or reason about something that is not part
+    of the machine, and the COCO export writes them from there, on their own.
     """
 
     desktop: int
@@ -256,6 +273,8 @@ class DesktopCtx:
     keyframes: dict[tuple[str, str, int], list[ShapeKeyframe]] = field(default_factory=dict)
     #: The provisional keys :meth:`__post_init__` took out of ``instances``.
     drafts: dict[str, InstanceRec] = field(default_factory=dict, repr=False)
+    #: The context objects :meth:`__post_init__` took out of ``instances`` (U18).
+    context: dict[str, InstanceRec] = field(default_factory=dict, repr=False)
     _states: dict[int, FrameState] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
@@ -264,6 +283,20 @@ class DesktopCtx:
             self.drafts = drafts
             self.instances = {k: v for k, v in self.instances.items()
                               if k not in drafts}
+        context = {k: v for k, v in self.instances.items() if is_context(v)}
+        if context:
+            self.context = context
+            self.instances = {k: v for k, v in self.instances.items()
+                              if k not in context}
+
+    def context_cls(self, instance: str) -> Optional[str]:
+        """The class a context object is exported under (a taxonomy class or ``other``)."""
+        rec = self.context.get(instance)
+        if rec is None:
+            return None
+        if rec.cls == CONTEXT_OTHER or rec.cls in self.tax.classes:
+            return rec.cls
+        return None
 
     def state_at(self, step: int) -> FrameState:
         """State of every instance at ``step`` (memoised); drafts are not in it."""
@@ -339,6 +372,20 @@ def categories(tax: Taxonomy) -> list[dict]:
 def category_ids(tax: Taxonomy) -> dict[str, int]:
     """``class name -> category id``."""
     return {c["name"]: c["id"] for c in categories(tax)}
+
+
+#: ``supercategory`` of the ``other`` category of the 框外零件 (task U18).
+CONTEXT_SUPERCATEGORY = "context"
+
+
+def other_category(tax: Taxonomy) -> dict:
+    """The category of a context object no taxonomy class describes (task U18).
+
+    One past the taxonomy's last id, so it never moves a class's id; it is
+    listed only in a file that has such an annotation.
+    """
+    return {"id": len(tax.classes) + 1, "name": CONTEXT_OTHER,
+            "supercategory": CONTEXT_SUPERCATEGORY}
 
 
 # --------------------------------------------------------------------------- #
@@ -505,6 +552,33 @@ def _attributes(ctx: DesktopCtx, instance: str, row: dict, step: int,
     }
 
 
+def _context_attributes(ctx: DesktopCtx, instance: str, row: dict,
+                        keyframe: Optional[ShapeKeyframe], tier: Optional[str],
+                        disputed: bool = False, occluder: Optional[str] = None) -> dict:
+    """The ``attributes`` of a 框外零件 (task U18): no state, no placement.
+
+    ``context: true`` says what it is, ``label`` its free-text name (``None``
+    when it has none); everything else as for any row, so a consumer filtering
+    on ``verified`` or ``visibility`` treats it alike.
+    """
+    rec = ctx.context.get(instance)
+    label = str(((rec.attrs if rec else None) or {}).get(CONTEXT_LABEL) or "").strip()
+    return {
+        "instance_key": instance,
+        "state": None,
+        "placement": None,
+        "visibility": row.get("visibility"),
+        "occluder": occluder,
+        "occlusion_ratio": row.get("occlusion_ratio"),
+        "amodal_complete": None if keyframe is None else bool(keyframe.amodal_complete),
+        "implied": False,
+        "tier": tier,
+        "verified": not disputed and row.get("status") == VERIFIED,
+        "context": True,
+        "label": label or None,
+    }
+
+
 def _annotation(ann_id: int, img_id: int, category: int, row: dict, attributes: dict,
                 roi: Optional[tuple[int, int, int, int]], include_boxes: bool,
                 amodal: Optional[dict] = None) -> Optional[dict]:
@@ -633,7 +707,8 @@ def export_coco(
         Keep only rows a human confirmed (``status == "verified"``). A frame
         whose rows are all dropped gets no image entry either.
     roi_crop:
-        Write ROI-relative coordinates (see the module docstring).
+        Write ROI-relative coordinates (see the module docstring). A 框外零件
+        (task U18) is kept only when it intersects the ROI.
     include_boxes:
         Also emit the compiled ``box`` rows -- a part lying on the bench, whose
         truth is a rectangle rather than a mask -- as bbox-only annotations with
@@ -733,22 +808,38 @@ def export_coco(
             amodals = _amodal_rles(service, key, sorted(set(occluders) & set(rows)))
             for instance in sorted(rows):
                 row = rows[instance]
-                cls = ctx.cls_of(instance)
-                if cls is None:
-                    continue  # an unresolved draft key: no category to export it under
                 keyframe = ctx.keyframe_at(instance, key.step, row.get("placement") or "",
                                            segment)
-                ann = _annotation(
-                    ann_id, img_id, cat_of[cls], row,
-                    _attributes(ctx, instance, row, key.step, keyframe, tier,
-                                key.step in disputed, gallery, occluders.get(instance)),
-                    roi, include_boxes, amodals.get(instance),
-                )
+                if instance in ctx.context:
+                    # a 框外零件 (task U18): its class -- `other` its own category --
+                    # and no state or placement; under --roi-crop kept only where
+                    # it reaches into the ROI (cropped like any row)
+                    cls = ctx.context_cls(instance)
+                    if cls is None:
+                        continue
+                    if cls == CONTEXT_OTHER and cls not in cat_of:
+                        cat_of[cls] = other_category(tax)["id"]
+                        doc["categories"].append(other_category(tax))
+                    attributes = _context_attributes(
+                        ctx, instance, row, keyframe, tier, key.step in disputed,
+                        occluders.get(instance))
+                else:
+                    cls = ctx.cls_of(instance)
+                    if cls is None:
+                        continue  # an unresolved draft key: no category to export it under
+                    attributes = _attributes(ctx, instance, row, key.step, keyframe, tier,
+                                             key.step in disputed, gallery,
+                                             occluders.get(instance))
+                ann = _annotation(ann_id, img_id, cat_of[cls], row, attributes,
+                                  roi, include_boxes, amodals.get(instance))
                 if ann is not None:
                     doc["annotations"].append(ann)
                     ann_id += 1
 
     out = Path(out_json)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
+    # ASCII on purpose: a 框外零件's ``label`` is the annotator's own words (task
+    # U18), and pycocotools opens the file in the locale's encoding -- cp1252
+    # on this machine, where a raw Chinese label made ``COCO(path)`` raise
+    out.write_text(json.dumps(doc, ensure_ascii=True, indent=1), encoding="utf-8")
     return doc

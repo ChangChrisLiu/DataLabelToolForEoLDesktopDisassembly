@@ -220,7 +220,14 @@ class CableMixin:
     # ------------------------------------------------------------- Ctrl+I
     @S.guard
     def act_cable_range(self) -> None:
-        """``Ctrl+I``: the selected part's 被线挡住 label from this frame to step N."""
+        """``Ctrl+I``: the selected part's 被线挡住 label from this frame to step N.
+
+        On a 框外零件 (task U18): 「不在」 over the span instead.
+        """
+        target = self.context_target(None) if compat.is_open(self.session) else None
+        if target is not None:
+            self.act_context_absent_range(target)
+            return
         if getattr(self.session, "gallery", False):
             self.report(CABLE_GALLERY)
             return

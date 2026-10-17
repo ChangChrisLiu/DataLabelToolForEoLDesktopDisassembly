@@ -25,7 +25,8 @@ from PySide6.QtCore import QObject, Signal
 from tda.core import masks
 from tda.core.compiler import CompiledFrame
 from tda.core.db import Db
-from tda.core.model import FrameKey, is_component_view
+from tda.core.context import context_label
+from tda.core.model import FrameKey, is_component_view, is_context_key
 from tda.core.taxonomy import Taxonomy
 from tda.core.truth import TruthService
 from tda.core.truth_inputs import instances_of, state_of
@@ -47,13 +48,15 @@ from tda.ui.session_truth import TruthCacheMixin
 from tda.ui.session_sweep import TruthSweeper
 from tda.ui.session_verb import VerbMixin, apply_correct_verb
 from tda.ui.session_captive import CaptiveMixin, apply_captive_fix
+from tda.ui.session_context import OP_KIND as CONTEXT_OP
+from tda.ui.session_context import ContextMixin, apply_context
 
 __all__ = ["AnnotationSession"]
 
 log = logging.getLogger("tda.session")
 
 class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, CaptiveMixin,
-                        CableMixin, TruthCacheMixin, QObject):
+                        CableMixin, ContextMixin, TruthCacheMixin, QObject):
     """One annotator's working set: a desktop, a view, and the frame in hand."""
 
     #: The current frame changed; payload is a :class:`~tda.core.model.FrameKey`.
@@ -143,6 +146,15 @@ class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, Captive
         ):
             handler = self._make_handler(apply)
             self.undo_stack.register(kind, handler, handler)
+        # 框外零件 (task U18): made, or taken back with its shapes -- and the
+        # layer of one an undo took away goes with it
+        made = self._make_handler(apply_context)
+
+        def context_handler(payload: dict) -> None:
+            made(payload)
+            self._drop_gone_context_edit()
+
+        self.undo_stack.register(CONTEXT_OP, context_handler, context_handler)
         # a brush stroke is undone in the same history, but it touches nothing
         # but the editing layer: no database write, no recompilation
         self.undo_stack.register(
@@ -454,7 +466,19 @@ class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, Captive
         # which states each part can be set to here (task U8): the panel's combo;
         # which can be said to be taken out after all (task U9): its button
         found = self._with_state_choices(found, state, instances)
-        return self._with_verb_offers(found, state, instances)
+        found = self._with_verb_offers(found, state, instances)
+        # the 框外零件 (task U18): their own block, last -- the ones this frame
+        # has, then the others, which are not drawn here (「—」) but can be
+        machine = [row for row in found if not is_context_key(row.get("key"))]
+        outside = [row for row in found if is_context_key(row.get("key"))]
+        if outside:
+            absent = self.context_absent_here()
+            for row in outside:
+                rec = instances.get(str(row["key"]))
+                row.update({"context": True, "label": context_label(rec),
+                            "absent": str(row["key"]) in absent})
+        return machine + outside + self.context_rows({str(r["key"]) for r in outside},
+                                                     instances)
 
     def _frame_overrides_of(self, key: FrameKey) -> tuple[frozenset, frozenset]:
         """``(labelled, drawn)``: instances with a hand-set label / pixels on this frame."""

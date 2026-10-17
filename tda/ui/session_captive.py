@@ -34,7 +34,7 @@ from tda.core.captive_fix import (
     plan_captive_fix,
 )
 from tda.core.db import Db
-from tda.core.model import ALL_VIEWS, FrameKey, is_component_view
+from tda.core.model import ALL_VIEWS, FrameKey, is_component_view, is_context_key
 from tda.core.states import needs_geom
 from tda.core.truth import TruthService
 from tda.core.truth_inputs import InputCache, annotatable_steps, instances_of, state_of
@@ -275,8 +275,8 @@ class CaptiveMixin:
 
     def is_screw(self, instance: str) -> bool:
         """Is ``instance`` a screw of the open desktop? (``Shift+T``'s two meanings.)"""
-        if not self.is_open or not instance:
-            return False
+        if not self.is_open or not instance or is_context_key(instance):
+            return False        # a 框外零件 screw is no screw of the machine (U18)
         rec = instances_of(self.db, self.current().desktop).get(str(instance))
         return rec is not None and rec.cls == SCREW
 

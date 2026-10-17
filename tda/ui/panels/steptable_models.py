@@ -29,8 +29,9 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QComboBox, QSpinBox, QStyledItemDelegate
 
 from tda.core import extra as X
-from tda.core.model import is_extra
+from tda.core.model import CONTEXT_LABEL, is_extra
 from tda.core.taxonomy import Taxonomy
+from tda.ui import context_text as CONTEXT_T
 from tda.ui.steps_model import StepTableData
 from tda.ui.steps_values import (
     DIFFICULTY_MAX,
@@ -119,6 +120,9 @@ INSTANCE_COLUMNS: tuple[Column, ...] = (
            lambda tax: [BLANK, *tax.directions]),
     Column("Raw names", "raw_names", "label"),
 )
+
+#: The column a 框外零件's row (task U18) shows -- and edits -- its name in.
+CONTEXT_FIELD = "raw_names"
 
 #: Instance fields only one class carries (spec 7.1); elsewhere they stay blank.
 CLASS_ONLY_FIELDS = {
@@ -407,17 +411,28 @@ class InstanceTableModel(_TableModel):
 
     def __init__(self, data: StepTableData, parent: QObject | None = None) -> None:
         super().__init__(data, parent)
-        self.keys: list[str] = data.instance_keys()
+        self.keys: list[Optional[str]] = self._all_keys()
+
+    def _all_keys(self) -> list[Optional[str]]:
+        """The machine's instances, then -- under a heading row (``None``) --
+        the 框外零件 (task U18), in their own block."""
+        outside = self.data_model.context_keys()
+        return [*self.data_model.instance_keys(), *([None, *outside] if outside else [])]
 
     def _rebuild(self) -> None:
-        self.keys = self.data_model.instance_keys()
+        self.keys = self._all_keys()
 
     def rowCount(self, parent=QModelIndex()) -> int:  # noqa: N802 - Qt API
         return 0 if parent.isValid() else len(self.keys)
 
     def key_at(self, view_row: int) -> Optional[str]:
-        """The instance key shown on a view row, or ``None`` when out of range."""
+        """The instance key shown on a view row, or ``None`` (out of range, the heading)."""
         return self.keys[view_row] if 0 <= view_row < len(self.keys) else None
+
+    def _outside(self, index: QModelIndex) -> bool:
+        """Is this row the 框外 block's (its heading, or a context object)?"""
+        key = self.keys[index.row()]
+        return key is None or key in self.data_model.context
 
     def _applies(self, index: QModelIndex) -> bool:
         """Does this column's field exist on the row's class at all?"""
@@ -430,6 +445,13 @@ class InstanceTableModel(_TableModel):
         if not index.isValid():
             return Qt.NoItemFlags
         base = Qt.ItemIsEnabled | Qt.ItemIsSelectable
+        if self._outside(index):
+            # a 框外零件's row: its name (in the last column) is all there is
+            # to edit; the heading is a heading
+            if (self.keys[index.row()] is not None
+                    and self.columns[index.column()].field == CONTEXT_FIELD):
+                return base | Qt.ItemIsEditable
+            return base if self.keys[index.row()] is not None else Qt.ItemIsEnabled
         kind = self.columns[index.column()].kind
         if not self._applies(index):
             return base  # e.g. a screw head on a connector: nothing to type there
@@ -442,6 +464,8 @@ class InstanceTableModel(_TableModel):
     def data(self, index: QModelIndex, role=Qt.DisplayRole):
         if not index.isValid():
             return None
+        if self._outside(index):
+            return self._context_data(index, role)
         inst = self.data_model.instances[self.keys[index.row()]]
         column = self.columns[index.column()]
         if role == Qt.ToolTipRole:
@@ -457,7 +481,19 @@ class InstanceTableModel(_TableModel):
         return None
 
     def setData(self, index: QModelIndex, value, role=Qt.EditRole) -> bool:  # noqa: N802
-        if not index.isValid() or not self._applies(index):
+        if not index.isValid():
+            return False
+        if self._outside(index):
+            key = self.keys[index.row()]
+            if (key is None or role != Qt.EditRole
+                    or self.columns[index.column()].field != CONTEXT_FIELD):
+                return False
+            try:
+                self.data_model.relabel_context(key, value)
+            except EditError as error:
+                return self._refuse(error)
+            return self._changed(index)
+        if not self._applies(index):
             return False
         column = self.columns[index.column()]
         checking = role == Qt.CheckStateRole and column.kind == "check"
@@ -470,6 +506,45 @@ class InstanceTableModel(_TableModel):
         except EditError as error:
             return self._refuse(error)
         return self._changed(index)
+
+    def _context_data(self, index: QModelIndex, role):
+        """The 框外 block (task U18): its heading, and a context object's row.
+
+        Key and class as for any part; the last column holds its name, which
+        is the one thing to edit (a double click; ``Apply`` writes it). Every
+        relation cell is blank: it has none.
+        """
+        key = self.keys[index.row()]
+        column = self.columns[index.column()]
+        if key is None:
+            if role == Qt.DisplayRole and index.column() == 0:
+                return CONTEXT_T.BLOCK_TITLE
+            if role == Qt.ToolTipRole:
+                return CONTEXT_T.BUTTON_TIP
+            return None
+        rec = self.data_model.context[key]
+        label = str((rec.attrs or {}).get(CONTEXT_LABEL) or "")
+        if role == Qt.ToolTipRole:
+            attrs = rec.attrs or {}
+            lines = [f"{key}: 框外零件（{attrs.get('added_by')}，{attrs.get('added_at')}）",
+                     "不在机器里：没有动作、状态、关系；在标注模式里画",
+                     "双击最后一列改名字（Apply 保存）；右键删除（连同它的形状）"]
+            if attrs.get("note"):
+                lines.insert(1, f"note: {attrs['note']}")
+            if key in self.data_model.relabelled:
+                lines.append("未写入：按 Apply 保存 / not applied yet")
+            return "\n".join(lines)
+        if role == Qt.EditRole and column.field == CONTEXT_FIELD:
+            return label
+        if role != Qt.DisplayRole:
+            return None
+        if column.field == "key":
+            return key
+        if column.field == "cls":
+            return rec.cls
+        if column.field == CONTEXT_FIELD:
+            return f"框外：{label}" if label else "框外"
+        return None
 
     @staticmethod
     def _value(inst, column: Column) -> Any:

@@ -281,7 +281,14 @@ class VerbMixin:
         re-reading would lose the staged edits without a word.
         """
         panel = getattr(self, "_steps_panel", None)
-        if panel is None or not panel.database_moved():
+        if panel is None:
+            return
+        if panel.context_moved():
+            # the 框外零件 Annotate mode made, undid or drew (U18 review, B2):
+            # their block alone is re-read, staged edits or not -- nothing an
+            # Apply writes from this panel can disagree with them
+            panel.refresh_context()
+        if not panel.database_moved():
             return
         if getattr(self, "_steps_dirty", False) or panel.has_unapplied_edits():
             panel.status.setText(STEPS_MOVED)

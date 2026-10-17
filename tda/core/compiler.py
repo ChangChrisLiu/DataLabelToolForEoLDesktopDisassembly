@@ -13,7 +13,10 @@ How the layering works
 ----------------------
 Each ``(instance, part)`` pair is one *layer*. Layers are grouped by
 placement: a part lying on the bench never occludes a part inside the chassis
-and vice versa (spec 3.3 step 5), so each group is composited on its own.
+and vice versa (spec 3.3 step 5), so each group is composited on its own. The
+框外零件 -- objects outside the machine, drawn on their own (task U18) -- are a
+group of their own too (``placement = "context"``): layered among themselves,
+never against the machine's parts.
 Within a group the layers are sorted bottom-to-top in the **global** z-order
 and then painted **top-down into a single claim canvas**: every pixel belongs
 to the first (topmost) layer that covers it, which yields all visible masks in

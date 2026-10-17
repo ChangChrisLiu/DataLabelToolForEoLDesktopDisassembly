@@ -42,6 +42,7 @@ from tda.ui import session_api as api
 __all__ = [
     "ACTIONS",
     "GROUPS",
+    "MENU_ENTRIES",
     "MODES",
     "MODE_ANNOTATE",
     "MODE_REVIEW",
@@ -52,6 +53,7 @@ __all__ = [
     "PALETTE_STATE",
     "PALETTE_TOOLS",
     "Action",
+    "MenuEntry",
     "action_for",
     "action_named",
     "blocks_shortcuts",
@@ -267,16 +269,21 @@ ACTIONS: tuple[Action, ...] = (
            "隐藏或显示选中实例", "edit", (), _ANN),
     # Task U10: ``I`` for invisible / 看不见 -- free in every mode. Task U15:
     # on a sequence frame the part is there but under a cable (not labelled).
+    # Task U18: on a 框外零件 (an object outside the machine) it is 「不在这张里」.
     Action("mark_absent", ("I",), "act_mark_absent",
            "Hidden: on the sequence, the selected part is under a cable (full -> partial "
-           "-> off); in the components gallery, the card's part is not in this shot",
+           "-> off); in the components gallery, the card's part is not in this shot; "
+           "an object outside the machine is not in this frame",
            "看不见：拆解序列里 = 选中零件被线挡住（完全→部分→撤回）；"
-           "零件合照里 = 卡上这个零件不在这张里（再按撤回）", "edit", (), _ANN,
+           "零件合照里 = 卡上这个零件不在这张里（再按撤回）；"
+           "框外零件 = 不在这张里（再按撤回）", "edit", (), _ANN,
            short="看不见"),
     # Task U15: the same over a span, as Ctrl+T is T's. Ctrl+I is free.
     Action("cable_range", ("Ctrl+I",), "act_cable_range",
-           "Selected part under a cable from this frame to a given step (one op)",
-           "选中零件从这一帧到第 N 步都标被线挡住（完全 / 部分 / 撤回；一次撤销）",
+           "Selected part under a cable from this frame to a given step (one op); "
+           "an object outside the machine: not in those frames",
+           "选中零件从这一帧到第 N 步都标被线挡住（完全 / 部分 / 撤回；一次撤销）；"
+           "框外零件 = 这一段都标不在 / 撤回",
            "edit", (), _ANN),
     Action("cycle_visibility", ("V",), "act_cycle_visibility", "Cycle visibility",
            "循环切换可见性取值", "edit", (), _ANN),
@@ -338,6 +345,34 @@ ACTIONS: tuple[Action, ...] = (
            (), _ALL),
     Action("cheat_sheet", ("?", "F12"), "act_cheat_sheet", "Shortcut cheat sheet",
            "快捷键速查表", "session", (), _ALL),
+)
+
+
+@dataclass(frozen=True)
+class MenuEntry:
+    """A gesture with no key: an entry of a right-click menu (task U18).
+
+    Listed in the guide's table and the cheat sheet with the key bindings --
+    the table is where the annotator looks up "how do I ..." -- but never in
+    the key index: the right button is not a key.
+    """
+
+    name: str
+    #: How it is reached, as the table's first column says it.
+    where: str
+    slot: str
+    label: str
+    label_zh: str
+    group: str = "edit"
+    modes: tuple[str, ...] = _ANN
+
+
+#: The right-click entries, in table order.
+MENU_ENTRIES: tuple[MenuEntry, ...] = (
+    MenuEntry("context_object", "右键画布 → 框外零件…", "act_context_object",
+              "Name and draw something outside the machine, apart from the annotation",
+              "框外零件：机器外、画面里的东西（旁边的零件、无关物件），选类别或「其他」写名字，"
+              "单独画；不进步骤表和任务卡、不挡 Space；某帧里没有它就选中按 I（Ctrl+I 一段）"),
 )
 
 
@@ -588,20 +623,30 @@ def _by_group() -> list[tuple[str, str, list[Action]]]:
     ]
 
 
+def _menu_of(group: str) -> list[MenuEntry]:
+    return [entry for entry in MENU_ENTRIES if entry.group == group]
+
+
 def shortcut_markdown() -> str:
-    """The ``快捷键`` table of ``docs/annotation_guide.md``, one row per binding."""
+    """The ``快捷键`` table of ``docs/annotation_guide.md``, one row per binding.
+
+    A right-click entry (:data:`MENU_ENTRIES`) is a row of its group too, after
+    the keys.
+    """
     lines = ["| 快捷键 | 作用 | 分组 |", "|---|---|---|"]
-    for _key, title, actions in _by_group():
+    for key, title, actions in _by_group():
         for action in actions:
             lines.append(f"| `{_keys_text(action)}` | {action.label_zh}"
                          f"{_how_text(action)} | {title} |")
+        for entry in _menu_of(key):
+            lines.append(f"| `{entry.where}` | {entry.label_zh} | {title} |")
     return "\n".join(lines)
 
 
 def cheat_sheet_html() -> str:
     """The same table as HTML, for the in-app cheat sheet (``?`` / ``F12``)."""
     parts = ["<h3>快捷键 / Shortcuts</h3>"]
-    for _key, title, actions in _by_group():
+    for key, title, actions in _by_group():
         parts.append(f"<h4>{title}</h4><table cellspacing='4'>")
         for action in actions:
             parts.append(
@@ -609,6 +654,9 @@ def cheat_sheet_html() -> str:
                 f"<td>{action.label_zh}{_how_text(action)}</td>"
                 f"<td><i>{action.label}</i></td></tr>"
             )
+        for entry in _menu_of(key):
+            parts.append(f"<tr><td><b>{entry.where}</b></td><td>{entry.label_zh}</td>"
+                         f"<td><i>{entry.label}</i></td></tr>")
         parts.append("</table>")
     return "".join(parts)
 

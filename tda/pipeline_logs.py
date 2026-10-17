@@ -39,7 +39,7 @@ from tda.core.log_report import _expected_steps
 from tda.core.logs import LogImport, import_log, iter_desktop_csvs, read_desktop_csv
 from tda.core import extra as X
 from tda.core.extra import extra_keys
-from tda.core.model import ALL_VIEWS, StepRec, StepType, is_extra
+from tda.core.model import ALL_VIEWS, StepRec, StepType, is_context, is_extra
 from tda.core.states import INITIAL_STEP, events_from_actions, initial_overrides
 from tda.core.taxonomy import Taxonomy
 from tda.core.merge_replay import OP_REPLAY_MERGES, MergeReplay, replay_merges_for_import
@@ -548,12 +548,14 @@ def _plan_drops(db: Db, li: LogImport, tax: Taxonomy, previous: list[StepRec],
 
     Provisional ``ls:*`` keys are never in scope: they belong to ``import-ls``.
     Nor are the instances an annotator added in S1 (:mod:`tda.core.extra`):
-    the sheet never named them, so its not naming them now says nothing.
+    the sheet never named them, so its not naming them now says nothing. And
+    never a 框外零件 (task U18): it is not part of the machine the sheet describes.
     """
     stored = db.instances(li.desktop)
     produced = _would_exist(db, li, tax)
     vanished = {key for key, rec in stored.items()
-                if key not in produced and not is_provisional(key) and not is_extra(rec)}
+                if key not in produced and not is_provisional(key) and not is_extra(rec)
+                and not is_context(rec)}
     if not vanished:
         return DropPlan()
     holding, carrying = _hold_reasons(db, li.desktop, vanished)
@@ -586,7 +588,8 @@ def _implausible(li: LogImport, previous: list[StepRec], stored: dict,
     there are any.
     """
     real = [key for key, rec in stored.items()
-            if not is_provisional(key) and not is_implied(rec) and not is_extra(rec)]
+            if not is_provisional(key) and not is_implied(rec) and not is_extra(rec)
+            and not is_context(rec)]
     if not previous and not real:  # a genuine first import: nothing to lose
         return ""
     drafts = sum(1 for key in stored if is_provisional(key))
@@ -1005,6 +1008,12 @@ def _import_one(
         if extras_kept:
             log(f"[import-logs]   kept {len(extras_kept)} instance(s) added in S1 "
                 f"(not in the sheet): {', '.join(extras_kept)}")
+        outside = sorted(key for key, rec in db.instances(desktop).items()
+                         if is_context(rec))
+        if outside:
+            # 框外零件 (task U18): not part of the machine, untouched by the sheet
+            log(f"[import-logs]   kept {len(outside)} context object(s) outside the "
+                f"machine: {', '.join(outside)}")
         extra = f", {len(implied)} implied instance(s)" if implied else ""
         log(f"[import-logs] D{desktop:02d}: {len(li.steps)} steps, {len(li.actions)} "
             f"actions, {len(li.instances)} instances, {events} events, "

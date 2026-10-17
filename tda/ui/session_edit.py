@@ -50,6 +50,7 @@ from tda.core.model import (
     Visibility,
     ZOrderRec,
     is_component_view,
+    machine_only,
 )
 from tda.core.truth import TruthService
 from tda.core.split_rows import open_split_steps, reverse_walk, split_rows_at
@@ -875,7 +876,9 @@ def _append_to_zorder(db: Db, key: FrameKey, seg: int, instance: str,
     order = [tuple(entry) for entry in rec.order]
     if any(entry[0] == instance for entry in order):
         return None
-    cls_of = {k: r.cls for k, r in db.instances(key.desktop).items()}
+    # a 框外零件 (task U18) is no floor layer and goes on top, in draw order;
+    # nor does one of class chassis count as the machine's chassis
+    cls_of = {k: r.cls for k, r in machine_only(db.instances(key.desktop)).items()}
     at = floor_index(order, cls_of.get(instance), cls_of)
     after = order[:at] + [(instance, part)] + order[at:]
     db.set_zorder(ZOrderRec(key.desktop, key.view, seg, after, version=rec.version + 1))

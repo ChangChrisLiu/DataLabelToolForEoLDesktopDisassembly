@@ -18,7 +18,10 @@ nothing points at any more, merge two instances that are one part
 (「合并到…」, :mod:`tda.ui.panels.merge_into`, written through). The
 ``＋ 添加零件 / Add parts`` button above the
 Instances table stages parts the picture shows and the log never names
-(:mod:`tda.ui.panels.add_parts`, :mod:`tda.core.extra`). ``Apply`` writes
+(:mod:`tda.ui.panels.add_parts`, :mod:`tda.core.extra`); its 「框外零件…」
+hands over to the window for an object outside the machine (task U18), which
+the Instances table then lists in a block of its own -- deletable with its
+shapes, its name editable, named by no step, relation or question. ``Apply`` writes
 everything back in one transaction and recompiles the automatic state-event log (emitting
 :attr:`StepTablePanel.sigSaved`); ``Revert`` reloads from the database.
 
@@ -40,6 +43,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMenu,
+    QMessageBox,
     QPushButton,
     QStyledItemDelegate,
     QTableView,
@@ -48,6 +52,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from tda.core import context as C
 from tda.core.db import Db
 from tda.core.taxonomy import Taxonomy, load_taxonomy
 from tda.ui.panels.add_parts import BUTTON as ADD_PARTS_BUTTON
@@ -74,6 +79,7 @@ from tda.ui.steps_model import (
     EditError,
     StepTableData,
     captive_signature,
+    context_signature,
     forget_deleted,
     stored_signature,
     table_signature,
@@ -102,6 +108,42 @@ DEFAULT_SPLIT = 2
 
 #: What an "Open questions" row stores so a double-click can jump to an edge.
 EDGE_ROLE = Qt.UserRole + 2
+
+#: Deleting a 框外零件 with confirmed rows (U18 review, M2): the question ...
+CONTEXT_DELETE_ASK = (
+    "删除框外零件 {key}，连同它在所有视角的形状（Steps 里没有撤销）。\n"
+    "它在 {n} 个已确认帧里有确认过的行（{where}）：这些帧会重新核对，各开一个冲突、"
+    "回到需复核，要到 Review 里逐个「采用新的」。\n删除吗？")
+#: ... and what the status line says afterwards.
+CONTEXT_DELETED = "已删除框外零件 {key}（连同它的形状）{recheck} / Deleted {key} with its shapes."
+CONTEXT_RECHECK = "；{n} 个已确认帧（{where}）会重新核对并开冲突，到 Review 里逐个「采用新的」"
+
+
+def _frames_text(frames: dict) -> str:
+    """``scan 第 10–12 帧、oak1 第 3 帧`` for the question and the status line."""
+    parts = []
+    for view, steps in sorted(frames.items()):
+        steps = sorted(int(s) for s in steps)
+        runs: list[list[int]] = []
+        for step in steps:
+            if runs and step == runs[-1][-1] + 1:
+                runs[-1].append(step)
+            else:
+                runs.append([step])
+        text = "、".join(f"{r[0]}" if len(r) == 1 else f"{r[0]}–{r[-1]}" for r in runs)
+        parts.append(f"{view} 第 {text} 帧")
+    return "、".join(parts)
+
+
+def _recheck_note(frames: dict) -> str:
+    """The status line's tail about the confirmed frames a delete re-checks; ``""`` for none."""
+    n = sum(len(s) for s in frames.values())
+    return CONTEXT_RECHECK.format(n=n, where=_frames_text(frames)) if n else ""
+
+
+def forget_context(signature: Optional[dict], key: str) -> dict:
+    """A 框外零件 signature after a write-through delete of ``key``."""
+    return {k: v for k, v in (signature or {}).items() if k != key}
 
 
 def _edge_to_change(deadlock) -> object:
@@ -139,6 +181,12 @@ class StepTablePanel(MergeIntoMixin, QWidget):
     #: Emitted by :meth:`revert`: nothing is staged any more, and the window's
     #: unsaved-edit flag has to hear it.
     sigReverted = Signal()
+    #: 「框外零件…」 in the 「＋ 添加零件」 dialog (task U18): the window goes to
+    #: Annotate and makes one there, where it is drawn at once.
+    sigContextObject = Signal()
+    #: A context object was deleted, written through (task U18): the window's
+    #: compiled frames may show it still.
+    sigContextChanged = Signal()
 
     def __init__(
         self,
@@ -282,21 +330,51 @@ class StepTablePanel(MergeIntoMixin, QWidget):
         self.loaded_data = table_signature(self.data.steps, self.data.actions)
         # the screws' captive fields too (task U14): Shift+T on a screw writes
         # them from Annotate mode
-        self.loaded_db_captive = captive_signature(self.db.instances(self.desktop))
+        stored = self.db.instances(self.desktop)
+        self.loaded_db_captive = captive_signature(stored)
         self.loaded_captive = captive_signature(self.data.instances)
+        # the 框外零件 too (U18 review, B2): Annotate mode makes, undoes and
+        # draws them without this panel
+        self.loaded_db_context = context_signature(stored)
+        self.loaded_context = context_signature(self.data.context)
+
+    def context_moved(self) -> bool:
+        """Have the stored 框外零件 changed since the last load / Apply / refresh?"""
+        return (context_signature(self.db.instances(self.desktop))
+                != getattr(self, "loaded_db_context", None))
 
     def database_moved(self) -> bool:
-        """Has the stored step table (or a screw's captive) changed since the last load / Apply?"""
+        """Has the stored step table (a screw's captive, a 框外零件) changed since the last load?"""
+        stored = self.db.instances(self.desktop)
         return (stored_signature(self.db, self.desktop) != self.loaded_db
-                or captive_signature(self.db.instances(self.desktop))
-                != getattr(self, "loaded_db_captive", None))
+                or captive_signature(stored) != getattr(self, "loaded_db_captive", None)
+                or context_signature(stored) != getattr(self, "loaded_db_context", None))
 
     def has_unapplied_edits(self) -> bool:
         """Does the panel hold steps, actions, captive flags, parts or edges not written yet?"""
         return (table_signature(self.data.steps, self.data.actions) != self.loaded_data
                 or captive_signature(self.data.instances)
                 != getattr(self, "loaded_captive", None)
-                or bool(self.data.extras) or bool(self.data.relations.dirty))
+                or bool(self.data.extras) or bool(self.data.relations.dirty)
+                # a 框外零件 renamed and not applied (U18)
+                or context_signature(self.data.context)
+                != getattr(self, "loaded_context", None)
+                or bool(self.data.relabelled))
+
+    def refresh_context(self) -> None:
+        """Re-read the 「框外零件」 block alone (U18 review, B2).
+
+        What Annotate mode made, undid or renamed since the last load; the
+        staged steps, actions and parts are kept, and so is a rename staged
+        here for an object still there. The signatures move with it, so
+        :meth:`database_moved` says nothing about it any more.
+        """
+        self.data.reload_context(self.db)
+        stored = {key: rec for key, rec in self.db.instances(self.desktop).items()
+                  if key in self.data.context}
+        self.loaded_db_context = context_signature(stored)
+        self.loaded_context = context_signature(stored)
+        self.instances_model.refresh_structure()
 
     def show_step(self, step: int) -> None:
         """Select one logical step in the Steps table and bring it into view."""
@@ -389,14 +467,46 @@ class StepTablePanel(MergeIntoMixin, QWidget):
         and a staged one that was never applied is simply unstaged.
         """
         staged = self.data.staged_extra(key)
+        outside = key in self.data.context        # a 框外零件 (task U18)
+        confirmed = C.confirmed_frames(self.db, self.desktop, key) if outside else {}
         self._command(lambda: self.data.delete_instance(self.db, key),
-                      f"Removed the staged {key}." if staged else f"Deleted {key}.",
+                      f"Removed the staged {key}." if staged
+                      else (CONTEXT_DELETED.format(key=key, recheck=_recheck_note(confirmed))
+                            if outside else f"Deleted {key}."),
                       staged=staged)
+        if outside and key not in self.data.context:
+            # written through on both sides alike (as U14's captive snapshot)
+            self.loaded_db_context = forget_context(self.loaded_db_context, key)
+            self.loaded_context = forget_context(self.loaded_context, key)
+            self.sigContextChanged.emit()
         if not staged and key not in self.data.instances:
             # written through: both sides lost it alike (U14's snapshot of the
             # screws' captive fields must not read that as a move or an edit)
             self.loaded_db_captive = forget_deleted(self.loaded_db_captive, key)
             self.loaded_captive = forget_deleted(self.loaded_captive, key)
+
+    def prompt_delete_context(self, key: str) -> None:
+        """Delete a 框外零件, asking first when confirmed rows of it exist (U18 review, M2).
+
+        Its shapes go in every view and there is no undo in Steps mode; a
+        frame somebody confirmed with it re-checks, opens a conflict about the
+        row it no longer has and goes back to 需复核 -- the question says how
+        many, in which views, and that Review takes each one 「采用新的」.
+        """
+        confirmed = C.confirmed_frames(self.db, self.desktop, key)
+        if confirmed and not self.ask_delete_context(key, confirmed):
+            self.status.setText(f"没有删除 / {key} was not deleted.")
+            return
+        self.delete_instance(key)
+
+    def ask_delete_context(self, key: str, confirmed: dict) -> bool:
+        """The question of :meth:`prompt_delete_context` (a method, so a test answers it)."""
+        answer = QMessageBox.question(
+            self, "删除框外零件 / Delete", CONTEXT_DELETE_ASK.format(
+                key=key, where=_frames_text(confirmed),
+                n=sum(len(s) for s in confirmed.values())),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        return answer == QMessageBox.Yes
 
     def add_parts(self, cls: str, count: int = 1, parent=DEFAULT_PARENT,
                   state: Optional[str] = None, note: str = "",
@@ -431,7 +541,8 @@ class StepTablePanel(MergeIntoMixin, QWidget):
         without blocking -- and returned, so a caller (or a test) can fill it in.
         """
         dialog = AddPartsDialog(self.data, self, cls=self.last_extra_class,
-                                demotion=self._demotion(), elsewhere=self._elsewhere())
+                                demotion=self._demotion(), elsewhere=self._elsewhere(),
+                                context=self.sigContextObject.emit)
         dialog.accepted.connect(lambda: self.add_parts(**dialog.values()))
         dialog.finished.connect(dialog.deleteLater)
         self.add_parts_dialog = dialog
@@ -522,7 +633,11 @@ class StepTablePanel(MergeIntoMixin, QWidget):
         """The instances-table context menu for one view row (not shown yet)."""
         menu = QMenu(self.instances_view)
         key = self.instances_model.key_at(view_row)
-        if key is not None:
+        if key is not None and key in self.data.context:
+            # a 框外零件 (task U18): deleted with its shapes; never merged
+            menu.addAction(f"删除框外零件 {key}（连同形状）/ Delete {key}",
+                           lambda: self.prompt_delete_context(key))
+        elif key is not None:
             menu.addAction(f"Delete {key}", lambda: self.delete_instance(key))
             self.add_merge_action(menu, key)        # 「合并到…」 (task U12)
         return menu

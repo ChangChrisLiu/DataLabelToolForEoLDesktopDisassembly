@@ -41,7 +41,7 @@ from tda.core.graph_rules import (
     is_orphan,
     is_provisional,
 )
-from tda.core.model import InstanceRec
+from tda.core.model import InstanceRec, machine_only
 from tda.core.taxonomy import Taxonomy
 
 __all__ = [
@@ -68,8 +68,12 @@ def _triple(edge: Edge) -> Triple:
 
 
 def settled_instances(instances: dict[str, InstanceRec]) -> dict[str, InstanceRec]:
-    """The desktop's instances without the Label Studio drafts (spec 3.2)."""
-    return {k: rec for k, rec in instances.items() if not is_provisional(k)}
+    """The desktop's instances without the Label Studio drafts (spec 3.2).
+
+    Nor the 框外零件 (task U18): they are not part of the machine, so no
+    constraint edge, deadlock or plan ever names one.
+    """
+    return {k: rec for k, rec in machine_only(instances).items() if not is_provisional(k)}
 
 
 @dataclass(frozen=True)

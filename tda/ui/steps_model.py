@@ -26,7 +26,14 @@ from typing import Any, Optional
 from tda.core import extra as X
 from tda.core.db import Db
 from tda.core.logs import CHASSIS_KEY, UNRESOLVED, instance_key
-from tda.core.model import ActionRec, InstanceRec, StepRec, StepType
+from tda.core.model import (
+    ActionRec,
+    InstanceRec,
+    StepRec,
+    StepType,
+    is_context,
+    machine_only,
+)
 from tda.core.states import (
     CABLE_CLASS,
     CABLE_PREFIX,
@@ -163,7 +170,22 @@ def captive_signature(instances: dict[str, InstanceRec]) -> dict[str, tuple]:
     """
     return {key: ((rec.attrs or {}).get("captive"), (rec.attrs or {}).get("captive_source"),
                   rec.parent or None, bool(rec.attached))
-            for key, rec in instances.items() if rec.cls == "screw"}
+            for key, rec in instances.items()
+            if rec.cls == "screw" and not is_context(rec)}   # a 框外零件 is no screw (U18)
+
+
+def context_signature(instances: dict[str, InstanceRec]) -> dict[str, tuple]:
+    """``ctx key -> (class, label)`` of the 框外零件 in ``instances`` (U18 review, B2).
+
+    Annotate mode makes them, takes them back with ``Ctrl+Z`` and draws them
+    without the Steps panel hearing of it; this is what tells the panel its
+    「框外零件」 block is behind the database, as :func:`captive_signature`
+    does for the screws.
+    """
+    from tda.core.model import CONTEXT_LABEL
+
+    return {key: (rec.cls, str((rec.attrs or {}).get(CONTEXT_LABEL) or ""))
+            for key, rec in instances.items() if is_context(rec)}
 
 
 def forget_deleted(signature: dict[str, tuple], key: str) -> dict[str, tuple]:
@@ -227,6 +249,13 @@ class StepTableData:
     #: :attr:`stored_initial`: what an added part's removal step is checked
     #: against (task U10, :func:`tda.core.extra.removal_refusal`).
     stored_manual: list = field(default_factory=list)
+    #: The 框外零件 of the desktop (task U18), kept apart from
+    #: :attr:`instances`: no step, action, relation or question may name one.
+    #: The Instances table lists them in a block of their own.
+    context: dict[str, InstanceRec] = field(default_factory=dict)
+    #: ``key -> label before`` of the context objects renamed since the last
+    #: load or save; :meth:`save` writes them (one ``op_log`` row each).
+    relabelled: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.relations is None:
@@ -242,7 +271,9 @@ class StepTableData:
         for action in db.actions(desktop):
             by_step.setdefault(action.step, []).append(action)
         rows = [StepRow(step=rec, actions=by_step.get(rec.step, [])) for rec in db.steps(desktop)]
-        data = cls(desktop=desktop, tax=tax, rows=rows, instances=db.instances(desktop),
+        stored = db.instances(desktop)
+        data = cls(desktop=desktop, tax=tax, rows=rows, instances=machine_only(stored),
+                   context={key: rec for key, rec in stored.items() if is_context(rec)},
                    declined=set(db.declined_implied(desktop)),
                    annotator=str(annotator or ANNOTATOR),
                    stored_initial=_stored_initial(db, desktop),
@@ -655,7 +686,82 @@ class StepTableData:
         if self.staged_extra(key):
             self._unstage_extra(key)
             return
+        if key in self.context:
+            self.delete_context(db, key)
+            return
         delete_instance(self, db, key)
+
+    # -- 框外零件 (task U18) ------------------------------------------------ #
+    def context_keys(self) -> list[str]:
+        """The context objects, in key order: the Instances table's last block."""
+        return sorted(self.context)
+
+    def reload_context(self, db: Db) -> None:
+        """Re-read the context objects alone, keeping the renames not applied yet.
+
+        Annotate mode makes and takes back context objects behind this table
+        (U18 review, B2); the staged steps, actions and parts are not touched,
+        and a staged rename of an object still there is put back on top.
+        """
+        from tda.core.model import CONTEXT_LABEL
+
+        staged = {key: (self.context[key].attrs or {}).get(CONTEXT_LABEL)
+                  for key in self.relabelled if key in self.context}
+        stored = {key: rec for key, rec in db.instances(self.desktop).items()
+                  if is_context(rec)}
+        self.relabelled = {k: v for k, v in self.relabelled.items() if k in stored}
+        for key, label in staged.items():
+            if key not in stored:
+                continue
+            if label:
+                stored[key].attrs[CONTEXT_LABEL] = label
+            else:
+                stored[key].attrs.pop(CONTEXT_LABEL, None)
+        self.context = stored
+
+    def relabel_context(self, key: str, label: Any) -> None:
+        """Rename a context object; written by :meth:`save`, like a cell edit."""
+        from tda.core.context import context_label
+        from tda.core.model import CONTEXT_LABEL, CONTEXT_OTHER
+
+        rec = self.context.get(key)
+        if rec is None:
+            raise EditError(f"{key} 不是框外零件 / not a context object")
+        text = text_of(label)
+        if rec.cls == CONTEXT_OTHER and not text:
+            raise EditError("「其他」要写名字：它是什么 / an 'other' object needs a name")
+        before = context_label(rec)
+        if text == before:
+            return
+        self.relabelled.setdefault(key, before)
+        if text:
+            rec.attrs[CONTEXT_LABEL] = text
+        else:
+            rec.attrs.pop(CONTEXT_LABEL, None)
+        if self.relabelled.get(key) == text:
+            self.relabelled.pop(key)        # back to what is stored
+
+    def delete_context(self, db: Db, key: str) -> dict:
+        """Delete a context object with its shapes, writing straight through.
+
+        Everything that names it goes with it (:func:`tda.core.context.remove_context`)
+        and one ``op_log`` row (:data:`tda.core.context.OP_DELETE`) carries it
+        all as the inverse. A frame somebody confirmed with it is queued for a
+        re-check, where the row it no longer has is a conflict like any other.
+        """
+        from tda.core import context as C
+
+        with db.transaction():
+            record = C.remove_context(db, self.desktop, key)
+            for view, steps in (record.get("frames") or {}).items():
+                frozen = db.frozen_steps_in(self.desktop, view, steps)
+                if frozen:
+                    db.add_rechecks(self.desktop, view, frozen)
+            db.log_op(self.desktop, C.OP_VIEW, C.OP_DELETE, {"instance": key, **record},
+                      dict(record), self.annotator)
+        self.context.pop(key, None)
+        self.relabelled.pop(key, None)
+        return record
 
     def save(self, db: Db, *, graph: bool = True) -> list[str]:
         """Write the session back and recompile the automatic state events.
@@ -705,6 +811,7 @@ class StepTableData:
                 db.add_events(batch.events)
                 db.log_op(self.desktop, X.OP_VIEW, X.OP_ADD, batch.payload(),
                           batch.inverse(), self.annotator)
+            self._save_relabels(db)
             manual = [event for event in db.events(self.desktop) if not event.auto]
             events = events_from_actions(self.instances, actions, self.tax,
                                          initial=initial_overrides(manual))
@@ -727,6 +834,21 @@ class StepTableData:
                                         events_of(db, self.tax, self.desktop), self.tax)
         self.refresh_issues()
         return list(self.messages)
+
+    def _save_relabels(self, db: Db) -> None:
+        """Write the renamed context objects (task U18). **In the transaction.**"""
+        from tda.core.context import OP_LABEL, OP_VIEW, context_label
+
+        stored = db.instances(self.desktop)
+        for key, before in sorted(self.relabelled.items()):
+            rec = self.context.get(key)
+            if rec is None or key not in stored:
+                continue
+            db.upsert_instance(rec)
+            db.log_op(self.desktop, OP_VIEW, OP_LABEL,
+                      {"instance": key, "label": context_label(rec)},
+                      {"instance": key, "label": before}, self.annotator)
+        self.relabelled = {}
 
     # -- issues ------------------------------------------------------------ #
     def refresh_issues(self) -> None:
