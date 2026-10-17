@@ -152,16 +152,14 @@ def cable_one(db: Db, truth: TruthService, key: FrameKey, instance: str,
     inverse = common | override_state(previous)
     if _same(payload, inverse):
         return _settled(db, truth, key, [key.step], None, label, changed=False)
-    disputed = open_about(db, key.desktop, key.view, instance, [key.step])
+    disputed = disputed_before(db, truth, key.desktop, key.view, instance, [key.step])
     with db.transaction():
         _write_override(db, key, instance, payload)
         db.log_op(key.desktop, key.view, "set_frame_override", payload, inverse, annotator)
     out = _settled(db, truth, key, [key.step], Op("set_frame_override", payload, inverse),
                    label, replaced_hand_mask=label == FULL and _hand_mask(previous))
-    out["accepted"] = accept_own_label(db, truth, key.desktop, key.view, instance,
-                                       [key.step], annotator, disputed, out.get("frame"))
-    out["conflicts"] = max(0, int(out["conflicts"]) - len(out["accepted"]))
-    return out
+    return _signed(db, truth, key.desktop, key.view, instance, [key.step], annotator,
+                   disputed, out)
 
 
 def open_about(db: Db, desktop: int, view: str, instance: str, steps) -> set[int]:
@@ -169,6 +167,24 @@ def open_about(db: Db, desktop: int, view: str, instance: str, steps) -> set[int
     wanted = {int(s) for s in steps}
     return {int(r["step"]) for r in db.conflicts(desktop, view, open_only=True)
             if str(r["instance"]) == str(instance) and int(r["step"]) in wanted}
+
+
+def disputed_before(db: Db, truth: TruthService, desktop: int, view: str, instance: str,
+                    steps) -> set[int]:
+    """The frozen frames among ``steps`` that already disagree about ``instance``.
+
+    Asked **before** a cable write, so that :func:`accept_own_label` signs
+    only the difference that write makes (review round 2, B1). A frozen frame
+    the inputs moved under -- a re-trace of the shape elsewhere, still waiting
+    in the re-check queue -- would otherwise disagree for both reasons at once
+    after the write, and the annotator's label would sign the re-trace too,
+    unseen. So every frozen frame in reach is compiled now, whatever its digest
+    says (what the queued re-check would do): a difference already there opens
+    its conflict, for Review, and the frame counts as disputed.
+    """
+    for step in frozen_among(db, desktop, view, steps):
+        truth.refresh(FrameKey(desktop, step, view), ignore_digest=True)
+    return open_about(db, desktop, view, instance, steps)
 
 
 def accept_own_label(db: Db, truth: TruthService, desktop: int, view: str, instance: str,
@@ -181,28 +197,47 @@ def accept_own_label(db: Db, truth: TruthService, desktop: int, view: str, insta
     *is* the authority on this frame (task U15, ruled), so each frozen frame
     among ``steps`` is compiled now and the conflict about ``instance`` it
     raises is accepted in this annotator's name -- provided the difference is
-    only the visible mask and the ``visibility`` label, and no conflict about
-    the instance was open there before the write (``disputed``): that one is
-    somebody else's question, and accepting it would answer it unread. The
-    undo and the redo of the op go through here too (:func:`apply_cable`), so
-    ``Ctrl+Z`` leaves the frame confirmed with its old row. ``held`` is the
+    only the visible mask and the ``visibility`` label, and the frame did not
+    already disagree about the instance before the write (``disputed``, from
+    :func:`disputed_before`): that difference is somebody else's question,
+    and accepting it would answer it unread. Its conflict stays open, brought
+    up to date with these inputs.
+
+    Every frozen frame compiled here is taken off the re-check queue: it was
+    compared with the very inputs a re-check would read, and showing it as
+    "recheck" until the sweeper passes was showing a question already answered.
+    The undo and the redo of the op go through here too (:func:`apply_cable`),
+    so ``Ctrl+Z`` leaves the frame confirmed with its old row. ``held`` is the
     compilation the write's own settle made of the frame in hand.
     """
     done: list[int] = []
     for step in frozen_among(db, desktop, view, steps):
-        if step in disputed:
-            continue
         key = FrameKey(desktop, step, view)
+        gen = db.recheck_generation(desktop, view, step)
         made = truth.refresh(key, want_compiled=True, held=held)["compiled"]
-        for cid, name in db.open_conflicts_at(key):
-            if name != instance:
-                continue
-            labels = payload_labels((db.get_conflict(cid) or {}).get("new_rle"))
-            if {c.get("field") for c in labels} - {"visibility"}:
-                continue                         # a state or placement: not ours
-            truth.resolve_conflict(cid, "accept_new", annotator, prepared=made)
-            done.append(step)
+        if step not in disputed:
+            for cid, name in db.open_conflicts_at(key):
+                if name != instance:
+                    continue
+                labels = payload_labels((db.get_conflict(cid) or {}).get("new_rle"))
+                if {c.get("field") for c in labels} - {"visibility"}:
+                    continue                     # a state or placement: not ours
+                truth.resolve_conflict(cid, "accept_new", annotator, prepared=made)
+                done.append(step)
+        if gen is not None:
+            db.clear_recheck(desktop, view, step, gen)   # just compared: not owed one
     return done
+
+
+def _signed(db: Db, truth: TruthService, desktop: int, view: str, instance: str, steps,
+            annotator: str, disputed, out: dict) -> dict:
+    """``out`` after :func:`accept_own_label`: what it signed, what is still owed a check."""
+    out["accepted"] = accept_own_label(db, truth, desktop, view, instance, steps, annotator,
+                                       disputed, out.get("frame"))
+    out["conflicts"] = len(open_about(db, desktop, view, instance, steps))
+    queued = set(db.rechecks(desktop, view))
+    out["rechecks"] = [s for s in out.get("rechecks") or [] if s in queued]
+    return out
 
 
 def apply_cable(apply):
@@ -213,15 +248,14 @@ def apply_cable(apply):
     """
     def run(db: Db, truth: TruthService, payload: dict, current: Optional[int] = None) -> dict:
         by = payload.get(CABLE_BY)
+        if not by:
+            return apply(db, truth, payload, current)
+        desktop, view, instance = payload["desktop"], payload["view"], payload["instance"]
         steps = ([int(f["step"]) for f in payload["frames"]] if "frames" in payload
                  else [int(payload["step"])])
-        disputed = (open_about(db, payload["desktop"], payload["view"], payload["instance"],
-                               steps) if by else set())
+        disputed = disputed_before(db, truth, desktop, view, instance, steps)
         stats = apply(db, truth, payload, current)
-        if by:
-            accept_own_label(db, truth, payload["desktop"], payload["view"],
-                             payload["instance"], steps, by, disputed, stats.get("frame"))
-        return stats
+        return _signed(db, truth, desktop, view, instance, steps, by, disputed, stats)
 
     return run
 
@@ -288,7 +322,7 @@ def cable_range(db: Db, truth: TruthService, key: FrameKey, instance: str,
               "instance": instance, "steps": written, CABLE_BY: annotator}
     payload = common | {"frames": frames}
     inverse = common | {"frames": before}
-    disputed = open_about(db, key.desktop, key.view, instance, written)
+    disputed = disputed_before(db, truth, key.desktop, key.view, instance, written)
     with db.transaction():
         for state in frames:
             _write_override(db, FrameKey(key.desktop, state["step"], key.view), instance,
@@ -296,10 +330,8 @@ def cable_range(db: Db, truth: TruthService, key: FrameKey, instance: str,
         db.log_op(key.desktop, key.view, OP_RANGE, payload, inverse, annotator)
     out = _settled(db, truth, key, written, Op(OP_RANGE, payload, inverse), label,
                    frames=written, measured=measured)
-    out["accepted"] = accept_own_label(db, truth, key.desktop, key.view, instance, written,
-                                       annotator, disputed, out.get("frame"))
-    out["conflicts"] = max(0, int(out["conflicts"]) - (key.step in out["accepted"]))
-    return out
+    return _signed(db, truth, key.desktop, key.view, instance, written, annotator,
+                   disputed, out)
 
 
 def _same(a: dict, b: dict) -> bool:

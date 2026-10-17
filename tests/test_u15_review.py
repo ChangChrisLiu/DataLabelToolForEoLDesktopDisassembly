@@ -413,6 +413,88 @@ def test_ctrl_i_over_confirmed_frames_keeps_them_confirmed(tmp_path):
                for s in (STEP - 2, STEP - 1, STEP))
 
 
+def _seed_all(session, steps) -> None:
+    """The reviewer's scene (p10): every part of 12-14 its own cell, anchored at its last."""
+    from session_scene import cell, chassis_instances
+    from tda.core.model import ZOrderRec
+
+    keys = sorted({k for st in steps for k in chassis_instances(session, st)})
+    order = []
+    for index, key in enumerate(keys):
+        anchor = max(st for st in steps if key in chassis_instances(session, st))
+        session.db.add_keyframe(ShapeKeyframe(
+            id=None, instance=key, desktop=DESKTOP, view=VIEW, pose_segment=1,
+            anchor_step=anchor, placement="in_chassis", geom_type="mask",
+            parts=[ShapePart("main", masks.encode_rle(cell(index)))]))
+        order.append((key, "main"))
+    session.db.set_zorder(ZOrderRec(DESKTOP, VIEW, 1, order))
+    session.refresh_all()
+
+
+@pytest.mark.parametrize("label", [PARTIAL, FULL])
+def test_a_retrace_waiting_for_its_recheck_is_not_signed_by_the_label(tmp_path, label):
+    """Review round 2, B1 (p10c / p10f): 12-14 confirmed; the chassis re-traced at 11
+    queues 12/13/14 for a re-check; Ctrl+I from 14 to 12 before the sweeper runs. The
+    re-trace (36 px -> 400 px) is somebody's question for Review: it opens its
+    conflicts first, the label signs nothing on those frames, and is still written."""
+    session = make_session(tmp_path)
+    session.sweeper_enabled = False
+    db = session.db
+    _seed_all(session, (12, 13, 14))
+    for step in (14, 13, 12):
+        session.goto(step, force=True)
+        assert session.confirm_frame(), step
+    session.goto(11, force=True)
+    session.begin_edit(CHASSIS)
+    session.set_editing_mask(rect(10, 40, 30, 60))
+    queued = session.commit_edit("keyframe")["rechecks"]
+    assert {12, 13, 14} <= set(queued) | set(db.rechecks(DESKTOP, VIEW))
+    session.goto(STEP, force=True)                 # arriving compiles 14: its conflict
+    assert [c["step"] for c in open_conflicts(session)] == [STEP]
+    frozen = {s: db.compiled(FrameKey(DESKTOP, s, VIEW))[CHASSIS] for s in (12, 13, 14)}
+
+    result = session.set_cable_range(CHASSIS, label, 12)
+    assert result["accepted"] == []
+    assert sorted(int(c["step"]) for c in open_conflicts(session)
+                  if c["instance"] == CHASSIS) == [12, 13, 14]
+    for step in (12, 13, 14):
+        row = db.compiled(FrameKey(DESKTOP, step, VIEW))[CHASSIS]
+        assert row == frozen[step], step                   # nothing signed
+        assert label_at(session, step) == label            # the label is written
+    resolved = [c for c in db.conflicts(DESKTOP, VIEW, open_only=False)
+                if c["status"] != "open" and c.get("resolution") == "accept_new"]
+    assert resolved == []
+    # 12 and 13 were compiled just now: not shown as waiting for a re-check
+    assert not {12, 13, 14} & set(db.rechecks(DESKTOP, VIEW))
+    assert all(session.frame_status(s) == "conflict" for s in (12, 13, 14))
+    # the undo goes the same way: nothing signed, the conflicts still Review's
+    assert session.undo()
+    assert all(label_at(session, s) is None for s in (12, 13, 14))
+    assert all(db.compiled(FrameKey(DESKTOP, s, VIEW))[CHASSIS] == frozen[s]
+               for s in (12, 13, 14))
+    assert sorted(int(c["step"]) for c in open_conflicts(session)) == [12, 13, 14]
+    assert not {12, 13, 14} & set(db.rechecks(DESKTOP, VIEW))
+
+
+def test_a_signed_frame_is_not_left_waiting_for_a_recheck(tmp_path):
+    """The plain case over several frames: re-signed, and off the re-check queue."""
+    session = make_session(tmp_path)
+    session.sweeper_enabled = False
+    db = session.db
+    _seed_all(session, (12, 13, 14))
+    for step in (14, 13, 12):
+        session.goto(step, force=True)
+        assert session.confirm_frame(), step
+    session.goto(STEP, force=True)
+    result = session.set_cable_range(CHASSIS, FULL, 12)
+    assert sorted(result["accepted"]) == [12, 13, 14] and result["rechecks"] == []
+    assert open_conflicts(session) == [] and db.rechecks(DESKTOP, VIEW) == []
+    assert all(session.frame_status(s) == "verified" for s in (12, 13, 14))
+    assert session.undo()
+    assert open_conflicts(session) == [] and db.rechecks(DESKTOP, VIEW) == []
+    assert all(session.frame_status(s) == "verified" for s in (12, 13, 14))
+
+
 def test_the_digit_keys_still_ask_review(drawn):
     session = drawn
     assert session.confirm_frame()
