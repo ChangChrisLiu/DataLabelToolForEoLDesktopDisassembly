@@ -5,6 +5,14 @@ repeated clicks on the same viewport crop only pay for the (cheap) mask decoder.
 ``SamQueue`` runs a service on a single background thread with "latest wins"
 semantics, so a fast-clicking user never queues up stale work.
 
+Given a :class:`~tda.models.sam_heads.SamHeadConfig` the service carries a
+second decoder head (task U19): L5's fine-tuned prompt encoder + mask decoder,
+loaded as a delta onto copies of the stock ones.  There is still one image
+encoder and one cached embedding; each prompt is answered by one head, chosen
+by :func:`~tda.models.sam_heads.choose_head`, and the result says which
+(:attr:`SamResult.head`).  See :meth:`SamService._attach_tuned` for how the
+two heads share the features.
+
 Conventions (see ``tda.core.model``):
   * images are ``HxWx3`` RGB ``uint8`` arrays in *crop* coordinates,
   * masks are boolean ``HxW`` arrays in the same crop coordinates,
@@ -28,6 +36,17 @@ from typing import Any, Callable, Optional
 import cv2
 import numpy as np
 import yaml
+
+from tda.models.sam_heads import (
+    HEAD_MODULES,
+    STOCK,
+    TUNED,
+    SamHeadConfig,
+    SamHeadError,
+    choose_head,
+    fingerprint,
+    read_head,
+)
 
 log = logging.getLogger(__name__)
 
@@ -116,6 +135,14 @@ class SamRequest:
         multimask: ask SAM for three candidates. All three come back in
             :attr:`SamResult.candidates`, best first, for the UI to cycle
             through; ``mask``/``score`` name the best one.
+        instance_cls: taxonomy class of the part being drawn, ``None`` when
+            nobody knows.  With two heads (task U19) a prompt without a box
+            goes to the stock head for a large class and to the tuned head
+            otherwise; with one head it is ignored.
+        mask_input_head: the head (:attr:`SamResult.head`) whose answer
+            ``mask_input`` is.  A refinement goes back to that head; without
+            it -- a layer painted by hand, a keyframe loaded for an edit -- the
+            prompt is routed like any other.  Ignored without ``mask_input``.
     """
 
     image_crop: np.ndarray
@@ -123,6 +150,8 @@ class SamRequest:
     box: Optional[tuple[float, float, float, float]] = None
     mask_input: Optional[np.ndarray] = None
     multimask: bool = False
+    instance_cls: Optional[str] = None
+    mask_input_head: Optional[str] = None
 
 
 @dataclass
@@ -142,6 +171,9 @@ class SamResult:
             refinement it holds the *blended* mask only -- the raw proposals
             would undo the blend if they were applied (spec 4.6).
         scores: ``candidates``' scores, same order and length.
+        head: which decoder head answered, ``"stock"`` or ``"tuned"``
+            (task U19).  Every candidate is that head's; a refinement of this
+            answer sends it back as :attr:`SamRequest.mask_input_head`.
     """
 
     mask: np.ndarray
@@ -149,6 +181,7 @@ class SamResult:
     ms: float
     candidates: list[np.ndarray] = field(default_factory=list)
     scores: list[float] = field(default_factory=list)
+    head: str = STOCK
 
     def __post_init__(self) -> None:
         """Default the candidate list to the single mask (backward compatible)."""
@@ -227,6 +260,26 @@ def blend_local(
 # ---------------------------------------------------------------------------
 # Service
 # ---------------------------------------------------------------------------
+class _HeadView:
+    """A ``SAM2Base`` seen through another prompt encoder and mask decoder.
+
+    ``SAM2ImagePredictor`` reads ``model.image_size`` when it is built and
+    ``model.sam_prompt_encoder``, ``model.sam_mask_decoder`` and
+    ``model.device`` when it decodes (sam2 1.x, ``_prep_prompts`` /
+    ``_predict``).  Those two modules are this view's own; every other
+    attribute -- the image encoder, ``no_mem_embed``, the memory modules -- is
+    the shared model's, by reference.
+    """
+
+    def __init__(self, base: Any, prompt_encoder: Any, mask_decoder: Any) -> None:
+        self._base = base
+        self.sam_prompt_encoder = prompt_encoder
+        self.sam_mask_decoder = mask_decoder
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.__dict__["_base"], name)
+
+
 class SamService:
     """SAM 2.1 image predictor with an embedding cache. Thread-safe, Qt-free."""
 
@@ -235,8 +288,17 @@ class SamService:
         checkpoint: Optional[str] = None,
         config: str = DEFAULT_CONFIG,
         device: str = "cuda",
+        heads: Optional[SamHeadConfig] = None,
     ) -> None:
-        """Build the model. ``checkpoint=None`` reads ``paths.yaml: weights_dir``."""
+        """Build the model. ``checkpoint=None`` reads ``paths.yaml: weights_dir``.
+
+        ``heads`` (task U19) asks for the fine-tuned head next to the stock
+        one, routed by ``heads.routing``.  ``None`` is the stock head alone,
+        exactly as before.  A head that is off in the configuration, or that
+        does not load, leaves the stock head answering every prompt: one
+        WARNING (or the configuration's INFO line), never an exception, and
+        :attr:`head_off_reason` says why.
+        """
         # Resolve the checkpoint before importing torch/sam2: a config or path
         # mistake should fail immediately, not after a multi-second import.
         ckpt = Path(checkpoint) if checkpoint else default_checkpoint()
@@ -272,6 +334,26 @@ class SamService:
         self._image_hw: Optional[tuple[int, int]] = None
         self.last_set_image_ms = 0.0
 
+        #: ``head -> SAM2ImagePredictor``; the stock one always, the tuned one
+        #: once :meth:`_attach_tuned` has loaded it.
+        self._predictors: dict[str, Any] = {STOCK: self._predictor}
+        self._routing = heads.routing if heads is not None else None
+        #: Why the tuned head is not answering, ``""`` when it is -- or when
+        #: nobody asked for it (``heads=None``).
+        self.head_off_reason = "" if heads is None else heads.off
+        #: The image encoder's first two levels, before the stock decoder's
+        #: ``conv_s0``/``conv_s1`` -- captured during ``set_image`` for the
+        #: tuned head's own projections, dropped right after.
+        self._raw_fpn: Optional[list] = None
+        self._hook: Any = None
+        self.tuned_file: Optional[str] = None
+        if heads is not None and heads.wanted:
+            try:
+                self._attach_tuned(Path(heads.head))
+            except Exception as exc:  # noqa: BLE001 - SAM works without the head
+                self._detach_tuned(f"{type(exc).__name__}: {exc}" if not isinstance(
+                    exc, SamHeadError) else str(exc))
+
     # -- introspection ------------------------------------------------------
     @staticmethod
     def available(checkpoint: Optional[str] = None) -> bool:
@@ -301,6 +383,187 @@ class SamService:
         """Id of the crop whose embedding is currently cached, if any."""
         return self._image_id
 
+    @property
+    def heads(self) -> tuple[str, ...]:
+        """The heads that can answer: ``("stock",)`` or ``("stock", "tuned")``."""
+        return tuple(self._predictors)
+
+    @property
+    def tuned_loaded(self) -> bool:
+        """Is the fine-tuned head loaded and routed to?"""
+        return TUNED in self._predictors
+
+    def head_for(self, req: SamRequest) -> str:
+        """The head that answers ``req`` (:func:`~tda.models.sam_heads.choose_head`).
+
+        The stock head whenever there is no tuned one; ``mask_input_head``
+        only counts for a request that does send ``mask_input``.
+        """
+        if self._routing is None or TUNED not in self._predictors:
+            return STOCK
+        head = choose_head(
+            self._routing,
+            has_box=req.box is not None,
+            instance_cls=req.instance_cls,
+            mask_input_head=req.mask_input_head if req.mask_input is not None else None,
+        )
+        return head if head in self._predictors else STOCK
+
+    # -- the second head (task U19) ----------------------------------------
+    def _attach_tuned(self, path: Path) -> None:
+        """Load the head file at ``path`` as a second (prompt encoder, mask decoder).
+
+        **What the two heads share, and what they cannot.**  One image
+        encoder runs once per crop, and its output -- the 64x64 image
+        embedding, ``no_mem_embed`` added -- is one tensor both predictors
+        hold by reference.  But ``SAM2Base.forward_image`` also projects the
+        encoder's two high-resolution levels with the *mask decoder's*
+        ``conv_s0``/``conv_s1`` before ``set_image`` caches them, and L5
+        trained those convolutions: the stock predictor's cached high-res
+        features are the stock decoder's, and decoding the tuned head from
+        them is not the model L5 measured.  So a forward hook on the image
+        encoder keeps the two raw levels for the duration of ``set_image``,
+        and the tuned head projects them with its own convolutions (two 1x1
+        convolutions, once per crop: :meth:`_project_tuned`).  A prompt then
+        costs one decoder pass on whichever head answers it.
+
+        The head's tensors replace those of deep copies of the stock modules;
+        the copies' other tensors (the ones L5 did not change) stay stock.
+        Refused, with :class:`SamHeadError`: a file :func:`read_head` refuses,
+        a manifest beside it that names another file, a model whose
+        fingerprint is not the one the head was made for, a tensor that is
+        not this model's or not of its shape and dtype, a SAM config without
+        the three-level high-res path the projection above assumes.
+        """
+        import copy
+
+        from sam2.sam2_image_predictor import SAM2ImagePredictor
+
+        blob = read_head(path)
+        self._check_manifest(path)
+        model = self._model
+        if not (getattr(model, "use_high_res_features_in_sam", False)
+                and getattr(model, "num_feature_levels", 0) == 3):
+            raise SamHeadError("this SAM config has no three-level high-res decoder path; "
+                               "the head cannot share its features")
+        state = model.state_dict()
+        expected = blob["base"]["fingerprint"]
+        absent = [k for k in expected if k not in state]
+        if absent:
+            raise SamHeadError(f"the head was made for another model (no {absent[0]})")
+        actual = fingerprint(state, expected)
+        wrong = [k for k in expected if actual[k] != expected[k]]
+        if wrong:
+            raise SamHeadError(
+                f"the head was made for another SAM 2.1 checkpoint "
+                f"({blob['base'].get('file')}, sha256 {str(blob['base'].get('sha256'))[:12]}…): "
+                f"{len(wrong)} of {len(expected)} fingerprint tensors differ, e.g. {wrong[0]}")
+        modules = {}
+        delta = blob["state_dict"]
+        for name in HEAD_MODULES:
+            module = copy.deepcopy(getattr(model, name))
+            own = module.state_dict()
+            prefix = f"{name}."
+            for key, tensor in delta.items():
+                if not key.startswith(prefix):
+                    continue
+                sub = key[len(prefix):]
+                if sub not in own:
+                    raise SamHeadError(f"{key} is not a tensor of this model")
+                if tuple(own[sub].shape) != tuple(tensor.shape) or own[sub].dtype != tensor.dtype:
+                    raise SamHeadError(
+                        f"{key} is {tensor.dtype} {tuple(tensor.shape)}, the model's "
+                        f"{own[sub].dtype} {tuple(own[sub].shape)}")
+                own[sub] = tensor
+            module.load_state_dict(own, strict=True)
+            module.eval()
+            for param in module.parameters():
+                param.requires_grad_(False)
+            modules[name] = module
+        predictor = SAM2ImagePredictor(_HeadView(model, modules["sam_prompt_encoder"],
+                                                 modules["sam_mask_decoder"]))
+        # The same prompt transforms object: coordinates and boxes are scaled
+        # by the one the stock predictor uses.
+        predictor._transforms = self._predictor._transforms
+        self._hook = model.image_encoder.register_forward_hook(self._capture_fpn)
+        self._predictors[TUNED] = predictor
+        self.tuned_file = str(path)
+        self.head_off_reason = ""
+        routing = self._routing
+        log.info("SAM fine-tuned head on: %s (%d tensors); box prompts -> %s, point-only "
+                 "large classes (%d) -> %s, other point-only -> %s, refinements -> the "
+                 "head that produced the mask", path.name, len(delta),
+                 routing.box_prompts, len(routing.large_classes), routing.point_large,
+                 routing.point_other)
+
+    @staticmethod
+    def _check_manifest(path: Path) -> None:
+        """The ``.json`` beside a head file, when there is one, must describe it."""
+        import json
+
+        manifest = path.with_suffix(".json")
+        if not manifest.is_file():
+            log.info("SAM head %s has no manifest beside it", path.name)
+            return
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            said = str(data["head"]["sha256"])
+        except Exception as exc:  # noqa: BLE001 - a manifest that says nothing usable
+            raise SamHeadError(f"the manifest {manifest.name} cannot be read: "
+                               f"{type(exc).__name__}: {exc}") from exc
+        digest = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for block in iter(lambda: fh.read(4 << 20), b""):
+                digest.update(block)
+        if digest.hexdigest() != said:
+            raise SamHeadError(f"the manifest {manifest.name} describes another file "
+                               f"(sha256 {said[:12]}…, the file's {digest.hexdigest()[:12]}…)")
+
+    def _detach_tuned(self, reason: str) -> None:
+        """No tuned head from here on: one WARNING, the stock head answers everything."""
+        self._predictors.pop(TUNED, None)
+        if self._hook is not None:
+            try:
+                self._hook.remove()
+            except Exception:  # pragma: no cover - a hook handle that is gone
+                pass
+            self._hook = None
+        self._raw_fpn = None
+        self.tuned_file = None
+        self.head_off_reason = str(reason) or "the fine-tuned head failed"
+        log.warning("SAM fine-tuned head OFF, the stock head answers every prompt: %s",
+                    self.head_off_reason)
+
+    def _capture_fpn(self, _module: Any, _inputs: Any, output: Any) -> None:
+        """Forward hook on the image encoder: keep its levels before the projection."""
+        fpn = output.get("backbone_fpn") if isinstance(output, dict) else None
+        self._raw_fpn = list(fpn) if fpn is not None else None
+
+    def _project_tuned(self) -> None:
+        """Give the tuned predictor the crop the stock one has just embedded.
+
+        The image embedding by reference; the two high-res levels projected
+        with the tuned decoder's own ``conv_s0``/``conv_s1`` (see
+        :meth:`_attach_tuned`).  Runs inside ``set_image``'s inference mode
+        and autocast, as ``forward_image`` does for the stock head.
+        """
+        raw, self._raw_fpn = self._raw_fpn, None
+        stock = self._predictor
+        tuned = self._predictors[TUNED]
+        if raw is None or len(raw) != 3:
+            raise SamHeadError("the image encoder's levels were not captured "
+                               f"({'none' if raw is None else len(raw)} of 3)")
+        decoder = tuned.model.sam_mask_decoder
+        high_res = [decoder.conv_s0(raw[0]), decoder.conv_s1(raw[1])]
+        shared = stock._features
+        if [tuple(f.shape) for f in high_res] != [tuple(f.shape) for f in shared["high_res_feats"]]:
+            raise SamHeadError("the tuned head's high-res features do not have the stock "
+                               "head's shapes")
+        tuned._features = {"image_embed": shared["image_embed"], "high_res_feats": high_res}
+        tuned._orig_hw = list(stock._orig_hw)
+        tuned._is_batch = False
+        tuned._is_image_set = True
+
     # -- inference ----------------------------------------------------------
     def set_image(self, image_crop: np.ndarray) -> str:
         """Compute and cache the image embedding; return the crop's id.
@@ -324,9 +587,18 @@ class SamService:
             self._image_id = None
             self._image_src = None
             self._image_hw = None
+            self._raw_fpn = None
+            for predictor in self._predictors.values():
+                if predictor is not self._predictor:
+                    predictor.reset_predictor()
             t0 = time.perf_counter()
             with self._torch.inference_mode(), self._autocast():
                 self._predictor.set_image(img)
+                if TUNED in self._predictors:
+                    try:
+                        self._project_tuned()
+                    except Exception as exc:  # noqa: BLE001 - the stock head still works
+                        self._detach_tuned(f"{type(exc).__name__}: {exc}")
             self.last_set_image_ms = (time.perf_counter() - t0) * 1000.0
             self._image_id = image_id
             self._image_src = image_crop
@@ -339,6 +611,8 @@ class SamService:
         With ``req.mask_input`` set *and* at least one point, the raw prediction
         is only accepted within :data:`REFINE_RADIUS_PX` px of a point and the
         prior mask is kept elsewhere (see :func:`blend_local`).
+
+        One head answers (:meth:`head_for`), and every candidate is its own.
         """
         t0 = time.perf_counter()
         with self._lock:
@@ -371,8 +645,9 @@ class SamService:
             if point_coords is None and box is None and low_res is None:
                 raise ValueError("SamRequest carries no prompt (points/box/mask_input)")
 
+            head = self.head_for(req)
             with self._torch.inference_mode(), self._autocast():
-                masks, scores, _low = self._predictor.predict(
+                masks, scores, _low = self._predictors[head].predict(
                     point_coords=point_coords,
                     point_labels=point_labels,
                     box=box,
@@ -407,6 +682,7 @@ class SamService:
             ms=(time.perf_counter() - t0) * 1000.0,
             candidates=candidates,
             scores=ranked,
+            head=head,
         )
 
     # -- internals ----------------------------------------------------------
@@ -496,6 +772,11 @@ class SamQueue:
     @property
     def running(self) -> bool:
         return self._thread.is_alive()
+
+    @property
+    def service(self) -> SamService:
+        """The service this queue runs -- for what it says about itself, not to call."""
+        return self._service
 
     def _run(self) -> None:
         while True:
