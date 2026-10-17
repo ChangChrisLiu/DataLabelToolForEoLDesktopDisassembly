@@ -51,6 +51,7 @@ from tda.core.model import (
 from tda.core.truth import TruthService
 from tda.core.split_rows import open_split_steps, reverse_walk
 from tda.core.truth_inputs import InputCache, frame_hw, pose_segment_of, state_of
+from tda.core.zorder_floor import floor_index
 from tda.ui import session_api as api
 from tda.ui.class_names import state_zh
 from tda.ui.session_api import SessionRefusal
@@ -179,7 +180,8 @@ def commit_edit(db: Db, truth: TruthService, key: FrameKey, instance: str,
         change reaches every frame of its interval.  When no keyframe applies
         yet the shape is created with the default anchor of
         :func:`~tda.ui.session_ops.default_anchor` and the instance is appended
-        to the layer order, i.e. on top of everything (spec 4.2).
+        to the layer order, i.e. on top of everything but the floor layers
+        (spec 4.2, :func:`_append_to_zorder`).
     ``split``
         A new version of the shape from this step on, in the browsing direction
         (spec 3.3): annotating in reverse the new keyframe is anchored at the
@@ -674,7 +676,13 @@ def _loggable(payload: dict) -> dict:
 
 def _append_to_zorder(db: Db, key: FrameKey, seg: int, instance: str,
                       part: str = MAIN) -> Optional[dict]:
-    """Put a newly drawn instance on top of the layer order (spec 4.2).
+    """Put a newly drawn instance into the layer order (spec 4.2).
+
+    On top -- except the two floor layers (task U17,
+    :func:`tda.core.zorder_floor.floor_index`): a ``chassis`` goes to the very
+    bottom and a ``motherboard`` directly above the lowest chassis, whatever
+    order the annotator drew them in on the start frame.  The class is the
+    instance record's.  Only here: a move the annotator makes stays theirs.
 
     Returns the before/after states for the undo payload, or ``None`` when the
     instance was in the order already and nothing had to change.
@@ -683,7 +691,9 @@ def _append_to_zorder(db: Db, key: FrameKey, seg: int, instance: str,
     order = [tuple(entry) for entry in rec.order]
     if any(entry[0] == instance for entry in order):
         return None
-    after = order + [(instance, part)]
+    cls_of = {k: r.cls for k, r in db.instances(key.desktop).items()}
+    at = floor_index(order, cls_of.get(instance), cls_of)
+    after = order[:at] + [(instance, part)] + order[at:]
     db.set_zorder(ZOrderRec(key.desktop, key.view, seg, after, version=rec.version + 1))
     return {
         "before": {"pose_segment": seg, "order": [list(e) for e in order],

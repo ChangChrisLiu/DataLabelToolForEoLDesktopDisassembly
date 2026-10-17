@@ -57,13 +57,15 @@ def session(qapp, tmp_path: Path) -> AnnotationSession:
 def two_shapes(session) -> AnnotationSession:
     """Chassis over the top-left quarter and *above* the cooler, which is clear of it.
 
-    Drawn cooler-first, because a new instance goes on top of the layer order:
-    so the chassis is the one painting over, which is what makes "add pixels
-    inside it" a question about layering at all.
+    The chassis is the one painting over, which is what makes "add pixels
+    inside it" a question about layering at all.  A newly drawn chassis goes
+    to the bottom of the layer order (task U17, a floor layer), so it is moved
+    above the cooler by hand, as ``Ctrl+Up`` would.
     """
     session.goto(10)
     draw(session, COOLER, SMALL, api.SCOPE_KEYFRAME)
     draw(session, CHASSIS, BIG, api.SCOPE_KEYFRAME)
+    session.set_zorder_move(CHASSIS, COOLER)
     return session
 
 
