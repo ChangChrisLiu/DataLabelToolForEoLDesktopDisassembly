@@ -159,7 +159,8 @@ def ci(samples: np.ndarray) -> tuple[float, float]:
     return float(np.percentile(s, 2.5)), float(np.percentile(s, 97.5))
 
 
-def fold(name: str, ft: str, desktop: int, stock: str = "stock") -> tuple[str, dict]:
+def fold(name: str, ft: str, desktop: int, stock: str = "stock",
+         v2: bool = False) -> tuple[str, dict]:
     d = load(name)
     d = d[d["desktop"] == desktop]
     res = {"fold": ft, "desktop": desktop, "cells": {}}
@@ -194,7 +195,7 @@ def fold(name: str, ft: str, desktop: int, stock: str = "stock") -> tuple[str, d
             lines.append(f"| {g} | {jg['mkey'].nunique()} | " + " | ".join(cells)
                          + f" | {'+' if apt >= 0 else ''}{fmt(apt)} [{fmt(lo)}, {fmt(hi)}] |")
         # macro over the small groups
-        for p in ("avg", "refine"):
+        for p in ("avg", "refine", "box_loose"):
             pts = [est[(metric, g, p)][0] for g in SMALL_GROUPS]
             smp = np.mean(np.stack([est[(metric, g, p)][1] for g in SMALL_GROUPS]), axis=0)
             est[(metric, "macro", p)] = (float(np.mean(pts)), smp)
@@ -248,6 +249,10 @@ def fold(name: str, ft: str, desktop: int, stock: str = "stock") -> tuple[str, d
     g5 = (lat[ft]["decode_med"] <= 1.10 * lat[stock]["decode_med"]
           and lat[ft]["embed_med"] <= 1.10 * lat[stock]["embed_med"])
     gate = {"G1": g1, "G2": g2, "G3": g3, "G4": g4, "G5": g5}
+    g3b_v = e("iou", "large", "box_loose")
+    g6_v = e("iou", "macro", "box_loose")
+    if v2:  # amendment 1: the loose (difference-map) box is gated too
+        gate.update(G3b=g3b_v >= -0.01, G6=g6_v >= -0.01)
     res.update(gate=gate, passed=all(gate.values()),
                macro_iou=(e("iou", "macro", "avg"), *ci(est[("iou", "macro", "avg")][1])),
                macro_bf=(e("bf", "macro", "avg"), *ci(est[("bf", "macro", "avg")][1])),
@@ -268,6 +273,9 @@ def fold(name: str, ft: str, desktop: int, stock: str = "stock") -> tuple[str, d
     lines.append(f"- G5 latency: decode {fmt(lat[ft]['decode_med'], 2)} vs {fmt(lat[stock]['decode_med'], 2)} ms, "
                  f"set_image {fmt(lat[ft]['embed_med'], 1)} vs {fmt(lat[stock]['embed_med'], 1)} ms → "
                  f"{'PASS' if g5 else 'FAIL'}")
+    lines.append(f"- G3b loose box, large: ΔIoU {fmt(g3b_v)}; G6 loose box, small macro: ΔIoU {fmt(g6_v)}"
+                 + (f" → {'PASS' if gate['G3b'] else 'FAIL'} / {'PASS' if gate['G6'] else 'FAIL'}"
+                    if v2 else " (not gated for v1; amendment 1 gates them for v2)"))
     lines.append(f"\n**Fold {ft}: {'PASS' if res['passed'] else 'FAIL'}**")
     text = "\n".join(lines) + "\n"
     out = env.OUT / "tables" / f"{name}.md"
@@ -284,6 +292,7 @@ def main(argv=None) -> int:
     ap.add_argument("--csv", required=True)
     ap.add_argument("--ft")
     ap.add_argument("--desktop", type=int)
+    ap.add_argument("--v2", action="store_true", help="amendment 1's gate (G3b, G6)")
     args = ap.parse_args(argv)
     import sys
 
@@ -291,7 +300,7 @@ def main(argv=None) -> int:
     if args.mode == "baseline":
         print(baseline(args.csv))
     else:
-        text, _res = fold(args.csv, args.ft, args.desktop)
+        text, _res = fold(args.csv, args.ft, args.desktop, v2=args.v2)
         print(text)
     return 0
 

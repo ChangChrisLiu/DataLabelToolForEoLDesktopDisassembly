@@ -54,6 +54,10 @@ W_FOCAL, W_DICE, W_IOU = 20.0, 1.0, 1.0
 CTX_RANGE = (1.2, 3.0)
 SHIFT = 0.25
 BOX_NOISE_FRAC, BOX_NOISE_MIN, BOX_NOISE_MAX = 0.1, 2.0, 12.0
+#: Recipe v2 (decision_rule.txt, amendment 1): share of loose box prompts and
+#: the largest outward push per edge, as a fraction of the box side.
+RECIPES = {"v1": 0.0, "v2": 0.5}
+LOOSE_MAX = 0.25
 POINT_DEPTH = 0.3
 MASK_LOGIT_SCALE = 8.0      # tda.models.sam_service.MASK_LOGIT_SCALE
 RES = 1024
@@ -67,7 +71,8 @@ PROMPT_KINDS = ("box", "point", "point_box")
 class Sampler:
     """Builds one training crop with up to MAX_TARGETS_PER_CROP targets (CPU)."""
 
-    def __init__(self, recs: list[G.Rec], frames: dict, seed: int) -> None:
+    def __init__(self, recs: list[G.Rec], frames: dict, seed: int, loose_frac: float = 0.0) -> None:
+        self.loose_frac = loose_frac
         self.recs = recs
         self.frames = frames
         self.by_frame = defaultdict(list)
@@ -106,6 +111,12 @@ class Sampler:
         if kind in ("box", "point_box"):
             x0, x1 = xs.min(), xs.max() + 1
             y0, y1 = ys.min(), ys.max() + 1
+            if self.loose_frac > 0 and self.rng.random() < self.loose_frac:
+                # v2 (amendment 1): the difference-map case, each edge pushed out
+                u = self.rng.uniform(0, LOOSE_MAX, size=4)
+                bw, bh = x1 - x0, y1 - y0
+                x0, y0 = x0 - u[0] * bw, y0 - u[1] * bh
+                x1, y1 = x1 + u[2] * bw, y1 + u[3] * bh
             nx = min(BOX_NOISE_MAX, max(BOX_NOISE_MIN, BOX_NOISE_FRAC * (x1 - x0)))
             ny = min(BOX_NOISE_MAX, max(BOX_NOISE_MIN, BOX_NOISE_FRAC * (y1 - y0)))
             d = self.rng.uniform(-1, 1, size=4) * np.array([nx, ny, nx, ny])
@@ -418,6 +429,7 @@ def main(argv=None) -> int:
     ap.add_argument("--epochs", type=float, default=EPOCHS)
     ap.add_argument("--lr", type=float, default=LR)
     ap.add_argument("--tag", default="")
+    ap.add_argument("--recipe", choices=sorted(RECIPES), default="v1")
     args = ap.parse_args(argv)
     if args.check:
         return check()
@@ -439,13 +451,14 @@ def main(argv=None) -> int:
     print(f"[train] {free:.1f} GiB free; capping this process at {min(0.75, budget / total_gb) * total_gb:.1f} GiB",
           flush=True)
 
-    name = args.fold + (f"_{args.tag}" if args.tag else "")
+    tag = args.tag or ("" if args.recipe == "v1" else args.recipe)
+    name = args.fold + (f"_{tag}" if tag else "")
     out = env.OUT / "train" / name
     out.mkdir(parents=True, exist_ok=True)
     recs, images = G.load()
     recs = [r for r in recs if r.desktop in FOLDS[args.fold]]
     frames = G.load_frames(images, {r.frame for r in recs})
-    sampler = Sampler(recs, frames, SEED)
+    sampler = Sampler(recs, frames, SEED, loose_frac=RECIPES[args.recipe])
     steps_per_epoch = len(recs) // CROPS_PER_STEP
     n_steps = int(round(args.epochs * steps_per_epoch))
     print(f"[train] fold {args.fold}: desktops {FOLDS[args.fold]}, {len(recs)} masks, "
@@ -522,7 +535,8 @@ def main(argv=None) -> int:
         "peak_alloc_gb": round(torch.cuda.max_memory_allocated() / 1024 ** 3, 2),
         "peak_reserved_gb": round(torch.cuda.max_memory_reserved() / 1024 ** 3, 2),
         "checkpoint": str(ckpt), "init": str(env.SAM2_CKPT), "config": env.SAM2_CONFIG,
-        "recipe": {"wd": WD, "warmup": WARMUP, "lr_floor": LR_FLOOR, "clip": CLIP,
+        "recipe": {"name": args.recipe, "loose_frac": RECIPES[args.recipe], "loose_max": LOOSE_MAX,
+                   "wd": WD, "warmup": WARMUP, "lr_floor": LR_FLOOR, "clip": CLIP,
                    "crops_per_step": CROPS_PER_STEP, "max_targets": MAX_TARGETS_PER_CROP,
                    "rounds": ROUNDS, "loss": [W_FOCAL, W_DICE, W_IOU], "ctx": CTX_RANGE,
                    "shift": SHIFT, "seed": SEED},

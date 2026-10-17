@@ -106,3 +106,28 @@ SHIP
 - Otherwise -> no candidate.  The fold checkpoints stay as experiment outputs
   (sam2.1_hiera_large_tda_<fold>.pt) and the report says what the measurement
   points to instead (prompt quality, candidate choice, SAM 3, ...).
+
+AMENDMENT 1 -- written 2026-10-17 01:45, after the F13 v1 evaluation and
+BEFORE any F5 result (F5 v1 was 50 steps into training).  The rule above is
+unchanged and is applied to v1 as written: F13 v1 FAILS G3 (LARGE point dIoU
+-0.012 < -0.01), so v1 yields no candidate whatever F5 shows.  F13 v1 also
+showed a regression the rule did not gate: box_loose on large parts 0.419 ->
+0.261 (motherboard 0.485 -> 0.012, drive_cage 0.461 -> 0.001), i.e. v1 learned
+that a box is always tight, and the difference-map box is often loose.
+
+RECIPE v2 = v1 with one change: half of the box prompts (box and point+box
+steps alike) are loose -- each edge pushed outward by U(0, 0.25) x that side
+before the v1 jitter, clipped to the window.  Everything else (data, lr,
+epochs, steps, seed, loss) is v1's.  Checkpoints:
+sam2.1_hiera_large_tda_<fold>_v2.pt.
+
+ORDER: F5 v2 first, then F13 v2.  F5 is blind to the v2 change (designed
+before any D5 result); F13 v2 is NOT blind (v2 was designed from F13's
+held-out failure) and the report says so.
+
+GATE v2 = G1-G5 above, unchanged, PLUS
+- G3b loose box, large parts: LARGE dIoU on box_loose >= -0.01.
+- G6 loose box, small parts: macro dIoU on box_loose >= -0.01.
+A v2 fold passes only when all seven hold.  Both v2 folds pass -> train `all`
+with v2 and save it as the candidate sam2.1_hiera_large_tda_v1.pt.  Otherwise
+no candidate.  No v3 inside L5.
