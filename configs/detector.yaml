@@ -39,10 +39,16 @@
 
 enabled: true
 
-# yolo (ultralytics) or rfdetr.  L3's production model: RF-DETR small trained
-# on all 4 873 tiles, its recipe and tiling in the manifest beside it.
+# yolo (ultralytics) or rfdetr.  L4's production model: RF-DETR small, L3's
+# all-desktop model fine-tuned on L2's 4 627 LS tiles plus the 920 tiles of
+# the annotator's own verified scan frames of D2-D5 and D13
+# (experiments/l4_detector/REPORT.md; recipe, tiles hashes and the evaluation
+# in the manifest beside it).  Held out: screw hit@0.10 D13 79.4 -> 81.1,
+# D5 74.8 -> 80.1; oak1 36.2 -> 45.0, oak2 52.5 -> 70.3 with no OAK training
+# data.  L3's model stays one swap away:
+# model: D:/DataSet/models/weights/tda_det_rfdetr_small_all.pt
 backend: rfdetr
-model: D:/DataSet/models/weights/tda_det_rfdetr_small_all.pt
+model: D:/DataSet/models/weights/tda_det_rfdetr_small_all_v2.pt
 
 # The fallback, U3's YOLO26n (hold13 never saw D13) -- swap these two lines in:
 # backend: yolo
@@ -50,22 +56,26 @@ model: D:/DataSet/models/weights/tda_det_rfdetr_small_all.pt
 # (with the YOLO, oak2 is best left out of `views`: L2's screw hit there was
 # 19 %.)
 
-# The detector's classes that arm a box.  L2 and L3: screws only --
-# connectors hit 15-29 % whatever the model, cooler screws 0 % (they are
-# captive and stay on the cooler).
-classes: [screw]
+# The detector's classes that arm a box.  L4 (clean ground truth, held out):
+# screws; connectors -- rank 1 on the removed connector 11/30 against 1/30 for
+# the difference map, although the D13 hit is 41.6 % (D5 86.3 %); ram_module,
+# psu_latch and cpu at 100 % hit on both folds.  Not armed: drive_latch (one
+# event), ram_latch and cpu_socket_lever (opened, never removed).
+classes: [screw, connector, ram_module, psu_latch, cpu]
 
 # Where it is on.  rs stays off (L3: screw hit 35 % at 6-10 px, not ready).
 views: [scan, oak1, oak2]
 
-# Minimum confidence of a candidate (L2's operating point, kept by L3).
-conf: 0.10
+# Minimum confidence of a candidate.  L2/L3 used 0.10; L4 moved it to 0.05:
+# the one held-out screw removal v2 lost at 0.10 (D5 k=41, scored 0.05-0.10)
+# ranks first at 0.05, and the screw hit holds on both folds (81.9 / 82.7 %).
+conf: 0.05
 
 # L3 §5: a box under this is dropped before the merge -- it changed 0 of 105
 # scan/oak1 events, and RF-DETR's detection on a scan frame went from 0.052 s
 # (all 300 queries a tile into the merge) to 0.025 s.  Never above `conf`;
 # left out it is 0.10 (or `conf`, if that is lower).
-merge_floor: 0.10
+merge_floor: 0.05
 
 # L2's tiles.py, for inference exactly as for training: crop the frame to the
 # stored ROI, bring it to the view's work scale, cut 640 x 640 tiles at a

@@ -143,25 +143,27 @@ def good_yaml(tmp_path: Path, **over) -> Path:
 
 
 def test_the_shipped_file_is_rfdetr_on_scan_oak1_and_oak2_screws_with_l2s_tiles(monkeypatch):
-    """U4: L3's RF-DETR small, with the 0.10 floor; U3's YOLO stays, commented, as the fallback."""
+    """U4/L4: L4's RF-DETR small v2 at the 0.05 floor, five armed classes; L3's model and U3's YOLO stay, commented."""
     text = DM.DEFAULT_FILE.read_text(encoding="utf-8")
     parsed = DM._parse(yaml.safe_load(text), DM.DEFAULT_FILE)
     assert parsed.enabled is True and parsed.backend == "rfdetr"
-    assert parsed.model.name == "tda_det_rfdetr_small_all.pt"
-    assert parsed.views == ("scan", "oak1", "oak2") and parsed.classes == ("screw",)
-    assert parsed.conf == pytest.approx(0.10) and parsed.merge_floor == pytest.approx(0.10)
+    assert parsed.model.name == "tda_det_rfdetr_small_all_v2.pt"
+    assert parsed.views == ("scan", "oak1", "oak2")
+    assert parsed.classes == ("screw", "connector", "ram_module", "psu_latch", "cpu")
+    assert parsed.conf == pytest.approx(0.05) and parsed.merge_floor == pytest.approx(0.05)
     assert parsed.roi_crop is True and parsed.tile == 640 and parsed.stride == 512
     assert parsed.scale("scan") == parsed.scale("oak1") == parsed.scale("oak2") == 1.0
     assert str(parsed.cache_root).replace("\\", "/") == "D:/DataSet/cache/det"
     assert str(parsed.yolo_config_dir).replace("\\", "/").startswith("D:/")
     assert parsed.half is True and parsed.device == 0
-    # the fallback, one swap away
+    # L3's model and the YOLO fallback, one swap away
+    assert "# model: D:/DataSet/models/weights/tda_det_rfdetr_small_all.pt" in text
     assert "# backend: yolo" in text
     assert "# model: D:/DataSet/models/weights/tda_det_yolo26n_l2_hold13.pt" in text
     fallback = DM._parse(dict(yaml.safe_load(text), backend="yolo",
                               model="D:/DataSet/models/weights/tda_det_yolo26n_l2_hold13.pt"),
                          DM.DEFAULT_FILE)
-    assert fallback.backend == "yolo" and fallback.merge_floor == pytest.approx(0.10)
+    assert fallback.backend == "yolo" and fallback.merge_floor == pytest.approx(0.05)
 
 
 def test_the_shipped_models_manifest_has_its_tiles_and_classes():
