@@ -401,14 +401,15 @@ def test_commit_keys_wait_for_a_half_drawn_polygon(window):
     window.act_tool("polygon")
     click(window, *SQUARE[0])
     count = ops(window)
-    for name in ("commit_override", "commit_split", "confirm"):
+    # commit_all: Ctrl+Enter, in the place of Ctrl+K's commit_split (U16)
+    for name in ("commit_override", "commit_all", "confirm"):
         window.report("")
         window.dispatch(A.action_named(name))
         assert SHAPE_BUSY in window.status_message(), name
         assert window.session.editing_instance, name
     assert ops(window) == count and window.polygon.vertices == [SQUARE[0]]
     window.refresh_guidance()
-    for name in ("commit_override", "commit_split", "confirm"):
+    for name in ("commit_override", "commit_all", "confirm"):
         assert not window.palette.button(name).isEnabled(), name
     assert window.palette.button("commit").isEnabled(), "Enter closes it"
 

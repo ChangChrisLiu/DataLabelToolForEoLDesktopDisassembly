@@ -1,9 +1,10 @@
 """Task U11 round 2: a cut copy is a placeholder that confines edits, never an answer.
 
 A ✂ row whose frame shows a ``source="cut"`` keyframe is not done: the card
-says 「待画：这帧上是另一状态的形状副本，画好后 Ctrl+K」 (the banner too),
-``Ctrl+K`` with the frame's shape drawn clears the mark and completes it, an
-untouched ``Ctrl+K`` is refused, and ``Ctrl+Shift+K`` (「这帧就是这个形状」)
+says 「待画：这帧上是另一状态的形状副本，画好后 Enter」 (the banner too; the key
+was ``Ctrl+K`` until U16 made it ``Enter``'s alias), the split with the frame's
+shape drawn clears the mark and completes it, an untouched one is refused,
+and ``Ctrl+Shift+K`` (「这帧就是这个形状」)
 takes the mark off without pixels. ``cli check`` counts the open row
 (``shape_predates_state``) and every other confirmed frame under the copy
 (``cut_copy_in_force``). A boundary with no cut copy (the log's own) is as
@@ -32,6 +33,7 @@ from tda.ui import app_actions as A
 from tda.ui import session_api as api
 from tda.ui.panels.taskcard import CUT_COPY_SENTENCE, row_view
 from tda.ui.session_api import SessionRefusal
+from tda.ui.session_commits import CUT_COPY_UNCHANGED
 
 CLIP = "ram_latch.04"
 HW = (256, 256)
@@ -89,7 +91,8 @@ def test_the_row_over_a_cut_copy_is_open_and_says_so(scene):
     assert found["kind"] == api.KIND_SPLIT_KEYFRAME
     assert found["done"] is False and found["cut_copy"] is True
     view = row_view(found)
-    assert view["sentence"].startswith("待画：这帧上是另一状态的形状副本，画好后 Ctrl+K")
+    # Enter since U16 (Ctrl+K, its alias now, before)
+    assert view["sentence"].startswith("待画：这帧上是另一状态的形状副本，画好后 Enter")
     assert view["sentence"].startswith(CUT_COPY_SENTENCE) and view["chip"] == "待画"
     assert s.cut_copy_here(CLIP) is True
     s.goto(41, force=True)
@@ -272,7 +275,13 @@ def test_the_window_banner_and_key(qapp, tmp_path: Path):
         QApplication.processEvents()
         win.expire_visibility_note()
         assert win.canvas.banner_text().endswith(BANNER_CUT_COPY)
-        assert BANNER_CUT_COPY.startswith("待画：这帧上是另一状态的形状副本，画好后 Ctrl+K")
+        # the key that draws it is Enter since U16 (Ctrl+K before, its alias now)
+        assert BANNER_CUT_COPY.startswith("待画：这帧上是另一状态的形状副本，画好后 Enter")
+        win.act_commit()                                 # Enter, nothing drawn: refused
+        if win._pending_warning is not None:             # "too big" for a clip
+            win.act_commit()
+        assert CUT_COPY_UNCHANGED in win.last_error_message()
+        assert win.session.editing_instance == CLIP      # the copy is still loaded
         win.act_confirm_cut_copy()                       # Ctrl+Shift+K
         assert win.session.editing_instance is None
         assert "✂ 完成" in win.status_message()

@@ -63,10 +63,16 @@ PHASES: tuple[str, ...] = (
     PHASE_CONFIRM, PHASE_CONFIRMED,
 )
 
-#: The key and the palette action of each commit scope, for the lines that
-#: have to name the *right* one (a ✂ row is committed with ``Ctrl+K``).
+#: The key of each commit action, for the area warning's "press it again":
+#: since task U16 one scope can be either key's (``keyframe`` is ``Enter``'s
+#: where the version starts and ``Ctrl+Enter``'s everywhere), so the warning
+#: remembers the action that raised it.  ``Enter`` (``commit``) otherwise.
+_WARNING_KEYS: dict[str, tuple[str, str]] = {
+    "commit_all": ("Ctrl+Enter", "commit_all"),
+    "commit_override": ("Alt+Enter", "commit_override"),
+}
+#: ... and for a warning that does not say: the scope's key, as before U16.
 _SCOPE_KEYS: dict[str, tuple[str, str]] = {
-    api.SCOPE_SPLIT: ("Ctrl+K", "commit_split"),
     api.SCOPE_FRAME_OVERRIDE: ("Alt+Enter", "commit_override"),
 }
 
@@ -109,13 +115,15 @@ class GuideFacts:
     #: Label of the instance being edited, or ``None``.
     editing: Optional[str] = None
     #: The task-card kind of the row being edited (``""`` when it is not on
-    #: the card): a ✂ row is committed with ``Ctrl+K``, never ``Enter``.
+    #: the card): a ✂ row is a new version from this frame on.
     editing_kind: str = ""
     layer_pixels: bool = False
     layer_dirty: bool = False
     warning: bool = False
     #: The scope the area warning was raised for (its second press repeats it).
     warning_scope: str = ""
+    #: The action whose key raised it (``commit_all`` …), ``""`` for Enter's.
+    warning_action: str = ""
     #: The scope the non-modal bar is suggesting, or ``""``.
     scope: str = ""
     #: That scope in the annotator's words (``它在 机箱 chassis 上面（层级）``).
@@ -123,6 +131,9 @@ class GuideFacts:
     #: ``L`` was pressed once: the bar is asking whether the layering change's
     #: reach is meant (task U6).
     layering_asked: bool = False
+    #: ``Ctrl+Enter`` was pressed once: the bar is asking about the confirmed
+    #: frames 改全部 reaches (task U16).
+    all_asked: bool = False
     ghost: bool = False
     #: Label of the part the bench box is armed for, or ``None``.
     bench: Optional[str] = None
@@ -195,12 +206,15 @@ POLYGON_DRAW = "多边形 {n} 个点：Enter / 双击 / 点回起点 填上"
 CIRCLE_NOW = "现在：拖到零件边缘松手，圆就填进去；Esc 取消"
 CIRCLE_DRAW = "圆形：拖到边缘松手"
 DRAW_BENCH = "在台面上拖一个框框住它（台面框 R），松手就存好"
-COMMIT = "Enter 提交（形状从这帧起变了用 Ctrl+K；只这一帧特殊用 Alt+Enter）"
-COMMIT_SPLIT = "Ctrl+K 提交（从这帧起新版本）— 这一条不要按 Enter"
+#: Step ④ (task U16): Enter is from this frame on; the frames walked keep theirs.
+COMMIT = "Enter 提交（从这帧起，走过的帧不变；只这一帧用 Alt+Enter）"
+COMMIT_SPLIT = "Enter 提交（从这帧起新版本）"
 #: Step ④ while a layering suggestion is on the bar (task U6).
 LAYERING_COMMIT = "层级建议：Enter 只改形状 / L 改层级（先看影响哪些帧，再按 L）"
+#: Step ④ while 改全部 asks (task U16).
+ALL_COMMIT = "改全部：再按 Ctrl+Enter 确定 / Esc 取消"
 CONFIRM = "全部画完：Space 确认整帧，自动退到上一帧"
-#: Steps ④ and ⑤ on a components-gallery shot (task U10): no Ctrl+K, and Space
+#: Steps ④ and ⑤ on a components-gallery shot (task U10): no ✂, and Space
 #: walks forwards.
 COMMIT_GALLERY = "Enter 提交；不在这张里的零件：任务卡上右键「看不见」或按 I"
 CONFIRM_GALLERY = "每个零件都画了或「看不见」：Space 确认这张，自动到下一张"
@@ -366,13 +380,22 @@ def _annotate_plan(facts: GuideFacts) -> GuidePlan:
                                 draw_text="旧草稿预览：Enter 采纳 / Esc 取消"),
                          "commit")
     if facts.warning:
-        key, action = _SCOPE_KEYS.get(facts.warning_scope, ("Enter", "commit"))
+        key, action = _WARNING_KEYS.get(
+            facts.warning_action, _SCOPE_KEYS.get(facts.warning_scope, ("Enter", "commit")))
         return GuidePlan(PHASE_WARNING, title,
                          f"现在：面积和这类零件差得多 — 确认没画错就再按一次 {key}，"
                          f"否则 Esc 回去改",
                          _steps(facts, 3, pick_text=f"已选中：{editing}" if editing else "",
                                 commit_text=f"面积提示：再按一次 {key} 仍然提交 / Esc 回去改"),
                          action)
+    if facts.all_asked:
+        # Task U16: 改全部 asks before it reaches the confirmed frames behind.
+        return GuidePlan(PHASE_SCOPE, title,
+                         "现在：提示条写着改全部会影响哪些帧（已确认的会重新检查）— "
+                         "确定就再按 Ctrl+Enter，不改按 Esc",
+                         _steps(facts, 3, pick_text=f"已选中：{editing}" if editing else "",
+                                commit_text=ALL_COMMIT),
+                         "commit_all")
     if facts.scope and facts.layering_asked:
         return GuidePlan(PHASE_SCOPE, title,
                          "现在：提示条写着层级改动会影响哪些帧（已确认的会重新检查）— "
@@ -384,7 +407,7 @@ def _annotate_plan(facts: GuideFacts) -> GuidePlan:
         said = facts.scope_text or facts.scope
         # Task U6: Enter writes the shape; the layering is L's and asks first.
         tail = ("" if facts.gallery else
-                "；Alt+Enter 只改这一帧，Ctrl+K 从这帧起新版本")
+                "；Alt+Enter 只改这一帧，Ctrl+Enter 改全部")
         return GuidePlan(PHASE_SCOPE, title,
                          f"现在：看画布下方的提示条 — Enter 只改形状；要改层级（{said}）按 L"
                          f"{tail}",
@@ -408,16 +431,17 @@ def _annotate_plan(facts: GuideFacts) -> GuidePlan:
         picked = f"已选中：{editing}"
         split = facts.editing_kind == api.KIND_SPLIT_KEYFRAME
         if facts.layer_dirty and split:
-            # Enter would rewrite the version in force -- the neighbour's shape
-            # too -- which is exactly what a ✂ row must not do (U2b round 2, I1).
+            # a ✂ row is a new version from this frame on -- what Enter writes
+            # there since task U16 (Ctrl+K before it: U2b round 2, I1)
             return GuidePlan(PHASE_DRAW_PIXELS, title,
-                             f"现在：「{editing}」的形状从这一帧起变了 — 画好了按 Ctrl+K"
-                             f"（从这帧起新版本）提交；Enter 会连前后帧里的旧样子一起改掉",
+                             f"现在：「{editing}」的形状从这一帧起变了 — 画好了按 Enter"
+                             f"（从这帧起新版本）提交，走过的帧不变",
                              _steps(facts, 3, pick_text=picked, commit_text=COMMIT_SPLIT),
-                             "commit_split")
+                             "commit")
         # re-tracing a confirmed shape puts its confirmed frames in conflict:
-        # said before the commit, with the one key that answers them all (U7)
-        retrace = ("" if split or not facts.retrace_frozen else
+        # said before the commit, with the one key that answers them all (U7).
+        # The frames are Enter's reach (U16), so a ✂ row counts its own.
+        retrace = ("" if not facts.retrace_frozen else
                    "；" + RETRACE_NOTE.format(n=len(facts.retrace_frozen)))
         if facts.layer_dirty:
             return GuidePlan(PHASE_DRAW_PIXELS, title,
@@ -427,7 +451,7 @@ def _annotate_plan(facts: GuideFacts) -> GuidePlan:
         if facts.layer_pixels:
             # A stored shape, loaded and untouched: Enter has nothing to write
             # and says so; the next thing is to change it or leave it.
-            nxt = "画好了按 Ctrl+K（从这帧起新版本）" if split else "改完 Enter"
+            nxt = "画好了按 Enter（从这帧起新版本）" if split else "改完 Enter"
             # An open ✂ row loads the *old* version: it needs drawing, so no
             # button is the next one to press -- not Esc (round 3, item 6).
             open_split = split and not any(

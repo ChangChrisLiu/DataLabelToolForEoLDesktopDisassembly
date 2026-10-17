@@ -178,9 +178,12 @@ def test_retrace_reach_counts_the_confirmed_frames_a_keyframe_reaches(session):
     session.goto(10)
     session.begin_edit(CHASSIS)
 
-    reach = session.retrace_reach()
-
+    # U16: the re-trace of the version in force is 改全部 (Ctrl+Enter) here ...
+    reach = session.retrace_reach(scope=api.SCOPE_KEYFRAME)
     assert reach["frozen"] == [12, 13] and {12, 13} <= set(reach["steps"])
+    # ... and Enter -- a new version from 10 on -- reaches neither (it did until U16)
+    enter = session.retrace_reach()
+    assert enter["frozen"] == [] and max(enter["steps"]) == 10
     session.clear_edit()
     # a part with no shape yet re-traces nothing
     session.db.conn.execute("DELETE FROM shape_keyframe WHERE instance=?", (COOLER,))
@@ -226,7 +229,12 @@ def window(qapp, tmp_path):
 
 
 def _window_conflicts(win) -> None:
-    """Frames 13 and 12 confirmed, then the chassis re-traced at 10: two conflicts."""
+    """Frames 13 and 12 confirmed, then the chassis re-traced at 10: two conflicts.
+
+    The re-trace is 改全部 (Ctrl+Enter) since U16: Enter at 10 starts a new
+    version from 10 on and reaches neither confirmed frame, so the edit says
+    nothing about them -- until U16 it said "重画会影响 2 个已确认帧".
+    """
     session = win.session
     session.sweeper_enabled = False
     session.goto(12)
@@ -235,11 +243,10 @@ def _window_conflicts(win) -> None:
     assert session.confirm_frame() and session.confirm_frame()
     session.goto(10)
     win.on_request_edit(CHASSIS)
-    assert "重画会影响 2 个已确认帧（第 12、13 帧），提交后用 Shift+N 一次接受" \
-        in win.status_message()
-    assert "重画会影响 2 个已确认帧" in win.guide_plan().now
+    assert "重画会影响" not in win.status_message()
+    assert "重画会影响" not in win.guide_plan().now
     session.set_editing_mask(rect(2, 34, 34, 62))
-    session.commit_edit(api.SCOPE_KEYFRAME)
+    session.commit_edit(api.SCOPE_KEYFRAME)          # what 改全部 writes
     session.clear_edit()
     session.truth.refresh_range(DESKTOP, VIEW, [12, 13])
 
@@ -314,15 +321,19 @@ def test_a_split_row_does_not_get_the_retrace_clause(window):
     assert session.current().step == 13
     rows = {r["instance"]: r["kind"] for r in session.task_card()}
     assert rows.get("ram_latch.01") == api.KIND_SPLIT_KEYFRAME
-    # what Enter would reach does include the confirmed frame 14 ...
-    assert 14 in (session.retrace_reach("ram_latch.01") or {}).get("frozen", [])
+    # what 改全部 would reach does include the confirmed frame 14 (Enter's did,
+    # until U16) ...
+    assert 14 in (session.retrace_reach("ram_latch.01", api.SCOPE_KEYFRAME)
+                  or {}).get("frozen", [])
+    # ... and Enter -- the split on a ✂ row -- does not
+    assert 14 not in (session.retrace_reach("ram_latch.01") or {}).get("frozen", [])
 
     window.on_request_edit("ram_latch.01")
 
-    # ... but the row is committed with Ctrl+K, and nothing says Shift+N
+    # the row is committed with Enter (Ctrl+K until U16), and nothing says Shift+N
     assert "重画会影响" not in window.status_message(), window.status_message()
     plan = window.guide_plan()
-    assert "Ctrl+K" in plan.now and "重画会影响" not in plan.now
+    assert "Enter" in plan.now and "重画会影响" not in plan.now
 
 
 def test_shift_n_with_no_conflict_says_so(window):

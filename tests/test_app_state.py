@@ -128,9 +128,10 @@ def test_a_run_of_frames_is_said_as_one(window):
     message = window.status_message()
     assert ("ram_latch.02 在第 11 步：打开（之前为 关上）；第 11–12 步都是 打开；"
             "第 13 步起恢复 关上") in message
-    # round 3: which key draws the run, no order to remember; 12 is the ✂ row
-    assert ("这几帧的形状要重画：在第 11–12 步任一帧画「打开」后 Enter（第 12 步是 ✂ 行，"
-            "那里用 Ctrl+K）；工具会自动在状态边界切开版本") in message
+    # round 3: which key draws the run; U16: Enter is "from this frame on", so
+    # the frame is the run's top (12, the ✂ row) -- from there it covers 11-12
+    assert ("这几帧的形状要重画：在第 12 步画「打开」后 Enter，第 11–12 步都用它；"
+            "工具会自动在状态边界切开版本") in message
 
 
 def test_t_with_nothing_selected_says_where_to_click(window):
@@ -197,7 +198,11 @@ def test_ctrl_z_takes_the_state_back(window):
 @pytest.mark.parametrize("instance,step", [(LOGGED, 13), (CORRECTED, STEP)],
                          ids=["log_boundary", "manual_boundary"])
 def test_a_manual_boundary_gets_the_split_banner_a_log_boundary_gets(window, instance, step):
-    """E: Enter instead of Ctrl+K on the new boundary is warned exactly the same."""
+    """E: the new boundary is offered the split exactly as the log's is.
+
+    Its key was Ctrl+K, with Enter warned against; since U16 the split is what
+    Enter writes on a ✂ row, so the guide, the banner and the border say Enter.
+    """
     if instance == CORRECTED:
         goto(window, step)
         window.instances.select_instance(instance)
@@ -215,12 +220,12 @@ def test_a_manual_boundary_gets_the_split_banner_a_log_boundary_gets(window, ins
         window.expire_visibility_note()
     plan = window.guide.plan()
     assert plan.phase == G.PHASE_DRAW_PIXELS
-    assert plan.action == "commit_split"
-    assert "Ctrl+K" in plan.now and "从这帧起新版本" in plan.now
+    assert plan.action == "commit"
+    assert "按 Enter" in plan.now and "从这帧起新版本" in plan.now
     assert any(G.COMMIT_SPLIT in str(line) for line in plan.steps)
     assert window.canvas.banner_text().endswith(BANNER_SPLIT)
-    assert window.palette.button("commit_split").suggested()
-    assert not window.palette.button("commit").suggested()
+    assert window.palette.button("commit").suggested()
+    assert not window.palette.button("commit_all").suggested()
 
 
 def _squash(text: str) -> str:
@@ -232,10 +237,10 @@ def test_the_documents_say_it():
     repo = Path(__file__).resolve().parents[1]
     quick = _squash((repo / "docs" / "trial_quickstart.md").read_text(encoding="utf-8"))
     guide = _squash((repo / "docs" / "annotation_guide.md").read_text(encoding="utf-8"))
-    assert _squash(
+    assert _squash(          # U16: the ✂ row is drawn with Enter, 改全部 is not for this
         "画面里的状态和日志不一样（比如卡扣中途又关上了）：选中它，按 `T` 把这帧的状态改过来；"
-        "工具会自动在下一帧恢复原状态，并在任务卡上给出 ✂ 行，用 `Ctrl+K` 画这几帧的形状。"
-        "不要用 `Enter` 重画已确认的形状去表达状态变化。") in quick
+        "工具会自动在下一帧恢复原状态，并在任务卡上给出 ✂ 行，在那一帧画这几帧的形状、按 `Enter`。"
+        "不要用 `Ctrl+Enter` 改全部去表达状态变化。") in quick
     assert _squash("在第 21 步：关上（之前为 打开）；第 22 步起恢复 打开") in quick
     assert _squash("按 `T`（或实例表的状态框）改这一帧") in guide
     assert _squash("**形状不会越过状态边界**") in guide
@@ -247,14 +252,18 @@ def test_the_documents_say_it():
     from tda.ui.app_commit import steps_text
     from tda.ui.app_state import cut_note, redraw_text
 
-    ctrl_k = cut_note({"cut_below": 19, "cut_top": None, "edit_reach": [20, 21]}, steps_text)
-    enter = cut_note({"cut_below": 19, "cut_top": 21, "edit_reach": [20, 21]}, steps_text)
+    split = cut_note({"cut_below": 19, "cut_top": None, "edit_reach": [20, 21]}, steps_text)
     end = cut_note({"cut_below": 38, "cut_top": None, "edit_reach": [39, 40, 41]},
                    steps_text)
-    for line in (ctrl_k, enter, end,
+    for line in (split, end,
+                 redraw_text("closed", (20, 21), {"top": True, "below": True}),
                  redraw_text("closed", (39, 41), {"top": False, "below": True})):
         assert _squash(line) in quick, line
-    assert "新版本只到第 21 步，后面的帧保持原来的形状" in enter
+    # U16: a commit stopped at the run's top ("新版本只到第 21 步…") is 改全部's
+    # now -- Enter inside the run is from that frame on -- and the quickstart
+    # no longer walks through it
+    top = cut_note({"cut_below": 19, "cut_top": 21, "edit_reach": [20, 21]}, steps_text)
+    assert "新版本只到第 21 步，后面的帧保持原来的形状" in top
 
 
 # --------------------------------------------------------------------------- #
@@ -290,27 +299,34 @@ def test_the_frames_before_a_removal_are_said_as_one_run(whole_window):
                     "第 42 步起是 拆下" in win.status_message())
     assert manual(win, LOGGED) == [(39, "open", "closed")]
     assert "第 39–41 步都是 关上；第 42 步起是 拆下" in win.status_message()
-    # round 3: the redraw needs no order -- any frame of the run, Enter; the
-    # only ✂ row is 38, on the open side, so Ctrl+K is not offered (round 3b)
-    assert ("这几帧的形状要重画：在第 39–41 步任一帧画「关上」后 Enter；"
+    # round 3: Enter, and the commit cuts at the run's edge; U16: on the run's
+    # top frame, since Enter is from that frame on; the only ✂ row is 38, on
+    # the open side, so it is not offered (round 3b)
+    assert ("这几帧的形状要重画：在第 41 步画「关上」后 Enter，第 39–41 步都用它；"
             "工具会自动在状态边界切开版本") in win.status_message()
     assert "✂ 行" not in win.status_message()
 
 
-def test_the_redraw_text_offers_ctrl_k_only_on_the_runs_own_top():
-    """Round 3b: the two texts -- a ✂ below the run is the other state's frame."""
+def test_the_redraw_text_names_the_runs_top_frame_and_enter():
+    """Round 3b, after U16: one key, one frame -- the run's top, the walk's first.
+
+    Round 3b said "any frame of the run, Enter" with Ctrl+K on the run's own
+    ✂ top.  Enter is "from this frame on" since U16: from the top it covers
+    the run, from a lower frame it would leave the frames above with the other
+    state's shape.  A ✂ below the run is still the other state's frame.
+    """
     from tda.ui.app_state import redraw_text
 
     below_only = redraw_text("closed", (39, 41), {"top": False, "below": True})
-    assert below_only == ("这几帧的形状要重画：在第 39–41 步任一帧画「关上」后 Enter；"
-                          "工具会自动在状态边界切开版本")
+    assert below_only == ("这几帧的形状要重画：在第 41 步画「关上」后 Enter，第 39–41 步"
+                          "都用它；工具会自动在状态边界切开版本")
     top = redraw_text("closed", (20, 21), {"top": True, "below": True})
-    assert top == ("这几帧的形状要重画：在第 20–21 步任一帧画「关上」后 Enter（第 21 步是 ✂ 行，"
-                   "那里用 Ctrl+K）；工具会自动在状态边界切开版本")
+    assert top == ("这几帧的形状要重画：在第 21 步画「关上」后 Enter，第 20–21 步都用它；"
+                   "工具会自动在状态边界切开版本")
     assert redraw_text("closed", (41, 41), {"top": False, "below": True}) == (
         "这帧的形状要重画：画「关上」后 Enter；工具会自动在状态边界切开版本")
     assert redraw_text("closed", (21, 21), {"top": True, "below": False}) == (
-        "这帧的形状要重画：画「关上」后 Ctrl+K；工具会自动在状态边界切开版本")
+        "这帧的形状要重画：画「关上」后 Enter；工具会自动在状态边界切开版本")
     assert redraw_text("closed", (21, 21), {"top": False, "below": False}) == ""
 
 
@@ -376,24 +392,33 @@ def test_a_refusal_right_after_a_change_is_what_shows(window):
     assert "在第 12 步：打开" not in window.canvas.banner_text()
 
 
-def test_ctrl_k_on_an_open_split_row_cuts_the_version_untouched(window):
-    """Round 2b: the key and its button take an untouched layer on a ✂ row only."""
-    from tda.ui.app_commit import SPLIT_UNCHANGED
+def test_enter_on_an_open_split_row_cuts_the_version_untouched(window):
+    """Round 2b: the key and its button take an untouched layer on a ✂ row only.
+
+    The key was Ctrl+K; since U16 it is Enter (Ctrl+K its alias), which on any
+    other untouched layer still writes nothing and says so.
+    """
+    from tda.ui.app_commit import NOTHING_TO_COMMIT, SPLIT_UNCHANGED
 
     goto(window, STEP)
     window.task_card.sigRequestEdit.emit(CORRECTED)        # no ✂ row for it yet
-    assert window.key_refusal("commit_split")              # untouched: refused as before
+    window.refresh_guidance()
+    assert not window.palette.button("commit").isEnabled()
+    window.act_commit()                                    # untouched: nothing, as before
+    assert window.status_message() == NOTHING_TO_COMMIT
     window.act_clear_edit()
     window.instances.select_instance(CORRECTED)
     window.act_cycle_state()                               # open at 12: ✂ here
     window.expire_visibility_note()
     window.task_card.sigRequestEdit.emit(CORRECTED)
     assert not window.has_uncommitted_edit()
-    assert window.key_refusal("commit_split") == ""
-    assert window.palette.button("commit_split").isEnabled()
-    window.act_commit_split()
+    assert window.key_refusal("commit") == ""
+    window.refresh_guidance()
+    assert window.palette.button("commit").isEnabled()
+    assert not window.palette.button("commit_all").isEnabled()   # nothing for 改全部
+    window.act_commit()
     if window._pending_warning is not None:     # the synthetic latch is "too big"
-        window.act_commit_split()               # ... the second press writes it
+        window.act_commit()                     # ... the second press writes it
     # round 3: 11 (closed, same version) is cut first, and the line says so
     assert window.status_message() == ("已先在第 11 步切开旧版本（形状不变），"
                                        "这次修改只影响第 12 步")

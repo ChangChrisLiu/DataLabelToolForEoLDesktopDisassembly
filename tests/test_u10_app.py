@@ -93,7 +93,9 @@ def test_the_cards_right_click_reaches_the_same_slot(window):
     assert next(r for r in window.task_card.rows() if r["instance"] == part)["absent"]
 
 
-@pytest.mark.parametrize("key,name", [("T", "cycle_state"), ("Ctrl+K", "commit_split"),
+# U16: Ctrl+K is Enter now -- a plain commit on a shot -- and 改全部 (Ctrl+Enter)
+# is what a shot refuses in its place (tests/test_u16_enter_default.py)
+@pytest.mark.parametrize("key,name", [("T", "cycle_state"), ("Ctrl+Return", "commit_all"),
                                       ("D", "toggle_heat"), ("Shift+C", "cycle_prompt_box"),
                                       ("R", "tool_bench_box"), ("Shift+R", "edit_roi")])
 def test_sequence_keys_refuse_with_their_reason(window, key, name):

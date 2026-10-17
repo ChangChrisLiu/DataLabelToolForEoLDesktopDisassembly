@@ -406,7 +406,11 @@ def test_b_middle_run_ctrl_k_cuts_the_lower_edge(frozen):
 
 
 def test_b_enter_on_the_top_boundary_is_refused(frozen):
-    """The frame is itself the ✂ row: Enter would rewrite 38-42 too."""
+    """The frame is itself the ✂ row: the re-trace would rewrite 38-42 too.
+
+    Since U16 the re-trace there is 改全部 (Ctrl+Enter) and the refusal names
+    Enter, which is the split on a ✂ row.
+    """
     s = frozen
     for step in (37, 36):
         s.goto(step, force=True)
@@ -414,14 +418,20 @@ def test_b_enter_on_the_top_boundary_is_refused(frozen):
     s.goto(37, force=True)
     s.begin_edit(LATCH)
     s.set_editing_mask(rect(2, 2, 30, 12, HW256))
-    with pytest.raises(SessionRefusal, match="这一帧是状态边界（✂）：Enter 会把第 38–42 步"):
+    assert s.enter_scope() == api.SCOPE_SPLIT          # what Enter writes here (U16)
+    with pytest.raises(SessionRefusal,
+                       match="这一帧是状态边界（✂）：改全部会把第 38–42 步.*用 Enter"):
         s.commit_edit(api.SCOPE_KEYFRAME)
     s.clear_edit()
     assert _anchors(s) == [42]
 
 
 def test_b_enter_inside_the_run_stops_at_its_top(frozen):
-    """Enter at 36: the edit is the run's version (anchored 37), 35 cut below."""
+    """The re-trace at 36: the edit is the run's version (anchored 37), 35 cut below.
+
+    ``Enter``'s until U16; 改全部 (Ctrl+Enter) since -- ``Enter`` at 36 is the
+    split from 36 on, which leaves 37 to its own ✂ row.
+    """
     s = frozen
     for step in (37, 36):
         s.goto(step, force=True)

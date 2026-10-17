@@ -393,12 +393,12 @@ def _check_one(db, tax, args: argparse.Namespace, desktop: int, view: str) -> in
               f"a re-check: {sorted(stats['pending'])[:10]}")
     if stale:
         print(f"[check] {len(stale)} confirmed frame(s) still carry the shape from "
-              f"before their state changed ({SHAPE_PREDATES_STATE}, Ctrl+K there): "
+              f"before their state changed ({SHAPE_PREDATES_STATE}, Enter there): "
               + ", ".join(f"{instance}@{step}" for step, instance in stale[:10]))
     if copies:
         print(f"[check] {len(copies)} confirmed frame(s) show a cut copy -- the other "
               f"state's shape kept off the run -- nobody has drawn or confirmed "
-              f"({CUT_COPY_IN_FORCE}; Ctrl+K or Ctrl+Shift+K at the ✂ frame): "
+              f"({CUT_COPY_IN_FORCE}; Enter or Ctrl+Shift+K at the ✂ frame): "
               + ", ".join(f"{instance}@{step}" for step, instance in copies[:10]))
     if floor:
         print(f"[check] {len(floor)} layer order(s) put the chassis, or the motherboard "

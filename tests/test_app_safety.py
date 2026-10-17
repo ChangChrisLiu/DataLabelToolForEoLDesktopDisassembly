@@ -221,7 +221,7 @@ def test_an_uncommitted_edit_blocks_every_way_out_of_the_frame(window, name):
 @pytest.mark.parametrize("button,key", [
     ("commit", "act_commit"),
     ("commit_override", "act_commit_override"),
-    ("commit_split", "act_commit_split"),
+    ("commit_all", "act_commit_all"),       # 改全部 took commit_split's slot (U16)
     ("confirm", "act_confirm"),
 ])
 def test_each_commit_button_is_its_key(window, monkeypatch, button, key):
@@ -230,7 +230,7 @@ def test_each_commit_button_is_its_key(window, monkeypatch, button, key):
     The four buttons were the task card's; since U2b round 1 they are the tool
     palette's, the one place for actions.
     """
-    if button in ("commit_override", "commit_split"):
+    if button in ("commit_override", "commit_all"):
         # Since U2b round 3 the key and the button share one guard, which
         # refuses these two on an untouched layer: give them something to
         # commit, so what is tested is the routing.

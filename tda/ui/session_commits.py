@@ -30,16 +30,16 @@ from tda.ui.session_tasks import has_bench_roi
 
 __all__ = ["CUT_COPY_UNCHANGED", "CommitMixin", "NOT_A_CUT_COPY"]
 
-#: ``Ctrl+K`` with nothing drawn on a frame that shows a cut copy (U11 round 2):
+#: ``Enter`` with nothing drawn on a frame that shows a cut copy (U11 round 2):
 #: it would confirm a placeholder, so it is refused and the explicit key named.
-CUT_COPY_UNCHANGED = ("这帧上是另一状态的形状副本：画好这一帧的样子再 Ctrl+K；"
+CUT_COPY_UNCHANGED = ("这帧上是另一状态的形状副本：画好这一帧的样子再 Enter；"
                       "形状确实没变就按 Ctrl+Shift+K（这帧就是这个形状）")
 #: ``Ctrl+Shift+K`` where the shape in force is not a cut copy.
 NOT_A_CUT_COPY = "{instance} 在这一帧的形状不是切开时留下的副本，不用确认"
 #: ``Ctrl+Shift+K`` with no part named and none being drawn.
 NO_CUT_TARGET = "先在实例表选中零件（或点任务卡上那一条）"
 #: ``Ctrl+Shift+K`` with pixels painted and not committed.
-CONFIRM_NEEDS_CLEAN_LAYER = ("正在画的像素还没提交：画的就是这一帧的样子按 Ctrl+K；"
+CONFIRM_NEEDS_CLEAN_LAYER = ("正在画的像素还没提交：画的就是这一帧的样子按 Enter；"
                              "要确认副本先 Esc 放弃")
 
 
@@ -180,9 +180,13 @@ class CommitMixin:
         """Drop the editing layer without writing anything."""
         self.layer.clear()
 
-    def commit_edit(self, scope: str, direction: str = edit.REVERSE, *,
+    def commit_edit(self, scope: str, direction: Optional[str] = None, *,
                     extra: Optional[dict] = None) -> dict:
         """Write the editing layer back with the scope the annotator chose.
+
+        ``direction`` is the walk's (:attr:`browsing`) unless given: a split is
+        "from this frame on" in the direction :meth:`enter_scope` judged it in
+        (task U16), and the two must not disagree.
 
         ``extra`` is merged into the op-log payload of this commit: what the
         *window* knows about why it was made and the session cannot derive --
@@ -199,8 +203,8 @@ class CommitMixin:
 
         A pixel scope with nothing changed is a no-op: loading a shape and
         pressing Enter must not mint a new version of it.  The one exception is
-        ``Ctrl+K`` on an open ✂ row of this frame (:meth:`open_split_here`):
-        there the boundary *is* the edit, and the result says
+        the split on an open ✂ row of this frame (:meth:`open_split_here`,
+        ``Enter`` there): the boundary *is* the edit, and the result says
         ``unchanged_split``.  An explicit layering scope is always honoured,
         because there the pixels are not the point.
 
@@ -216,6 +220,7 @@ class CommitMixin:
         if not self.layer.active:
             raise RuntimeError("commit_edit() needs begin_edit() first")
         extra = _loggable_extra(extra)
+        direction = direction or self.browsing
         key, instance = self._editable_frame(), self.layer.instance
         if getattr(self, "gallery", False) and (
                 scope == api.SCOPE_SPLIT or edit.splits_the_shape(scope)):
@@ -230,13 +235,14 @@ class CommitMixin:
                         "scope": scope}
             if self.cut_copy_here(instance):
                 # the row is open *because* the frame shows a placeholder:
-                # an untouched Ctrl+K would sign it as this frame's shape
+                # an untouched Enter would sign it as this frame's shape
                 raise SessionRefusal(CUT_COPY_UNCHANGED)
             # An open ✂ row whose shape is already right on this side (U8
             # round 2b): the clip closed at 39-41 before the board takes it out
             # at 42 leaves the ✂ at 38, where the open shape loaded is the open
-            # shape. Ctrl+K cuts the version boundary with it unchanged, so a
-            # later Enter on the far side reaches only that state's frames.
+            # shape. The split (Enter there, task U16) cuts the version boundary
+            # with it unchanged, so a later commit on the far side reaches only
+            # that state's frames.
             unchanged_split = True
         if pair is not None and self._added_pixels(pair):
             other, _above = pair
@@ -315,11 +321,11 @@ class CommitMixin:
 
         Refused when the shape in force is not a cut copy, and while painted
         pixels are waiting in the editing layer (they are either this frame's
-        shape -- ``Ctrl+K`` -- or not wanted). An untouched layer on the same
+        shape -- ``Enter`` -- or not wanted). An untouched layer on the same
         part is closed.
         """
         if getattr(self, "gallery", False):
-            # a shot has no Ctrl+K, so no copy -- refused all the same (U10/U11)
+            # a shot has no split, so no copy -- refused all the same (U10/U11)
             raise SessionRefusal(gallery_refusal(self.view, "confirm_cut_copy"))
         target = str(instance or self.layer.instance or "")
         if not target:
@@ -364,8 +370,9 @@ class CommitMixin:
     def open_split_here(self, instance: Optional[str]) -> bool:
         """Does this frame's task card hold an open ✂ row for ``instance``?
 
-        The one case where ``Ctrl+K`` on an untouched layer writes: the
-        version boundary itself is the work (U8 round 2b).
+        The one case where a commit of an untouched layer writes -- ``Enter``,
+        as the split (task U16; ``Ctrl+K`` before it): the version boundary
+        itself is the work (U8 round 2b).
         """
         if not instance:
             return False
@@ -377,10 +384,10 @@ class CommitMixin:
     def _shape_scope(scope: str) -> str:
         """Which pixel scope the shape half of a layering commit is written with.
 
-        ``Enter`` re-traces the keyframe in force; ``Ctrl+K`` on the same
-        suggestion (``split+zorder:above:<B>``) cuts a new version from here and
-        records the pair with it -- a split that dropped the pair wrote the
-        pixels and left them hidden under ``B``, so nothing on screen moved.
+        ``L`` re-traces the keyframe in force; ``split+zorder:above:<B>`` cuts
+        a new version from here and records the pair with it -- a split that
+        dropped the pair wrote the pixels and left them hidden under ``B``, so
+        nothing on screen moved.
         """
         return api.SCOPE_SPLIT if edit.splits_the_shape(scope) else api.SCOPE_KEYFRAME
 
@@ -449,12 +456,13 @@ class CommitMixin:
                                       occluder_type, self.annotator)
         return self._after_edit(result)
 
-    def preview(self, scope: str, direction: str = edit.REVERSE) -> dict:
+    def preview(self, scope: str, direction: Optional[str] = None) -> dict:
         """How far the pending edit would reach, before it is written (spec 4.3).
 
         ``{"steps", "verified_steps"}`` -- the frames the scope would change and
         the already-confirmed ones among them, i.e. the "影响 N 帧 / 将产生 N 个
-        冲突" strip.  Nothing is written and no pixels are touched.
+        冲突" strip.  Nothing is written and no pixels are touched.  The walk's
+        direction unless given, as :meth:`commit_edit`.
 
         A layering answer that carries new pixels writes a keyframe as well, so
         its reach is the union of both: the pair holds where both instances are
@@ -462,6 +470,7 @@ class CommitMixin:
         """
         if self.editing_instance is None:
             return {"steps": [], "verified_steps": []}
+        direction = direction or self.browsing
         pair = edit.split_zorder_scope(scope)
         if pair is not None:
             other, _above = pair
@@ -482,19 +491,24 @@ class CommitMixin:
         return edit.preview(self.db, self.truth, self.current(), self.editing_instance,
                             scope, direction, **({"geom_type": geom} if geom else {}))
 
-    def retrace_reach(self, instance: Optional[str] = None) -> Optional[dict]:
-        """How many confirmed frames re-tracing this shape here would put in conflict (U7).
+    def retrace_reach(self, instance: Optional[str] = None,
+                      scope: Optional[str] = None) -> Optional[dict]:
+        """How many confirmed frames committing this shape here would put in conflict (U7).
 
         ``{"steps", "frozen"}`` for the instance being edited (or ``instance``)
         when a keyframe of it applies at the open frame: the frames ``Enter``
-        would rewrite -- :meth:`preview` with keyframe scope, the same chain
-        rule -- and the frozen ones among them (the frame confirmed, or a row
-        of it signed).  ``None`` for a shape drawn here for the first time:
-        that adds a part, it re-traces nothing.
+        would rewrite -- :meth:`preview` with :meth:`enter_scope`, or with
+        ``scope`` (``keyframe`` is ``Ctrl+Enter``'s 改全部) -- and the frozen
+        ones among them (the frame confirmed, or a row of it signed).  ``None``
+        for a shape drawn here for the first time: that adds a part, it
+        re-traces nothing.
 
         On D13/scan a re-trace of four confirmed clips at frame 41 put frames
         17-41 in conflict and nothing said so before the commit; the task card
-        says it now, from this.  A few state lookups and one query.
+        says it now, from this.  Since task U16 ``Enter`` on a frame the
+        version is carried to starts a new one here, so its reach stops at this
+        frame and the frames behind are not in it.  A few state lookups and
+        one query.
         """
         target = instance or self.editing_instance
         if target is None or not self.is_open or not self.keyframe_applies(target):
@@ -502,9 +516,38 @@ class CommitMixin:
         key = self.current()
         geom = GEOM_BOX if edit.placement_of(self.db, self.tax, key, str(target)) == ON_BENCH \
             else edit.GEOM_MASK
-        reach = edit.preview(self.db, self.truth, key, str(target), api.SCOPE_KEYFRAME,
+        scope = scope or self.enter_scope(str(target))
+        reach = edit.preview(self.db, self.truth, key, str(target), scope, self.browsing,
                              geom_type=geom)
         return {"steps": list(reach["steps"]), "frozen": list(reach["verified_steps"])}
+
+    def enter_scope(self, instance: Optional[str] = None,
+                    direction: Optional[str] = None) -> str:
+        """The pixel scope ``Enter`` writes for ``instance`` here (task U16).
+
+        :data:`~tda.ui.session_api.SCOPE_SPLIT` -- a new version from this
+        frame on in the walk -- when the version in force is carried from a
+        frame the walk has passed (:func:`tda.ui.session_edit.carried_here`):
+        those frames, confirmed or not, keep it untouched.
+        :data:`~tda.ui.session_api.SCOPE_KEYFRAME` where it starts, for a part
+        with no shape here yet, and on a components-gallery shot (a shot is a
+        segment of its own: it has no "from here on", and refuses the split).
+        ``Ctrl+Enter`` (改全部) is the keyframe scope wherever it is pressed.
+
+        ``instance`` defaults to the part being drawn, ``direction`` to the
+        walk (:attr:`browsing`). Writes nothing.
+        """
+        target = instance or self.editing_instance
+        if not target or not self.is_open or getattr(self, "gallery", False):
+            return api.SCOPE_KEYFRAME
+        key = self.current()
+        if key.step is None:
+            return api.SCOPE_KEYFRAME
+        geom = GEOM_BOX if edit.placement_of(self.db, self.tax, key, str(target)) == ON_BENCH \
+            else edit.GEOM_MASK
+        carried = edit.carried_here(self.db, self.truth, key, str(target),
+                                    direction or self.browsing, geom_type=geom)
+        return api.SCOPE_SPLIT if carried else api.SCOPE_KEYFRAME
 
     def set_visibility(self, instance: str, vis: str) -> None:
         """Override one instance's visibility label on this frame (spec 6.2)."""

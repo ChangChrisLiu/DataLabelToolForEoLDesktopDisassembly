@@ -33,17 +33,28 @@ A_ZORDER_ABOVE = "zorder:above:"
 A_ZORDER_BELOW = "zorder:below:"
 SPLIT_PREFIX = "split+"
 
-#: ``Ctrl+K`` on the frame where the shape in force already starts: the session
-#: re-traces that version instead (``_cannot_split``), and said nothing -- the
-#: D13 annotator believed they had split (task U6).
-NO_SPLIT = "这一帧就是这版形状的起点：Ctrl+K 等于重画这一版，没有拆分"
+#: ``Enter`` on a layer nobody has touched.
+NOTHING_TO_COMMIT = "没有可提交的修改 / nothing to commit on this layer"
+#: ``Ctrl+Enter`` (改全部) on the frame where the version in force starts: it is
+#: what ``Enter`` writes there, and it says so (task U16).
+ALL_IS_ENTER = "这一帧就是这版形状的起点：改全部和 Enter 一样，重画的就是这一版"
 #: A shape committed on a components-gallery part marked 「看不见」 (task U10).
 ABSENT_CLEARED = ("画好了；它在这张里，「看不见」已取消（Ctrl+Z 一起撤回）/ drawn: it is in "
                   "this shot, so 'not in this shot' was taken back")
-#: ``Ctrl+K`` on an open ✂ row with the layer untouched (U8 round 2b): the
+#: ``Enter`` on an open ✂ row with the layer untouched (U8 round 2b): the
 #: version boundary is cut here and the shape on this side stays as it is.
 SPLIT_UNCHANGED = ("已在这帧切出新版本（形状不变）：另一侧的帧现在单独一版，到那边用 Enter "
                    "改它，只影响那一段")
+#: ``Enter`` (or ``L``) while 改全部 asks: neither is the answer (task U16).
+ALL_ASKED = ("还没改：再按 Ctrl+Enter（或点「Ctrl+Enter 确定改全部」）确定，Esc 取消 / "
+             "press Ctrl+Enter again to write it everywhere, Esc to cancel")
+ALL_CANCELLED = "没有改全部 / nothing was written"
+#: The scope bar's 改全部 button, before and while the question is asked.
+ALL_BUTTON = "Ctrl+Enter 改全部"
+ALL_BUTTON_CONFIRM = "Ctrl+Enter 确定改全部"
+#: The key of each commit action, as the area warning names it (task U16).
+WARNING_KEYS = {"commit": "Enter", "commit_all": "Ctrl+Enter",
+                "commit_override": "Alt+Enter"}
 #: ``L`` with no layering suggestion on the bar.
 NO_LAYERING = ("L 只用来回答画布下方的层级建议；现在没有层级建议 / L answers a "
                "layering suggestion, and none is open")
@@ -86,6 +97,14 @@ class CommitMixin:
         gesture in the annotator's hand, so ``Enter`` closes it -- and with
         fewer than three vertices does nothing but say so -- before it can mean
         anything to the layer underneath.
+
+        **What the commit means** (task U16): *from this frame on* in the walk
+        -- :meth:`_enter_scope`, the session's judgement.  The annotator walks
+        backwards and confirms as they go; a shape changed on frame k is the
+        shape from k on, and the frames behind them stay as they are.  Where
+        the version in force starts it is re-traced, as before.  Editing the
+        version everywhere it applies, confirmed frames behind included, is
+        ``Ctrl+Enter`` (:meth:`act_commit_all`).  ``Ctrl+K`` is this slot too.
         """
         if self.finish_shape():
             return
@@ -94,31 +113,62 @@ class CommitMixin:
         if self.roi_editing:
             self.accept_roi()
             return
+        if self._all_asked:
+            # the 改全部 question is answered by Ctrl+Enter (task U16)
+            self.report(ALL_ASKED)
+            return
         if self._pending_scope is not None:
             if self._layering_asked:
                 # The question on the bar is answered by L; Enter is the key
                 # pressed a hundred times a day, and it changes no layering.
                 self.report(LAYERING_ASKED)
                 return
-            # Task U6: Enter on a layering suggestion commits the shape only.
-            # The layering itself is L's, asked and confirmed.
-            self._commit(api.SCOPE_KEYFRAME if is_layering(self._pending_scope)
+            # Task U6: Enter on a layering suggestion commits the shape only,
+            # from this frame on (U16). The layering itself is L's, asked and
+            # confirmed.
+            self._commit(self._enter_scope() if is_layering(self._pending_scope)
                          else self._pending_scope)
             return
-        if getattr(self.session, "editing_instance", None) is not None \
-                and self.session.editing_mask() is not None:
+        instance = getattr(self.session, "editing_instance", None)
+        if instance is not None and self.session.editing_mask() is not None:
             if not self.has_uncommitted_edit():
+                if self._open_split_here(instance):
+                    # An open ✂ row whose shape is already right on this side:
+                    # the version boundary is the edit (U8 round 2b, Ctrl+K's
+                    # until U16). A cut copy here is refused by the session.
+                    self._commit(api.SCOPE_SPLIT)
+                    return
                 # Enter on a layer nobody has touched used to report
                 # "committed (keyframe): False", write nothing, and clear the
                 # layer -- so the annotator lost the instance they had just
                 # loaded and had to double-click it again.
-                self.report("没有可提交的修改 / nothing to commit on this layer")
+                self.report(NOTHING_TO_COMMIT)
                 return
             scope = self.session.suggest_scope()
             if scope == api.SCOPE_KEYFRAME:
-                self._commit(scope)
+                self._commit(self._enter_scope())
             else:
                 self._offer_scope(scope)
+
+    def _enter_scope(self) -> str:
+        """The pixel scope ``Enter`` writes here: from this frame on (task U16).
+
+        ``split`` where the version in force is carried from frames the walk
+        has passed, ``keyframe`` where it starts -- the session's answer
+        (:func:`tda.ui.app_compat.enter_scope`).
+        """
+        return compat.enter_scope(self.session)
+
+    def _open_split_here(self, instance: str) -> bool:
+        """Is ``instance``'s row on this frame's card an open ✂? The session's answer.
+
+        Asked only for an untouched layer, where it decides whether ``Enter``
+        writes at all; the panel's copy of the card is the fallback.
+        """
+        ask = getattr(self.session, "open_split_here", None)
+        if callable(ask):
+            return bool(ask(instance))
+        return self._open_split_editing()
 
     @S.guard
     def commit_with_suggested_scope(self) -> None:
@@ -128,33 +178,113 @@ class CommitMixin:
         written -- and a layering suggestion is written as what ``Enter`` would
         write, the shape only (task U6): a layering change needs its own key,
         and a dialog about closing the window is not where anybody gives it.
+        With ``Enter``'s scope, too: from this frame on (task U16).
         """
         if getattr(self.session, "editing_instance", None) is None:
             return
         self._drop_scope_bar()
         scope = self.session.suggest_scope()
-        self._commit(api.SCOPE_KEYFRAME if is_layering(scope) else scope)
+        self._commit(self._enter_scope()
+                     if scope == api.SCOPE_KEYFRAME or is_layering(scope) else scope)
 
     @S.guard
     def act_commit_override(self) -> None:
         """``Alt+Enter``: this frame only."""
         if self.refuse_under_shape() or self.refuse_under_ghost():
             return
-        self._commit(api.SCOPE_FRAME_OVERRIDE)
+        self._commit(api.SCOPE_FRAME_OVERRIDE, action="commit_override")
 
     @S.guard
-    def act_commit_split(self) -> None:
-        """``Ctrl+K``: a new shape version from this step on -- the shape only.
+    def act_commit_all(self) -> None:
+        """``Ctrl+Enter``: 改全部 -- the version in force, everywhere it applies.
 
-        On an open layering suggestion too (task U6): the layering is ``L``'s,
-        asked and confirmed, and no other key changes it.  The bar says that
-        the pixels painted into the other part stay under it.  On the frame
-        where the version in force already starts there is nothing to split
-        off: the session re-traces that version, and :meth:`_commit` says so.
+        Task U16. ``Enter`` is "from this frame on" since the user's ruling;
+        this is the rare other answer, the re-trace that reaches every frame
+        of the version -- the confirmed ones the walk has passed included, and
+        those come back to be checked and may conflict. So, modelled on ``L``
+        (:meth:`act_commit_layering`): when that reach holds a confirmed frame
+        the first press only *asks* on the bar -- how many frames, which
+        confirmed ones -- and a second ``Ctrl+Enter`` (or the bar's button)
+        writes; ``Esc`` takes the question back; ``Enter`` and ``L`` say which
+        key answers. With no confirmed frame in reach it writes at once.
+
+        Where the version starts there is nothing behind to reach: it is what
+        ``Enter`` writes, written, and said. On an open ✂ row the session
+        refuses it with its own sentence (it would rewrite the other state's
+        frames), so it is not asked first. The shape only on a layering
+        suggestion, like every key but ``L`` (task U6).
         """
         if self.refuse_under_shape() or self.refuse_under_ghost():
             return
-        self._commit(api.SCOPE_SPLIT)
+        if self._layering_asked:
+            self.report(LAYERING_ASKED)
+            return
+        if self._all_asked:
+            self._commit(api.SCOPE_KEYFRAME, action="commit_all")
+            return
+        if getattr(self.session, "editing_instance", None) is None \
+                or self.session.editing_mask() is None or not self.has_uncommitted_edit():
+            self.report(NOTHING_TO_COMMIT)
+            return
+        if self._enter_scope() == api.SCOPE_KEYFRAME:
+            self._commit(api.SCOPE_KEYFRAME, action="commit_all", note=ALL_IS_ENTER)
+            return
+        counts = compat.preview(self.session, api.SCOPE_KEYFRAME) or {}
+        if not counts.get("verified_steps") or self._open_split_editing():
+            self._commit(api.SCOPE_KEYFRAME, action="commit_all")
+            return
+        self._all_asked = True
+        self._show_scope_buttons(question=True)
+        self.scope_bar.show_text(self._all_question(counts))
+        self.logger.info("commit_all asked: %s", counts.get("verified_steps"))
+        self.report("改全部先看范围：画布下方提示条写着影响哪些帧，再按 Ctrl+Enter 确定，"
+                    "Esc 取消 / check the reach on the bar, then Ctrl+Enter again")
+        self.refresh_guidance()
+
+    def _all_question(self, counts: dict) -> str:
+        """What ``Ctrl+Enter`` asks before it writes (task U16).
+
+        :meth:`~tda.ui.session_commits.CommitMixin.preview` of the keyframe
+        scope -- the frames the re-trace writes, after the cuts at state
+        boundaries -- and the confirmed ones among them.
+        """
+        steps = counts.get("steps") or []
+        verified = counts.get("verified_steps") or []
+        where = (f"第 {steps_text(steps)} 帧（共 {len(steps)} 帧）" if steps
+                 else "（算不出影响哪些帧）")
+        return (f"改全部会改这一版形状用到的每一帧：{where}，其中已确认的第 "
+                f"{steps_text(verified)} 帧会被重新检查（可能产生冲突）。确定？再按 "
+                f"Ctrl+Enter（或点「{ALL_BUTTON_CONFIRM}」）确定，Esc 取消")
+
+    def cancel_all_question(self) -> bool:
+        """``Esc`` on the 改全部 question: nothing written, the layer stays (U16)."""
+        if not self._all_asked:
+            return False
+        self._all_asked = False
+        self._show_scope_buttons(question=False)
+        if self._pending_scope is not None:
+            self.scope_bar.show_text(self._suggestion_text(self._pending_scope))
+        else:
+            self.scope_bar.hide()
+        self.report(ALL_CANCELLED)
+        self.refresh_guidance()
+        return True
+
+    def all_asked(self) -> bool:
+        """Is the bar asking "确定？" about 改全部 right now?"""
+        return bool(self._all_asked)
+
+    def _show_scope_buttons(self, question: bool) -> None:
+        """The bar's buttons for a suggestion, or only the 改全部 confirmation.
+
+        While 改全部 asks, the one button is the answer; the suggestion's
+        Enter / L / Alt+Enter are not, and on a frame with no suggestion they
+        would offer things nobody was asked about.
+        """
+        self.scope_all_button.setText(ALL_BUTTON_CONFIRM if question else ALL_BUTTON)
+        for button in (self.scope_enter_button, self.scope_layer_button,
+                       self.scope_override_button):
+            button.setVisible(not question)
 
     @S.guard
     def act_commit_layering(self) -> None:
@@ -170,6 +300,9 @@ class CommitMixin:
         answers.
         """
         if self.refuse_under_shape() or self.refuse_under_ghost():
+            return
+        if self._all_asked:
+            self.report(ALL_ASKED)      # the bar is asking about 改全部 (U16)
             return
         scope = self._pending_scope
         if not is_layering(scope):
@@ -209,14 +342,18 @@ class CommitMixin:
         """No suggestion, no question, no bar."""
         self._pending_scope = None
         self._layering_asked = False
+        self._all_asked = False
         self.scope_layer_button.setText(LAYER_BUTTON)
+        self._show_scope_buttons(question=False)
         self.scope_bar.hide()
 
     def _offer_scope(self, scope: str) -> None:
         """Show the suggestion and its alternatives without blocking the canvas."""
         self._pending_scope = scope
         self._layering_asked = False
+        self._all_asked = False
         self.scope_layer_button.setText(LAYER_BUTTON)
+        self._show_scope_buttons(question=False)
         self.scope_bar.show_text(self._suggestion_text(scope))
         self.logger.info("suggested scope: %s", scope)
         self.report("看画布下方提示条：Enter 只改形状，L 改层级 / read the bar: Enter "
@@ -239,12 +376,13 @@ class CommitMixin:
         接受": the D13 annotator pressed Enter and the chassis went over a
         screw on forty frames.  ``Enter`` now writes the shape only and says
         what that leaves on screen; ``L`` is the layering, and says what it
-        hides.
+        hides.  ``Enter``'s shape is from this frame on; ``Ctrl+Enter`` is the
+        other shape-only answer, 改全部 (task U16).
         """
         if not is_layering(scope):
             return f"建议范围 {scope}"
         me, other, above = self._pair_labels(scope)
-        tail = "。Alt+Enter 只改这一帧；Ctrl+K 从这帧起新版本（只改形状）；Esc 回去改"
+        tail = "。Alt+Enter 只改这一帧；Ctrl+Enter 改全部（只改形状）；Esc 回去改"
         if above:
             return (f"你画到了「{other}」占着的像素（它盖在「{me}」上面，画进去的这块现在"
                     f"看不见）。Enter = 只改形状，「{other}」照样盖着；L = 改层级：把「{me}」"
@@ -274,7 +412,7 @@ class CommitMixin:
         return (f"层级改动作用于整个位姿段：{where}，{frozen}。把「{upper}」放到「{lower}」"
                 f"上面，确定？再按 L（或点「{LAYER_BUTTON_CONFIRM}」）确定，Esc 取消")
 
-    def _commit(self, scope: str) -> None:
+    def _commit(self, scope: str, *, action: str = "commit", note: str = "") -> None:
         """Write the edit, or show why the session will not take it.
 
         A refusal -- "this part is on the bench, use the bench box" -- is an
@@ -282,12 +420,16 @@ class CommitMixin:
         annotator can press ``R`` and draw the box instead, and it does not go
         through the exception path, which would log a traceback for something
         the annotator simply has to read.
+
+        ``action`` is the key's action that asked (an area warning names the
+        key to press again); ``note`` is said in place of the plain
+        "committed" line when nothing more particular happened (task U16).
         """
         instance = getattr(self.session, "editing_instance", None)
         if instance is None:
             self.report("nothing is being edited")
             return
-        if not self._area_is_plausible(instance, scope):
+        if not self._area_is_plausible(instance, scope, action):
             return
         key = self.session.current()
         mask = self.session.editing_mask()
@@ -329,16 +471,8 @@ class CommitMixin:
                              result.get("cut_below"), result.get("cut_top"))
             self.report(cut, hold_ms=6000)
             return
-        if result.get("no_split"):
-            # Ctrl+K where the version in force starts: it re-traced that one
-            # (U6 addendum, item 2) -- and saying nothing let the annotator
-            # believe the frames before this one had their own version now.
-            self.logger.info("split of %s at step %s re-traced the version that "
-                             "starts there", instance, key.step)
-            self.report(NO_SPLIT, hold_ms=6000)
-            return
         if result.get("unchanged_split"):
-            # Ctrl+K on an open ✂ row, layer untouched: only the boundary (U8 2b)
+            # Enter on an open ✂ row, layer untouched: only the boundary (U8 2b)
             self.logger.info("split of %s at step %s with the shape unchanged",
                              instance, key.step)
             self.report(SPLIT_UNCHANGED, hold_ms=6000)
@@ -346,6 +480,9 @@ class CommitMixin:
         if result.get("cleared_absent"):
             # a shape drawn on a part marked 「看不见」 on a gallery shot (U10)
             self.report(ABSENT_CLEARED, hold_ms=6000)
+            return
+        if note:
+            self.report(note, hold_ms=6000)
             return
         self.report(f"committed ({scope}): {result.get('changed', '')}".strip())
 
@@ -402,6 +539,8 @@ class CommitMixin:
             return
         if self.cancel_layering_question():
             return          # the question goes; the suggestion and the layer stay (U6)
+        if self.cancel_all_question():
+            return          # ... and so does 改全部's (U16)
         if self._pending_warning is not None:
             # The warning is the thing on screen: Esc answers it by taking the
             # annotator back to the layer, not by throwing the layer away.
@@ -476,7 +615,8 @@ class CommitMixin:
         """What the area warning bar is currently saying."""
         return self.warn_bar.label.text()
 
-    def _area_is_plausible(self, instance: str, scope: str) -> bool:
+    def _area_is_plausible(self, instance: str, scope: str,
+                           action: str = "commit") -> bool:
         """``False`` when a warning was raised and is waiting for a second Enter.
 
         Never blocks: the second press writes the mask exactly as it is and the
@@ -484,6 +624,10 @@ class CommitMixin:
         part looks like.  The rehearsal committed 1,502,386 px as a ``screw``
         and 40 masks under 50 px with nothing said either way, which is the
         only outcome this rules out.
+
+        ``action`` -- the key that asked -- is kept with the warning, for the
+        guide to name the key to press again: since task U16 one scope can be
+        ``Enter``'s or ``Ctrl+Enter``'s.
         """
         pending = self._pending_warning
         if pending is not None and pending[0] == scope:
@@ -506,12 +650,27 @@ class CommitMixin:
             self.warn_bar.hide()
             return True
         self._pending_warning = (scope, warning,
-                                 self._warning_facts(mask, cls, warning))
-        self.warn_bar.show_text(f"{warning}  —— Enter 仍然提交 / Esc 回去改")
+                                 self._warning_facts(mask, cls, warning), action)
+        again = WARNING_KEYS.get(action, "Enter")
+        self.warn_commit_button.setText(f"{again} 仍然提交")
+        self.warn_bar.show_text(f"{warning}  —— {again} 仍然提交 / Esc 回去改")
         self.report(warning)
         self.logger.info("area_warning instance=%s scope=%s: %s",
                          instance, scope, warning)
         return False
+
+    def _answer_warning(self) -> None:
+        """The warning bar's 「仍然提交」: the key that raised the warning, again.
+
+        Since task U16 one scope can be ``Enter``'s or ``Ctrl+Enter``'s, and
+        ``Enter`` after a ``Ctrl+Enter`` warning means a different scope -- a
+        new question, not the answer -- so the button presses the key that asked.
+        """
+        pending = self._pending_warning
+        action = str(pending[3]) if pending is not None and len(pending) > 3 else "commit"
+        slot = {"commit_all": self.act_commit_all,
+                "commit_override": self.act_commit_override}.get(action, self.act_commit)
+        slot()
 
     def _warning_facts(self, mask, cls: str, warning: str) -> dict:
         """What an override of this warning should say in the op log.

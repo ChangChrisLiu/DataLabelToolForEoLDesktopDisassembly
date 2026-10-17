@@ -9,8 +9,10 @@ one is what it does on any other.  Three things are its own and live here:
   ``missing_shape`` (:func:`tda.core.compiler.marked_absent`).  ``I`` or the
   card row's right-click menu set it on the card's part; again takes it back.
 * **what the gallery refuses**: the sequence's keys that have nothing to act
-  on here (``T``, ``Ctrl+K``, the difference map, ``Tab``, the bench box, the
-  ROI, a pose break), each with its reason (:mod:`tda.ui.gallery`).
+  on here (``T``, ``Ctrl+Enter``, the difference map, ``Tab``, the bench box,
+  the ROI, a pose break), each with its reason (:mod:`tda.ui.gallery`).
+  ``Enter`` -- and ``Ctrl+K``, its alias since task U16 -- is a plain commit:
+  a shot is a segment of its own, with no frames behind it to keep.
 * **the title**: 「零件合照 OAK1 第 k/N 张」 in the window's title bar.
 """
 from __future__ import annotations

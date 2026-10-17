@@ -55,7 +55,10 @@ GALLERY_REFUSALS: dict[str, str] = {
     "confirm_cut_copy": ("零件合照没有切开的形状副本：每张是独立的一段，"
                          "画好就 Enter"),            # Ctrl+Shift+K (U11 round 2)
     "correct_verb": NO_VERB,
+    # the session's refusal of an explicit split; Enter on a shot is a plain
+    # commit, so no key reaches it since task U16
     "commit_split": "零件合照每张是独立的，没有「从这帧起新版本」：用 Enter 提交",
+    "commit_all": "零件合照每张是独立的，没有「改全部」：用 Enter 提交",   # Ctrl+Enter (U16)
     "toggle_heat": "零件合照没有差异图：每张照片之间零件被重新摆过",
     "cycle_prompt_box": "零件合照没有差异图给的提示框：用 S 点选或 X 框选",
     "flash_compare": "零件合照没有可对照的上一帧：每张照片之间零件被重新摆过",

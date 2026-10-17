@@ -109,6 +109,7 @@ __all__ = [
     "apply_occluder",
     "apply_pair_override",
     "apply_zorder",
+    "carried_here",
     "commit_box",
     "commit_edit",
     "commit_occluder",
@@ -181,13 +182,17 @@ def commit_edit(db: Db, truth: TruthService, key: FrameKey, instance: str,
         yet the shape is created with the default anchor of
         :func:`~tda.ui.session_ops.default_anchor` and the instance is appended
         to the layer order, i.e. on top of everything but the floor layers
-        (spec 4.2, :func:`_append_to_zorder`).
+        (spec 4.2, :func:`_append_to_zorder`).  The window writes it for
+        ``Ctrl+Enter`` (改全部), and for ``Enter`` where the version starts
+        (task U16).
     ``split``
         A new version of the shape from this step on, in the browsing direction
         (spec 3.3): annotating in reverse the new keyframe is anchored at the
         current step, so it covers this frame and every earlier one while the
         old keyframe keeps the frames after it.  Going forward the old keyframe
-        is pulled back to ``k-1`` and the new one inherits its anchor.
+        is pulled back to ``k-1`` and the new one inherits its anchor.  What
+        ``Enter`` writes where the version in force is carried from frames the
+        walk has passed (:func:`carried_here`, task U16).
     ``frame_override``
         Only this frame: the edited pixels, minus the frame's occluders, become
         the instance's visible mask here and nothing else changes.
@@ -411,13 +416,15 @@ def plan_cuts(db: Db, tax, key: FrameKey, instance: str, chain: list[ShapeKeyfra
     on both sides):
 
     * ``below`` -- the highest such frame under the current one: the version in
-      force is cut there first, pixels unchanged (``Enter`` and ``Ctrl+K``);
-    * ``top`` -- ``Enter`` only, whose reach runs up to the anchor: the lowest
+      force is cut there first, pixels unchanged (either scope);
+    * ``top`` -- the re-trace only (``keyframe``: ``Ctrl+Enter``, or ``Enter``
+      where the version starts), whose reach runs up to the anchor: the lowest
       such frame above the current one. The edit is written as a version
       anchored there instead of re-tracing the one in force, so the frames of
       the next state keep their shape;
-    * ``refuse`` -- ``Enter`` on a frame that is itself an open ✂ row: the row
-      says Ctrl+K, and Enter would rewrite the other state's frames.
+    * ``refuse`` -- the re-trace on a frame that is itself an open ✂ row: it
+      would rewrite the other state's frames, and ``Enter`` there is the split
+      (task U16).
 
     Nothing is cut when no non-empty mask is in force (the part is drawn here
     for the first time, or by a box), and in the forward walk, which is for
@@ -452,8 +459,8 @@ def plan_cuts(db: Db, tax, key: FrameKey, instance: str, chain: list[ShapeKeyfra
                     state_of(db, tax, key.desktop, there, cache).get(instance))
             what = "" if held is None else f"（{state_zh(held.state)}）"
             out["refuse"] = (
-                f"这一帧是状态边界（✂）：Enter 会把第 {there}–{chosen.anchor_step} 步{what}"
-                f"的形状一起改掉。用 Ctrl+K（从这帧起新版本）")
+                f"这一帧是状态边界（✂）：改全部会把第 {there}–{chosen.anchor_step} 步{what}"
+                f"的形状一起改掉。用 Enter（从这帧起新版本）")
         else:
             out["top"] = above[0]
     return out
@@ -565,6 +572,42 @@ def preview(db: Db, truth: TruthService, key: FrameKey, instance: str, scope: st
     # frozen, not only flagged: a demoted frame's signed rows conflict too (U7)
     return {"steps": steps,
             "verified_steps": frozen_among(db, key.desktop, key.view, steps)}
+
+
+def carried_here(db: Db, truth: TruthService, key: FrameKey, instance: str,
+                 direction: str = REVERSE, geom_type: str = GEOM_MASK) -> bool:
+    """Is the version in force here also in force on a frame the walk has passed?
+
+    Task U16. The annotator walks the teardown backwards and, changing a shape
+    on frame k, means "from this frame on": the frames behind them -- already
+    looked at, often confirmed -- are to stay as they are. ``Enter`` re-traced
+    the version in force wherever it applied, and on the trial that reached
+    the confirmed frames behind and turned them red. So ``Enter`` cuts a new
+    version here (:data:`~tda.ui.session_api.SCOPE_SPLIT`) exactly when this
+    answers ``True``: the version is *carried* -- some annotatable frame behind
+    this one in ``direction`` (later steps in the reverse walk, earlier ones
+    going forward), in this pose segment, needs this part's geometry and
+    selects the same keyframe. Where the version starts -- nothing behind
+    carries it -- a split would cut off nothing, and ``Enter`` re-traces it.
+
+    ``False`` when no keyframe of this geometry applies (a part drawn here for
+    the first time takes its default anchor, which is not "from here on").
+    Writes nothing; reverse-walk answers with the version anchored here cost
+    one query.
+    """
+    cache = InputCache()
+    seg = pose_segment_of(db, key, cache)
+    placement = placement_of(db, truth.tax, key, instance, cache)
+    chain = chain_for(db, key, instance, seg, placement)
+    chosen = select_keyframe(chain, key.step)
+    if chosen is None or chosen.geom_type != geom_type:
+        return False
+    if direction == REVERSE and int(chosen.anchor_step) <= int(key.step):
+        return False        # it ends exactly here: nothing behind carries it
+    steps = chain_steps(db, truth.tax, key, instance, seg, placement, chain, chosen, cache)
+    if direction == REVERSE:
+        return any(s > key.step for s in steps)
+    return any(s < key.step for s in steps)
 
 
 def pair_steps(db: Db, tax, key: FrameKey, one: str, two: str, seg: int,

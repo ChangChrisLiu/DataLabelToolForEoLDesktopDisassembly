@@ -25,8 +25,10 @@ def test_the_quickstart_no_longer_sends_anybody_to_enter_for_a_layering_change()
     assert "`Enter`（**只改形状**）" in quick
     assert "层级改动作用于整个位姿段：第 1–40 帧，其中已确认的第 39、40 帧会被重新检查" in quick
     assert "**层级不是形状版本**：它不能按帧拆分" in quick
-    assert "Ctrl+K 等于 重画这一版，没有拆分" in quick or \
-        "Ctrl+K 等于重画这一版，没有拆分" in quick
+    # U16: the frame where the version starts is Enter's re-trace now; it was
+    # Ctrl+K's "没有拆分" (the key that splits is Enter, Ctrl+K its alias)
+    assert "`Enter` 就是重画这一版" in quick
+    assert "Ctrl+K 等于重画这一版" not in quick.replace(" ", "")
     assert "SAM 加载失败：原因（F5 重试）" in quick
     assert "SAM 没加载：用 Y 圆形 / B 画笔 / P 多边形" in quick
     assert "检测器找到的螺丝（SAM 未加载： Y 拖一下就画好）" in quick or \

@@ -192,8 +192,13 @@ def test_a_non_keyframe_suggestion_opens_the_scope_bar_instead_of_a_dialog(windo
     assert not window.scope_bar.isVisibleTo(window)
 
 
-def test_the_scope_bar_alternatives_are_frame_override_and_split(window, monkeypatch):
-    """The two keys beside ``Enter``: both write the shape only (task U6)."""
+def test_the_scope_bar_alternatives_are_frame_override_and_all(window, monkeypatch):
+    """The two keys beside ``Enter``: both write the shape only (task U6).
+
+    U16: the second one is ``Ctrl+Enter`` 改全部 (keyframe scope), where it was
+    ``Ctrl+K`` (split) -- the split is ``Enter``'s own now.  A part drawn for
+    the first time has no frames behind to ask about: it writes at once.
+    """
     session = window.session
     instance = first_task_instance(window)
     window.task_card.sigRequestEdit.emit(instance)
@@ -211,14 +216,14 @@ def test_the_scope_bar_alternatives_are_frame_override_and_split(window, monkeyp
     window.task_card.sigRequestEdit.emit(instance)
     paint(window)
     window.act_commit()
-    window.act_commit_split()
-    assert committed == [api.SCOPE_SPLIT]      # no pair: the layering is L's
+    window.act_commit_all()
+    assert committed == [api.SCOPE_KEYFRAME]   # no pair: the layering is L's
 
     committed.clear()
     window.task_card.sigRequestEdit.emit(instance)
     paint(window)
-    window.act_commit_split()          # no suggestion on the bar: a plain split
-    assert committed == [api.SCOPE_SPLIT]
+    window.act_commit_all()            # no suggestion on the bar: the plain re-trace
+    assert committed == [api.SCOPE_KEYFRAME]
 
 
 def test_a_refused_commit_keeps_the_edit_and_shows_the_reason(window, monkeypatch):
@@ -1008,19 +1013,22 @@ def test_the_scope_bar_names_every_key_it_has(window, monkeypatch):
     window.act_commit()
 
     text = window.scope_bar_text()
-    assert "Enter" in text and "L =" in text and "Alt+Enter" in text and "Ctrl+K" in text
-    assert "只改这一帧" in text and "新版本" in text
+    # U16: the fourth is Ctrl+Enter 改全部, where it was Ctrl+K 从这帧起新版本
+    assert "Enter" in text and "L =" in text and "Alt+Enter" in text and "Ctrl+Enter" in text
+    assert "只改这一帧" in text and "改全部" in text and "Ctrl+K" not in text
     buttons = [b.text() for b in window.scope_bar.findChildren(QPushButton)]
     assert "Enter 只改形状" in buttons and "L 改层级" in buttons
+    assert "Ctrl+Enter 改全部" in buttons
 
 
 @pytest.mark.parametrize("key,expected", [
+    # a part drawn here for the first time: Enter's scope is the re-trace (U16)
     ("act_commit", api.SCOPE_KEYFRAME),
-    ("act_commit_split", api.SCOPE_SPLIT),
+    ("act_commit_all", api.SCOPE_KEYFRAME),
     ("act_commit_override", api.SCOPE_FRAME_OVERRIDE),
 ])
 def test_the_three_answers_to_a_layering_suggestion(window, monkeypatch, key, expected):
-    """Enter, Ctrl+K and Alt+Enter on a layering suggestion write no layering (U6).
+    """Enter, Ctrl+Enter and Alt+Enter on a layering suggestion write no layering (U6).
 
     The layering answer is ``L``'s alone, asked and confirmed
     (:func:`test_the_layering_key_asks_with_the_reach_then_writes`).
@@ -1086,16 +1094,24 @@ def test_the_layering_key_without_a_suggestion_says_so(window):
     assert "没有层级建议" in window.status_message()
 
 
-def test_ctrl_k_where_the_version_starts_says_it_did_not_split(window, monkeypatch):
-    """U6 addendum, item 2: the session re-traced, and the window said nothing."""
+def test_ctrl_enter_where_the_version_starts_says_it_is_enter(window, monkeypatch):
+    """U6 addendum, item 2, after U16: the re-trace here is Enter's, and it says so.
+
+    Before U16 this was ``Ctrl+K`` re-tracing where the version starts while the
+    window said nothing.  ``Enter`` decides that itself now, so the key that can
+    surprise is 改全部, which writes exactly what ``Enter`` writes there.
+    """
+    from tda.ui.app_commit import ALL_IS_ENTER
+
     session = window.session
     window.task_card.sigRequestEdit.emit(first_task_instance(window))
     paint(window)
-    monkeypatch.setattr(session, "commit_edit", lambda scope, *a, **k: {
-        "scope": api.SCOPE_KEYFRAME, "changed": True, "no_split": True})
-    window.act_commit_split()
-    assert ("这一帧就是这版形状的起点：Ctrl+K 等于重画这一版，没有拆分"
-            in window.status_message())
+    committed: list[str] = []
+    monkeypatch.setattr(session, "commit_edit", lambda scope, *a, **k: committed.append(
+        scope) or {"scope": api.SCOPE_KEYFRAME, "changed": True})
+    window.act_commit_all()
+    assert committed == [api.SCOPE_KEYFRAME]
+    assert window.status_message() == ALL_IS_ENTER
 
 
 # --------------------------------------------------------------------------- #

@@ -1,7 +1,7 @@
 """A cut keyframe follows its state boundary (task U11).
 
-U8 round 3 made a shape commit stop at an open state boundary: before ``Enter``
-or ``Ctrl+K`` writes, the version in force is cut at the highest open ✂ frame
+U8 round 3 made a shape commit stop at an open state boundary: before a commit
+writes (``Enter``, ``Ctrl+Enter``), the version in force is cut at the highest open ✂ frame
 below the current one, with a copy of the *pre-edit* shape -- the **cut
 keyframe** -- so the edit reaches the current state run only.  The copy keeps
 the frames of the other state, below the run.

@@ -23,7 +23,7 @@ one layer per press (``act_commit`` / ``act_clear_edit`` in
 
 1. a ``P`` polygon or ``Y`` circle half drawn (task U5a) -- ``Enter`` closes the
    polygon (under three vertices it only says so), ``Esc`` drops the shape and
-   nothing else; ``Alt+Enter``, ``Ctrl+K`` and ``Space`` wait for it;
+   nothing else; ``Alt+Enter``, ``Ctrl+Enter`` and ``Space`` wait for it;
 2. the Label Studio draft ghost;
 3. the area warning (``Esc`` goes back to the mask, a second ``Enter`` writes);
 4. the ROI rectangle;
@@ -236,6 +236,9 @@ class EditMixin:
         #: ``L`` was pressed once on a layering suggestion and the bar is
         #: asking whether the reach it shows is meant (task U6).
         self._layering_asked = False
+        #: ``Ctrl+Enter`` (改全部) was pressed once and the bar is asking about
+        #: the confirmed frames it reaches (task U16).
+        self._all_asked = False
         self._restore_offer: Optional[dict] = None
         #: The instance an ``add_bench_box`` card item armed the box tool for.
         self.bench_instance: Optional[str] = None
@@ -248,13 +251,16 @@ class EditMixin:
         self._override_facts: Optional[dict] = None
         self.priors = app_priors.load_priors()
         self.warn_bar = Bar(self)
-        self.warn_bar.add_button("Enter 仍然提交", self.act_commit)
+        # the key that raised the warning, named and pressed again (U16)
+        self.warn_commit_button = self.warn_bar.add_button("Enter 仍然提交",
+                                                           self._answer_warning)
         self.warn_bar.add_button("Esc 回去改", self.act_clear_edit)
 
         self.scope_bar = Bar(self)
         # Task U6: Enter writes the shape only; the layering is L's, and L asks
         # before it writes (the button's text says which of the two it is).
-        self.scope_bar.add_button("Enter 只改形状", self.act_commit)
+        self.scope_enter_button = self.scope_bar.add_button("Enter 只改形状",
+                                                            self.act_commit)
         self.scope_layer_button = self.scope_bar.add_button(
             "L 改层级", self.act_commit_layering)
         # Its key's path, guard included, and greyed with the palette button's
@@ -262,7 +268,10 @@ class EditMixin:
         # refusal and say it as an error (U2e).
         self.scope_override_button = self.scope_bar.add_button(
             "Alt+Enter 仅本帧", self._scope_bar_override)
-        self.scope_bar.add_button("Ctrl+K 从此拆分", self.act_commit_split)
+        # Task U16: Enter is from this frame on; 改全部 is Ctrl+Enter, and it
+        # asks on this bar before it reaches confirmed frames.
+        self.scope_all_button = self.scope_bar.add_button(
+            "Ctrl+Enter 改全部", lambda: self.run_palette_action("commit_all"))
         self.restore_bar = Bar(self)
         self.restore_bar.add_button("恢复 Restore", self.restore_pending)
         self.restore_bar.add_button("丢弃 Discard", self.discard_pending)
@@ -759,7 +768,7 @@ class EditMixin:
         return False
 
     def refuse_under_shape(self) -> bool:
-        """``Alt+Enter``, ``Ctrl+K`` and ``Space`` wait for a half-drawn shape.
+        """``Alt+Enter``, ``Ctrl+Enter`` and ``Space`` wait for a half-drawn shape.
 
         Each of them would end the edit the shape is being drawn for, and the
         shape with it, unfilled -- the polygon's clicks gone with no word.  The

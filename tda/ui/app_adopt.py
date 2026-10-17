@@ -12,7 +12,7 @@ them, and it is deliberately the same conversation the ROI rectangle has:
   that ignored the pointer put the right one somewhere in the middle of a list
   nobody walks to the end of.
 * while a ghost is up it **owns every commit key** -- ``Enter``, ``Alt+Enter``,
-  ``Ctrl+K``, ``Space`` and the task card's buttons -- through the layered
+  ``Ctrl+Enter``, ``Space`` and the task card's buttons -- through the layered
   chain in :mod:`tda.ui.app_commit` that already gives ``Enter``/``Esc`` to the
   ROI rectangle and the area warning.  ``Enter`` copies the ghost into the
   editing layer as one undoable stroke (the sidecar follows, as after any
@@ -357,7 +357,7 @@ class AdoptMixin:
     def refuse_under_ghost(self) -> bool:
         """``True`` (and a line) when a commit key is not the ghost's ``Enter``.
 
-        Every other way of saying "write it" -- ``Alt+Enter``, ``Ctrl+K``,
+        Every other way of saying "write it" -- ``Alt+Enter``, ``Ctrl+Enter``,
         ``Space``, the task card's four buttons -- would commit the layer
         *under* the preview, which is not what the annotator is looking at.
 

@@ -384,12 +384,12 @@ def _untouched(win: MainWindow) -> None:
 @pytest.mark.parametrize("setup,missing,name", [
     (_no_image, (LAST_STEP,), "commit"),
     (_no_image, (LAST_STEP,), "commit_override"),
-    (_no_image, (LAST_STEP,), "commit_split"),
+    (_no_image, (LAST_STEP,), "commit_all"),        # commit_split's slot until U16
     (_no_image, (LAST_STEP,), "confirm"),
     (_no_image, (LAST_STEP,), "tool_brush"),
     (_no_image, (LAST_STEP,), "toggle_heat"),
     (_untouched, (), "commit_override"),
-    (_untouched, (), "commit_split"),
+    (_untouched, (), "commit_all"),
 ])
 def test_a_key_refuses_with_the_greyed_buttons_reason(qapp, tmp_path, setup, missing, name):
     win = open_window(tmp_path, missing=missing)
