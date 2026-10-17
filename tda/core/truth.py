@@ -58,7 +58,14 @@ from tda.core import masks
 from tda.core.cache import configured_cache_dir
 from tda.core.compiler import CompiledFrame, compile_frame, select_keyframe
 from tda.core.db import RESOLUTIONS, Db
-from tda.core.model import FrameKey, FrameOverride, ShapeKeyframe, is_component_view
+from tda.core.context import context_reach
+from tda.core.model import (
+    CONTEXT_PLACEMENT,
+    FrameKey,
+    FrameOverride,
+    ShapeKeyframe,
+    is_component_view,
+)
 from tda.core.states import needs_geom
 from tda.core.taxonomy import Taxonomy
 from tda.core.truth_fresh import FreshMixin, digest_of
@@ -623,6 +630,10 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
             for kf in self.db.keyframes(desktop, view, instance)
             if kf.pose_segment == keyframe.pose_segment and kf.placement == keyframe.placement
         ]
+        if keyframe.placement == CONTEXT_PLACEMENT:
+            # a 框外零件 (task U18) is wherever one of its shapes applies
+            return sorted(context_reach(self.db, desktop, view, keyframe.pose_segment,
+                                        chain, keyframe, cache))
         out: list[int] = []
         # shots, not steps, on a components-gallery view (task U10)
         for step in view_steps(self.db, desktop, view):

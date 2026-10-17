@@ -17,6 +17,7 @@ from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QApplication, QGraphicsPixmapItem
 
 from tda.core.diffmap import DiffBlob, explain_blobs
+from tda.core.model import is_context_key
 from tda.ui import app_compat as compat
 from tda.ui import app_support as S
 from tda.ui import prompt_gate as PG
@@ -38,6 +39,7 @@ from tda.ui.app_detect import DetCandidate, DetectMixin, detector_asked
 from tda.ui.guide import DRAW_NO_SAM as G_DRAW_NO_SAM
 from tda.ui.app_roi_worker import RoiProposer
 from tda.ui.class_names import class_zh
+from tda.ui.context_text import NO_PROMPT_BOX as NO_PROMPT_BOX_CONTEXT
 
 __all__ = ["ASSIST_CONFIRM_WAIT", "BOX_REFUSED", "DET_CHIP", "DET_CHIP_NO_SAM",
            "DET_CHIP_RANK", "EDITING_NO_BOX", "NO_ALTERNATE", "PROMPT_ARMED",
@@ -418,9 +420,21 @@ class AssistMixin(DetectMixin):
         on every path.  Setting a box touches neither the token nor the
         candidates, so this cancels nothing.
         """
+        box = self._tool_box(self._prompt_box)
         for tool in (self.sam_point, self.sam_box):
-            if tool.prompt_box != self._prompt_box:
-                tool.set_prompt_box(self._prompt_box)
+            if tool.prompt_box != box:
+                tool.set_prompt_box(box)
+
+    def _tool_box(self, box: Optional[tuple]) -> Optional[tuple]:
+        """The armed box as the SAM tools get it: none while a 框外零件 is drawn.
+
+        The box is the difference map's or the detector's guess about a part
+        of the machine, inside the ROI; a context object (task U18) is outside
+        it, and a click on it must not be refused for landing outside a box
+        that was never about it. The canvas still shows the box.
+        """
+        instance = getattr(self.sam_point, "instance", None)
+        return None if is_context_key(instance) else box
 
     def clear_prompt_box(self) -> None:
         """Forget the box prompt; the next frame's diff map proposes its own.
@@ -545,7 +559,7 @@ class AssistMixin(DetectMixin):
         self._prompt_source = None if box is None else str(source)
         self._prompt_chip = None if box is None else chip
         for tool in (self.sam_point, self.sam_box):
-            tool.set_prompt_box(box)
+            tool.set_prompt_box(self._tool_box(box))
         # The difference map's box, not a drag: its own band, colour and chip
         # saying it is a guess (U2g addendum A).  The canvas keeps it off the
         # screen by itself while the ROI rectangle is being edited.
@@ -924,6 +938,10 @@ class AssistMixin(DetectMixin):
         roi = self.roi()
         if roi is None:
             return
+        if is_context_key(getattr(self.session, "editing_instance", None)):
+            # a 框外零件 is being drawn (task U18): the guesses are about the
+            # machine's parts, inside the ROI -- none is offered for it
+            return
         if self._box_refused_here():
             # A click outside the armed box has already turned it down on this
             # frame; a comparison landing late, an ``Esc`` or the next part of
@@ -1139,6 +1157,8 @@ class AssistMixin(DetectMixin):
             return ALT_ROI_EDITING
         if self.showing_draft_ghost():
             return ALT_GHOST
+        if is_context_key(getattr(self.session, "editing_instance", None)):
+            return NO_PROMPT_BOX_CONTEXT       # the guesses are not about it (U18)
         if not self.sam_available:
             # The box prompt exists to be sent to SAM.  ``act_cycle_candidate``
             # says the reason rather than going quiet, and so does this.

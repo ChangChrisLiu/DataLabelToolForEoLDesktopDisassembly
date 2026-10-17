@@ -111,8 +111,56 @@ def is_extra(rec: Optional["InstanceRec"]) -> bool:
     geometry, it is compiled, it is exported -- but nothing *about* it may be
     guessed: no heuristic fills a relation on it, no template edge starts at it
     and no re-import drops it, because the sheet never knew it existed.
+
+    A 框外零件 (:func:`is_context`, task U18) carries ``added_by`` too, and is
+    **not** an extra: it is no part of the machine at all.
     """
-    return rec is not None and bool((rec.attrs or {}).get(EXTRA_ATTR))
+    return (rec is not None and bool((rec.attrs or {}).get(EXTRA_ATTR))
+            and not is_context(rec))
+
+
+# --------------------------------------------------------------------------- #
+# 框外零件: objects outside the machine (task U18, spec 3.2c)
+# --------------------------------------------------------------------------- #
+#: Every key of a context object starts so: ``ctx.<class>.NN``. No taxonomy
+#: class is called ``ctx``, so a machine part's key never does.
+CONTEXT_PREFIX = "ctx."
+#: ``attrs`` flag of a context object.
+CONTEXT_ATTR = "context"
+#: ``attrs`` key of its free-text name (required for :data:`CONTEXT_OTHER`).
+CONTEXT_LABEL = "label"
+#: The class of a context object no taxonomy class describes.
+CONTEXT_OTHER = "other"
+#: The placement chain -- and the compiler's placement group -- of its shapes:
+#: they are layered among themselves only, never against the machine's parts.
+CONTEXT_PLACEMENT = "context"
+
+
+def is_context_key(key: Optional[str]) -> bool:
+    """Is ``key`` the key of a context object (:data:`CONTEXT_PREFIX`)?"""
+    return str(key or "").startswith(CONTEXT_PREFIX)
+
+
+def is_context(rec: Optional["InstanceRec"]) -> bool:
+    """Is this instance a 框外零件 -- something in the picture, not in the machine?
+
+    Something the frames show outside the machine nobody listed (another part
+    lying beside it, an unrelated object), drawn on its own (task U18). It has
+    no state, no action, no relation; it is never implied, never in the log,
+    never on a task card, never a reason ``Space`` refuses, and the machine's
+    parts neither cover it nor are covered by it. Everything that walks the
+    machine's parts asks this (or :func:`machine_only`); the key alone answers
+    where only a key is at hand (:func:`is_context_key`).
+    """
+    if rec is None:
+        return False
+    return bool((rec.attrs or {}).get(CONTEXT_ATTR)) or is_context_key(rec.key)
+
+
+def machine_only(instances: dict) -> dict:
+    """``instances`` without the context objects: the machine's own table."""
+    return {key: rec for key, rec in instances.items()
+            if not is_context_key(key) and not is_context(rec)}
 
 
 # --------------------------------------------------------------------------- #

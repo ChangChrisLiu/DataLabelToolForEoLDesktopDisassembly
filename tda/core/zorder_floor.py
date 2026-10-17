@@ -36,7 +36,7 @@ from typing import Iterable, Mapping, Optional, Sequence
 import numpy as np
 
 from tda.core.db import Db
-from tda.core.model import FrameKey
+from tda.core.model import FrameKey, machine_only
 from tda.core.taxonomy import Taxonomy
 from tda.core.truth_inputs import InputCache, pose_segment_of
 
@@ -182,7 +182,8 @@ def floor_problems(db: Db, tax: Taxonomy, desktop: int, view: str,
         (int(desktop), str(view))).fetchall()]
     if not segs:
         return []
-    cls_of = {key: rec.cls for key, rec in db.instances(int(desktop)).items()}
+    # the machine's parts: a 框外零件 (task U18) is layered apart, never a floor
+    cls_of = {key: rec.cls for key, rec in machine_only(db.instances(int(desktop))).items()}
     cache = InputCache()
     steps_of: Optional[dict[int, list[int]]] = None
     out: list[str] = []

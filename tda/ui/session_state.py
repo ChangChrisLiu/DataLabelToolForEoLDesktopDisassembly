@@ -27,7 +27,7 @@ from typing import Optional
 
 from tda.core.cut_follow import CutMove, cut_views, mask_states, plan_cut_moves
 from tda.core.db import Db
-from tda.core.model import FrameKey, Placement, is_provisional
+from tda.core.model import FrameKey, Placement, is_context, is_provisional
 from tda.core.state_assert import (
     OP_ASSERT_STATE,
     StateAssertError,
@@ -48,6 +48,7 @@ from tda.core.truth import TruthService
 from tda.core.truth_inputs import InputCache, annotatable_steps, instances_of, state_of
 from tda.ui.class_names import state_zh
 from tda.ui.commands import Op
+from tda.ui.context_text import NO_STATE as CONTEXT_NO_STATE
 from tda.ui.gallery import NO_STATE
 from tda.ui.session_api import SessionRefusal
 from tda.ui.session_ops import FORWARD as FORWARD_WALK
@@ -81,6 +82,8 @@ def gate(instances: dict, state: FrameState, tax, instance: str,
     rec = instances.get(instance)
     if rec is None or is_provisional(instance):
         return [], f"{instance} 不是这台机器的零件，没有状态可改"
+    if is_context(rec):
+        return [], CONTEXT_NO_STATE.format(instance=instance)   # task U18
     choices = assertable_states(tax, rec.cls)
     if not choices:
         return [], f"{instance}（{rec.cls}）只有一种要画的状态，没有可换的"

@@ -25,8 +25,10 @@ from typing import Iterable, Optional
 import numpy as np
 
 from tda.core import masks
+from tda.core.context import context_reach
 from tda.core.db import Db
 from tda.core.model import (
+    CONTEXT_PLACEMENT,
     FrameKey,
     FrameOverride,
     OccluderMask,
@@ -36,6 +38,7 @@ from tda.core.model import (
     ShapePart,
     ZOrderRec,
     is_component_view,
+    is_context_key,
 )
 from tda.core.compiler import select_keyframe
 from tda.core.states import needs_geom
@@ -179,7 +182,13 @@ def _bench_roi(db: Db, key: FrameKey, seg: int):
 
 def placement_of(db: Db, tax: Taxonomy, key: FrameKey, instance: str,
                  cache: Optional[InputCache] = None) -> str:
-    """Where the instance is at this step; the chassis chain when it is unknown."""
+    """Where the instance is at this step; the chassis chain when it is unknown.
+
+    A 框外零件 (task U18) has no state: its shapes are always in its own
+    chain, :data:`~tda.core.model.CONTEXT_PLACEMENT`.
+    """
+    if is_context_key(instance):
+        return CONTEXT_PLACEMENT
     inst = state_of(db, tax, key.desktop, key.step, cache, view=key.view).get(instance)
     return IN_CHASSIS if inst is None else inst.placement
 
@@ -243,6 +252,11 @@ def chain_steps(db: Db, tax: Taxonomy, key: FrameKey, instance: str, seg: int,
     over a chain the caller may have *simulated*: that is what lets the session
     answer "影响 N 帧" (spec 4.3) before anything is written.
     """
+    if placement == CONTEXT_PLACEMENT:
+        # a 框外零件 (task U18) is in a frame exactly where a shape of it applies
+        return annotatable_steps(db, key.desktop, key.view,
+                                 context_reach(db, key.desktop, key.view, seg, chain,
+                                               target, cache))
     instances = instances_of(db, key.desktop, cache)
     bench_roi = _bench_roi(db, key, seg)
     out: list[int] = []
@@ -267,7 +281,14 @@ def segment_steps(db: Db, tax: Taxonomy, key: FrameKey, instance: str, seg: int,
 
     ``geom`` narrows it to one kind: ``"mask"`` for the steps where the instance
     is a *layer*, which is the only place the layering can be argued about.
+    A 框外零件 (task U18) carries geometry wherever one of its shapes applies.
     """
+    if is_context_key(instance):
+        chain = chain_for(db, key, instance, seg, CONTEXT_PLACEMENT)
+        found = context_reach(db, key.desktop, key.view, seg,
+                              [kf for kf in chain if geom is None or kf.geom_type == geom],
+                              None, cache)
+        return annotatable_steps(db, key.desktop, key.view, found)
     instances = instances_of(db, key.desktop, cache)
     bench_roi = _bench_roi(db, key, seg)
     out = []

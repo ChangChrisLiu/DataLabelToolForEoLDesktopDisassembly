@@ -14,17 +14,21 @@ to find out -- nor disagreeing about whether a *frame* is a row.
 """
 from __future__ import annotations
 
-from tda.core.model import COMPONENT_VIEWS, SKIP_STEP_TYPES, StepType
+from tda.core.model import COMPONENT_VIEWS, CONTEXT_PREFIX, SKIP_STEP_TYPES, StepType
 
 __all__ = ["DESKTOP_COUNTERS", "VIEW_COUNTERS", "StatusMixin"]
 
-#: counter -> the table whose rows are counted per desktop.
+#: The 框外零件 (task U18) by their key: ``ctx.<class>.NN`` (no wildcard in it).
+_CONTEXT = f"'{CONTEXT_PREFIX}%'"
+#: counter -> the table (and filter) whose rows are counted per desktop. The
+#: machine's instances and shapes leave the 框外零件 out; ``context`` counts them.
 DESKTOP_COUNTERS: dict[str, str] = {
     "steps": "step",
     "actions": "action",
-    "instances": "instance",
+    "instances": f'instance WHERE "key" NOT LIKE {_CONTEXT}',
     "events": "state_event",
-    "keyframes": "shape_keyframe",
+    "keyframes": f"shape_keyframe WHERE instance NOT LIKE {_CONTEXT}",
+    "context": f'instance WHERE "key" LIKE {_CONTEXT}',
 }
 #: The frames that are work for their view, as a ``FROM`` source: a frame
 #: with an image (``missing`` unset) of a step the step table does not skip.
@@ -50,7 +54,7 @@ _WORK = (
 VIEW_COUNTERS: dict[str, str] = {
     "frames": "FROM frame",
     "missing": "FROM frame WHERE missing=1",
-    "keyframes": "FROM shape_keyframe",
+    "keyframes": f"FROM shape_keyframe WHERE instance NOT LIKE {_CONTEXT}",
     "verified": "FROM frame WHERE review_status='verified'",
     # frozen frames whose inputs moved and that nobody has compared yet: until
     # this is zero the truth table of that view is not one to export (spec 3.4)
@@ -72,11 +76,11 @@ class StatusMixin:
     def count_per_desktop(self, counter: str) -> dict[int, int]:
         """``{desktop: n}`` for one of :data:`DESKTOP_COUNTERS`."""
         try:
-            table = DESKTOP_COUNTERS[counter]
+            source = DESKTOP_COUNTERS[counter]
         except KeyError:
             raise ValueError(f"unknown desktop counter: {counter!r}") from None
         rows = self.conn.execute(
-            f"SELECT desktop, COUNT(*) AS n FROM {table} GROUP BY desktop"
+            f"SELECT desktop, COUNT(*) AS n FROM {source} GROUP BY desktop"
         ).fetchall()
         return {r["desktop"]: r["n"] for r in rows}
 

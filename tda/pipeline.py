@@ -838,7 +838,7 @@ def desktops_without_steps(db: Db, desktops: Iterable[int]) -> list[int]:
 # status
 # --------------------------------------------------------------------------- #
 #: The per-desktop counters ``status`` shows (a subset of the repository's).
-STATUS_TOTALS = ("steps", "actions", "instances", "events")
+STATUS_TOTALS = ("steps", "actions", "instances", "events", "context")
 
 
 def status_rows(db: Db, desktops: Optional[set[int]] = None) -> list[dict]:

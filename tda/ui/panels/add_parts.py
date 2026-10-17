@@ -25,6 +25,12 @@ gains an instance and goes back to 需复核.  On D13/scan four clips demoted th
 them is right, the frames just need a Space each once the clips are drawn --
 only the sentence.  The dialog only *reads* the view model; :meth:`values` is
 what the panel hands to :meth:`~tda.ui.steps_model.StepTableData.add_extras`.
+
+Something in the picture that is **not part of the machine** at all is no
+extra: the button 「框外零件…」 (task U18, shown when the panel wires it) closes
+the dialog and hands over to the window, which makes a context object in
+Annotate mode (:mod:`tda.ui.panels.context_object`). Nothing about adding parts
+changes.
 """
 from __future__ import annotations
 
@@ -48,8 +54,8 @@ from tda.ui.class_names import class_zh, state_zh
 from tda.ui.guide import steps_text
 from tda.ui.steps_model import StepTableData
 
-__all__ = ["AddPartsDialog", "BUTTON", "DEMOTION", "HINT", "NO_PARENT", "TIP", "TITLE",
-           "class_choices", "demotion_text", "preview_text"]
+__all__ = ["AddPartsDialog", "BUTTON", "CONTEXT_BUTTON", "DEMOTION", "HINT", "NO_PARENT",
+           "TIP", "TITLE", "class_choices", "demotion_text", "preview_text"]
 
 TITLE = "＋ 添加零件 / Add parts"
 #: The button above the Instances table that opens the dialog.
@@ -78,6 +84,10 @@ NEVER_REMOVED = "（不拆 / 跟着装它的零件走）"
 #: The removal field's tooltip.
 REMOVED_TIP = ("这个零件在第几步被拆下来（之后在零件合照里列出、序列里不再要它）；"
                "装在别的零件上、跟着它一起离开的，留空 / the step it was taken out at")
+#: 「框外零件…」 (task U18): the thing is not in the machine at all.
+CONTEXT_BUTTON = "框外零件…"
+CONTEXT_TIP = ("不在机器里的东西（旁边放着的另一个零件、无关的物件）：到标注模式起个名字单独画，"
+               "不进步骤表 / something outside the machine")
 
 
 def elsewhere_text(others: dict) -> str:
@@ -141,12 +151,16 @@ class AddPartsDialog(QDialog):
     def __init__(self, data: StepTableData, parent: Optional[QWidget] = None,
                  cls: Optional[str] = None,
                  demotion: Optional[Callable[[dict], list[int]]] = None,
-                 elsewhere: Optional[Callable[[dict], dict]] = None) -> None:
+                 elsewhere: Optional[Callable[[dict], dict]] = None,
+                 context: Optional[Callable[[], None]] = None) -> None:
         super().__init__(parent)
         self.data = data
         self._demotion = demotion
         #: ``{view: [steps]}`` the parts would demote in the other views (U10).
         self._elsewhere = elsewhere
+        #: 「框外零件…」 (task U18): not a part of the machine at all -- the
+        #: dialog closes and this is called; ``None`` shows no button.
+        self._context = context
         self.setWindowTitle(TITLE)
         self.class_combo = QComboBox(self)
         for label, name in class_choices(data):
@@ -179,6 +193,12 @@ class AddPartsDialog(QDialog):
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("添加 / Add")
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
+        self.context_button = None
+        if context is not None:
+            self.context_button = self.buttons.addButton(
+                CONTEXT_BUTTON, QDialogButtonBox.ButtonRole.ActionRole)
+            self.context_button.setToolTip(CONTEXT_TIP)
+            self.context_button.clicked.connect(self._on_context)
         self._build()
         if cls:
             index = self.class_combo.findData(cls)
@@ -209,6 +229,12 @@ class AddPartsDialog(QDialog):
         layout.addWidget(self.preview)
         layout.addWidget(self.warning)
         layout.addWidget(self.buttons)
+
+    def _on_context(self) -> None:
+        """Not a part of the machine: close, and make a 框外零件 instead (U18)."""
+        self.reject()
+        if self._context is not None:
+            self._context()
 
     # -- reading ------------------------------------------------------------ #
     @property

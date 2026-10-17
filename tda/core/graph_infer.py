@@ -34,7 +34,14 @@ from typing import Iterable, Optional
 # class X" -- neither as the candidate nor as a competitor -- and nothing is
 # ever written onto them (spec 3.2: S1 turns a draft into a real instance, and
 # only then does it carry relations).
-from tda.core.model import LS_PREFIX, ActionRec, InstanceRec, is_extra, is_provisional
+from tda.core.model import (
+    LS_PREFIX,
+    ActionRec,
+    InstanceRec,
+    is_context,
+    is_extra,
+    is_provisional,
+)
 from tda.core.taxonomy import Taxonomy
 
 __all__ = [
@@ -54,10 +61,13 @@ __all__ = [
 ]
 
 def real_instances(instances: dict[str, InstanceRec], cls: str) -> list[str]:
-    """Keys of the settled (non-draft) instances of ``cls``, sorted."""
+    """Keys of the settled (non-draft) instances of ``cls``, sorted.
+
+    A 框外零件 (task U18) of the class is not one: it is not in the machine.
+    """
     return [
         key for key, rec in sorted(instances.items())
-        if rec.cls == cls and not is_provisional(key)
+        if rec.cls == cls and not is_provisional(key) and not is_context(rec)
     ]
 
 

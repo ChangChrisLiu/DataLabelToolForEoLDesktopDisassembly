@@ -39,7 +39,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable, Mapping, Optional
 
-from tda.core.model import ActionRec, InstanceRec, Placement, StateEvent, is_provisional
+from tda.core.model import (
+    ActionRec,
+    InstanceRec,
+    Placement,
+    StateEvent,
+    is_context,
+    is_provisional,
+)
 from tda.core.taxonomy import Taxonomy
 
 __all__ = [
@@ -143,12 +150,17 @@ def initial_state(
 
     ``initial`` overrides the default of the instances it names -- the states
     :func:`initial_overrides` reads off the hand-written step-0 events.
+
+    A 框外零件 (:func:`tda.core.model.is_context`, task U18) has no state at
+    all: it is not part of the machine, so no snapshot carries it -- and with
+    that no geometry policy, task card, cascade or validation ever sees it.
     """
     over = initial or {}
     return {
         key: InstState(state=over.get(key) or tax.default_state(rec.cls),
                        placement=IN_CHASSIS)
         for key, rec in instances.items()
+        if not is_context(rec)
     }
 
 
@@ -274,6 +286,8 @@ def events_from_actions(
             continue
 
         rec = instances[action.target]
+        if action.target not in frame:
+            continue        # a 框外零件 (task U18): it has no state to change
         effect = tax.apply_verb(rec.cls, rec.attrs, action.verb)
         if effect is None:
             continue
@@ -595,6 +609,8 @@ def event_problems(
 
     for event in sorted(events, key=lambda e: e.step):  # stable: keeps intra-step order
         rec = instances.get(event.target)
+        if rec is not None and is_context(rec):
+            continue        # a 框外零件 (task U18): no state, nothing to validate
         if rec is not None:
             cls = rec.cls
         else:

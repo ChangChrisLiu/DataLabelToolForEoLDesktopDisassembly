@@ -92,6 +92,15 @@ def _count(stats: dict, key: str) -> int:
         return 0
 
 
+def _context_count(stats: dict) -> int:
+    """How many of the exported annotations are 框外零件 (task U18), counted apart."""
+    found = stats.get("annotations")
+    if not isinstance(found, list):
+        return 0
+    return sum(1 for ann in found
+               if isinstance(ann, dict) and (ann.get("attributes") or {}).get("context"))
+
+
 def _runs(desktops: Sequence[int]) -> list[tuple[int, int]]:
     """Contiguous ``(first, last)`` runs of a desktop list.
 
@@ -568,8 +577,11 @@ def cmd_export_coco(args: argparse.Namespace) -> int:
                 continue
             # ``images``/``annotations`` are the *lists*: printing them put the
             # whole COCO document on the terminal.
+            outside = _context_count(stats)
+            note = (f" ({outside} of them context objects outside the machine)"
+                    if outside else "")
             print(f"[export-coco] {_count(stats, 'images')} images, "
-                  f"{_count(stats, 'annotations')} annotations -> {out}")
+                  f"{_count(stats, 'annotations')} annotations{note} -> {out}")
         return worst
 
 

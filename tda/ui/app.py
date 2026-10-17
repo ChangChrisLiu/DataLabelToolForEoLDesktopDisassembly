@@ -41,6 +41,7 @@ from tda.ui.app_adopt import AdoptMixin
 from tda.ui.app_assist import AssistMixin
 from tda.ui.app_cable import CableMixin
 from tda.ui.app_commit import CommitMixin
+from tda.ui.app_context import ContextMixin
 from tda.ui.app_edit import EditMixin
 from tda.ui.app_gallery import GalleryMixin
 from tda.ui.app_guide import GuideMixin
@@ -80,7 +81,7 @@ STEPS_UNSAVED = ("Steps 里有没 Apply 的修改（例如刚加的零件）：�
 
 class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateMixin,
                  VerbMixin, AssistMixin, GuideMixin, KeysMixin, RawDataMixin, GalleryMixin,
-                 CableMixin, ToolsMixin, StatusMixin, ShellMixin, QMainWindow):
+                 CableMixin, ContextMixin, ToolsMixin, StatusMixin, ShellMixin, QMainWindow):
     """One annotator, one desktop/view, three modes."""
 
     def __init__(self, session, paths: dict, annotator: str, *,
@@ -124,6 +125,7 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateM
         self._init_assist(sam_queue)
         self._init_rawdata()
         self._init_gallery()
+        self._init_context()    # 框外零件 (task U18): the canvas' right-click menu
         self._init_guide()      # last: it reads the bars and the raw-drive state
         self._connect_session()
 
@@ -158,6 +160,9 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateM
                                                        or ""))
             panel.sigSaved.connect(self.on_steps_saved)
             panel.sigEdited.connect(self._mark_steps_dirty)  # a part added (U5b)
+            # 「＋ 添加零件」's 框外零件… (task U18): drawn in Annotate at once
+            panel.sigContextObject.connect(self.open_context_from_steps)
+            panel.sigContextChanged.connect(self.on_context_changed)
             panel.sigReverted.connect(self._clear_steps_dirty)
             for model in (panel.steps_model, panel.instances_model):
                 model.dataChanged.connect(self._mark_steps_dirty)

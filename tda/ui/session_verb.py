@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import Optional
 
 from tda.core.db import Db
-from tda.core.model import FrameKey
+from tda.core.model import FrameKey, is_context_key
 from tda.core.states import needs_geom
 from tda.core.truth import TruthService
 from tda.core.truth_inputs import InputCache, annotatable_steps, instances_of, state_of
@@ -35,6 +35,7 @@ from tda.core.verb_fix import (
 )
 from tda.ui.class_names import state_zh
 from tda.ui.commands import Op
+from tda.ui.context_text import NO_VERB as CONTEXT_NO_VERB
 from tda.ui.gallery import NO_VERB
 from tda.ui.session_api import VERB_NEEDS_CLEAN_LAYER, SessionRefusal
 from tda.ui.session_ops import settle
@@ -179,6 +180,8 @@ class VerbMixin:
             return "没有打开的帧"
         if getattr(self, "gallery", False):
             return NO_VERB
+        if is_context_key(instance):
+            return CONTEXT_NO_VERB.format(instance=instance)     # task U18
         key = self.current()
         try:
             plan_verb_fix(self.db, self.tax, key.desktop, str(instance), key.step,
@@ -201,6 +204,8 @@ class VerbMixin:
             # its number is a shot, not a step: a verb would be changed at the
             # wrong step of the teardown (U10)
             raise SessionRefusal(NO_VERB)
+        if is_context_key(instance):
+            raise SessionRefusal(CONTEXT_NO_VERB.format(instance=instance))   # task U18
         editing = self.layer.instance
         if editing == instance and self.layer.changed():
             raise SessionRefusal(VERB_NEEDS_CLEAN_LAYER.format(instance=instance))

@@ -27,9 +27,11 @@ from typing import Optional
 import cv2
 
 from tda.core.cache import cached_image_path
+from tda.core.context import context_needs
 from tda.core.db import Db
 from tda.core.rawroot import resolve_raw
 from tda.core.model import (
+    CONTEXT_PLACEMENT,
     GALLERY_EXCLUDED_CLASSES,
     FrameKey,
     FrameOverride,
@@ -492,19 +494,26 @@ def gather(
     bench_roi = (None if is_component_view(key.view)
                  else db.bench_roi(key.desktop, key.view, seg))
     needs = needs_geom(instances, state, tax, bench_roi=bench_roi)
+    keyframes = _keyframes_of(db, key.desktop, key.view, cache)
+    placements = {inst: st.placement for inst, st in state.items()
+                  if not is_provisional(inst)
+                  and (inst in needs or st.placement != ON_BENCH)}
+    # the 框外零件 this frame has (task U18): no state says where one is, its
+    # shapes do -- compiled in a placement group of their own
+    context = context_needs(instances, keyframes, key, seg)
+    needs.update(context)
+    placements.update({inst: CONTEXT_PLACEMENT for inst in context})
     return FrameInputs(
         key=key,
         hw=frame_hw(db, key, cache_dir),
         needs=needs,
-        keyframes=_keyframes_of(db, key.desktop, key.view, cache),
+        keyframes=keyframes,
         zorder=_zorder_of(db, key.desktop, key.view, seg, cache),
         overrides=_overrides_of(db, key.desktop, key.view, seg, cache),
         occluders=db.occluders(key),
         frame_overrides=db.frame_overrides(key),
         transform=db.transform(key),
-        placements={inst: st.placement for inst, st in state.items()
-                    if not is_provisional(inst)
-                    and (inst in needs or st.placement != ON_BENCH)},
+        placements=placements,
         pose_segment=seg,
         bench_roi=bench_roi,
     )

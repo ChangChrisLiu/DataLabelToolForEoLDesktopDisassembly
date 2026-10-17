@@ -64,7 +64,14 @@ from typing import Iterable, Optional
 from tda.core import dbrows as R
 from tda.core.compiler import select_keyframe
 from tda.core.db import Db
-from tda.core.model import VIEWS, FrameKey, InstanceRec, StateEvent, is_provisional
+from tda.core.model import (
+    VIEWS,
+    FrameKey,
+    InstanceRec,
+    StateEvent,
+    is_context,
+    is_provisional,
+)
 from tda.core.states import (
     INITIAL_STEP,
     LEAVES_REMOVED,
@@ -672,6 +679,9 @@ def plan_merge(db: Db, tax: Taxonomy, desktop: int, gone: str, keep: str) -> Mer
             raise MergeError(f"D{desktop:02d} 没有实例 {key}")
         if is_provisional(key):
             raise MergeError(f"{key} 是 Label Studio 草稿：草稿要采纳（Shift+A），不是合并")
+        if is_context(instances[key]):
+            # task U18: not a part of the machine; it is deleted, not merged
+            raise MergeError(f"{key} 是框外零件：不能合并（不要了就在实例表右键删除）")
     g_rec, k_rec = instances[gone], instances[keep]
     if g_rec.cls != k_rec.cls:
         raise MergeError(f"{gone} 是 {g_rec.cls}，{keep} 是 {k_rec.cls}：只有同一类的两个实例"

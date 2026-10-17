@@ -17,7 +17,7 @@ from typing import Optional
 
 import numpy as np
 
-from tda.core.model import FrameKey, is_provisional
+from tda.core.model import FrameKey, is_context_key, is_provisional
 from tda.core.split_rows import CUT, keyframe_at
 from tda.core.truth_inputs import frame_hw
 from tda.ui import session_api as api
@@ -63,6 +63,18 @@ def _loggable_extra(extra: Optional[dict]) -> Optional[dict]:
     except (TypeError, ValueError) as bad:
         raise ValueError(f"extra must be JSON-serialisable: {bad}") from bad
     return dict(extra)
+
+
+#: A layering gesture between a 框外零件 and a part of the machine (task U18).
+ACROSS_FAMILIES = ("{a} 和 {b} 一个是框外零件、一个是机器里的零件：它们的像素互不遮挡，"
+                   "层级只在框外零件之间排 / an object outside the machine is layered only "
+                   "against other such objects")
+
+
+def _refuse_across(one: str, other: str) -> None:
+    """Refuse an order between a 框外零件 and a machine part: there is none (U18)."""
+    if is_context_key(one) != is_context_key(other):
+        raise SessionRefusal(ACROSS_FAMILIES.format(a=one, b=other))
 
 
 def _refuse_draft(instance: str) -> None:
@@ -254,6 +266,8 @@ class CommitMixin:
             # with it unchanged, so a later commit on the far side reaches only
             # that state's frames.
             unchanged_split = True
+        if pair is not None:
+            _refuse_across(instance, pair[0])
         if pair is not None and self._added_pixels(pair):
             other, _above = pair
             edit.require_instance(self._known_instances(), other)
@@ -607,6 +621,7 @@ class CommitMixin:
 
     def set_zorder_move(self, instance: str, above_of: str) -> None:
         """Move ``instance`` directly above ``above_of`` in the layer order."""
+        _refuse_across(instance, above_of)
         self._after_edit(
             edit.set_zorder_move(self.db, self.truth, self.current(), instance, above_of,
                                  self.annotator, known=self._known_instances())

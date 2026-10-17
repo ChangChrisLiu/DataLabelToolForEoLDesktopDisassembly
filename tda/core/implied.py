@@ -38,7 +38,7 @@ from tda.core.graph_infer import (
     is_provisional,
     real_instances,
 )
-from tda.core.model import ActionRec, InstanceRec
+from tda.core.model import ActionRec, InstanceRec, is_context, machine_only
 from tda.core.taxonomy import Taxonomy
 
 __all__ = [
@@ -94,8 +94,8 @@ def referencing_instances(
     """
     out: list[str] = []
     for key, rec in sorted(instances.items()):
-        if is_provisional(key):
-            continue
+        if is_provisional(key) or is_context(rec):
+            continue    # a draft, or a 框外零件 (task U18): no evidence about the machine
         hit = False
         if rec.cls == "connector":
             hit = str(rec.socket_host or "").strip() == cls
@@ -147,6 +147,7 @@ def implied_instances(
     there is nothing to imply, so a caller can write ``for rec in ...``
     unconditionally.
     """
+    instances = machine_only(instances)     # a 框外零件 is never implied (task U18)
     if not instances:
         return []
     desktop = next(iter(instances.values())).desktop

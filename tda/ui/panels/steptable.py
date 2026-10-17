@@ -18,7 +18,10 @@ nothing points at any more, merge two instances that are one part
 (「合并到…」, :mod:`tda.ui.panels.merge_into`, written through). The
 ``＋ 添加零件 / Add parts`` button above the
 Instances table stages parts the picture shows and the log never names
-(:mod:`tda.ui.panels.add_parts`, :mod:`tda.core.extra`). ``Apply`` writes
+(:mod:`tda.ui.panels.add_parts`, :mod:`tda.core.extra`); its 「框外零件…」
+hands over to the window for an object outside the machine (task U18), which
+the Instances table then lists in a block of its own -- deletable with its
+shapes, its name editable, named by no step, relation or question. ``Apply`` writes
 everything back in one transaction and recompiles the automatic state-event log (emitting
 :attr:`StepTablePanel.sigSaved`); ``Revert`` reloads from the database.
 
@@ -139,6 +142,12 @@ class StepTablePanel(MergeIntoMixin, QWidget):
     #: Emitted by :meth:`revert`: nothing is staged any more, and the window's
     #: unsaved-edit flag has to hear it.
     sigReverted = Signal()
+    #: 「框外零件…」 in the 「＋ 添加零件」 dialog (task U18): the window goes to
+    #: Annotate and makes one there, where it is drawn at once.
+    sigContextObject = Signal()
+    #: A context object was deleted, written through (task U18): the window's
+    #: compiled frames may show it still.
+    sigContextChanged = Signal()
 
     def __init__(
         self,
@@ -296,7 +305,8 @@ class StepTablePanel(MergeIntoMixin, QWidget):
         return (table_signature(self.data.steps, self.data.actions) != self.loaded_data
                 or captive_signature(self.data.instances)
                 != getattr(self, "loaded_captive", None)
-                or bool(self.data.extras) or bool(self.data.relations.dirty))
+                or bool(self.data.extras) or bool(self.data.relations.dirty)
+                or bool(self.data.relabelled))       # a 框外零件 renamed (U18)
 
     def show_step(self, step: int) -> None:
         """Select one logical step in the Steps table and bring it into view."""
@@ -389,9 +399,14 @@ class StepTablePanel(MergeIntoMixin, QWidget):
         and a staged one that was never applied is simply unstaged.
         """
         staged = self.data.staged_extra(key)
+        outside = key in self.data.context        # a 框外零件 (task U18)
         self._command(lambda: self.data.delete_instance(self.db, key),
-                      f"Removed the staged {key}." if staged else f"Deleted {key}.",
+                      f"Removed the staged {key}." if staged
+                      else (f"已删除框外零件 {key}（连同它的形状）/ Deleted {key} with its shapes."
+                            if outside else f"Deleted {key}."),
                       staged=staged)
+        if outside and key not in self.data.context:
+            self.sigContextChanged.emit()
         if not staged and key not in self.data.instances:
             # written through: both sides lost it alike (U14's snapshot of the
             # screws' captive fields must not read that as a move or an edit)
@@ -431,7 +446,8 @@ class StepTablePanel(MergeIntoMixin, QWidget):
         without blocking -- and returned, so a caller (or a test) can fill it in.
         """
         dialog = AddPartsDialog(self.data, self, cls=self.last_extra_class,
-                                demotion=self._demotion(), elsewhere=self._elsewhere())
+                                demotion=self._demotion(), elsewhere=self._elsewhere(),
+                                context=self.sigContextObject.emit)
         dialog.accepted.connect(lambda: self.add_parts(**dialog.values()))
         dialog.finished.connect(dialog.deleteLater)
         self.add_parts_dialog = dialog
@@ -522,7 +538,11 @@ class StepTablePanel(MergeIntoMixin, QWidget):
         """The instances-table context menu for one view row (not shown yet)."""
         menu = QMenu(self.instances_view)
         key = self.instances_model.key_at(view_row)
-        if key is not None:
+        if key is not None and key in self.data.context:
+            # a 框外零件 (task U18): deleted with its shapes; never merged
+            menu.addAction(f"删除框外零件 {key}（连同形状）/ Delete {key}",
+                           lambda: self.delete_instance(key))
+        elif key is not None:
             menu.addAction(f"Delete {key}", lambda: self.delete_instance(key))
             self.add_merge_action(menu, key)        # 「合并到…」 (task U12)
         return menu

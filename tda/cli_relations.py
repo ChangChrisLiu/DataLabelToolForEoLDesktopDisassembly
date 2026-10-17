@@ -54,7 +54,7 @@ from tda.core.graph_infer import (
 )
 from tda.core.implied import OP_KIND as IMPLIED_OP_KIND
 from tda.core.implied import implied_instances
-from tda.core.model import InstanceRec
+from tda.core.model import InstanceRec, machine_only
 from tda.core.states import events_from_actions, initial_overrides
 from tda.core.taxonomy import Taxonomy, load_taxonomy
 
@@ -214,7 +214,9 @@ def _apply_one(db: Db, tax: Taxonomy, desktop: int, dry_run: bool,
     raises must not come out of it having forgotten a refusal it never acted on.
     """
     declined = set() if reset_declined else db.declined_implied(desktop)
-    instances = db.instances(desktop)
+    # the machine's table: a 框外零件 (task U18) neither implies nor is implied,
+    # and no heuristic fills a field on one
+    instances = machine_only(db.instances(desktop))
     actions = db.actions(desktop)
     new_instances = (implied_instances(instances, actions, tax, declined)
                      if add_implied else [])

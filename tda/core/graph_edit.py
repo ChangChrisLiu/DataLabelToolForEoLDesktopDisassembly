@@ -44,7 +44,7 @@ from tda.core.graph import (
 )
 from tda.core.graph_derive import MANUAL, OVERRIDE, RULE
 from tda.core.graph_rules import BLOCKED_MODES, CABLE_PREFIX, is_orphan
-from tda.core.model import ActionRec, InstanceRec
+from tda.core.model import ActionRec, InstanceRec, machine_only
 
 __all__ = [
     "DECISIONS",
@@ -443,8 +443,8 @@ def violations(db, desktop: int, tax=None) -> list[Violation]:
         tax = load_taxonomy()
     from tda.core.states import initial_overrides
 
-    instances = {k: rec for k, rec in db.instances(desktop).items()
-                 if not is_provisional(k)}
+    instances = {k: rec for k, rec in machine_only(db.instances(desktop)).items()
+                 if not is_provisional(k)}        # no draft, no 框外零件 (task U18)
     initial = initial_overrides(e for e in db.events(desktop) if not e.auto)
     return violations_of(instances, edges_from_db(db, desktop), db.actions(desktop), tax,
                          initial=initial)

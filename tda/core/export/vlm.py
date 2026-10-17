@@ -102,7 +102,7 @@ from tda.core.export.vlm_tasks import (
 )
 from tda.core.export.vlm_shortcuts import option_verb_shortcut, shortcut_report
 from tda.core.graph import constraint_edges, edges_from_db
-from tda.core.model import FrameKey, is_component_view
+from tda.core.model import FrameKey, is_component_view, is_context_key
 from tda.core.taxonomy import Taxonomy
 from tda.core.truth import TruthService
 
@@ -184,7 +184,9 @@ def _read_view(db: Db, ctx: DesktopCtx, desktop: int, view: str,
         if not ctx.exportable(step):
             continue  # an `ignore` step is no moment of the teardown
         key = FrameKey(desktop, step, view)
-        compiled = db.compiled(key)
+        # no 框外零件 (task U18): nothing outside the machine is asked about
+        compiled = {inst: row for inst, row in db.compiled(key).items()
+                    if not is_context_key(inst)}
         # a frame somebody is still arguing about answers nothing confirmed
         verified = step not in disputed and frame_is_verified(db, key, compiled)
         slim = {inst: slim_row(r) for inst, r in compiled.items()}

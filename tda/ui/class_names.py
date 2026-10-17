@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from tda.core.model import CONTEXT_LABEL, CONTEXT_PREFIX
+
 __all__ = ["CLASS_ZH", "STATE_ZH", "VISIBILITY_ZH", "class_zh", "instance_label",
            "state_zh", "visibility_zh"]
 
@@ -115,8 +117,14 @@ _REFINED: dict[tuple[str, str], dict[str, str]] = {
 
 
 def _class_of_key(instance: str) -> str:
-    """``screw.cpu_cooler.03`` -> ``screw``: what a key says when nothing else does."""
-    return str(instance).split(".", 1)[0]
+    """``screw.cpu_cooler.03`` -> ``screw``: what a key says when nothing else does.
+
+    A 框外零件's key (``ctx.<class>.NN``, task U18) says its class after the prefix.
+    """
+    text = str(instance)
+    if text.startswith(CONTEXT_PREFIX):
+        text = text[len(CONTEXT_PREFIX):]
+    return text.split(".", 1)[0]
 
 
 def class_zh(cls: Optional[str], attrs: Optional[dict] = None,
@@ -133,6 +141,12 @@ def class_zh(cls: Optional[str], attrs: Optional[dict] = None,
 
 def instance_label(instance: str, cls: Optional[str] = None,
                    attrs: Optional[dict] = None) -> str:
-    """``导风罩 cover.01`` -- the name to read and the key to quote."""
+    """``导风罩 cover.01`` -- the name to read and the key to quote.
+
+    A 框外零件 (task U18) reads ``框外·<its name, else its class> ctx.….NN``.
+    """
     zh = class_zh(cls, attrs, instance)
+    if str(instance).startswith(CONTEXT_PREFIX):
+        label = str((attrs or {}).get(CONTEXT_LABEL) or "").strip()
+        zh = f"框外·{label or zh}"
     return f"{zh} {instance}" if zh and zh != instance else str(instance)

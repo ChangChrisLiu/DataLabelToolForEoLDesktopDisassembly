@@ -37,6 +37,7 @@ KINDS: frozenset[str] = frozenset(
         "assert_state",  # manual StateEvents: a part's state at one frame (U8)
         "correct_verb",  # an action's open <-> remove: opened, or taken out (U9)
         "captive_fix",  # a screw's captive flag: unscrewed and out, or left in its part (U14)
+        "add_context",  # a 框外零件: an object outside the machine, made (or taken back) (U18)
     }
 )
 

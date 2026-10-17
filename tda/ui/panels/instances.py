@@ -52,6 +52,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from tda.ui import context_text as CONTEXT_T
 from tda.ui import session_api as api
 from tda.ui.canvas.overlay import palette_color
 from tda.ui.class_names import state_zh, visibility_zh
@@ -95,6 +96,9 @@ VERB_TIP = ("打开着的盖板/卡扣其实被拆走了（画面里没有它）
             "日志里那一步的「打开」改成「拆下」；拆下的零件（勾上 Removed）反过来。"
             "螺丝：拧松后其实拿走了 → 其实拧下来了；拧下后其实留在零件里 → 其实留在零件里 / "
             "the log's open was a removal, or the other way round; a screw: captive or not")
+
+#: The State cell of a 框外零件 (task U18): it has none; it is outside the machine.
+CONTEXT_STATE = "框外"
 
 #: The Vis cell of a part that has no shape on this frame yet (task U2c).
 NOT_DRAWN = "—"
@@ -289,10 +293,13 @@ class InstanceListPanel(QWidget):
                 if not gone:
                     swatch.setBackground(QBrush(QColor(*palette_color(key))))
                 vis_cell = self._vis_cell(data, gone)
+                outside = bool(data.get("context"))    # a 框外零件 (task U18)
+                label = str(data.get("label") or "")
                 cells = [
                     swatch,
-                    QTableWidgetItem(key),
-                    QTableWidgetItem(str(data.get("state", ""))),
+                    QTableWidgetItem(f"{key}  {label}" if outside and label else key),
+                    QTableWidgetItem(CONTEXT_STATE if outside
+                                     else str(data.get("state", ""))),
                     vis_cell,
                 ]
                 hidden = QTableWidgetItem("")
@@ -348,6 +355,12 @@ class InstanceListPanel(QWidget):
         """
         value = str(data.get("visibility", ""))
         item = QTableWidgetItem(_short(value))
+        if not gone and data.get("context") and data.get("absent"):
+            # a 框外零件 said not to be in this frame (I, task U18)
+            item.setText(CONTEXT_T.TAG_ABSENT)
+            item.setBackground(QBrush(OVERRIDE_COLOR))
+            item.setToolTip(CONTEXT_T.TAG_ABSENT_TIP)
+            return item
         if _not_drawn(data, gone):
             item.setText(NOT_DRAWN)
             item.setToolTip(NOT_DRAWN_TIP)

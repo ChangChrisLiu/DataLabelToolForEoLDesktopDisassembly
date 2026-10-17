@@ -17,7 +17,7 @@ from typing import Optional
 import numpy as np
 
 from tda.core.compiler import CompiledFrame, Window
-from tda.core.model import InstanceRec, Placement, Visibility
+from tda.core.model import CONTEXT_PLACEMENT, InstanceRec, Placement, Visibility
 from tda.core.states import FrameState
 
 __all__ = ["HIDING_VISIBILITY", "hidden_by_label", "instance_rows", "mark_cable",
@@ -30,13 +30,14 @@ ON_BENCH = Placement.ON_BENCH.value
 def painted(compiled: CompiledFrame) -> list[str]:
     """The instances the compiler actually composited, bottom-up.
 
-    The two placement groups are concatenated chassis-first: they never occlude
+    The placement groups are concatenated chassis-first: they never occlude
     each other, so any order between them is a presentation choice, and a part
-    lying on the bench is in front of the machine it came out of.
+    lying on the bench is in front of the machine it came out of. The 框外零件
+    (task U18) are a group of their own, last.
     """
-    return list(compiled.painted.get(IN_CHASSIS, [])) + list(
-        compiled.painted.get(ON_BENCH, [])
-    )
+    return (list(compiled.painted.get(IN_CHASSIS, []))
+            + list(compiled.painted.get(ON_BENCH, []))
+            + list(compiled.painted.get(CONTEXT_PLACEMENT, [])))
 
 
 def paint_order(compiled: CompiledFrame) -> list[str]:
