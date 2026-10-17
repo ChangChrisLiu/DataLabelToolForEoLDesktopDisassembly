@@ -38,11 +38,11 @@ from tda.models.load_gate import Turn, heavy
 from tda.ui.app_detect import DetCandidate, DetectMixin, detector_asked
 from tda.ui.guide import DRAW_NO_SAM as G_DRAW_NO_SAM
 from tda.ui.app_roi_worker import RoiProposer
-from tda.ui.class_names import class_zh
+from tda.ui.class_names import class_of_key, class_zh
 from tda.ui.context_text import NO_PROMPT_BOX as NO_PROMPT_BOX_CONTEXT
 
 __all__ = ["ASSIST_CONFIRM_WAIT", "BOX_REFUSED", "DET_CHIP", "DET_CHIP_NO_SAM",
-           "DET_CHIP_RANK", "EDITING_NO_BOX", "NO_ALTERNATE", "PROMPT_ARMED",
+           "DET_CHIP_RANK", "EDITING_NO_BOX", "HEAD_OFF_NOTE", "NO_ALTERNATE", "PROMPT_ARMED",
            "PROMPT_ARMED_DET", "PROMPT_ARMED_DET_NO_SAM", "PROMPT_CHIP",
            "PROMPT_CHIP_RANK", "PROMPT_TOO_BIG", "PROMPT_WITHHELD", "AssistMixin",
            "DiffOffer", "short_reason"]
@@ -159,6 +159,9 @@ BOX_REFUSED = ("你点在提示框外：这次只用你的点，提示框不用�
 #: ... held against SAM's "+N px" line, which lands a fraction of a second
 #: later and would otherwise wipe the one sentence saying why the box went.
 BOX_REFUSED_HOLD_MS = 4000
+#: After "SAM ready" while SAM's fine-tuned head is off (task U19): the masks
+#: are the stock head's, as before U19.  The log line says why.
+HEAD_OFF_NOTE = "（原版 SAM：微调头没加载）"
 
 
 def short_reason(text: str, limit: int = 48) -> str:
@@ -376,16 +379,46 @@ class AssistMixin(DetectMixin):
         Changing it also throws the half-built prompt away: the points clicked
         so far were about the *previous* part, and sending them with the next
         click made every mask after the first commit a union of the two.
+
+        The tools are told the instance's class with it (task U19): SAM picks
+        its decoder head by it for a prompt without a box.  Looked up when the
+        instance changes, not on every frame that re-announces the same one.
         """
         changed = any(tool.instance != instance
                       for tool in (self.sam_point, self.sam_box))
+        cls = self.sam_class_of(instance) if changed else self.sam_point.instance_cls
         for tool in (self.sam_point, self.sam_box):
             if tool.instance != instance:
                 tool.reset_prompt()
             tool.instance = instance
+            tool.instance_cls = cls
         if changed:
             self.reset_prompt_rank()
         self.hand_prompt_box_to_tools()
+
+    def sam_class_of(self, instance: Optional[str]) -> Optional[str]:
+        """The taxonomy class of ``instance`` as SAM is told it, ``None`` when unknown.
+
+        The card's row first (a sequence frame, the components gallery), then
+        the desktop's instance table, then what the key says -- which for a
+        框外零件 is the class after ``ctx.`` (task U18), ``other`` included.
+        An unknown class is a small part as far as SAM's routing goes.
+        """
+        if not instance:
+            return None
+        try:
+            for row in self.task_card.rows():
+                if str(row.get("instance")) == str(instance) and row.get("cls"):
+                    return str(row["cls"])
+        except Exception:  # noqa: BLE001 - a class is never worth a failure
+            pass
+        try:
+            rec = self.db.instances(int(self.session.desktop)).get(str(instance))
+        except Exception:  # noqa: BLE001
+            rec = None
+        if rec is not None and getattr(rec, "cls", None):
+            return str(rec.cls)
+        return class_of_key(str(instance)) or None
 
     def reset_sam_prompt(self) -> None:
         """Forget the points, the box drag and the candidates of both SAM tools.
@@ -1283,8 +1316,23 @@ class AssistMixin(DetectMixin):
             return f"SAM error: {self._sam_failure} (S to retry)"
         tool = self._candidate_tool()
         if tool is not None:
-            return f"SAM ready · {tool.candidate_index + 1}/{tool.candidate_count}"
-        return "SAM ready"
+            return (f"SAM ready · {tool.candidate_index + 1}/{tool.candidate_count}"
+                    f"{self.sam_head_note()}")
+        return f"SAM ready{self.sam_head_note()}"
+
+    def sam_head_reason(self) -> str:
+        """Why SAM's fine-tuned head is off (task U19), ``""`` when it is on.
+
+        Also ``""`` when the queue does not say -- one handed in by a test or
+        a smoke run, which never asked for a head.
+        """
+        service = getattr(self.sam_queue, "service", None)
+        reason = getattr(service, "head_off_reason", "")
+        return reason if isinstance(reason, str) else ""
+
+    def sam_head_note(self) -> str:
+        """:data:`HEAD_OFF_NOTE` while the fine-tuned head is off, else ``""``."""
+        return HEAD_OFF_NOTE if self.sam_head_reason() else ""
 
     def note_sam_failure(self, text: str) -> None:
         """Remember that the last prompt failed, until the next one is armed."""
@@ -1391,13 +1439,17 @@ class AssistMixin(DetectMixin):
         def load() -> None:
             try:
                 with heavy("sam"):
-                    from tda.models import sam_service
+                    from tda.models import sam_heads, sam_service
 
                     # The paths the app was *started* with, not the repo's own
                     # configs/paths.yaml: --paths was being ignored for the weights.
                     checkpoint = sam_service.checkpoint_in(paths)
-                    service = (sam_service.SamService(checkpoint=str(checkpoint))
-                               if checkpoint is not None else sam_service.SamService())
+                    # Task U19: the fine-tuned head, or a WARNING and the stock
+                    # head alone -- configs/sam.yaml (TDA_SAM_HEAD overrides).
+                    heads = sam_heads.load_sam_head_config()
+                    service = (sam_service.SamService(checkpoint=str(checkpoint), heads=heads)
+                               if checkpoint is not None
+                               else sam_service.SamService(heads=heads))
                 outcome: object = sam_service.SamQueue(service)
             except Exception as exc:  # noqa: BLE001 - the app works without SAM
                 outcome = f"{type(exc).__name__}: {exc}"
@@ -1436,8 +1488,11 @@ class AssistMixin(DetectMixin):
             return
         self._sam_load_failed = ""
         self.set_sam_queue(outcome, owns=True)
-        self.logger.info("SAM: ready")
-        self.report("SAM ready")
+        heads = getattr(getattr(outcome, "service", None), "heads", None)
+        why = self.sam_head_reason()
+        self.logger.info("SAM: ready (heads: %s%s)", ", ".join(heads or ("stock",)),
+                         f"; fine-tuned head off: {why}" if why else "")
+        self.report(f"SAM ready{self.sam_head_note()}")
 
     def retry_sam(self) -> bool:
         """``F5`` after a failed load: one more load, once per press (task U6).

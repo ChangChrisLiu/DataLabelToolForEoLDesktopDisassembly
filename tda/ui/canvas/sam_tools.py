@@ -135,6 +135,10 @@ class SamToolBase(CandidatesMixin, Tool):
             only the region near the new points changes (spec 4.6).
         instance: instance key the result belongs to; ``None`` keeps whatever
             the overlay is already editing.
+        instance_cls: the taxonomy class of that instance, sent with every
+            request (:attr:`~tda.models.sam_service.SamRequest.instance_cls`)
+            so the service can pick its decoder head (task U19); ``None`` when
+            unknown.  The window sets it with :attr:`instance`.
         prompt_box: optional box sent along with the points, set via
             :meth:`set_prompt_box` by the window, and only by it: the box of a
             :class:`~tda.core.diffmap.DiffBlob` from the frame difference map,
@@ -167,7 +171,12 @@ class SamToolBase(CandidatesMixin, Tool):
         self.queue = queue
         self.refine = bool(refine)
         self.instance = instance
+        self.instance_cls: Optional[str] = None
         self.last_result: Optional[SamResult] = None
+        #: The head (:attr:`SamResult.head`) whose answer this prompt last put
+        #: in the layer, or ``None``: a refinement is sent back to it (task
+        #: U19).  The prompt's, so :meth:`reset_prompt` forgets it.
+        self._answer_head: Optional[str] = None
         #: The frame to crop prompts from.  ``None`` means "whatever the canvas
         #: is displaying", which is only the same thing while nothing is being
         #: flashed over it; the window sets this on every frame change.
@@ -260,6 +269,8 @@ class SamToolBase(CandidatesMixin, Tool):
         self._reset_candidates()
         self.prompt_box = None
         self._prompt_identity = None
+        # Whoever writes the layer next, it is not this prompt's answer any more.
+        self._answer_head = None
 
     # -- frame identity -----------------------------------------------------
     @property
@@ -428,13 +439,17 @@ class SamToolBase(CandidatesMixin, Tool):
             # A refinement is different: it already has the shape to improve,
             # and only the blended result is a valid edit.
             multimask=mask_input is None,
+            # Task U19: the class picks the head of a prompt without a box, and
+            # a refinement goes back to the head whose answer it refines.
+            instance_cls=self.instance_cls,
+            mask_input_head=self._answer_head if mask_input is not None else None,
         )
         self._reset_candidates()
         self._token += 1
         self._submitted_at = time.perf_counter()
-        log.info("sam prompt instance=%s points=%d box=%s refine=%s multimask=%s",
-                 self._target_instance(), len(crop_points), crop_box is not None,
-                 bool(self.refine), bool(req.multimask))
+        log.info("sam prompt instance=%s cls=%s points=%d box=%s refine=%s multimask=%s",
+                 self._target_instance(), self.instance_cls, len(crop_points),
+                 crop_box is not None, bool(self.refine), bool(req.multimask))
         stamp = (self._token, self._identity())
         bridge = self._bridge
         # on_error matters as much as the callback: without it a failed
@@ -531,10 +546,12 @@ class SamToolBase(CandidatesMixin, Tool):
 
         elapsed = ((time.perf_counter() - self._submitted_at) * 1000.0
                    if self._submitted_at else -1.0)
-        log.info("sam result instance=%s candidates=%d ms=%.0f picked=1",
+        head = getattr(result, "head", None)
+        log.info("sam result instance=%s candidates=%d ms=%.0f picked=1 head=%s",
                  self._target_instance(),
-                 len(result.candidates or [result.mask]), elapsed)
+                 len(result.candidates or [result.mask]), elapsed, head)
         self.last_result = result
+        self._answer_head = head if isinstance(head, str) else None
         self._candidates = [
             np.asarray(mask).astype(bool)
             for mask in (result.candidates or [result.mask])
