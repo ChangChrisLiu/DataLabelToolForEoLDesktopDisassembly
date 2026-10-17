@@ -174,6 +174,20 @@ def captive_signature(instances: dict[str, InstanceRec]) -> dict[str, tuple]:
             if rec.cls == "screw" and not is_context(rec)}   # a 框外零件 is no screw (U18)
 
 
+def context_signature(instances: dict[str, InstanceRec]) -> dict[str, tuple]:
+    """``ctx key -> (class, label)`` of the 框外零件 in ``instances`` (U18 review, B2).
+
+    Annotate mode makes them, takes them back with ``Ctrl+Z`` and draws them
+    without the Steps panel hearing of it; this is what tells the panel its
+    「框外零件」 block is behind the database, as :func:`captive_signature`
+    does for the screws.
+    """
+    from tda.core.model import CONTEXT_LABEL
+
+    return {key: (rec.cls, str((rec.attrs or {}).get(CONTEXT_LABEL) or ""))
+            for key, rec in instances.items() if is_context(rec)}
+
+
 def forget_deleted(signature: dict[str, tuple], key: str) -> dict[str, tuple]:
     """``signature`` after a write-through delete of ``key``: gone, and nobody's parent."""
     return {other: ((value[0], value[1], None, False) if value[2] == key else value)
@@ -681,6 +695,29 @@ class StepTableData:
     def context_keys(self) -> list[str]:
         """The context objects, in key order: the Instances table's last block."""
         return sorted(self.context)
+
+    def reload_context(self, db: Db) -> None:
+        """Re-read the context objects alone, keeping the renames not applied yet.
+
+        Annotate mode makes and takes back context objects behind this table
+        (U18 review, B2); the staged steps, actions and parts are not touched,
+        and a staged rename of an object still there is put back on top.
+        """
+        from tda.core.model import CONTEXT_LABEL
+
+        staged = {key: (self.context[key].attrs or {}).get(CONTEXT_LABEL)
+                  for key in self.relabelled if key in self.context}
+        stored = {key: rec for key, rec in db.instances(self.desktop).items()
+                  if is_context(rec)}
+        self.relabelled = {k: v for k, v in self.relabelled.items() if k in stored}
+        for key, label in staged.items():
+            if key not in stored:
+                continue
+            if label:
+                stored[key].attrs[CONTEXT_LABEL] = label
+            else:
+                stored[key].attrs.pop(CONTEXT_LABEL, None)
+        self.context = stored
 
     def relabel_context(self, key: str, label: Any) -> None:
         """Rename a context object; written by :meth:`save`, like a cell edit."""

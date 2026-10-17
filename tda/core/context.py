@@ -58,6 +58,7 @@ from tda.core.model import (
     PairOverride,
     ShapeKeyframe,
     ShapePart,
+    Visibility,
     ZOrderRec,
     is_context,
     is_context_key,
@@ -66,9 +67,10 @@ from tda.core.taxonomy import Taxonomy
 
 __all__ = [
     "ADDED_AT", "ADDED_BY", "NOTE_ATTR", "OP_ADD", "OP_DELETE", "OP_LABEL", "OP_VIEW",
-    "ContextError", "chain_of", "class_choices", "context_keys", "context_label",
-    "context_needs", "context_reach", "frames_of", "next_key", "plan_context",
-    "relabel_context", "remove_context", "restore_context", "write_context",
+    "ContextError", "chain_of", "class_choices", "confirmed_frames", "context_keys",
+    "context_label", "context_needs", "context_reach", "frames_of", "keys_in_use",
+    "next_key", "plan_context", "relabel_context", "remove_context", "restore_context",
+    "said_absent", "write_context",
 ]
 
 #: ``attrs`` provenance keys (the extras' names, :mod:`tda.core.extra`).
@@ -83,6 +85,7 @@ OP_LABEL = "relabel_context_instance"
 OP_VIEW = "-"
 
 _ORDINAL = re.compile(r"\.(\d+)$")
+OUT_OF_VIEW = Visibility.OUT_OF_VIEW.value
 
 
 class ContextError(ValueError):
@@ -123,13 +126,57 @@ def next_key(keys: Iterable[str], cls: str) -> str:
     return f"{prefix}{top + 1:02d}"
 
 
+#: The tables whose ``instance`` column can still name a context object that
+#: is gone -- a confirmed row, a conflict about it, a shape an undo left behind.
+_NAMING_TABLES = ("shape_keyframe", "compiled_mask", "conflict", "frame_override")
+
+
+def keys_in_use(db: Db, desktop: int) -> set[str]:
+    """Every context key this desktop has ever had, or that anything still names.
+
+    The instance table's, the ones still named by a shape, a truth row, a
+    conflict, a frame override or a pair override -- and every key an
+    :data:`OP_ADD` row ever made. :func:`next_key` never hands one of them out
+    again: a deleted object's confirmed rows and open conflicts are about
+    *that* object, and a new one with its key would inherit them (U18 review).
+    """
+    desktop = int(desktop)
+    like = f"{CONTEXT_PREFIX}%"
+    found = {key for key in db.instances(desktop) if is_context_key(key)}
+    for table in _NAMING_TABLES:
+        found |= {str(r[0]) for r in db.conn.execute(
+            f"SELECT DISTINCT instance FROM {table} WHERE desktop=? AND instance LIKE ?",
+            (desktop, like)).fetchall()}
+    for column in ("above", "below"):
+        found |= {str(r[0]) for r in db.conn.execute(
+            f"SELECT DISTINCT {column} FROM pair_override WHERE desktop=? AND {column} LIKE ?",
+            (desktop, like)).fetchall()}
+    for op in db.ops_of_kind(desktop, OP_ADD):
+        made = ((op.get("payload") or {}).get("instance") or {}).get("key")
+        if made:
+            found.add(str(made))
+    return found
+
+
+def confirmed_frames(db: Db, desktop: int, key: str) -> dict[str, list[int]]:
+    """``view -> steps`` where a human confirmed a row of this object."""
+    out: dict[str, list[int]] = {}
+    for row in db.conn.execute(
+            "SELECT view, step FROM compiled_mask WHERE desktop=? AND instance=? "
+            "AND status='verified' ORDER BY view, step", (int(desktop), str(key))).fetchall():
+        out.setdefault(str(row["view"]), []).append(int(row["step"]))
+    return out
+
+
 def plan_context(instances: dict[str, InstanceRec], tax: Taxonomy, desktop: int,
                  cls: str, label: str = "", note: str = "", annotator: str = "",
-                 now: Optional[str] = None) -> InstanceRec:
+                 now: Optional[str] = None, taken: Iterable[str] = ()) -> InstanceRec:
     """The record of one new context object, not written yet.
 
     ``cls`` is a taxonomy class or ``other``; ``label`` is required for
     ``other`` (what else would say what it is) and optional otherwise.
+    ``taken`` are keys never to hand out again besides the table's
+    (:func:`keys_in_use`).
     """
     cls = str(cls or "").strip()
     if cls != CONTEXT_OTHER and cls not in tax.classes:
@@ -137,7 +184,7 @@ def plan_context(instances: dict[str, InstanceRec], tax: Taxonomy, desktop: int,
     label = str(label or "").strip()
     if cls == CONTEXT_OTHER and not label:
         raise ContextError("「其他」要写名字：它是什么 / an 'other' object needs a name")
-    key = next_key(instances, cls)
+    key = next_key([*instances, *taken], cls)
     if key in instances:  # pragma: no cover - next_key is one past the highest
         raise ContextError(f"D{desktop:02d} already has {key}")
     attrs: dict = {CONTEXT_ATTR: True, ADDED_BY: str(annotator or "unknown"),
@@ -183,6 +230,17 @@ def relabel_context(db: Db, desktop: int, key: str, label: str, annotator: str =
 # --------------------------------------------------------------------------- #
 # geometry
 # --------------------------------------------------------------------------- #
+def said_absent(override: Optional[FrameOverride]) -> bool:
+    """Has 「不在这张里」 (``I``) been said of a context object on this frame?
+
+    The ``out_of_view`` label, whatever pixels the override keeps: a
+    single-frame mask drawn there (``Alt+Enter``) stays under the label, so
+    taking the label back brings it back (U18 review, M3). The compiler
+    shows nothing of a part labelled ``out_of_view`` either way.
+    """
+    return override is not None and str(override.visibility) == OUT_OF_VIEW
+
+
 def chain_of(keyframes: Iterable[ShapeKeyframe], key: FrameKey,
              pose_segment: int) -> list[ShapeKeyframe]:
     """A context object's keyframes of ``key``'s view in one pose segment."""

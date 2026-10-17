@@ -37,13 +37,20 @@ from tda.ui import app_compat as compat
 from tda.ui import app_support as S
 from tda.ui import context_text as T
 
-__all__ = ["ContextMixin", "ContextRangeDialog", "NO_FRAME", "WRONG_MODE"]
+__all__ = ["CONTEXT_UNDO_CLEARED", "ContextMixin", "ContextRangeDialog", "NO_FRAME",
+           "RANGE_ABSENT_NOTE", "RANGE_BACK_NOTE", "WRONG_MODE"]
 
 #: 「框外零件…」 outside Annotate mode, and with no frame to draw on.
 WRONG_MODE = "切到标注模式再新建框外零件 / switch to Annotate mode"
 NO_FRAME = "这一帧没有图像：框外零件要画在有图的帧上 / no image here"
 #: The SAM tools take the right button as a negative point.
 _SAM_TOOLS = ("sam_point", "sam_box")
+#: After a 框外零件 was deleted in Steps mode (U18 review, B1).
+CONTEXT_UNDO_CLEARED = ("Steps 里删除了框外零件：标注模式的撤销记录从这里重新开始（和 Apply 一样）/ "
+                        "the undo history starts afresh")
+#: The ``Ctrl+I`` dialog's line under each option (U18 review, N2).
+RANGE_ABSENT_NOTE = "这一段里画着它的帧都标「不在」（没画它的帧本来就没有它）。"
+RANGE_BACK_NOTE = "这一段里标了「不在」的帧都撤回（没标的不动；单帧形状还在的话会重新显示）。"
 
 
 class ContextRangeDialog(QDialog):
@@ -67,14 +74,23 @@ class ContextRangeDialog(QDialog):
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        #: What the chosen option does, said for that option (U18 review, N2).
+        self.explain = QLabel("")
+        self.explain.setWordWrap(True)
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(f"{label}：从第 {step} 步起（这一位姿段第 {low}–{high} 步）"))
         layout.addWidget(self.what)
         layout.addWidget(self.step_box)
-        layout.addWidget(QLabel("这一段里画着它的帧都标「不在」（没画它的帧本来就没有它）。"))
+        layout.addWidget(self.explain)
         layout.addWidget(buttons)
+        self.what.currentIndexChanged.connect(self._explain)
+        self._explain()
         self.step_box.setFocus()
         self.step_box.selectAll()
+
+    def _explain(self, *_args) -> None:
+        self.explain.setText(RANGE_ABSENT_NOTE if self.what.currentData()
+                             else RANGE_BACK_NOTE)
 
     def answer(self) -> tuple[bool, int]:
         return bool(self.what.currentData()), int(self.step_box.value())
@@ -156,10 +172,17 @@ class ContextMixin:
 
     @S.guard
     def on_context_changed(self) -> None:
-        """Steps mode deleted a 框外零件, written through: the frame in hand follows."""
+        """Steps mode deleted a 框外零件, written through: the frame in hand follows.
+
+        The session drops its undo history (an op of it may name the object:
+        undoing or redoing it would write a shape for an instance that is gone,
+        U18 review B1), as an ``Apply`` reopening it does.
+        """
         changed = getattr(self.session, "context_changed", None)
         if callable(changed) and compat.is_open(self.session):
             changed()
+            self._sync_editing_layer()
+            self.report(CONTEXT_UNDO_CLEARED)
 
     def open_context_from_steps(self) -> None:
         """The 「＋ 添加零件」 dialog's 「框外零件…」: to Annotate, then as from the canvas."""

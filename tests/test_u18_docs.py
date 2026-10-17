@@ -46,8 +46,10 @@ def test_the_quickstart_has_one_short_section_with_the_example():
     head = "### 机器外面的东西（「框外零件」）"
     assert body.count(head) == 1
     section = body.split(head, 1)[1].split("\n#", 1)[0]
-    for needed in ("D5 第 20 帧", "右键", "「框外零件…」", "cooler_bracket", "`Enter`",
-                   "第 10 帧", "`I`", "「不在」", "`Ctrl+I`"):
+    for needed in ("假设的例子", "假如 D5 第 20 帧", "右键", "「框外零件…」", "cooler_bracket",
+                   "`Enter`", "第 10 帧", "`I`", "「不在」", "`Ctrl+I`",
+                   # review M4: what it does to frames already confirmed
+                   "已经确认过的帧复检时会回到待复核", "再按一次 `Space`"):
         assert needed in section, needed
     assert len(section) < 900                                # short
 

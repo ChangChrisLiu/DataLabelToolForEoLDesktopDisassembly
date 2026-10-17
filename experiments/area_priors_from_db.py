@@ -6,7 +6,8 @@
         --db D:\\DataSet\\.cache\\tmp\\tda_copy.sqlite --out configs/area_priors.yaml
 
 What it reads: every ``shape_keyframe`` with a mask, its instance's class, and
-the ROI of the pose segment the keyframe belongs to.  What it writes: per class
+the ROI of the pose segment the keyframe belongs to -- not a 框外零件's
+(``ctx.*``, task U18), which is no part of the machine.  What it writes: per class
 ``{min_frac, max_frac}`` as **fractions of the ROI area**, which is the only
 view-independent way to compare a screw on a 1600x1600 scan with the same screw
 on a 4032x3040 OAK frame.
@@ -133,7 +134,9 @@ def collect(db_path: str) -> tuple[dict[str, list[float]], dict[str, int]]:
         query = (
             "SELECT k.desktop, k.view, k.pose_segment, k.instance, p.rle_json "
             "FROM shape_keyframe k JOIN shape_part p ON p.keyframe_id = k.id "
-            "WHERE k.geom_type = 'mask' AND p.rle_json IS NOT NULL"
+            "WHERE k.geom_type = 'mask' AND p.rle_json IS NOT NULL "
+            # a 框外零件 (task U18) is no part of the machine: not a prior of its class
+            "AND k.placement <> 'context' AND k.instance NOT LIKE 'ctx.%'"
         )
         for row in conn.execute(query):
             cls = classes.get((row["desktop"], row["instance"]))

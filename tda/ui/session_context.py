@@ -7,8 +7,9 @@ this module is what the window calls on the open frame:
   its inverse) and push an ``add_context`` op on the undo stack, so ``Ctrl+Z``
   takes it back -- with its shapes, if any were drawn and not undone before it
   (:func:`apply_context`: both directions of the op, one handler);
-* ``I`` on one -- 「不在这张里」: an ``out_of_view`` label with no pixels on this
-  frame, the gallery's 看不见, toggled (:meth:`ContextMixin.toggle_context_absent`),
+* ``I`` on one -- 「不在这张里」: an ``out_of_view`` label on this frame, the
+  gallery's 看不见 (a single-frame mask stays under it, so ``I`` ``I`` is a
+  round trip), toggled (:meth:`ContextMixin.toggle_context_absent`),
   and ``Ctrl+I`` the same over a span of the pose segment in one op
   (:meth:`ContextMixin.set_context_absent_range`);
 * the instance list's rows for the context objects the frame does not have
@@ -23,14 +24,16 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Optional
 
-from tda.core.compiler import marked_absent, select_keyframe
+from tda.core.compiler import select_keyframe
 from tda.core.context import (
     ContextError,
     chain_of,
     context_label,
+    keys_in_use,
     plan_context,
     remove_context,
     restore_context,
+    said_absent,
     write_context,
 )
 from tda.core.db import Db
@@ -59,6 +62,11 @@ OP_KIND = "add_context"
 #: The ``Ctrl+I`` op: the U15 range kind, written without a cable reason.
 OP_RANGE = "set_frame_overrides"
 ABSENT = Visibility.OUT_OF_VIEW.value
+
+
+def _kept_mask(previous: Optional[FrameOverride]) -> Optional[dict]:
+    """The single-frame mask an override holds (``Alt+Enter``), kept under the label."""
+    return None if previous is None else previous.visible_rle
 
 
 def context_name(rec) -> str:
@@ -118,7 +126,7 @@ class ContextMixin:
         if overrides is None:
             overrides = self.db.frame_overrides(self.current())
         return {name for name, fo in overrides.items()
-                if is_context_key(name) and marked_absent(fo)}
+                if is_context_key(name) and said_absent(fo)}
 
     def context_rows(self, listed: set[str], instances: Optional[dict] = None) -> list[dict]:
         """Instance-list rows for the context objects ``listed`` does not have.
@@ -160,8 +168,10 @@ class ContextMixin:
         if self.layer.active and self.layer.changed():
             raise SessionRefusal(f"{self.layer.instance} 正在画、还没提交：先 Enter 或 Esc")
         try:
+            # never a key anything still names, or any object ever had (U18 review)
             rec = plan_context(self.db.instances(self.desktop), self.tax, self.desktop,
-                               cls, label, note, self.annotator)
+                               cls, label, note, self.annotator,
+                               taken=keys_in_use(self.db, self.desktop))
             write_context(self.db, rec, self.annotator)
         except ContextError as refused:
             raise SessionRefusal(str(refused)) from None
@@ -177,8 +187,18 @@ class ContextMixin:
         return rec.key
 
     def context_changed(self) -> None:
-        """A context object went elsewhere (Steps mode): recompile what is shown."""
+        """A context object was deleted elsewhere (Steps mode), written through.
+
+        The undo history goes, as an ``Apply`` reopening the session drops it:
+        an op of it may name the object -- its creation, a commit of its shape
+        -- and undoing or redoing one would write a keyframe and a layer-order
+        entry for an instance that no longer exists (U18 review, B1). Then the
+        frame in hand is recompiled.
+        """
         self._drop_gone_context_edit()
+        self.undo_stack.clear()
+        self._saved_at = self._history_mark()
+        self._refresh_dirty()
         self._invalidate()
         self._announce()
 
@@ -207,10 +227,12 @@ class ContextMixin:
     def toggle_context_absent(self, instance: str) -> dict:
         """``I`` on a context object: 「不在这张里」, or -- again -- take it back.
 
-        The label is ``out_of_view`` with no pixels on this frame (undoable);
-        taking it back keeps a single-frame mask drawn there. Refused where no
-        shape of it applies (it is not here anyway) and while its pixels are
-        being drawn.
+        The label is ``out_of_view`` on this frame (undoable), and only the
+        label: a single-frame mask drawn there (``Alt+Enter``) stays in the
+        override under it -- the compiler shows nothing of a part out of view
+        -- and taking the label back brings it back, so ``I`` ``I`` is a round
+        trip (U18 review, M3). Refused where no shape of it applies (it is not
+        here anyway) and while its pixels are being drawn.
         """
         marked, why = self.context_absent_gate(instance)
         if why:
@@ -226,16 +248,17 @@ class ContextMixin:
         return {"absent": True}
 
     def _mark_absent(self, instance: str) -> None:
-        """The label with no pixels: a single-frame mask there goes with it."""
+        """The label alone: a single-frame mask there stays under it (M3)."""
         key = self.current()
         previous = self.db.frame_overrides(key).get(instance)
+        kept = _kept_mask(previous)
         common = {"desktop": key.desktop, "view": key.view, "step": key.step,
                   "instance": instance, "steps": [key.step]}
         payload = common | {"exists": True, "visibility": ABSENT, "occluder": None,
-                            "visible_rle": None}
+                            "visible_rle": kept}
         inverse = common | override_state(previous)
         with self.db.transaction():
-            self.db.set_frame_override(FrameOverride(key, instance, None, ABSENT))
+            self.db.set_frame_override(FrameOverride(key, instance, kept, ABSENT))
             self.db.log_op(key.desktop, key.view, "set_frame_override", payload, inverse,
                            self.annotator)
         self._after_edit(edit._result(self.db, self.truth, key, [key.step],
@@ -246,8 +269,9 @@ class ContextMixin:
 
         One op over the annotatable frames of this pose segment between the
         two: 「不在」 on the frames a shape of it applies to (the others do not
-        have it anyway), 撤回 on the frames that carry the label. Returns
-        ``{"frames": [steps written]}``.
+        have it anyway), 撤回 on the frames that carry the label. Only the
+        label moves: a single-frame mask stays in the override both ways, as
+        with ``I`` (M3). Returns ``{"frames": [steps written]}``.
         """
         if not is_context_key(instance):
             raise SessionRefusal(T.NOT_IN_TABLE.format(instance=instance))
@@ -268,16 +292,17 @@ class ContextMixin:
         for step in steps:
             here = FrameKey(key.desktop, step, key.view)
             previous = self.db.frame_overrides(here).get(str(instance))
+            kept = _kept_mask(previous)
             if absent:
-                if marked_absent(previous) or not self._context_applies(str(instance), here):
+                if said_absent(previous) or not self._context_applies(str(instance), here):
                     continue
-                after = {"exists": True, "visible_rle": None, "visibility": ABSENT,
+                after = {"exists": True, "visible_rle": kept, "visibility": ABSENT,
                          "occluder": None}
             else:
-                if not marked_absent(previous):
+                if not said_absent(previous):
                     continue
-                after = {"exists": False, "visible_rle": None, "visibility": None,
-                         "occluder": None}
+                after = {"exists": kept is not None, "visible_rle": kept,
+                         "visibility": None, "occluder": None}
             frames.append({"step": step} | after)
             before.append({"step": step} | override_state(previous))
         if not frames:
