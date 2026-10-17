@@ -42,7 +42,8 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen, QPixmap
 
 __all__ = [
-    "CHIP_BG", "CHIP_GAP", "CHIP_MARGIN", "CHIP_MAX_W", "CURSOR_RING_PX", "DASH_PX",
+    "CABLE_PX", "CHIP_BG", "CHIP_GAP", "CHIP_MARGIN", "CHIP_MAX_W", "CURSOR_RING_PX",
+    "DASH_PX",
     "DRAFT_RGB", "DRAG_BAND", "DRAG_RGB", "FIRST_VERTEX_HOT_PX", "FIRST_VERTEX_PX",
     "GAP_PX", "HANDLE_EDGE", "HINT_PX",
     "OCCLUDER_RGB", "OutlineStyle", "PROMPT_BOX", "PROMPT_POINT", "PROMPT_RGB",
@@ -50,7 +51,7 @@ __all__ = [
     "RESERVED_HUE_HALF_WIDTHS", "RESERVED_RGBS", "ROI_CHIP", "ROI_EDITING",
     "ROI_HUE_HALF_WIDTH", "ROI_RGB", "ROI_STORED", "SHAPE_CLOSING", "SHAPE_EDGE",
     "SHAPE_RGB", "VERTEX_PX",
-    "UNDER_ALPHA", "UNDER_EXTRA_PX", "chip_pixmap", "draw_outline_rect",
+    "UNDER_ALPHA", "UNDER_EXTRA_PX", "cable_style", "chip_pixmap", "draw_outline_rect",
     "hint_style", "hue_degrees", "hue_distance", "place_chip", "reserved_half_width",
     "reserved_hue_bands",
 ]
@@ -195,6 +196,18 @@ CURSOR_RING_PX = 1.8
 def hint_style(rgb: Sequence[int]) -> OutlineStyle:
     """The outline of one hover hint in its source's colour."""
     return OutlineStyle("hint", (int(rgb[0]), int(rgb[1]), int(rgb[2])), HINT_PX)
+
+
+#: A part 被线挡住（完全） on this frame (task U15): its visible mask is empty, so
+#: nothing is filled; its whole (amodal) outline is drawn dashed in the part's
+#: own palette colour -- "it is there, but hidden" -- over the dark under-stroke
+#: every outline has, so it reads on the chassis and on the scan bed alike.
+CABLE_PX = 2.0
+
+
+def cable_style(rgb: Sequence[int]) -> OutlineStyle:
+    """The dashed amodal outline of one part hidden by a cable, in its colour."""
+    return OutlineStyle("cable", (int(rgb[0]), int(rgb[1]), int(rgb[2])), CABLE_PX)
 
 
 def draw_outline_rect(painter: QPainter, rect: QRectF, style: OutlineStyle,

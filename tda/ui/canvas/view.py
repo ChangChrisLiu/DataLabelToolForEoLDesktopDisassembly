@@ -27,6 +27,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPen,
     QPixmap,
+    QPolygonF,
     QTransform,
 )
 from PySide6.QtWidgets import (
@@ -458,6 +459,11 @@ class ImageCanvas(QGraphicsView):
         #: ``[((x0, y0, x1, y1), label, rgb), ...]`` in image coordinates.
         #: Display only -- nothing reads it back.
         self._hints: list[tuple[tuple[float, float, float, float], str,
+                                tuple[int, int, int]]] = []
+        #: The parts 被线挡住（完全） on this frame (task U15): their amodal
+        #: outlines, ``[(polygons, rgb)]`` in image coordinates, drawn dashed
+        #: with no fill -- the overlay paints nothing for an empty visible mask.
+        self._cable: list[tuple[tuple[tuple[tuple[float, float], ...], ...],
                                 tuple[int, int, int]]] = []
         self._last_zoom: Optional[float] = None
         #: What the armed tool looks like under the mouse; ``None`` means the
@@ -986,6 +992,39 @@ class ImageCanvas(QGraphicsView):
         """The outlines on screen (a copy)."""
         return list(self._hints)
 
+    def set_cable_outlines(self, outlines) -> None:
+        """The dashed amodal outlines of the parts 被线挡住（完全） (task U15).
+
+        ``outlines`` is ``[(polygons, (r, g, b)), ...]``, each polygon a list of
+        ``(x, y)`` in image coordinates; ``[]`` takes them away. Setting what is
+        already shown repaints nothing. They are a layer like the masks: ``A``
+        hides them with the overlay.
+        """
+        value = [(tuple(tuple((float(x), float(y)) for x, y in poly) for poly in polys),
+                  tuple(int(c) for c in rgb)) for polys, rgb in (outlines or [])]
+        if value == self._cable:
+            return
+        self._cable = value
+        self.viewport().update()
+
+    def cable_outlines(self) -> list:
+        """The dashed outlines on screen (a copy)."""
+        return list(self._cable)
+
+    def _draw_cable(self, painter: QPainter, dpr: float) -> None:
+        """Each hidden part's whole outline, dashed, nothing filled."""
+        if not self._cable or (self._overlay is not None and not self._overlay.visible):
+            return
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for polygons, rgb in self._cable:
+            style = OS.cable_style(rgb)
+            shapes = [QPolygonF([QPointF(x + 0.5, y + 0.5) for x, y in poly])
+                      for poly in polygons if len(poly) >= 3]
+            for pen in (style.under_pen(dpr), style.over_pen(dpr)):
+                painter.setPen(pen)
+                for shape in shapes:
+                    painter.drawPolygon(shape)
+
     def _draw_hints(self, painter: QPainter, dpr: float,
                     exposed: Optional[QRectF] = None) -> None:
         """The hover outlines; their labels are chips (:meth:`chip_layout`)."""
@@ -1398,6 +1437,8 @@ class ImageCanvas(QGraphicsView):
         # one.  The painter's own ratio, so a grab is drawn like the screen.
         dpr = float(painter.device().devicePixelRatioF() or 1.0)
         self._draw_roi(painter, dpr, rect)
+        # under every hint and box: it is a fact about the frame, like a mask
+        self._draw_cable(painter, dpr)
         if self._prompt_band_shown():
             x0, y0, x1, y1 = self._prompt_band
             OS.draw_outline_rect(painter, QRectF(x0, y0, x1 - x0, y1 - y0),

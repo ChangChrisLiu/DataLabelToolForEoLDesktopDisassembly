@@ -11,7 +11,7 @@ import sqlite3
 
 import pytest
 
-from tda.core.db import Db
+from tda.core.db import SCHEMA_VERSION, Db
 from tda.core.model import FrameKey
 
 RLE_A = {"size": [4, 4], "counts": "0 4 12"}
@@ -69,7 +69,8 @@ def test_schema_v1_database_is_migrated_in_place(tmp_db_path: str):
     assert row["visible_rle"] == RLE_A  # the old data survives
     assert row["status"] == "verified"
     assert row["geom_type"] == "mask" and row["box"] is None  # the new columns default
-    assert db.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "4"
+    assert db.conn.execute("SELECT value FROM meta WHERE key='schema_version'"
+                           ).fetchone()[0] == str(SCHEMA_VERSION)
     db.close()
 
 
@@ -97,7 +98,8 @@ def test_a_v3_database_gains_the_empty_pose_break_table(tmp_db_path: str):
         assert db.conn.execute(
             "SELECT count(*) FROM pose_break").fetchone()[0] == 0
         assert db.conn.execute(
-            "SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "4"
+            "SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == str(
+                SCHEMA_VERSION)
         # the v3 data is still exactly where it was
         assert [(r["seg"], r["start_step"], r["end_step"])
                 for r in db.pose_segments(13, "scan")] == [(1, 1, 20)]
@@ -123,10 +125,11 @@ def test_a_v4_database_is_refused_by_a_build_that_knows_only_v3(tmp_db_path: str
     try:
         with pytest.raises(RuntimeError) as err:
             older.init_schema(Path(tda_core_dir()) / "schema.sql", 3)
-        assert "schema version 4" in str(err.value)
+        # the file is this build's (v5 since U15), which the v3 build names
+        assert f"schema version {SCHEMA_VERSION}" in str(err.value)
         stamped = older.conn.execute(
             "SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-        assert stamped == "4"       # left exactly as the newer build wrote it
+        assert stamped == str(SCHEMA_VERSION)   # left exactly as the newer build wrote it
     finally:
         older.conn.close()
 

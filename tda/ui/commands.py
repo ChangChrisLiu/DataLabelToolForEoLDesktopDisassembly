@@ -31,6 +31,7 @@ KINDS: frozenset[str] = frozenset(
         "set_zorder",  # instance stacking order of a frame
         "set_pair_override",  # PairOverride (A above B) for a pose segment
         "set_frame_override",  # FrameOverride (single-frame mask/visibility)
+        "set_frame_overrides",  # one instance's FrameOverride over a run (U15, Ctrl+I)
         "set_occluder",  # OccluderMask of one occluder_type on a frame
         "commit_keyframe",  # write/split a ShapeKeyframe
         "assert_state",  # manual StateEvents: a part's state at one frame (U8)

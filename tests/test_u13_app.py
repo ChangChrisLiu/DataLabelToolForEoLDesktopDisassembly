@@ -42,6 +42,7 @@ from tda.core.model import ShapeKeyframe, ShapePart
 from tda.ui import app_actions as A
 from tda.ui import session_api as api
 from tda.ui.app import MainWindow
+from tda.ui.app_cable import PICK_FIRST
 from tda.ui.app_gallery import NOT_A_GALLERY
 from tda.ui.app_state import CONFIRM_DIRTY, NO_TARGET_FOR, REMOVED_ROW
 from tda.ui.app_verb import NO_VERB_TARGET
@@ -302,7 +303,11 @@ def test_nothing_selected_greys_them_with_the_keys_own_sentences(window):
     assert state(window, "state_range") == (False, NO_TARGET_FOR["state_range"])
     assert state(window, "correct_verb") == (False, NO_VERB_TARGET)
     assert state(window, "confirm_cut_copy") == (False, NO_TARGET_FOR["confirm_cut_copy"])
-    assert state(window, "mark_absent") == (False, NOT_A_GALLERY)
+    # U15: on a sequence frame 「看不见」 is 被线挡住 -- "select a part first",
+    # naming the gallery's meaning (the card's own row is not a choice)
+    enabled, why = state(window, "mark_absent")
+    assert not enabled and why.startswith(PICK_FIRST)
+    assert NOT_A_GALLERY not in why
     for name in GROUP:
         button = window.palette.button(name)
         assert f"现在不能用：{button.reason()}" in button.toolTip()

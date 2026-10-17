@@ -55,6 +55,8 @@ from tda.ui import session_api as api
 from tda.ui.canvas.overlay import palette_color
 from tda.ui.class_names import state_zh, visibility_zh
 from tda.ui.panels import session_is_open
+from tda.ui.session_cable import LABEL_ZH as CABLE_ZH
+from tda.ui.session_cable import TAG_ZH as CABLE_TAGS
 from tda.ui.session_rows import HIDING_VISIBILITY
 
 __all__ = ["InstanceListPanel"]
@@ -91,6 +93,9 @@ VERB_TIP = ("打开着的盖板/卡扣其实被拆走了（画面里没有它）
 #: The Vis cell of a part that has no shape on this frame yet (task U2c).
 NOT_DRAWN = "—"
 NOT_DRAWN_TIP = "还没画：这一帧还没有它的形状 / not drawn yet"
+#: The Vis cell's tooltip of a part 被线挡住 here (task U15).
+CABLE_TIP = ("这一帧被线挡住（{how}）：零件在原位，形状保留；导出时写明被线缆挡住。"
+             "选中后再按 I 换（完全 → 部分 → 撤回），Ctrl+Z 撤销 / hidden by a cable")
 
 
 def _short(value: str) -> str:
@@ -340,6 +345,14 @@ class InstanceListPanel(QWidget):
         if _not_drawn(data, gone):
             item.setText(NOT_DRAWN)
             item.setToolTip(NOT_DRAWN_TIP)
+            return item
+        cable = data.get("cable")
+        if not gone and cable in CABLE_TAGS:
+            # 「被线挡住」 (task U15): the label says why, so it is the tag
+            item.setText(CABLE_TAGS[cable])
+            item.setBackground(QBrush(OVERRIDE_COLOR))
+            item.setForeground(QBrush(WARN_COLOR))
+            item.setToolTip(CABLE_TIP.format(how=CABLE_ZH[cable]))
             return item
         if gone or not data.get("vis_override"):
             return item

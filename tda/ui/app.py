@@ -39,6 +39,7 @@ from tda.ui import app_compat as compat
 from tda.ui import app_support as S
 from tda.ui.app_adopt import AdoptMixin
 from tda.ui.app_assist import AssistMixin
+from tda.ui.app_cable import CableMixin
 from tda.ui.app_commit import CommitMixin
 from tda.ui.app_edit import EditMixin
 from tda.ui.app_gallery import GalleryMixin
@@ -79,7 +80,7 @@ STEPS_UNSAVED = ("Steps 里有没 Apply 的修改（例如刚加的零件）：�
 
 class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateMixin,
                  VerbMixin, AssistMixin, GuideMixin, KeysMixin, RawDataMixin, GalleryMixin,
-                 ToolsMixin, StatusMixin, ShellMixin, QMainWindow):
+                 CableMixin, ToolsMixin, StatusMixin, ShellMixin, QMainWindow):
     """One annotator, one desktop/view, three modes."""
 
     def __init__(self, session, paths: dict, annotator: str, *,
@@ -304,6 +305,7 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateM
             return
         masks, order, windows = compat.overlay_layers(self.session)
         self.overlay.set_instances(masks, order, windows=windows)
+        self.refresh_cable_outlines()    # 被线挡住（完全）: no pixels, a dashed outline (U15)
         self.canvas.refresh()
 
 

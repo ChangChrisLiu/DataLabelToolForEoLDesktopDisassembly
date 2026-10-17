@@ -45,18 +45,25 @@ TERMINALS = ("conclude", "abstain")
 
 
 def observe(instance: str, value: Any, view: str, bbox: Sequence[float],
-            visibility: Optional[str], step: Optional[int] = None) -> dict:
+            visibility: Optional[str], step: Optional[int] = None,
+            occluder: Optional[str] = None) -> dict:
     """Read a value off this image, naming the box and the visibility it came from.
 
     ``bbox`` is required and must be non-empty: an ``observe`` without one is
     the one shape of chain the grounding metric cannot score, and the whole
     point of spec 8.2's rationale format is that the intermediate boxes are
     checkable. Use :func:`propagate_state` for a value this frame cannot show.
+
+    ``occluder`` (task U15): what nobody labels covers part of it here -- a
+    cable -- so the box holds pixels that are not the part's. Only written when
+    there is one.
     """
     if not bbox:
         raise ValueError(f"observe({instance!r}) needs the box it read the value off")
     evidence: dict[str, Any] = {"view": view, "bbox": list(bbox),
                                 "visibility": visibility}
+    if occluder:
+        evidence["occluder"] = str(occluder)
     if step is not None:
         evidence["step"] = int(step)
     return {"op": "observe", "target": instance, "value": value, "evidence": evidence}

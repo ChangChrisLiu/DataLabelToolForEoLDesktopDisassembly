@@ -14,6 +14,7 @@ from typing import Optional
 from tda.core import masks
 from tda.core.db import RESOLUTIONS
 from tda.core.model import FrameKey, FrameOverride, Placement, Visibility
+from tda.core.occluder import keeps_reason
 from tda.core.truth_conflicts import (
     AGREE_AGAIN,
     GEOM_BOX,
@@ -264,20 +265,28 @@ class ResolveMixin:
             )
         existing = self.db.frame_overrides(key).get(instance)
         held = None if existing is None else existing.visibility
+
+        def reason(visibility: Optional[str]) -> Optional[str]:
+            # the frame's 「被线挡住」 reason (U15) stays with a label it still fits
+            if existing is None or not keeps_reason(visibility):
+                return None
+            return existing.occluder
+
         if visible_rle is None:
             # the frozen row had no geometry at all: pin the label it carried
             row = self.db.compiled(key).get(instance) or {}
+            label = (pinned.get("visibility") or row.get("visibility")
+                     or Visibility.OUT_OF_VIEW.value)
             self.db.set_frame_override(FrameOverride(
                 key, instance,
                 visible_rle=None if existing is None else existing.visible_rle,
-                visibility=(pinned.get("visibility") or row.get("visibility")
-                            or Visibility.OUT_OF_VIEW.value),
+                visibility=label, occluder=reason(label),
             ))
             return
+        # a label the conflict was about is pinned here too, which is what
+        # "keep the old value" means when the pixels never moved
+        label = pinned.get("visibility") or held
         self.db.set_frame_override(FrameOverride(
-            key, instance,
-            visible_rle=visible_rle,
-            # a label the conflict was about is pinned here too, which is what
-            # "keep the old value" means when the pixels never moved
-            visibility=pinned.get("visibility") or held,
+            key, instance, visible_rle=visible_rle, visibility=label,
+            occluder=reason(label),
         ))

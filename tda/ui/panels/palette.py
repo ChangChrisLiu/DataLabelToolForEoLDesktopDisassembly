@@ -501,7 +501,7 @@ class ToolPalette(QWidget):
         self.state_header = self._header("状态")
         self.state_header.setToolTip("日志和画面对不上时用：这一帧的状态、一段帧的状态、"
                                      "其实拆下 / 其实只是打开；切开的形状副本没变；"
-                                     "零件合照里看不见")
+                                     "看不见（拆解序列里被线挡住，零件合照里不在这张）")
         layout.addWidget(self.state_header)
         for name in A.PALETTE_STATE:
             layout.addWidget(self._add(name, checkable=False))

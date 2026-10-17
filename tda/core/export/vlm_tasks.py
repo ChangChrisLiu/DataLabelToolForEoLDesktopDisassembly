@@ -955,7 +955,38 @@ def observed(instance: str, value: Any, tc: TaskCtx,
     if instance not in seen:
         return R.propagate_state(instance, value)
     row, box = seen[instance]
-    return R.observe(instance, value, tc.view, box, row.get("visibility"), step=step)
+    return R.observe(instance, value, tc.view, box, row.get("visibility"), step=step,
+                     occluder=row.get("occluder"))
+
+
+def seen_as(row: dict) -> dict:
+    """The per-instance evidence attributes of a row: its visibility, and its occluder.
+
+    ``occluder`` (task U15, 「被线挡住」) only when the frame names one: the part
+    is in its place and something nobody labels -- a cable -- covers it.
+    """
+    out = {"visibility": row.get("visibility")}
+    if row.get("occluder"):
+        out["occluder"] = row["occluder"]
+    return out
+
+
+#: How V14 abstains on a part 被线挡住（完全）: in place, and why it is not seen.
+HIDDEN_BY = {"cable": "a cable", "other_unlabeled": "something not annotated"}
+
+
+def unseen_reason(instance: str, row: dict, view: str) -> str:
+    """Why this view cannot tell: the label, or -- for a part under a cable -- the cable.
+
+    ``"X is occluded_full in view scan"`` for a bare label; a part the frame
+    says is 被线挡住 is ``"X is in place, hidden by a cable, in view scan"``
+    (X 在原位，被线缆挡住).
+    """
+    occluder = row.get("occluder")
+    if occluder:
+        return (f"{instance} is in place, hidden by "
+                f"{HIDDEN_BY.get(str(occluder), str(occluder))}, in view {view}")
+    return f"{instance} is {row.get('visibility')} in view {view}"
 
 
 def question_label(tc: TaskCtx, instance: str,
@@ -1031,9 +1062,10 @@ def gen_v1(tc: TaskCtx, step: int) -> Iterator[dict]:
         components.append({"class": cls, "instance": instance, "bbox": box,
                            "placement": row.get("placement")})
         bboxes[instance] = box
-        attrs[instance] = {"visibility": row.get("visibility")}
+        attrs[instance] = seen_as(row)
         used.append(row)
-        steps.append(R.observe(instance, cls, tc.view, box, row.get("visibility")))
+        steps.append(R.observe(instance, cls, tc.view, box, row.get("visibility"),
+                               occluder=row.get("occluder")))
     if not components:
         return
     rec_id = f"V1-{frame_id(tc.desktop, tc.view, step)}"
@@ -1088,9 +1120,9 @@ def _v2_states(tc: TaskCtx, frame: FrameData) -> Iterator[dict]:
             {"type": "exact", "derive": "instance_state", "instance": instance,
              "class": cls, "fields": ["state"],
              "allowed": sorted(tc.tax.states_of(cls))},
-            evidence({instance: box}, tc, {instance: {"visibility": row.get("visibility")}}),
+            evidence({instance: box}, tc, {instance: seen_as(row)}),
             R.rationale([R.observe(instance, inst.state, tc.view, box,
-                                   row.get("visibility"))]),
+                                   row.get("visibility"), occluder=row.get("occluder"))]),
             row_verified([row], frame.verified),
         )
 
@@ -1529,10 +1561,9 @@ def gen_v8(tc: TaskCtx, step: int) -> Iterator[dict]:
              "geometry": "visible_mask_bbox",
              "metric": "point_in_box" if tiny else "box_iou",
              "expression": family},
-            evidence({instance: box}, tc,
-                     {instance: {"visibility": row.get("visibility")}}),
+            evidence({instance: box}, tc, {instance: seen_as(row)}),
             R.rationale([R.observe(instance, tc.ctx.cls_of(instance), tc.view, box,
-                                   row.get("visibility"))]),
+                                   row.get("visibility"), occluder=row.get("occluder"))]),
             row_verified([row], frame.verified),
         )
 
@@ -1694,12 +1725,13 @@ def gen_v14(tc: TaskCtx, step: int) -> Iterator[dict]:
         if answerable:
             box = frame.pointable[instance][1]
             chain = R.rationale([R.observe(instance, state[instance].state, tc.view,
-                                           box, row.get("visibility"))])
+                                           box, row.get("visibility"),
+                                           occluder=row.get("occluder"))])
             bboxes = {instance: box}
         else:
             chain = R.rationale(
                 [R.propagate_state(instance, None)],
-                R.abstain(f"{instance} is {row.get('visibility')} in view {tc.view}"),
+                R.abstain(unseen_reason(instance, row, tc.view)),
             )
             bboxes = {}
         yield record(
@@ -1709,7 +1741,7 @@ def gen_v14(tc: TaskCtx, step: int) -> Iterator[dict]:
              "state": state[instance].state if answerable else None},
             {"type": "exact", "derive": "answerable", "instance": instance,
              "fields": ["answerable", "state"], "metric": "risk_coverage"},
-            evidence(bboxes, tc, {instance: {"visibility": row.get("visibility")}}),
+            evidence(bboxes, tc, {instance: seen_as(row)}),
             chain, row_verified([row], frame.verified),
             negative=None if answerable else "unanswerable",
         )
@@ -1776,12 +1808,13 @@ def _v15_cross(tc: TaskCtx, step: int, frame: FrameData, other: str,
              "blind_view": tc.view, "answer_view": other,
              "fields": ["state", "best_view"]},
             evidence({instance: box}, tc,
-                     {instance: {"visibility": here.get("visibility"),
-                                 f"visibility_{other}": row.get("visibility")}}),
+                     {instance: seen_as(here) | {
+                         f"visibility_{other}": row.get("visibility")}}),
             R.rationale([
                 R.propagate_state(instance, None),
                 R.observe(instance, state[instance].state, other, box,
-                          row.get("visibility"), step=step),
+                          row.get("visibility"), step=step,
+                          occluder=row.get("occluder")),
             ]),
             row_verified([row], frame.verified and mate.verified),
             views=[tc.view, other],

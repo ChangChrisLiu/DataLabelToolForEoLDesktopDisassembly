@@ -214,9 +214,10 @@ def test_annotation_geometry_and_attributes(db, tax, tmp_path: Path):
     assert psu["segmentation"]["size"] == [64, 64]
     assert psu["attributes"] == {
         "instance_key": PSU, "state": "installed", "placement": "in_chassis",
-        "visibility": "visible", "occlusion_ratio": 0.0, "amodal_complete": False,
-        "implied": False, "tier": "gold", "verified": True,
+        "visibility": "visible", "occluder": None, "occlusion_ratio": 0.0,
+        "amodal_complete": False, "implied": False, "tier": "gold", "verified": True,
     }
+    assert "amodal_segmentation" not in psu   # only a part 被线挡住 carries it (U15)
 
     screw = _ann_of(doc, 1, SCREW)
     assert screw["bbox"] == [50, 40, 8, 8]

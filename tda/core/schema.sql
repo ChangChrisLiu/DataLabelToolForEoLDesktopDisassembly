@@ -209,6 +209,9 @@ CREATE TABLE IF NOT EXISTS frame_override (
     instance        TEXT    NOT NULL,
     visible_rle_json TEXT,
     visibility      TEXT,
+    -- schema_version 5 (task U15): why a part in its place is not seen --
+    -- 'cable' | 'other_unlabeled', NULL for a bare label
+    occluder        TEXT,
     PRIMARY KEY (desktop, step, view, instance)
 );
 

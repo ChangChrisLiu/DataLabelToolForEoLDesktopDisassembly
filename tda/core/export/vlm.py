@@ -190,6 +190,10 @@ def _read_view(db: Db, ctx: DesktopCtx, desktop: int, view: str,
         slim = {inst: slim_row(r) for inst, r in compiled.items()}
         for inst, r in compiled.items():
             slim[inst]["status"] = r.get("status")
+        # 「被线挡住」 (task U15): what hides a part in its place, nobody labels it
+        for inst, fo in db.frame_overrides(key).items():
+            if fo.occluder and inst in slim:
+                slim[inst]["occluder"] = fo.occluder
         frames[step] = FrameData(
             step=step, image=frame_file_name(row, key),
             image_id=opaque_image_id(desktop, view, step), verified=verified,
