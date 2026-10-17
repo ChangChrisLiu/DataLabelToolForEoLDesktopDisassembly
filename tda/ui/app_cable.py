@@ -15,6 +15,7 @@ Where it shows: the instance table's tag (线挡 / 线半挡), the card row's
 """
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 from PySide6.QtWidgets import (
@@ -34,7 +35,8 @@ from tda.ui.app_state import REMOVED_ROW
 from tda.ui.canvas.overlay import palette_color
 from tda.ui.session_cable import CABLE_EDITING, CABLE_GALLERY, LABEL_ZH
 
-__all__ = ["CABLE_DONE", "CABLE_NO_TARGET", "CableMixin", "CableRangeDialog", "cable_note",
+__all__ = ["CABLE_DONE", "CABLE_NO_TARGET", "HAND_NOT_BACK", "HAND_REPLACED",
+           "MEASURED_NOTE", "STALE_OFF", "CableMixin", "CableRangeDialog", "cable_note",
            "range_note"]
 
 #: ``I`` / ``Ctrl+I`` on a sequence frame with nothing to act on. It names the
@@ -48,11 +50,32 @@ CABLE_DONE = {
     PARTIAL: "{label} 被线挡住（部分）：看得见的像素照旧（再按 I 撤回，Ctrl+Z 撤销）",
     None: "{label}：撤回被线挡住（Ctrl+Z 撤销）",
 }
+#: 完全 took the place of a single-frame mask drawn by hand (U15 review M3).
+HAND_REPLACED = "这一帧手画的形状被替换，Ctrl+Z 找回"
+#: ... and a later 部分 / 撤回 does not bring it back.
+HAND_NOT_BACK = "「完全」替换掉的手画形状没有回来（Ctrl+Z 退到那一步才找回）"
+#: 撤回 because the frame cannot carry the label any more (M1): ``{why}``.
+STALE_OFF = "{label}：这一帧已经不能标被线挡住（{why}），标签撤回（Ctrl+Z 撤销）"
+#: ``Ctrl+I`` that had to read image sizes first (M6), when it took a while.
+MEASURED_NOTE = "（其中 {n} 帧第一次读图量尺寸，以后不用）"
+#: ... said when ``Ctrl+I`` took longer than this, seconds.
+SLOW_RANGE_S = 0.5
+#: Between the two halves of a cached gate answer (:meth:`CableMixin.cable_refusal`).
+_SEP = "\x1f"
 
 
-def cable_note(label: str, value: Optional[str]) -> str:
-    """The status line after ``I``."""
-    return CABLE_DONE[value].format(label=label)
+def cable_note(label: str, value: Optional[str], result: Optional[dict] = None) -> str:
+    """The status line after ``I``: what it set, and what happened to a hand-drawn mask."""
+    result = result or {}
+    if value is None and result.get("stale"):
+        text = STALE_OFF.format(label=label, why=str(result["stale"]).rstrip("。"))
+    else:
+        text = CABLE_DONE[value].format(label=label)
+    if value == FULL and result.get("replaced_hand_mask"):
+        text += f"。{HAND_REPLACED}"
+    elif value != FULL and result.get("hand_mask_lost"):
+        text += f"。{HAND_NOT_BACK}"
+    return text
 
 
 def range_note(label: str, value: Optional[str], steps: list[int]) -> str:
@@ -143,19 +166,25 @@ class CableMixin:
         if target is None:
             return CABLE_NO_TARGET
         label = self._label_of(target)[0] or target
-        if getattr(self.session, "editing_instance", None) == target and (
-                self.has_uncommitted_edit() if dirty is None else dirty):
-            return f"{label}：{CABLE_EDITING}"
         gate = getattr(self.session, "cable_gate", None)
         if not callable(gate):
             return "这个会话不支持 / not supported by this session"
+
+        def ask(part: str) -> str:
+            nxt, why = gate(part)
+            return f"{'' if nxt is None else 'set'}{_SEP}{why}"
+
         if cached:
-            why = self._why_once("cable", target, lambda part: gate(part)[1])
+            answer = self._why_once("cable", target, ask)
         else:
             try:
-                why = gate(target)[1]
+                answer = ask(target)
             except Exception:  # noqa: BLE001 - the write itself will say what is wrong
-                why = ""
+                answer = f"set{_SEP}"
+        sets, _sep, why = answer.partition(_SEP)
+        if sets and getattr(self.session, "editing_instance", None) == target and (
+                self.has_uncommitted_edit() if dirty is None else dirty):
+            return f"{label}：{CABLE_EDITING}"      # 撤回 is never refused (U15 review)
         if why and from_card:
             return f"{PICK_FIRST}；任务卡上亮着的 {label}：{why}"
         return f"{label}：{why}" if why else ""
@@ -176,7 +205,7 @@ class CableMixin:
         except ValueError as refused:            # SessionRefusal is one
             self.report(f"{label}：{refused}")
             return
-        self._after_cable(cable_note(label, result.get("label")))
+        self._after_cable(cable_note(label, result.get("label"), result))
 
     def _drop_clean_layer(self, target: str) -> None:
         """An untouched layer of the part goes first: there is nothing to lose."""
@@ -201,17 +230,18 @@ class CableMixin:
             self.report(CABLE_NO_TARGET.replace("I 在", "Ctrl+I 在", 1))
             return
         label = self._label_of(target)[0] or target
-        if getattr(self.session, "editing_instance", None) == target \
-                and self.has_uncommitted_edit():
-            self.report(f"{label}：{CABLE_EDITING.replace('再按 I', '再按 Ctrl+I')}")
-            return
         low, high = self.session.cable_bounds()
         current = self.session.cable_label(target)
         answer = self.ask_cable_range(target, current or FULL, low, high)
         if answer is None:
             return
         value, to_step = answer
+        if value is not None and getattr(self.session, "editing_instance", None) == target \
+                and self.has_uncommitted_edit():         # 撤回 is never refused
+            self.report(f"{label}：{CABLE_EDITING.replace('再按 I', '再按 Ctrl+I')}")
+            return
         self._drop_clean_layer(target)
+        started = time.perf_counter()
         try:
             result = self.session.set_cable_range(target, value, int(to_step))
         except ValueError as refused:            # SessionRefusal is one
@@ -221,7 +251,10 @@ class CableMixin:
         if not frames:
             self.report(f"{label}：这一段本来就是这样，没有改")
             return
-        self._after_cable(range_note(label, value, frames))
+        note = range_note(label, value, frames)
+        if time.perf_counter() - started > SLOW_RANGE_S and result.get("measured"):
+            note += MEASURED_NOTE.format(n=int(result["measured"]))
+        self._after_cable(note)
 
     def ask_cable_range(self, instance: str, value: Optional[str], low: int,
                         high: int) -> Optional[tuple[Optional[str], int]]:

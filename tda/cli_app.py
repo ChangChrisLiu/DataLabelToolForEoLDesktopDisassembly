@@ -375,8 +375,8 @@ def _check_one(db, tax, args: argparse.Namespace, desktop: int, view: str) -> in
 
     floor = floor_problems(db, tax, desktop, view, stats["truth"])
     problems.extend(floor)
-    # a stored 「被线挡住」 reason on a frame where the part has no shape (U15):
-    # "it is here, under a cable" about nothing -- data to repair (I there: 撤回)
+    # a stored 「被线挡住」 reason on a frame that cannot carry it (U15): no shape,
+    # taken out, or on the bench -- data to repair (I there: 撤回)
     from tda.core.occluder import OCCLUDER_WITHOUT_SHAPE, occluders_without_shape
 
     lost = occluders_without_shape(db, tax, desktop, view)
@@ -413,9 +413,9 @@ def _check_one(db, tax, args: argparse.Namespace, desktop: int, view: str) -> in
               f"it and Ctrl+Down in the instance list): "
               + "; ".join(text.split(":", 1)[1] for text in floor[:10]))
     if lost:
-        print(f"[check] {len(lost)} frame(s) say a part is hidden by a cable where it has "
-              f"no shape ({OCCLUDER_WITHOUT_SHAPE}; draw or carry the shape there, or "
-              f"press I until the label is taken back): "
+        print(f"[check] {len(lost)} frame(s) say a part is hidden by a cable where it is "
+              f"not in its place with a shape -- no shape, taken out, or on the bench "
+              f"({OCCLUDER_WITHOUT_SHAPE}): 按 I 撤回（或从零件还在的帧按 Ctrl+I 撤回）: "
               + ", ".join(f"{instance}@{step}" for step, instance in lost[:10]))
     for text in problems[: int(args.limit)]:
         print(f"  - {text}")

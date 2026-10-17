@@ -6,13 +6,19 @@ cycles the selected part 完全 -> 部分 -> 撤回, one ``set_frame_override`` 
 press; ``Ctrl+I`` writes one of the three over a run of frames as **one** op,
 ``set_frame_overrides`` -- one row per frame and one inverse, so one ``Ctrl+Z``.
 
-Both are refused where the label would describe nothing: a part with no shape
-on the frame (完全 keeps the amodal shape, so there has to be one -- it may be
-carried from another frame as usual), a part that is not on the frame at all
-(taken out), one lying on the bench (not in its place), and the part whose
-pixels are being drawn. 撤回 is never refused for a missing shape: it is how a
-stored label that lost its shape is repaired. The components gallery has no
-cable label at all -- ``I`` means 「看不见」 there (task U10).
+完全 and 部分 are refused where the label would describe nothing: a part with
+no shape on the frame (完全 keeps the amodal shape, so there has to be one -- it
+may be carried from another frame as usual), a part that is not on the frame
+at all (taken out), one lying on the bench (not in its place), and the part
+whose pixels are being drawn. **撤回 is never refused**: on a frame that can no
+longer carry a label it holds (the step table moved, the shape went) the next
+``I`` is 撤回 whatever the label was, and ``Ctrl+I`` 撤回 runs over any frame.
+The components gallery has no cable label at all -- ``I`` means 「看不见」
+there (task U10).
+
+On a confirmed frame the label is the annotator's own statement about that
+frame, so the row is re-signed with it rather than queued for Review
+(:func:`accept_own_label`); the undo does the same with the old row.
 """
 from __future__ import annotations
 
@@ -27,12 +33,15 @@ from tda.core.occluder import (
     FULL,
     PARTIAL,
     cable_label,
+    kept_mask,
     next_label,
     occluded_override,
     shape_applies,
 )
 from tda.core.truth import TruthService
+from tda.core.truth_conflicts import payload_labels
 from tda.core.truth_inputs import (
+    HW_MEASURED,
     InputCache,
     annotatable_steps,
     frame_hw,
@@ -42,16 +51,23 @@ from tda.core.truth_inputs import (
 from tda.ui.commands import Op
 from tda.ui.gallery import GALLERY_REFUSALS
 from tda.ui.session_api import SessionRefusal
-from tda.ui.session_ops import _write_override, override_state, settle
+from tda.ui.session_ops import _write_override, frozen_among, override_state, settle
 
 __all__ = [
-    "CABLE_EDITING", "CABLE_GALLERY", "CABLE_NEEDS_SHAPE", "CABLE_ON_BENCH",
-    "CABLE_OTHER_SEGMENT", "CABLE_REMOVED", "CableMixin", "LABEL_ZH", "OP_RANGE",
-    "TAG_ZH", "cable_one", "cable_range", "cable_reason", "range_bounds",
+    "CABLE_BY", "CABLE_EDITING", "CABLE_GALLERY", "CABLE_NEEDS_SHAPE", "CABLE_NOW_PARTIAL",
+    "CABLE_ON_BENCH", "CABLE_OTHER_SEGMENT", "CABLE_REMOVED", "CableMixin", "LABEL_ZH",
+    "OP_RANGE", "TAG_ZH", "accept_own_label", "apply_cable", "cable_one", "cable_range",
+    "cable_reason", "open_about", "range_bounds",
 ]
 
 #: The op ``Ctrl+I`` logs: one instance's override on several frames.
 OP_RANGE = "set_frame_overrides"
+#: The key both directions of a cable op carry: who said it, so that the undo
+#: and the redo re-sign a confirmed frame in the same name (:func:`apply_cable`).
+CABLE_BY = "cable_by"
+#: Pixels committed for this frame only on a part 被线挡住（完全） (Alt+Enter).
+CABLE_NOW_PARTIAL = ("{label}：这一帧画出了看得见的部分，被线挡住改成「部分」"
+                     "（Ctrl+Z 撤销）")
 #: The three steps of the cycle as the status line and the dialog say them.
 LABEL_ZH: dict[Optional[str], str] = {FULL: "完全", PARTIAL: "部分", None: "撤回"}
 #: The instance table's tag of each label (the Vis column is 46 px wide).
@@ -99,13 +115,28 @@ def _refuse_gallery(key: FrameKey) -> None:
         raise SessionRefusal(CABLE_GALLERY)
 
 
+def _hand_mask(fo) -> bool:
+    """Does ``fo`` hold a single-frame mask with pixels, drawn by hand (Alt+Enter)?"""
+    mask = kept_mask(fo)
+    return mask is not None and masks.rle_area(mask) > 0
+
+
+def _measured(db: Db, key: FrameKey) -> bool:
+    """Has this frame's image size been read off the image already? (``frame_hw``)"""
+    row = db.get_frame(key) or {}
+    return ((row.get("aux") or {}).get("hw_source")) == HW_MEASURED
+
+
 def cable_one(db: Db, truth: TruthService, key: FrameKey, instance: str,
               label: Optional[str], annotator: str = "system",
               occluder: str = OCCLUDER_CABLE) -> dict:
     """Set ``label`` (完全 / 部分 / ``None`` = 撤回) on this frame: one ``set_frame_override`` op.
 
-    Returns what every edit returns plus ``label`` and ``changed``; nothing is
-    written (and no op made) when the frame already says exactly that.
+    Returns what every edit returns plus ``label``, ``changed``,
+    ``replaced_hand_mask`` (完全 took the place of a single-frame mask drawn by
+    hand -- the op's inverse holds it) and ``accepted`` (the frozen frames whose
+    row now carries the label, :func:`accept_own_label`); nothing is written
+    (and no op made) when the frame already says exactly that.
     """
     _refuse_gallery(key)
     if label is not None:
@@ -113,19 +144,86 @@ def cable_one(db: Db, truth: TruthService, key: FrameKey, instance: str,
         if why:
             raise SessionRefusal(why)
     previous = db.frame_overrides(key).get(instance)
-    after = occluded_override(key, instance, previous, label,
-                              frame_hw(db, key, truth.cache_dir), occluder)
+    hw = frame_hw(db, key, truth.cache_dir) if label == FULL else (0, 0)
+    after = occluded_override(key, instance, previous, label, hw, occluder)
     common = {"desktop": key.desktop, "view": key.view, "step": key.step,
-              "instance": instance, "steps": [key.step]}
+              "instance": instance, "steps": [key.step], CABLE_BY: annotator}
     payload = common | override_state(after)
     inverse = common | override_state(previous)
     if _same(payload, inverse):
         return _settled(db, truth, key, [key.step], None, label, changed=False)
+    disputed = open_about(db, key.desktop, key.view, instance, [key.step])
     with db.transaction():
         _write_override(db, key, instance, payload)
         db.log_op(key.desktop, key.view, "set_frame_override", payload, inverse, annotator)
-    return _settled(db, truth, key, [key.step], Op("set_frame_override", payload, inverse),
-                    label)
+    out = _settled(db, truth, key, [key.step], Op("set_frame_override", payload, inverse),
+                   label, replaced_hand_mask=label == FULL and _hand_mask(previous))
+    out["accepted"] = accept_own_label(db, truth, key.desktop, key.view, instance,
+                                       [key.step], annotator, disputed, out.get("frame"))
+    out["conflicts"] = max(0, int(out["conflicts"]) - len(out["accepted"]))
+    return out
+
+
+def open_about(db: Db, desktop: int, view: str, instance: str, steps) -> set[int]:
+    """The steps among ``steps`` with a conflict about ``instance`` open right now."""
+    wanted = {int(s) for s in steps}
+    return {int(r["step"]) for r in db.conflicts(desktop, view, open_only=True)
+            if str(r["instance"]) == str(instance) and int(r["step"]) in wanted}
+
+
+def accept_own_label(db: Db, truth: TruthService, desktop: int, view: str, instance: str,
+                     steps, annotator: str, disputed=(), held=None) -> list[int]:
+    """Keep a confirmed frame confirmed under a 被线挡住 label its annotator just set.
+
+    Writing a label on a frozen frame makes its re-compilation disagree with
+    the frozen row -- the digit keys leave that disagreement in the conflict
+    queue, and ``Space`` waits for Review. For the cable label the annotator
+    *is* the authority on this frame (task U15, ruled), so each frozen frame
+    among ``steps`` is compiled now and the conflict about ``instance`` it
+    raises is accepted in this annotator's name -- provided the difference is
+    only the visible mask and the ``visibility`` label, and no conflict about
+    the instance was open there before the write (``disputed``): that one is
+    somebody else's question, and accepting it would answer it unread. The
+    undo and the redo of the op go through here too (:func:`apply_cable`), so
+    ``Ctrl+Z`` leaves the frame confirmed with its old row. ``held`` is the
+    compilation the write's own settle made of the frame in hand.
+    """
+    done: list[int] = []
+    for step in frozen_among(db, desktop, view, steps):
+        if step in disputed:
+            continue
+        key = FrameKey(desktop, step, view)
+        made = truth.refresh(key, want_compiled=True, held=held)["compiled"]
+        for cid, name in db.open_conflicts_at(key):
+            if name != instance:
+                continue
+            labels = payload_labels((db.get_conflict(cid) or {}).get("new_rle"))
+            if {c.get("field") for c in labels} - {"visibility"}:
+                continue                         # a state or placement: not ours
+            truth.resolve_conflict(cid, "accept_new", annotator, prepared=made)
+            done.append(step)
+    return done
+
+
+def apply_cable(apply):
+    """An undo/redo handler that keeps confirmed frames confirmed (:func:`accept_own_label`).
+
+    Wraps the plain override handler: an op without :data:`CABLE_BY` -- a
+    digit key, a single-frame mask -- is applied exactly as before.
+    """
+    def run(db: Db, truth: TruthService, payload: dict, current: Optional[int] = None) -> dict:
+        by = payload.get(CABLE_BY)
+        steps = ([int(f["step"]) for f in payload["frames"]] if "frames" in payload
+                 else [int(payload["step"])])
+        disputed = (open_about(db, payload["desktop"], payload["view"], payload["instance"],
+                               steps) if by else set())
+        stats = apply(db, truth, payload, current)
+        if by:
+            accept_own_label(db, truth, payload["desktop"], payload["view"],
+                             payload["instance"], steps, by, disputed, stats.get("frame"))
+        return stats
+
+    return run
 
 
 def cable_range(db: Db, truth: TruthService, key: FrameKey, instance: str,
@@ -139,8 +237,10 @@ def cable_range(db: Db, truth: TruthService, key: FrameKey, instance: str,
     part has no shape on some of them -- nothing is written then. 撤回 goes
     over the frames that carry a 被线挡住 label and leaves the others alone.
 
-    Returns what every edit returns plus ``label``, ``changed`` and ``frames``
-    (the steps written).
+    Returns what every edit returns plus ``label``, ``changed``, ``frames``
+    (the steps written), ``measured`` (frames whose image size had to be read
+    off the image first -- once per frame, ever) and ``accepted`` (the frozen
+    frames whose row now carries the label, :func:`accept_own_label`).
     """
     _refuse_gallery(key)
     cache = InputCache()
@@ -153,23 +253,28 @@ def cable_range(db: Db, truth: TruthService, key: FrameKey, instance: str,
     steps = [s for s in annotatable_steps(db, key.desktop, key.view, range(first, last + 1))
              if pose_segment_of(db, FrameKey(key.desktop, s, key.view), cache) == seg]
     if label is not None:
+        shapes = db.keyframes(key.desktop, key.view, instance)   # once for the run
         refused: dict[str, list[int]] = {}
         for step in steps:
-            why = cable_reason(db, truth.tax, FrameKey(key.desktop, step, key.view),
-                               instance, cache)
+            why = _REASONS.get(shape_applies(db, truth.tax, FrameKey(key.desktop, step,
+                                                                     key.view),
+                                             instance, cache, shapes), "")
             if why:
                 refused.setdefault(why, []).append(step)
         if refused:
             raise SessionRefusal("；".join(
                 f"第 {_steps_text(found)} 步：{why}" for why, found in refused.items()))
-    frames, before = [], []
+    frames, before, measured = [], [], 0
     for step in steps:
         here = FrameKey(key.desktop, step, key.view)
         previous = db.frame_overrides(here).get(instance)
         if label is None and cable_label(previous) is None:
             continue                     # 撤回 leaves a frame with no cable label alone
-        after = occluded_override(here, instance, previous, label,
-                                  frame_hw(db, here, truth.cache_dir), occluder)
+        hw = (0, 0)
+        if label == FULL:
+            measured += not _measured(db, here)
+            hw = frame_hw(db, here, truth.cache_dir)
+        after = occluded_override(here, instance, previous, label, hw, occluder)
         new, old = override_state(after), override_state(previous)
         if _same(new, old):
             continue
@@ -177,18 +282,24 @@ def cable_range(db: Db, truth: TruthService, key: FrameKey, instance: str,
         before.append({"step": step} | old)
     written = [f["step"] for f in frames]
     if not frames:
-        return _settled(db, truth, key, steps, None, label, changed=False, frames=[])
+        return _settled(db, truth, key, steps, None, label, changed=False, frames=[],
+                        measured=measured, accepted=[])
     common = {"desktop": key.desktop, "view": key.view, "step": key.step,
-              "instance": instance, "steps": written}
+              "instance": instance, "steps": written, CABLE_BY: annotator}
     payload = common | {"frames": frames}
     inverse = common | {"frames": before}
+    disputed = open_about(db, key.desktop, key.view, instance, written)
     with db.transaction():
         for state in frames:
             _write_override(db, FrameKey(key.desktop, state["step"], key.view), instance,
                             state)
         db.log_op(key.desktop, key.view, OP_RANGE, payload, inverse, annotator)
-    return _settled(db, truth, key, written, Op(OP_RANGE, payload, inverse), label,
-                    frames=written)
+    out = _settled(db, truth, key, written, Op(OP_RANGE, payload, inverse), label,
+                   frames=written, measured=measured)
+    out["accepted"] = accept_own_label(db, truth, key.desktop, key.view, instance, written,
+                                       annotator, disputed, out.get("frame"))
+    out["conflicts"] = max(0, int(out["conflicts"]) - (key.step in out["accepted"]))
+    return out
 
 
 def _same(a: dict, b: dict) -> bool:
@@ -246,55 +357,96 @@ class CableMixin:
         return {name: label for name, fo in found.items()
                 if (label := cable_label(fo)) is not None}
 
+    def cable_carry(self, instance: str) -> str:
+        """Why this frame cannot carry a 被线挡住 label of ``instance``, ``""`` when it can.
+
+        Read off the compiled frame the session already holds: not on this
+        frame, on the bench, no shape.
+        """
+        found = self.compiled().instances.get(str(instance))
+        if found is None:
+            return CABLE_REMOVED
+        if found.placement == "on_bench":
+            return CABLE_ON_BENCH
+        if found.keyframe_id is None:
+            return CABLE_NEEDS_SHAPE
+        return ""
+
     def cable_gate(self, instance: str) -> tuple[Optional[str], str]:
         """``(the label I would set, why it cannot)`` -- ``why`` is ``""`` when it may.
 
-        Read off the compiled frame the session already holds: no shape, not
-        on this frame, on the bench. The pixels being drawn are the window's to
-        judge first (it knows whether they are dirty); :meth:`cycle_cable`
-        refuses them too.
+        撤回 always may: after 部分, and on a frame that can no longer carry the
+        label it holds, whatever that is -- the step table moved under it, the
+        shape went (never via 部分 then). The pixels being drawn are the
+        window's to judge first (it knows whether they are dirty);
+        :meth:`cycle_cable` refuses them too, for 完全 and 部分.
         """
         if self.gallery:
             return None, CABLE_GALLERY
-        nxt = next_label(self.db.frame_overrides(self.current()).get(str(instance)))
+        held = self.db.frame_overrides(self.current()).get(str(instance))
+        nxt = next_label(held)
         if nxt is None:
-            return None, ""                      # 撤回 is always allowed
-        found = self.compiled().instances.get(str(instance))
-        if found is None:
-            return nxt, CABLE_REMOVED
-        if found.placement == "on_bench":
-            return nxt, CABLE_ON_BENCH
-        if found.keyframe_id is None:
-            return nxt, CABLE_NEEDS_SHAPE
-        return nxt, ""
+            return None, ""
+        why = self.cable_carry(instance)
+        if why and cable_label(held) is not None:
+            return None, ""                      # a label it cannot carry: take it back
+        return nxt, why
 
     def cable_bounds(self) -> tuple[int, int]:
         """``(low, high)`` of the steps ``Ctrl+I`` can reach from the open frame."""
         return range_bounds(self.db, self.current())
 
     # -- writes --------------------------------------------------------------
-    def _refuse_cable_edit(self, instance: str) -> None:
-        if self.layer.instance == str(instance) and self.layer.changed():
+    def _refuse_cable_edit(self, instance: str, label: Optional[str]) -> None:
+        if label is not None and self.layer.instance == str(instance) and self.layer.changed():
             raise SessionRefusal(CABLE_EDITING)
 
     def cycle_cable(self, instance: str) -> dict:
-        """``I`` on a sequence frame: 完全 -> 部分 -> 撤回 (one op per press)."""
-        self._refuse_cable_edit(instance)
+        """``I`` on a sequence frame: 完全 -> 部分 -> 撤回 (one op per press).
+
+        The result says, besides what :func:`cable_one` does, ``stale`` -- why
+        the frame could not carry the label any more, when that is what made
+        this press a 撤回 -- and ``hand_mask_lost``: a 部分 or a 撤回 after a 完全
+        that replaced a single-frame mask drawn by hand, which is not back
+        (``Ctrl+Z`` to that 完全 finds it).
+        """
+        key = self.current()
         nxt, why = self.cable_gate(instance)
+        self._refuse_cable_edit(instance, nxt)
         if why:
             raise SessionRefusal(why)
-        return self._after_edit(cable_one(self.db, self.truth, self.current(), str(instance),
-                                          nxt, self.annotator))
+        stale = self.cable_carry(instance) if nxt is None else ""
+        lost = nxt != FULL and self._hand_mask_lost(key, str(instance))
+        result = cable_one(self.db, self.truth, key, str(instance), nxt, self.annotator)
+        result.update(stale=stale, hand_mask_lost=lost)
+        return self._after_edit(result)
+
+    def _hand_mask_lost(self, key: FrameKey, instance: str) -> bool:
+        """Did this cycle's 完全 replace a single-frame mask drawn by hand? (undo history)"""
+        for op in reversed(self.undo_stack.ops):
+            p = op.payload
+            if op.kind != "set_frame_override" or (
+                    p.get("desktop"), p.get("view"), p.get("step"), p.get("instance")) != (
+                    key.desktop, key.view, key.step, instance):
+                continue
+            if not p.get(CABLE_BY) or not p.get("occluder"):
+                return False                     # the cycle began after this write
+            if p.get("visibility") == FULL:
+                inverse = op.inverse
+                return (inverse.get("visible_rle") is not None
+                        and masks.rle_area(inverse["visible_rle"]) > 0
+                        and not inverse.get("occluder"))
+        return False
 
     def set_cable(self, instance: str, label: Optional[str]) -> dict:
         """One label on this frame, whatever it held (the cycle's one step, named)."""
-        self._refuse_cable_edit(instance)
+        self._refuse_cable_edit(instance, label)
         return self._after_edit(cable_one(self.db, self.truth, self.current(), str(instance),
                                           label, self.annotator))
 
     def set_cable_range(self, instance: str, label: Optional[str], to_step: int) -> dict:
         """``Ctrl+I``: ``label`` from this frame to ``to_step``, one op (one ``Ctrl+Z``)."""
-        self._refuse_cable_edit(instance)
+        self._refuse_cable_edit(instance, label)
         return self._after_edit(cable_range(self.db, self.truth, self.current(),
                                             str(instance), label, int(to_step),
                                             self.annotator))

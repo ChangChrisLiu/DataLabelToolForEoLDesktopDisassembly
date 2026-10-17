@@ -34,7 +34,7 @@ from tda.core.truth_refusals import blocking_reasons
 from tda.ui import session_edit as edit
 from tda.ui.commands import Op, UndoStack
 from tda.ui.session_api import SessionRefusal
-from tda.ui.session_cable import CableMixin
+from tda.ui.session_cable import CableMixin, apply_cable
 from tda.ui.session_commits import CommitMixin
 from tda.ui.session_ops import apply_frame_overrides
 from tda.ui.session_images import ImageCache
@@ -132,8 +132,9 @@ class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, CableMi
             ("commit_keyframe", edit.apply_keyframes),
             ("set_zorder", edit.apply_zorder),
             ("set_pair_override", edit.apply_pair_override),
-            ("set_frame_override", edit.apply_frame_override),
-            ("set_frame_overrides", apply_frame_overrides),   # task U15, Ctrl+I
+            # a 被线挡住 op keeps a confirmed frame confirmed both ways (U15)
+            ("set_frame_override", apply_cable(edit.apply_frame_override)),
+            ("set_frame_overrides", apply_cable(apply_frame_overrides)),   # Ctrl+I
             ("set_occluder", edit.apply_occluder),
             ("assert_state", apply_assert_state),   # task U8
             ("correct_verb", apply_correct_verb),   # task U9

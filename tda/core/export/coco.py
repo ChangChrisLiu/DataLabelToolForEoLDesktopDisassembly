@@ -12,8 +12,8 @@ ratio, amodal completeness, provenance, the view's ``tier`` and whether it is
 ``verified``), because the spec's downstream users -- and the VLM export next
 door -- need the truth table's semantics, not only its pixels. A part
 被线挡住 (task U15) also carries its whole shape, ``amodal_segmentation`` /
-``amodal_bbox``; one hidden completely is written with an empty segmentation
-and its amodal box (:func:`_annotation`).
+``amodal_bbox``; one hidden completely is written with an empty segmentation,
+its amodal box and ``iscrowd: 1`` (:func:`_annotation`).
 
 ``tier`` and ``verified`` are two fields on purpose. The tier is the **view's**
 (spec 8.1: scanner and OAK1 gold, OAK2 silver, RealSense bronze) and is read
@@ -520,14 +520,19 @@ def _annotation(ann_id: int, img_id: int, category: int, row: dict, attributes: 
     that names an occluder (task U15, 「被线挡住」) and written beside the
     visible one as ``amodal_segmentation`` / ``amodal_bbox`` (spec 8.1's
     extension field). A part 被线挡住（完全） has an empty visible mask: it is
-    exported anyway -- an empty ``segmentation``, ``area`` 0 and the amodal
-    box as ``bbox`` -- where a part with nothing visible and no reason given
-    is still dropped.
+    exported anyway -- an empty ``segmentation``, ``area`` 0, the amodal box as
+    ``bbox`` and **``iscrowd: 1``**, so that COCOeval neither expects a
+    visible-mask detector to find it nor penalises one that does (a perfect
+    detector scored segm AP 0.972 against ``iscrowd: 0``, 1.000 against this);
+    its segmentation is the compressed RLE (``{"size", "counts"}``) that
+    pycocotools reads for a crowd region. A part with nothing visible and no
+    reason given is still dropped.
     """
     if amodal is not None and roi is not None:
         amodal = _crop_rle(amodal, roi)
     hidden = (amodal is not None and bool(attributes.get("occluder"))
               and attributes.get("visibility") == Visibility.OCCLUDED_FULL.value)
+    crowd = 0
     rle = row.get("visible_rle")
     if rle:
         if roi is not None:
@@ -541,6 +546,9 @@ def _annotation(ann_id: int, img_id: int, category: int, row: dict, attributes: 
         box = mask_bbox_xywh(rle)
         if box is None and hidden:
             box = mask_bbox_xywh(amodal)       # nothing seen: where the part is
+            # ... and a crowd region: COCOeval neither expects a visible-mask
+            # detection there nor counts one against it (ruled, U15 review M5)
+            crowd = 1
         if box is None:
             return None
         area = float(masks.rle_area(rle))
@@ -560,7 +568,7 @@ def _annotation(ann_id: int, img_id: int, category: int, row: dict, attributes: 
     ann = {
         "id": ann_id, "image_id": img_id, "category_id": category,
         "segmentation": segmentation, "bbox": box, "area": _round_int(area),
-        "iscrowd": 0, "attributes": attributes,
+        "iscrowd": crowd, "attributes": attributes,
     }
     if amodal is not None:
         ann["amodal_segmentation"] = amodal

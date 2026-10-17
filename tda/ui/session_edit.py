@@ -37,7 +37,9 @@ from tda.core import masks
 from tda.core.compiler import marked_absent, select_keyframe
 from tda.core.cut_follow import CUT, is_cut, same_parts
 from tda.core.db import Db
-from tda.core.occluder import kept_mask
+from tda.core.occluder import FULL as CABLE_FULL
+from tda.core.occluder import PARTIAL as CABLE_PARTIAL
+from tda.core.occluder import cable_label, kept_mask
 from tda.core.model import (
     FrameKey,
     FrameOverride,
@@ -899,10 +901,13 @@ def _commit_frame_override(db: Db, truth: TruthService, key: FrameKey, instance:
     previous = db.frame_overrides(key).get(instance)
     common = {"desktop": key.desktop, "view": key.view, "step": key.step,
               "instance": instance, "steps": [key.step]}
-    # the pixels change, the label -- and the reason it gives (U15) -- do not
+    # the pixels change, the label -- and the reason it gives (U15) -- do not;
+    # except that pixels drawn on a part 被线挡住（完全） say part of it is seen
+    label = None if previous is None else previous.visibility
+    seen = cable_label(previous) == CABLE_FULL and bool(visible.any())
     payload = _with_extra(common, extra) | {
         "exists": True, "visible_rle": masks.encode_rle_boxed(visible),
-        "visibility": None if previous is None else previous.visibility,
+        "visibility": CABLE_PARTIAL if seen else label,
         "occluder": None if previous is None else previous.occluder}
     inverse = common | override_state(previous)
     with db.transaction():
@@ -911,7 +916,8 @@ def _commit_frame_override(db: Db, truth: TruthService, key: FrameKey, instance:
                           payload["occluder"])
         )
         db.log_op(key.desktop, key.view, "set_frame_override", payload, inverse, annotator)
-    return _result(db, truth, key, [key.step], Op("set_frame_override", payload, inverse))
+    return _result(db, truth, key, [key.step], Op("set_frame_override", payload, inverse),
+                   {"cable_partial": seen})
 
 
 # --------------------------------------------------------------------------- #

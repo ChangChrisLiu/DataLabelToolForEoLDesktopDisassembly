@@ -40,7 +40,7 @@ from tda.core.model import FrameKey
 from tda.core.occluder import FULL, PARTIAL, cable_label
 from tda.ui import app_actions as A
 from tda.ui.app import MainWindow
-from tda.ui.app_cable import PICK_FIRST
+from tda.ui.app_cable import HAND_NOT_BACK, HAND_REPLACED, PICK_FIRST
 from tda.ui.app_state import REMOVED_ROW
 from tda.ui.canvas.overlay import palette_color
 from tda.ui.gallery import GALLERY_REFUSALS
@@ -178,6 +178,48 @@ def test_a_hidden_part_hides_its_outline_too(window):
     assert window.canvas.cable_outlines() == []
 
 
+def test_full_over_a_hand_drawn_mask_says_so_on_the_line_and_the_banner(window):
+    """Review M3: the replaced mask is in the undo, and the window says so."""
+    session = window.session
+    session.begin_edit(CHASSIS)
+    session.set_editing_mask(np.pad(np.ones((4, 4), bool), ((2, 58), (2, 58))))
+    session.commit_edit("frame_override")
+    window._sync_editing_layer()
+    assert window.instances.select_instance(CHASSIS)
+    window.handle_key(key_event("I"))
+    assert HAND_REPLACED in window.status_message()
+    assert HAND_REPLACED in window._vis_note[0]
+    window.instances.select_instance(CHASSIS)
+    window.handle_key(key_event("I"))                   # 部分: the mask is not back
+    assert HAND_NOT_BACK in window.status_message()
+
+
+def test_alt_enter_pixels_on_a_full_part_make_it_partial_and_say_so(window):
+    """Review M4."""
+    assert window.instances.select_instance(CHASSIS)
+    window.act_mark_absent()
+    assert label_at(window) == FULL
+    window.show()
+    QApplication.processEvents()
+    window.on_request_edit(CHASSIS)
+    window.act_tool("brush")
+    viewport = window.canvas.viewport()
+    centre = viewport.rect().center()
+    QTest.mousePress(viewport, Qt.MouseButton.LeftButton,
+                     Qt.KeyboardModifier.NoModifier, centre)
+    QTest.mouseMove(viewport, centre + QPoint(6, 0))
+    QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton,
+                       Qt.KeyboardModifier.NoModifier, centre + QPoint(6, 0))
+    QApplication.processEvents()
+    assert window.has_uncommitted_edit()
+    window.act_commit_override()
+    if window._pending_warning is not None:              # an area warning: yes, commit
+        window.act_commit_override()
+    assert label_at(window) == PARTIAL
+    assert "被线挡住改成「部分」" in window.status_message()
+    assert vis_cell(window) == "线半挡"
+
+
 # --------------------------------------------------------------------------- #
 # the palette's 「看不见」: the same slot, live here
 # --------------------------------------------------------------------------- #
@@ -274,6 +316,20 @@ def test_ctrl_i_writes_the_run_in_one_op(window, monkeypatch):
     assert len(ops) == 1
     window.act_undo()
     assert all(label_at(window, s) is None for s in (10, 11, 12))
+
+
+def test_a_slow_ctrl_i_says_it_was_reading_image_sizes(window, monkeypatch):
+    """Review M6: the first touch of a frame reads its size off the image, once."""
+    from tda.ui import app_cable
+
+    monkeypatch.setattr(app_cable, "SLOW_RANGE_S", -1.0)      # "slow", whatever it took
+    real = window.session.set_cable_range
+    monkeypatch.setattr(window.session, "set_cable_range",
+                        lambda *a: real(*a) | {"measured": 3})
+    monkeypatch.setattr(window, "ask_cable_range", lambda *a: (FULL, 10))
+    assert window.instances.select_instance(CHASSIS)
+    window.handle_key(key_event("Ctrl+I"))
+    assert "其中 3 帧第一次读图量尺寸" in window.status_message()
 
 
 def test_ctrl_i_names_the_frames_the_part_has_no_shape_on(window, monkeypatch):

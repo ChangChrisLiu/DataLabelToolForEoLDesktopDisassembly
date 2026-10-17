@@ -267,8 +267,11 @@ class ResolveMixin:
         held = None if existing is None else existing.visibility
 
         def reason(visibility: Optional[str]) -> Optional[str]:
-            # the frame's 「被线挡住」 reason (U15) stays with a label it still fits
-            if existing is None or not keeps_reason(visibility):
+            # the frame's 「被线挡住」 reason (U15) stays only with the very label
+            # it was given for: a frozen occluded_partial pinned over a 完全
+            # is the frozen statement, and the cable was never part of it
+            if (existing is None or not keeps_reason(visibility)
+                    or visibility != existing.visibility):
                 return None
             return existing.occluder
 
