@@ -14,8 +14,10 @@ parsed record, matched by key (merged keys followed, :mod:`tda.core.merge_replay
 
 * **kept** -- the stored value is a manual one and differs from the sheet's
   guess: the parsed record gets it (``captive_source="manual"``);
-* **agrees** -- the guess already says the same, or the screw is one added in
-  S1 (the import keeps its record as it is);
+* **agrees** -- the guess already says the same (a manual value still goes in
+  as ``captive_source="manual"``: the annotator's word stands, and a later
+  change of the guess must not read it as a flip taken back), or the screw is
+  one added in S1 (the import keeps its record as it is);
 * **not matched** -- the sheet no longer has that key (or it is no screw any
   more), the table being replaced has none, or the flip was taken back
   (Ctrl+Z) and the stored value is the old guess; reported with why, nothing
@@ -126,18 +128,20 @@ def replay_captive(ops: list[dict], stored: dict[str, InstanceRec],
                 "why": f"the sheet no longer has the screw {target}"})
             continue
         entry["sheet"] = bool((rec.attrs or {}).get("captive"))
-        if entry["sheet"] == entry["captive"]:
-            report.agrees.append(entry)
-        elif attrs.get("captive_source") != MANUAL:
+        manual = attrs.get("captive_source") == MANUAL
+        if entry["sheet"] != entry["captive"] and not manual:
             report.unmatched.append(entry | {
                 "why": "the flip was taken back (Ctrl+Z) before the import; the sheet's "
                        "guess stands"})
-        else:
+            continue
+        if manual:
+            # the annotator's word, even where the guess agrees today: a later
+            # change of the guess must not read it as a flip taken back
             report.inverse.append({"target": target, "captive": (rec.attrs or {}).get("captive"),
                                    "captive_source": (rec.attrs or {}).get("captive_source")})
             out[target] = replace(rec, attrs={**(rec.attrs or {}), "captive": entry["captive"],
                                               "captive_source": MANUAL})
-            report.kept.append(entry)
+        (report.agrees if entry["sheet"] == entry["captive"] else report.kept).append(entry)
     return out, report
 
 

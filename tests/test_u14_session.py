@@ -218,6 +218,10 @@ def test_stays_in_needs_a_part_to_stay_in(session):
     db.upsert_instance(rec)
     with pytest.raises(SessionRefusal, match="没写拧在哪个零件上"):
         session.correct_captive(SECOND)
+    rec.fastens = "ghost.part.01"                         # names no part of this machine
+    db.upsert_instance(rec)
+    with pytest.raises(SessionRefusal, match="fastens 写的是「ghost.part.01」，这台机器上找不到"):
+        session.correct_captive(SECOND)
     assert not db.ops_of_kind(DESKTOP, OP_CAPTIVE_FIX)
 
 
@@ -264,6 +268,25 @@ def test_confirmed_frames_are_re_checked_in_every_view_and_a_drawn_one_conflicts
     session.truth.run_pending_rechecks(DESKTOP, VIEW)
     assert not [c for c in session.truth.open_conflicts(DESKTOP, VIEW)
                 if c["instance"] == SCREW]                   # it agrees again: closed
+
+
+def test_a_second_flip_says_it_closes_the_conflict_the_first_one_opened(session):
+    """Shift+T again rather than Ctrl+Z: the signed row matches again (review F3)."""
+    seed_shapes(session, 12, anchor=12)
+    session.goto(12)
+    assert session.confirm_frame() is True
+    session.goto(10)
+    first = session.correct_captive(SCREW)
+    assert first["clashes"] == [("scan", 12)] and first["closes"] == []
+    session.truth.run_pending_rechecks(DESKTOP, VIEW)
+    assert [c["step"] for c in session.truth.open_conflicts(DESKTOP, VIEW)
+            if c["instance"] == SCREW] == [12]
+    second = session.correct_captive(SCREW)              # back in, not an undo
+    assert second["fix"].new is True
+    assert second["clashes"] == [] and second["closes"] == [("scan", 12)]
+    session.truth.run_pending_rechecks(DESKTOP, VIEW)
+    assert not [c for c in session.truth.open_conflicts(DESKTOP, VIEW)
+                if c["instance"] == SCREW]
 
 
 def test_a_confirmed_frame_that_now_lacks_it_is_owed(session):
@@ -341,6 +364,8 @@ def test_a_gallery_shot_offers_nothing_and_refuses(qapp, tmp_path):
         with pytest.raises(SessionRefusal, match="零件合照不改步骤表"):
             made.correct_captive(SCREW)
         assert made.captive_gate(SCREW) == NO_VERB
+        # one sentence for covers and screws: no button names of either (review N5)
+        assert "「其实…」" in NO_VERB and "其实拆下来了" not in NO_VERB
         assert not made.db.ops_of_kind(GS.DESKTOP, OP_CAPTIVE_FIX)
     finally:
         made.close(force=True)

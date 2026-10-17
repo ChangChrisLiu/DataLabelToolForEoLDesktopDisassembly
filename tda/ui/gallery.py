@@ -44,9 +44,11 @@ GALLERY_SENTENCE = (f"这张里看得到就画出它（整个零件）；不在�
 #: Why a gallery shot has no state to set (``T``, the state combo).
 NO_STATE = "零件合照里没有状态：桌上的零件都是拆下来的，只画它本身"
 #: Why a gallery shot does not change the step table (``Shift+T``, the 「其实…」 button):
-#: a shot's number is not a step, so the verb would change at the wrong step.
-NO_VERB = ("零件合照不改步骤表：「其实拆下来了 / 其实只是打开了」到拆解序列"
-           "（OAK1/OAK2/RS）里那一步的帧上用（Shift+T）")
+#: a shot's number is not a step, so the verb would change at the wrong step. One
+#: sentence for a cover's verb and a screw's captive flag (task U14): the key is
+#: refused before anybody asks which part is selected.
+NO_VERB = ("零件合照不改步骤表和实例表：「其实…」（Shift+T）到拆解序列"
+           "（OAK1/OAK2/RS）里那一步的帧上用")
 
 #: What the gallery refuses, per action name of :data:`tda.ui.app_actions.ACTIONS`.
 GALLERY_REFUSALS: dict[str, str] = {

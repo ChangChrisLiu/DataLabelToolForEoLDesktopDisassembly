@@ -149,6 +149,24 @@ def test_a_screw_the_new_sheet_no_longer_has_is_reported_not_applied(imported, t
                              f"screw {FAN4})") for line in printed)
 
 
+def test_a_manual_value_the_sheet_agrees_with_stays_manual(imported, tmp_path, tax):
+    """Flipped twice (out, back in): the guess agrees, the annotator's word stands (N1)."""
+    db, truth = imported
+    flip(db, truth, FAN)
+    flip(db, truth, FAN)
+    assert (rec(db, FAN).attrs["captive"], rec(db, FAN).attrs["captive_source"]) == \
+        (True, "manual")
+    folder = sheets(tmp_path)
+    for _ in range(2):                                         # and on the next one too
+        import_logs_into_db(db, folder, tax, desktops={D2}, force=True)
+        fan = rec(db, FAN)
+        assert (fan.attrs["captive"], fan.attrs["captive_source"]) == (True, "manual")
+        op = db.ops_of_kind(D2, OP_REPLAY_CAPTIVE)[-1]
+        assert [(e["target"], e["captive"], e["sheet"]) for e in op["payload"]["agrees"]] == \
+            [(FAN, True, True)]
+        assert op["payload"]["kept"] == op["payload"]["unmatched"] == []
+
+
 def test_a_flip_taken_back_agrees_with_the_sheet(imported, tmp_path, tax):
     db, truth = imported
     result = flip(db, truth, FAN)
@@ -167,18 +185,22 @@ def test_the_pure_replay_follows_merges_and_keeps_added_screws():
                                                    "captive_source": source}, **kw)
 
     ops = [{"id": 1, "payload": {"target": "s.02"}}, {"id": 2, "payload": {"target": "s.01"}},
-           {"id": 3, "payload": {"target": "s.09"}}, {"id": 4, "payload": {"target": "s.05"}}]
+           {"id": 3, "payload": {"target": "s.09"}}, {"id": 4, "payload": {"target": "s.05"}},
+           {"id": 5, "payload": {"target": "s.06"}}]
     added = InstanceRec("s.09", 1, "screw", attrs={"captive": True, "captive_source": "manual",
                                                    "added_by": "tester"})   # added in S1
     stored = {"s.01": screw("s.01", False, "manual"), "s.09": added,
-              "s.05": screw("s.05", True, "heuristic")}
+              "s.05": screw("s.05", True, "heuristic"), "s.06": screw("s.06", True, "manual")}
     fresh = {"s.01": screw("s.01", True), "s.02": screw("s.02", True),
-             "s.05": screw("s.05", False)}
+             "s.05": screw("s.05", False), "s.06": screw("s.06", True)}
     out, report = replay_captive(ops, stored, fresh, rename={"s.02": "s.01"})
     assert out["s.01"].attrs == {"captive": False, "captive_source": "manual"}
     assert fresh["s.01"].attrs["captive"] is True                  # the input is left alone
     assert [(e["target"], e["ops"]) for e in report.kept] == [("s.01", [1, 2])]
-    assert [e["target"] for e in report.agrees] == ["s.09"]        # added in S1: kept as is
+    # added in S1: kept as is; the guess agrees with a manual value: still manual
+    assert [e["target"] for e in report.agrees] == ["s.06", "s.09"]
+    assert out["s.06"].attrs == {"captive": True, "captive_source": "manual"}
+    assert fresh["s.06"].attrs["captive_source"] == "heuristic"
     [taken_back] = report.unmatched
     assert taken_back["target"] == "s.05" and "taken back" in taken_back["why"]
     assert out["s.05"].attrs["captive"] is False                   # the guess stands

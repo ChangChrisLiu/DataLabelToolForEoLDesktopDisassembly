@@ -27,17 +27,20 @@ def test_the_key_table_row_names_both_screw_buttons():
     assert label in guide                                   # the generated key table
 
 
-def test_the_quickstart_quotes_the_d3_status_line_and_the_card_hint():
+def test_the_quickstart_tells_d3_as_a_worked_example_in_the_past_tense():
+    """D3 is fixed in the live database: the paragraph says what was done, and not to redo it."""
     quick = _squash(_flat("docs", "trial_quickstart.md"))
     fix = CaptiveFix(desktop=3, target="screw.cpu_cooler.01", step=2, new=False, at=10,
                      parent="cpu_cooler.fan.01", before={"captive": True},
                      after={"captive": False})
     note = captive_note("散热器螺丝 screw.cpu_cooler.01", {"fix": fix})
-    assert _squash(note) in quick
+    assert _squash(note.split("（Ctrl+Z")[0]) in quick
     assert _squash(captive_hint()) in quick
-    for words in ("五颗风扇螺丝其实第2–6步就拧下拿走了", "第7–15帧", f"「{VERB_UNSCREWED}」",
-                  f"「{VERB_STAYS_IN}」"):
-        assert _squash(words) in quick
+    for words in ("D3（**已经改好了**）", "五颗风扇螺丝其实第2–6步就拧下拿走了",
+                  "改之前任务卡在第7–15帧要画它们", f"当时在实例表点screw.cpu_cooler.01（按钮写"
+                  f"「{VERB_UNSCREWED}」）", f"现在D3上这五颗的按钮写「{VERB_STAYS_IN}」——**别再按**",
+                  "再按一次`Shift+T`会把它翻回去"):
+        assert _squash(words) in quick, words
 
 
 def test_the_spec_has_the_paragraph_and_the_entry():

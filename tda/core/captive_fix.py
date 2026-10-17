@@ -198,7 +198,7 @@ def plan_captive_fix(db: Db, tax: Taxonomy, desktop: int, target: str, step: int
     「其实留在零件里」 (``to=STAYS_IN``); ``to`` names the direction the caller
     means and is refused when the flag says otherwise. Writes nothing.
     """
-    from tda.core.graph_infer import resolve_ref       # late: the graph modules are heavy
+    from tda.core.graph_infer import blank, resolve_ref   # late: the graph modules are heavy
 
     desktop, step = int(desktop), int(step)
     instances = db.instances(desktop)
@@ -223,6 +223,10 @@ def plan_captive_fix(db: Db, tax: Taxonomy, desktop: int, target: str, step: int
     after = dict(before, captive=new, captive_source=MANUAL)
     if new:
         parent = before["parent"] or resolve_ref(instances, rec.fastens)
+        if not parent and not blank(rec.fastens):
+            raise CaptiveFixError(
+                f"{target} 的 fastens 写的是「{rec.fastens}」，这台机器上找不到这个零件：留在零件里"
+                f"得知道是哪个零件，先在 Steps 模式的实例表里改 fastens 或填 parent")
         if not parent:
             raise CaptiveFixError(
                 f"{target} 没写拧在哪个零件上（fastens / parent 都空着）：留在零件里得知道是"

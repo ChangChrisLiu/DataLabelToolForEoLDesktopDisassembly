@@ -177,6 +177,12 @@ def test_the_status_line_counts_the_confirmed_frames_re_checked(window):
     window.act_correct_verb()
     assert "；已确认的 1 帧重新核对，其中 1 帧确认时画着它、现在算已拿走，会开冲突" in \
         window.status_message()
+    window.session.truth.run_pending_rechecks(DESKTOP, "scan")   # the conflict opens
+    select_removed(window, SCREW)
+    window.act_correct_verb()                                    # Shift+T again, not Ctrl+Z
+    message = window.status_message()
+    assert "；已确认的 1 帧重新核对，1 帧又和确认时一样，会关闭 1 个冲突" in message
+    assert "会开冲突" not in message
 
 
 def test_refused_while_steps_mode_holds_edits_not_applied(window):
@@ -187,9 +193,16 @@ def test_refused_while_steps_mode_holds_edits_not_applied(window):
     window.set_mode(A.MODE_ANNOTATE)
     window.session.goto(10, force=True)
     window.instances.select_instance(SCREW)
+    window.refresh_guidance()
+    button = window.palette.button("correct_verb")
+    assert not button.isEnabled() and button.reason() == CAPTIVE_STAGED   # review N4
     window.act_correct_verb()
     assert window.status_message() == f"改不了：{CAPTIVE_STAGED}"
     assert captive(window) is True
+    window.instances.select_instance(COVER)               # a cover's button stays live
+    window.refresh_guidance()
+    assert button.isEnabled() and button.reason() == ""
+    window.instances.select_instance(SCREW)
     window._mark_steps_dirty()                            # the flag alone refuses too
     panel.data.apply_instance_edit(SCREWS[1], "captive", True)
     window.act_correct_verb()

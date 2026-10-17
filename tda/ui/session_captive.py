@@ -116,11 +116,25 @@ def reach_of(db: Db, desktop: int, step: int) -> dict[str, list[int]]:
     return out
 
 
-def _signed(db: Db, desktop: int, target: str) -> set[tuple[str, int]]:
-    """``(view, step)`` of every row of ``target`` a human has signed."""
+def _signed(db: Db, desktop: int, target: str) -> dict[tuple[str, int], str]:
+    """``(view, step) -> placement`` of every row of ``target`` a human has signed."""
+    return {(str(r["view"]), int(r["step"])): str(r["placement"] or "")
+            for r in db.conn.execute(
+                "SELECT view, step, placement FROM compiled_mask WHERE desktop=? "
+                "AND instance=? AND status=?", (int(desktop), str(target), VERIFIED))}
+
+
+def _conflicted(db: Db, desktop: int, target: str) -> set[tuple[str, int]]:
+    """``(view, step)`` of every open conflict about ``target``."""
     return {(str(r["view"]), int(r["step"])) for r in db.conn.execute(
-        "SELECT view, step FROM compiled_mask WHERE desktop=? AND instance=? AND status=?",
-        (int(desktop), str(target), VERIFIED))}
+        "SELECT view, step FROM conflict WHERE desktop=? AND instance=? AND status='open'",
+        (int(desktop), str(target)))}
+
+
+def _agrees(held: tuple, placement: str) -> bool:
+    """Does the frame ask for the screw where its signed row has it?"""
+    inst, needed = held
+    return bool(needed) and inst is not None and inst[1] == placement
 
 
 def _held(db: Db, tax, desktop: int, target: str,
@@ -174,8 +188,12 @@ def commit_captive_fix(db: Db, truth: TruthService, key: FrameKey, instance: str
     ``fix``, ``reach`` (every view's frames it can change), ``frozen`` (the
     confirmed frames among them, re-checked), ``clashes`` -- the confirmed
     frames whose signed row of the screw no longer matches (a conflict when
-    re-checked) -- and ``owed``, the confirmed frames that now ask for it and
-    have no row of it (back to review).
+    re-checked) --, ``closes`` -- the ones whose signed row matches again and
+    hold an open conflict about it (a flip taken back by a second ``Shift+T``
+    rather than ``Ctrl+Z``: the re-check closes it) -- and ``owed``, the
+    confirmed frames that now ask for it and have no row of it (back to
+    review). A signed row matches when the frame asks for the screw in the
+    placement the row has it.
     """
     try:
         fix = plan_captive_fix(db, truth.tax, key.desktop, instance, key.step, to,
@@ -186,6 +204,7 @@ def commit_captive_fix(db: Db, truth: TruthService, key: FrameKey, instance: str
     frozen = {view: found for view, steps in reach.items()
               if (found := db.frozen_steps_in(key.desktop, view, steps))}
     signed = _signed(db, key.desktop, instance)
+    conflicted = _conflicted(db, key.desktop, instance)
     before = _held(db, truth.tax, key.desktop, instance, frozen)
     payload = fix.rows(fix.after) | {"view": key.view, "reach": reach,
                                      "annotator": annotator}
@@ -200,10 +219,12 @@ def commit_captive_fix(db: Db, truth: TruthService, key: FrameKey, instance: str
         raise SessionRefusal(str(refused)) from refused
     after = _held(db, truth.tax, key.desktop, instance, frozen)
     changed = sorted(frame for frame in before if before[frame] != after[frame])
+    resigned = [f for f in changed if f in signed]
     stats = settle(db, truth, key.desktop, key.view, reach.get(key.view) or [], key.step)
     return {"changed": True, "fix": fix, "reach": reach, "affected": reach.get(key.view, []),
             "frozen": frozen, "queued": queued,
-            "clashes": [f for f in changed if f in signed],
+            "clashes": [f for f in resigned if not _agrees(after[f], signed[f])],
+            "closes": [f for f in resigned if _agrees(after[f], signed[f]) and f in conflicted],
             "owed": [f for f in changed if f not in signed and after[f][1]],
             "messages": list(messages), "compiled": stats["compiled"],
             "rechecks": stats["rechecks"], "conflicts": stats["conflicts"],

@@ -56,8 +56,9 @@ def captive_note(label: str, result: dict, parent: str = "") -> str:
 
     ``螺丝 screw.cpu_cooler.01 其实拧下来了：从第 3 步起算拧下拿走；已确认的 9 帧重新核对，
     其中 2 帧确认时画着它、现在算已拿走，会开冲突`` -- and the mirror,
-    ``…其实留在零件里：第 3 步拧松后留在 <parent> 里``. ``parent`` is the
-    part's label (its key when empty).
+    ``…其实留在零件里：第 3 步拧松后留在 <parent> 里``; a flip taken back by a
+    second ``Shift+T`` says the conflicts the first one opened will be closed.
+    ``parent`` is the part's label (its key when empty).
     """
     fix = result["fix"]
     if fix.new:
@@ -69,10 +70,13 @@ def captive_note(label: str, result: dict, parent: str = "") -> str:
     if frozen:
         text += f"；已确认的 {frozen} 帧重新核对"
         clashes, owed = result.get("clashes") or [], result.get("owed") or []
+        closes = result.get("closes") or []
         if clashes:
             text += (f"，其中 {len(clashes)} 帧确认时画着它、现在算已拿走，会开冲突"
                      if not fix.new else
                      f"，其中 {len(clashes)} 帧确认时的样子对不上了，会开冲突")
+        if closes:
+            text += f"，{len(closes)} 帧又和确认时一样，会关闭 {len(closes)} 个冲突"
         if owed:
             text += f"，{len(owed)} 帧现在要画它、退回待复核"
     return text + "（Ctrl+Z 撤销）"
@@ -151,6 +155,12 @@ class VerbMixin:
         instance = self._verb_target()
         if not instance:
             return NO_VERB_TARGET
+        # a screw's flip writes the instance table at once (U14): the key's
+        # first refusal, so the button's first reason too
+        screw = self._why_once("screw", instance,
+                               lambda part: "1" if self._is_screw(part) else "")
+        if screw and self._steps_staged():
+            return CAPTIVE_STAGED
         if dirty and getattr(self.session, "editing_instance", None) == instance:
             return api.VERB_NEEDS_CLEAN_LAYER.format(instance=instance)
         row = self.instances.row_of(instance)
