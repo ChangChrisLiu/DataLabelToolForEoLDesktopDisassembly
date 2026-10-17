@@ -1,0 +1,92 @@
+L4 decision rule -- written 2026-10-16 before any L4 detection, evaluation or
+training result (only the ground-truth counts of gt.py had been looked at).
+Committed before the first training run; copied to
+D:\DataSet\experiments_out\l4_detector\decision_rule.txt.
+
+DATA
+- Ground truth: the 230 verified scan frames of D2, D3, D4, D5, D13 in the DB
+  copy (.cache/tmp/l4/tda_l4.sqlite, mode=ro).  Box = bbox of the compiled
+  *visible* mask; placement in_chassis; visibility in {visible, visible_tiny,
+  occluded_partial, too_small}; the production head's 8 classes.  ROI = the
+  pose segment's stored ROI (what the app crops to); tiles = L2's (work scale
+  1.0, 640 tiles, stride 512, grey 114 pad); tile labels = L2's rule (a box
+  kept in a tile when >= 50 % of it lies inside).
+- Verified tiles enter training once per frame (weight 1): every verified
+  frame, the same per-desktop density as the LS desktops (each LS desktop-view
+  contributes every frame with drafts, 12-55 frames).  No oversampling; the
+  verified tiles are ~0.2x the LS tile count.
+- Where a verified frame and an L2 LS tile show the same frame (D13 scan),
+  the LS tile is dropped: the verified labels replace the drafts.
+
+FOLDS (leave one desktop out; the RF-DETR recipe is L3's, fixed: 30 epochs,
+effective batch 16 = 8 x 2 (4 x 4 if VRAM requires), lr 1e-4, encoder lr
+1.5e-4, wd 1e-4, EMA, AMP bf16, resolution 640, rfdetr's default train-time
+augmentation, seed 0, the model = last_ema.pth; nothing is selected on a
+held-out desktop)
+- F13 (hold out D13).  Init = L3's hold13 RF-DETR small
+  (experiments_out/l3_detector/rfdetr_small/runs/hold13/last_ema.pth), NOT the
+  production checkpoint: production was trained on D13's LS drafts (the same
+  scan frames), so starting from it would leak D13.  Train = L2's LS tiles not
+  of D13 (L2's hold13 list, 4 015 tiles) + verified scan tiles of D2/3/4/5.
+  Comparator = L3 hold13 (same init, same LS data, never saw D13).  The
+  production model's D13 score is reported beside it but is not held out.
+- F5 (hold out D5).  Init = the production checkpoint (never saw D5: D5 has no
+  LS drafts).  Train = L2's LS tiles minus L2's D13 scan tiles + verified scan
+  tiles of D2/3/4/13.  Comparator = production.
+- all (the v2 candidate).  Init = production.  Train = L2's LS tiles minus
+  L2's D13 scan tiles + verified scan tiles of all five desktops.
+- If time runs short, F5 is dropped (said so in the report) and the gate below
+  is evaluated on F13 alone.
+
+METRICS (held-out desktop's verified frames; L2's tiling and merge, every box
+>= 0.001 into the merge, as L2/L3 evaluated)
+- Per class: hit@0.10 (a same-class detection at conf >= 0.10 whose box centre
+  lies inside the GT box; L2's definition), AP50, R50@0.10, FP/frame@0.10, and
+  hit / precision curves at conf 0.01 .. 0.50.
+- The guess: events = removal actions (remove, disconnect, unscrew, displace)
+  at step k with frames j = k-1 and k verified, the target visible on j and not
+  visible on k.  On frame j: candidates = detections of the event's class with
+  conf >= 0.10, centre inside the ROI, minus those already drawn (the app's
+  tda.ui.app_detect.already_drawn against the other same-class instances
+  visible on j); ranked by the app's tda.models.detector.box_change(j, k)
+  (mean native dE in the box), highest first.  Rank-1 hit = the rank-1
+  candidate's box centre inside the target's visible mask on j.  Also: the
+  candidate ceiling (target among the candidates) and top-3; and the
+  difference map's rank 1 (L2's M0app: diff_delta_e + diff_blobs on the ROI)
+  for reference.  Policy P_screw = the production config (the detector for
+  screw events, the difference map for every other class).
+
+GATE -- publish v2 only when ALL hold:
+- G1  screw hit@0.10: F13 model >= L3 hold13 - 2 pts on D13, AND F5 model >=
+      production - 2 pts on D5.
+- G2  guess rank-1 hits on screw events under P_screw, pooled over the two
+      held-out desktops (D13 events scored by F13 vs L3 hold13, D5 events by F5
+      vs production): v2 >= comparator (no drop).
+- G3  OAK regression: the F13 model's screw hit@0.10 on D13 oak1 and on D13
+      oak2 (L3's held-out protocol: L2's ROI = the drafts' union + 10 %, the
+      ls: drafts as GT, rebuilt from the L4 DB copy) >= L3 hold13's - 3 pts,
+      each view.
+
+ENABLING ANOTHER CLASS c in configs/detector.yaml `classes` (only if the gate
+passes): the fold models' held-out hit@0.10 for c >= 60 % on BOTH D13 (F13)
+and D5 (F5), AND (safeguard, added a priori: L3 found connectors fail on the
+dE ranking, not on recall) on c's removal events pooled over both held-out
+desktops, the detector's rank-1 hits >= the difference map's (M0app).
+
+OPERATING POINT: the app has one global `conf`.  It stays 0.10 unless, pooled
+over both held-out desktops' events of the enabled classes, the guess rank-1
+hits at 0.05 or 0.25 are strictly more than at 0.10 AND screw hit at that conf
+>= hit@0.10 - 2 pts on both folds.  The curves are reported either way.
+
+PUBLISH (gate passes): the `all` model -> D:\DataSet\models\weights\
+tda_det_rfdetr_small_all_v2.pt + .json manifest; configs/detector.yaml model
+-> v2, classes per the rule above, the comment block updated with L4's
+numbers.  Gate fails: nothing in configs changes, the report says why.
+
+SIDE TASK (prompt_box_bands.yaml, scan only): re-fit with fit_bands.py's
+method on the verified data -- a part = (desktop, instance), its value = the
+median visible-mask area over the verified frames where it has one (the
+visibilities above), the band = 5th-95th percentile over parts, >= 5 parts
+from >= 2 desktops or unbanded.  Applied to the scan entry only (other views
+keep the LS fit, no verified frames there) when tests/ stay green AND, for
+every class banded both before and after, hi/lo(new) <= 2 x hi/lo(old).
