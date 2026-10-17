@@ -21,7 +21,7 @@
 # each prompt so that cell cannot get worse:
 #
 #   a box (detector, difference map, a drag, point+box)    -> box_prompts
-#   no box, the part is of a `large_classes` class         -> point_only.large
+#   no box, the part is of a `stock_point_classes` class   -> point_only.stock_point_classes
 #   no box, any other class, or no class known             -> point_only.other
 #   a corrective click (the layer goes back as mask_input) -> the head that
 #                                                             produced that mask
@@ -46,29 +46,34 @@ head: D:/DataSet/models/weights/sam2.1_tda_head_f5_v2.pt
 route:
   box_prompts: tuned
   point_only:
-    large: stock
+    stock_point_classes: stock
     other: tuned
 
-# The classes whose scan band in prompt_box_bands.yaml reaches above 20 000 px
-# (hi_px; L5's "large" group is masks above 20 000 px), computed 2026-10-17:
-#   motherboard 412 597, optical_drive 157 329, drive_cage 137 914,
-#   cpu_cooler 130 779, psu 113 563, storage_drive 83 974,
-#   cpu_socket_lever 23 090
-# plus the two large classes the scan bands do not cover, named in the
-# ruling: chassis (no band; every L5 chassis mask is above 20 000 px) and
-# expansion_card (unbanded, one part).
+# The classes whose single-click prompts (no box) the stock head answers.
+# Each member says why it is here, one of three reasons:
+#   band > 20 000 px     its scan band in prompt_box_bands.yaml reaches above
+#                        20 000 px (hi_px; L5's "large" group is the masks
+#                        above 20 000 px) -- the cell the ruling protects.
+#                        tda.models.sam_heads.large_classes_from_bands derives
+#                        exactly these seven (computed 2026-10-17)
+#   named by the ruling  a large class the scan bands do not cover
+#   measured worse       on a single click the tuned head was worse on both
+#                        blind desktops of L5 (per-class point IoU of the shown
+#                        candidate, D5 / D13; one or two instances each)
 # Not here: cover -- its scan band tops out at 17 004 px (median 16 274; 14 %
 # of L5's cover masks are above 20 000 px), and on a single click the tuned
 # head was better on both held-out desktops (D5 +0.08, D13 +0.35 IoU).
 # This list, not the bands, is what the app reads; tests/test_u19_heads.py
 # says so when a re-fit of the bands no longer agrees with it.
-large_classes:
-  - chassis
-  - cpu_cooler
-  - cpu_socket_lever
-  - drive_cage
-  - expansion_card
-  - motherboard
-  - optical_drive
-  - psu
-  - storage_drive
+stock_point_classes:
+  - motherboard        # band > 20 000 px (hi 412 597)
+  - optical_drive      # band > 20 000 px (hi 157 329)
+  - drive_cage         # band > 20 000 px (hi 137 914)
+  - cpu_cooler         # band > 20 000 px (hi 130 779)
+  - psu                # band > 20 000 px (hi 113 563)
+  - storage_drive      # band > 20 000 px (hi 83 974)
+  - cpu_socket_lever   # band > 20 000 px (hi 23 090)
+  - chassis            # named by the ruling: no scan band; every L5 chassis mask > 20 000 px
+  - expansion_card     # named by the ruling: unbanded (one part)
+  - ram_module         # measured worse: tuned single click -0.096 (D5) / -0.023 (D13) IoU
+  - drive_latch        # measured worse: tuned single click -0.027 (D5) / -0.191 (D13) IoU

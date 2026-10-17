@@ -12,11 +12,16 @@ regression cannot happen by construction:
 
 * a prompt with a box (detector box, difference-map box, a drag, point+box)
   -> the tuned head;
-* point-only, and the part being drawn is of a ``large_classes`` class
+* point-only, and the part being drawn is of a ``stock_point_classes`` class
   -> the stock head;
 * point-only, any other class, or no class known -> the tuned head (the
   common case is a small part);
 * a refinement (``mask_input``) -> the head that produced the mask it refines.
+
+``stock_point_classes`` is the large classes of the ruling -- the scan area
+bands above 20 000 px (:func:`large_classes_from_bands`) and two large classes
+the bands do not cover -- plus the classes where L5 measured the tuned head
+worse on a single click on both blind desktops (U19 review).
 
 This module is the half that needs neither Qt nor torch at import: the
 configuration (``configs/sam.yaml``, :func:`load_sam_head_config`), the routing
@@ -79,9 +84,9 @@ FINGERPRINT_KEYS = (
     "image_encoder.neck.convs.3.conv.weight",
 )
 
-_TOP_KEYS = ("enabled", "head", "route", "large_classes")
+_TOP_KEYS = ("enabled", "head", "route", "stock_point_classes")
 _ROUTE_KEYS = ("box_prompts", "point_only")
-_POINT_KEYS = ("large", "other")
+_POINT_KEYS = ("stock_point_classes", "other")
 
 
 class SamHeadConfigError(ValueError):
@@ -97,12 +102,17 @@ class SamHeadError(RuntimeError):
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class Routing:
-    """Which head answers which prompt (``route`` and ``large_classes``)."""
+    """Which head answers which prompt (``route`` and ``stock_point_classes``).
+
+    ``point_listed`` answers a prompt without a box for a part of a class in
+    ``stock_point_classes`` (``route.point_only.stock_point_classes``),
+    ``point_other`` any other prompt without a box.
+    """
 
     box_prompts: str = TUNED
-    point_large: str = STOCK
+    point_listed: str = STOCK
     point_other: str = TUNED
-    large_classes: frozenset = field(default_factory=frozenset)
+    stock_point_classes: frozenset = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)
@@ -132,15 +142,16 @@ def choose_head(routing: Routing, *, has_box: bool, instance_cls: Optional[str] 
     ``mask_input_head`` -- the head that produced the mask a refinement sends
     back -- wins: a correcting click goes to the head whose answer it corrects.
     Without one, a box (with or without points) goes to ``box_prompts``; a
-    prompt with no box to ``point_large`` when the part is of a large class,
-    to ``point_other`` otherwise -- an unknown class included.
+    prompt with no box to ``point_listed`` when the part's class is in
+    ``stock_point_classes``, to ``point_other`` otherwise -- an unknown class
+    included.
     """
     if mask_input_head in HEADS:
         return str(mask_input_head)
     if has_box:
         return routing.box_prompts
-    if instance_cls is not None and str(instance_cls) in routing.large_classes:
-        return routing.point_large
+    if instance_cls is not None and str(instance_cls) in routing.stock_point_classes:
+        return routing.point_listed
     return routing.point_other
 
 
@@ -173,12 +184,12 @@ def parse_sam_head_config(data: Any, source: Optional[Path] = None,
                           known_classes: Optional[Iterable[str]] = None) -> SamHeadConfig:
     """A :class:`SamHeadConfig`, or :class:`SamHeadConfigError` saying why not.
 
-    Refused: anything but a mapping; a key it does not know (``large_class``
+    Refused: anything but a mapping; a key it does not know (``stock_point_class``
     would otherwise route every motherboard to the tuned head without a word);
     ``enabled`` that is not true/false; a ``head`` that is not a path; a route
-    that is not ``stock`` or ``tuned``; ``large_classes`` that is not a list of
-    taxonomy classes.  Whether the head file exists is :func:`load_sam_head_config`'s
-    question, not this one's.
+    that is not ``stock`` or ``tuned``; ``stock_point_classes`` that is not a
+    list of taxonomy classes.  Whether the head file exists is
+    :func:`load_sam_head_config`'s question, not this one's.
     """
     if not isinstance(data, dict):
         raise SamHeadConfigError("the SAM head file is not a mapping of keys")
@@ -196,21 +207,22 @@ def parse_sam_head_config(data: Any, source: Optional[Path] = None,
         head = source.parent / head
     route = _mapping(data.get("route"), "route", _ROUTE_KEYS)
     point = _mapping(route["point_only"], "route.point_only", _POINT_KEYS)
-    raw_large = data.get("large_classes")
-    if (not isinstance(raw_large, list) or not raw_large
-            or not all(isinstance(c, str) and c.strip() for c in raw_large)):
-        raise SamHeadConfigError(f"large_classes must be a non-empty list of class "
-                                 f"names (large_classes: {raw_large!r})")
-    large = tuple(dict.fromkeys(c.strip() for c in raw_large))
+    raw_listed = data.get("stock_point_classes")
+    if (not isinstance(raw_listed, list) or not raw_listed
+            or not all(isinstance(c, str) and c.strip() for c in raw_listed)):
+        raise SamHeadConfigError(f"stock_point_classes must be a non-empty list of class "
+                                 f"names (stock_point_classes: {raw_listed!r})")
+    listed = tuple(dict.fromkeys(c.strip() for c in raw_listed))
     known = frozenset(known_classes) if known_classes is not None else _known_classes()
-    strangers = [c for c in large if c not in known]
+    strangers = [c for c in listed if c not in known]
     if strangers:
-        raise SamHeadConfigError(f"large_classes {strangers} are not taxonomy classes")
+        raise SamHeadConfigError(f"stock_point_classes {strangers} are not taxonomy classes")
     routing = Routing(
         box_prompts=_head_name(route["box_prompts"], "route.box_prompts"),
-        point_large=_head_name(point["large"], "route.point_only.large"),
+        point_listed=_head_name(point["stock_point_classes"],
+                                "route.point_only.stock_point_classes"),
         point_other=_head_name(point["other"], "route.point_only.other"),
-        large_classes=frozenset(large),
+        stock_point_classes=frozenset(listed),
     )
     off = "" if enabled else f"enabled: false in {source}"
     return SamHeadConfig(routing=routing, head=head, source=source, off=off)
@@ -264,9 +276,10 @@ def large_classes_from_bands(bands: Mapping, view: str = "scan",
                              threshold_px: float = 20_000.0) -> list[str]:
     """Classes whose ``view`` band's upper bound exceeds ``threshold_px``.
 
-    The rule ``large_classes`` was written down from (``prompt_box_bands.yaml``,
-    task U19); kept as a function so the test suite can say when the bands are
-    re-fitted and the list in ``configs/sam.yaml`` no longer follows from them.
+    The band part of ``stock_point_classes`` -- the members marked "band >
+    20 000 px" in ``configs/sam.yaml`` (``prompt_box_bands.yaml``, task U19);
+    kept as a function so the test suite can say when the bands are re-fitted
+    and the list no longer contains what follows from them.
     """
     classes = ((bands.get("views") or {}).get(view) or {}).get("classes") or {}
     return sorted(str(cls) for cls, band in classes.items()

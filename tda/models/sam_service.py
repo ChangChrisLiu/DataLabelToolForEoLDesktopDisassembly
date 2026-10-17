@@ -137,8 +137,9 @@ class SamRequest:
             through; ``mask``/``score`` name the best one.
         instance_cls: taxonomy class of the part being drawn, ``None`` when
             nobody knows.  With two heads (task U19) a prompt without a box
-            goes to the stock head for a large class and to the tuned head
-            otherwise; with one head it is ignored.
+            goes to the stock head for a class in ``stock_point_classes``
+            (``configs/sam.yaml``) and to the tuned head otherwise; with one
+            head it is ignored.
         mask_input_head: the head (:attr:`SamResult.head`) whose answer
             ``mask_input`` is.  A refinement goes back to that head; without
             it -- a layer painted by hand, a keyframe loaded for an edit -- the
@@ -491,10 +492,10 @@ class SamService:
         self.head_off_reason = ""
         routing = self._routing
         log.info("SAM fine-tuned head on: %s (%d tensors); box prompts -> %s, point-only "
-                 "large classes (%d) -> %s, other point-only -> %s, refinements -> the "
-                 "head that produced the mask", path.name, len(delta),
-                 routing.box_prompts, len(routing.large_classes), routing.point_large,
-                 routing.point_other)
+                 "stock_point_classes (%d) -> %s, other point-only -> %s, refinements -> "
+                 "the head that produced the mask", path.name, len(delta),
+                 routing.box_prompts, len(routing.stock_point_classes),
+                 routing.point_listed, routing.point_other)
 
     @staticmethod
     def _check_manifest(path: Path) -> None:
