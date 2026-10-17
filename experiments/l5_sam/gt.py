@@ -235,14 +235,16 @@ def build() -> tuple[list[Rec], dict[tuple[int, int], str], Counter]:
 
 def save(recs: list[Rec], images: dict, path: Path = GT_PKL) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    # plain dicts: a pickled Rec written by ``python -m ...gt`` would belong to __main__
     with open(path, "wb") as fh:
-        pickle.dump({"recs": recs, "images": images}, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        pickle.dump({"recs": [vars(r) for r in recs], "images": images}, fh,
+                    protocol=pickle.HIGHEST_PROTOCOL)
 
 
 def load(path: Path = GT_PKL) -> tuple[list[Rec], dict[tuple[int, int], str]]:
     with open(path, "rb") as fh:
         blob = pickle.load(fh)
-    return blob["recs"], blob["images"]
+    return [Rec(**r) for r in blob["recs"]], blob["images"]
 
 
 def load_frames(images: dict[tuple[int, int], str],
