@@ -104,6 +104,10 @@ SCOPE_FRAME_OVERRIDE = "frame_override"
 #: where the version in force is carried from frames the walk has passed
 #: (``Ctrl+K`` is the same key; task U16).
 SCOPE_SPLIT = "split"
+#: ``Ctrl+Enter`` where this frame's version starts here and the frames behind
+#: are still on the previous one: write the shape into that one and drop this
+#: frame's own version (U16 review; :func:`tda.ui.session_edit.commit_into_previous`).
+SCOPE_INTO_PREVIOUS = "into_previous"
 
 COMMIT_SCOPES: tuple[str, ...] = (SCOPE_KEYFRAME, SCOPE_FRAME_OVERRIDE, SCOPE_SPLIT)
 

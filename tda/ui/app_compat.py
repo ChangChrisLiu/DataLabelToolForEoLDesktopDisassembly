@@ -36,6 +36,7 @@ __all__ = [
     "overlay_layers",
     "peek_image_at",
     "preview",
+    "previous_behind",
     "push_stroke",
     "removed_rows",
     "resolve_conflict",
@@ -204,6 +205,18 @@ def enter_scope(session: Any) -> str:
         return str(session.enter_scope())
     _note("enter_scope", "Enter re-traces the version in force (no 'from here on')")
     return api.SCOPE_KEYFRAME
+
+
+def previous_behind(session: Any, instance: Optional[str] = None) -> Optional[dict]:
+    """The frames behind 改全部 would fold this version into, or ``None`` (U16 review).
+
+    :meth:`~tda.ui.session_commits.CommitMixin.previous_behind`; ``None`` from
+    a session that has not got it -- 改全部 is then the plain re-trace.
+    """
+    if _has(session, "previous_behind"):
+        return session.previous_behind(instance)
+    _note("previous_behind", "Ctrl+Enter never folds a version into the previous one")
+    return None
 
 
 # --------------------------------------------------------------------------- #

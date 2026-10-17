@@ -150,6 +150,9 @@ class GuideMixin:
         #: The confirmed frames re-tracing that instance's shape would put in
         #: conflict (task U7), read once when its edit starts.
         self._edit_reach: tuple[int, ...] = ()
+        #: Its version starts here and the frames behind are on the previous
+        #: one, so 改全部 has something to write untouched (U16 review).
+        self._edit_behind = False
         #: The SAM tool a new shape starts with: the last one chosen, S until
         #: then (ruling U2b-4, round 2).
         self._last_sam_tool = "sam_point"
@@ -332,8 +335,13 @@ class GuideMixin:
         no_shape = self.override_refusal() if scoped else ""
         states["commit_override"] = (scoped and not no_shape, False,
                                      closed or no_shape or why_scope)
-        # 改全部 (task U16): only pixels to write make it mean anything
-        states["commit_all"] = (scoped, False, closed or why_scope)
+        # 改全部 (task U16): pixels to write -- or, untouched, a version that
+        # starts here with the frames behind on the previous one (U16 review):
+        # the part loaded, or the one Enter just named on this frame
+        foldable = bool(not closed and not facts.ghost and not facts.roi_editing
+                        and not facts.shape
+                        and (self._edit_behind if facts.editing else self._hint_here()))
+        states["commit_all"] = (scoped or foldable, False, closed or why_scope)
         if facts.shape:
             why_confirm = SHAPE_BUSY
         elif dirty:
@@ -426,6 +434,12 @@ class GuideMixin:
             return ""
         enabled, _checked, why = self.palette_states(facts).get(name, (True, False, ""))
         return "" if enabled else (why or "现在不能用")
+
+    def _hint_here(self) -> bool:
+        """Did ``Enter`` just name frames behind on this frame (Ctrl+Enter's target)?"""
+        hint = getattr(self, "_behind_hint", None)
+        return bool(hint is not None and compat.is_open(self.session)
+                    and hint[0] == self.session.current())
 
     def _open_split_editing(self) -> bool:
         """Is the part being drawn an open ✂ row of this frame's card? (U8 round 2b)
@@ -714,6 +728,7 @@ class GuideMixin:
             label, raw = self._label_of(instance)
             self._edit_label = (instance, label, raw)
             self._edit_reach = self._retrace_frozen(instance)
+            self._edit_behind = self._behind_here(instance)
         changed = facts != self._edit_facts
         self._edit_facts = facts
         if changed and refresh:
@@ -745,6 +760,19 @@ class GuideMixin:
         except Exception:  # noqa: BLE001 - a hint is never worth a failure
             return ()
         return tuple(int(s) for s in (found or {}).get("frozen") or ())
+
+    def _behind_here(self, instance: Optional[str]) -> bool:
+        """Would 改全部 fold ``instance``'s version into the previous one? (U16 review)
+
+        Asked once when its edit starts, like :meth:`_retrace_frozen`; ``False``
+        for nothing being drawn, a session that cannot answer, or any failure.
+        """
+        if not instance:
+            return False
+        try:
+            return compat.previous_behind(self.session, instance) is not None
+        except Exception:  # noqa: BLE001 - a grey button is never worth a failure
+            return False
 
     def retrace_note(self) -> str:
         """The status line's clause for a re-trace that reaches confirmed frames (U7)."""

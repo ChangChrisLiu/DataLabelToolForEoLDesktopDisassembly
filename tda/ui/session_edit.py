@@ -49,7 +49,7 @@ from tda.core.model import (
     is_component_view,
 )
 from tda.core.truth import TruthService
-from tda.core.split_rows import open_split_steps, reverse_walk
+from tda.core.split_rows import open_split_steps, reverse_walk, split_rows_at
 from tda.core.truth_inputs import InputCache, frame_hw, pose_segment_of, state_of
 from tda.core.zorder_floor import floor_index
 from tda.ui import session_api as api
@@ -111,6 +111,7 @@ __all__ = [
     "apply_zorder",
     "carried_here",
     "commit_box",
+    "commit_into_previous",
     "commit_edit",
     "commit_occluder",
     "commit_pair_override",
@@ -127,6 +128,7 @@ __all__ = [
     "set_visibility",
     "set_zorder_move",
     "suggest_scope",
+    "version_behind",
     "item_text",
     "task_card_for",
 ]
@@ -243,13 +245,19 @@ def _commit_shape(db: Db, truth: TruthService, key: FrameKey, instance: str,
                   parts: list[ShapePart], geom_type: str, scope: str, direction: str,
                   cache: InputCache, annotator: str,
                   pair: Optional[str] = None,
-                  extra: Optional[dict] = None) -> dict:
+                  extra: Optional[dict] = None,
+                  dropped: Optional[tuple[dict, dict]] = None) -> dict:
     """The shared body of :func:`commit_edit` and :func:`commit_box`.
 
     ``pair`` is the instance this one is to be put *above* in the same gesture
     (spec 4.3 改层级 with new pixels): the ``PairOverride`` is written in the
     same transaction and travels in the same op, so one ``Ctrl+Z`` takes back
     both halves of what was one decision.
+
+    ``dropped`` -- ``(before, after)`` keyframe states -- is a keyframe the
+    caller deleted in its own enclosing transaction just before this commit
+    (:func:`commit_into_previous`): it goes into the same op, so the undo
+    puts it back with everything else.
     """
     seg = pose_segment_of(db, key, cache)
     placement = placement_of(db, truth.tax, key, instance, cache)
@@ -263,10 +271,11 @@ def _commit_shape(db: Db, truth: TruthService, key: FrameKey, instance: str,
     source, draft_id = _adoption(extra)
     ref: dict = {"keyframe_id": None}
     old_ref: dict = {"keyframe_id": None if chosen is None else chosen.id}
-    before: list[dict] = []
-    after: list[dict] = []
+    before: list[dict] = [] if dropped is None else [dropped[0]]
+    after: list[dict] = [] if dropped is None else [dropped[1]]
 
-    no_split = scope == api.SCOPE_SPLIT and _cannot_split(chosen, key.step, direction)
+    no_split = scope == api.SCOPE_SPLIT and _cannot_split(chosen, key.step, direction,
+                                                          chain)
     if no_split:
         # there is nothing left to cut off: the keyframe in force already ends
         # exactly here, so "split" means "re-trace this one" (see _cannot_split).
@@ -438,7 +447,8 @@ def plan_cuts(db: Db, tax, key: FrameKey, instance: str, chain: list[ShapeKeyfra
         return out
     lower = [kf.anchor_step for kf in chain if kf.anchor_step < key.step]
     low = max(lower) + 1 if lower else None
-    re_trace = scope == api.SCOPE_KEYFRAME or _cannot_split(chosen, key.step, direction)
+    re_trace = scope == api.SCOPE_KEYFRAME or _cannot_split(chosen, key.step, direction,
+                                                            chain)
     high = int(chosen.anchor_step) if re_trace else int(key.step)
     walk = reverse_walk(db, key.desktop, key.view)
     # only boundaries of this chain's pose segment: a cut anchored in another
@@ -557,7 +567,8 @@ def preview(db: Db, truth: TruthService, key: FrameKey, instance: str, scope: st
             target = new_keyframe(key, instance, seg, cuts["top"], placement, [], geom_type)
             target.version = int(chosen.version) + 1
             simulated = chain + [target]
-        elif scope == api.SCOPE_SPLIT and not _cannot_split(chosen, key.step, direction):
+        elif scope == api.SCOPE_SPLIT and not _cannot_split(chosen, key.step, direction,
+                                                            chain):
             target = new_keyframe(key, instance, seg, key.step, placement, [], geom_type)
             target.version = 1 if chosen is None else int(chosen.version) + 1
             simulated = chain + [target]
@@ -610,6 +621,112 @@ def carried_here(db: Db, truth: TruthService, key: FrameKey, instance: str,
     return any(s < key.step for s in steps)
 
 
+#: 「改全部」 where this frame's version is separated from the previous one by a
+#: state boundary (U16 review, M1): the frames behind are the other state's.
+INTO_PREVIOUS_ACROSS_BOUNDARY = (
+    "这一帧和后面第 {there} 步之间是状态边界（✂）：后面的帧是{what}的样子，"
+    "不能把这一版写过去")
+#: ... and where there is no previous version behind to write into.
+NOTHING_BEHIND = "后面的帧用的就是这一版（或没有要它形状的帧）：用 Enter"
+
+
+def version_behind(db: Db, truth: TruthService, key: FrameKey, instance: str,
+                   direction: str = REVERSE, cache: Optional[InputCache] = None
+                   ) -> Optional[dict]:
+    """The previous version the frames behind still use, when this one starts here.
+
+    U16 review, M1. After ``Enter``'s split on a carried frame k the version
+    in force *starts* at k, so 改全部 there re-traced only that version and
+    the frames behind -- the ones the window just named, "要一起改用
+    Ctrl+Enter" -- never changed. This is the other answer ``Ctrl+Enter`` gives
+    on such a frame: the version in force starts here (nothing behind carries
+    it, :func:`carried_here`) and the frames behind in the walk are on the
+    *previous* version -- the next keyframe up the chain, however this one came
+    about (a split, or a first draw with the part carried behind).
+
+    ``None`` when that is not so: the version is carried (改全部 re-traces
+    it), no previous version is behind, a box, the forward walk (deleting this
+    frame's version would not hand it to the frame behind there; no window
+    path browses forward). Otherwise ``{"here", "behind", "steps", "frozen",
+    "refuse"}``: the two keyframes; the frames behind that would take the
+    shape -- the previous version's frames up to the first open ✂ boundary
+    above (where the write stops, as a re-trace does, U8 round 3) -- and the
+    frozen ones among them; and the session's refusal when a state boundary
+    lies between this frame and the next one behind (``""`` when none).
+    """
+    if direction != REVERSE or is_component_view(key.view):
+        return None
+    cache = cache if cache is not None else InputCache()
+    seg = pose_segment_of(db, key, cache)
+    placement = placement_of(db, truth.tax, key, instance, cache)
+    chain = chain_for(db, key, instance, seg, placement)
+    here = select_keyframe(chain, key.step)
+    if here is None or here.geom_type != GEOM_MASK:
+        return None
+    if carried_here(db, truth, key, instance, direction):
+        return None
+    behind = select_keyframe(chain, int(here.anchor_step) + 1)
+    if behind is None or behind.geom_type != GEOM_MASK:
+        return None
+    rest = [kf for kf in chain if kf is not here]
+    reach = chain_steps(db, truth.tax, key, instance, seg, placement, rest, behind, cache)
+    steps = [s for s in reach if s > key.step]
+    if not steps:
+        return None
+    walk = reverse_walk(db, key.desktop, key.view)
+    opened = [f for f in open_split_steps(db, truth.tax, key.desktop, key.view, instance,
+                                          key.step + 1, int(behind.anchor_step), cache,
+                                          walk)
+              if pose_segment_of(db, FrameKey(key.desktop, f, key.view), cache) == seg]
+    if opened:
+        steps = [s for s in steps if s <= opened[0]]
+    later = [s for s in walk if s > key.step]
+    refuse = ""
+    if later and split_rows_at(db, truth.tax, key.desktop, key.view, key.step, later[0],
+                               cache, only=instance):
+        held = state_of(db, truth.tax, key.desktop, later[0], cache).get(instance)
+        refuse = INTO_PREVIOUS_ACROSS_BOUNDARY.format(
+            there=later[0], what="" if held is None else f"「{state_zh(held.state)}」")
+    return {"here": here, "behind": behind, "steps": steps,
+            "frozen": frozen_among(db, key.desktop, key.view, steps), "refuse": refuse}
+
+
+def commit_into_previous(db: Db, truth: TruthService, key: FrameKey, instance: str,
+                         mask: np.ndarray, direction: str = REVERSE,
+                         annotator: str = "system", extra: Optional[dict] = None) -> dict:
+    """「把这一版也写到后面的帧」: this frame's version folds into the previous one.
+
+    U16 review, M1 -- what ``Ctrl+Enter`` does where :func:`version_behind`
+    answers: the shape (the editing layer: the caller passes the stored one
+    when nothing was painted) is written into the previous version's keyframe,
+    every part, and this frame's own version is deleted so the frame falls back
+    to it. That is a re-trace of the previous version from here (the same
+    :func:`_commit_shape` path, cuts at open state boundaries included), with
+    the deleted keyframe in the same op: one ``Ctrl+Z`` restores both. The
+    previous version's frozen frames are re-checked as any re-trace's are.
+    Refused across a state boundary and where there is nothing behind.
+    """
+    found = version_behind(db, truth, key, instance, direction)
+    if found is None:
+        raise SessionRefusal(NOTHING_BEHIND)
+    if found["refuse"]:
+        raise SessionRefusal(found["refuse"])
+    here = found["here"]
+    edited = as_mask(mask, frame_hw(db, key, truth.cache_dir))
+    parts = [ShapePart(MAIN, masks.encode_rle_boxed(edited))]
+    ref: dict = {"keyframe_id": here.id}
+    dropped = (keyframe_state(here, ref), keyframe_state(None, ref, template=here))
+    note = dict(extra or {}) | {"into_previous": int(here.anchor_step)}
+    with db.transaction():
+        # inside one transaction: a refusal below rolls the delete back too
+        db.delete_keyframe(here.id)
+        result = _commit_shape(db, truth, key, instance, parts, GEOM_MASK,
+                               api.SCOPE_KEYFRAME, direction, InputCache(), annotator,
+                               extra=note, dropped=dropped)
+    result["into_previous"] = list(found["steps"])
+    return result
+
+
 def pair_steps(db: Db, tax, key: FrameKey, one: str, two: str, seg: int,
                cache: Optional[InputCache] = None) -> list[int]:
     """Steps where both instances are mask layers, so a pair override can bite.
@@ -640,7 +757,8 @@ def preview_pair(db: Db, truth: TruthService, key: FrameKey, instance: str,
             "verified_steps": frozen_among(db, key.desktop, key.view, steps)}
 
 
-def _cannot_split(chosen: Optional[ShapeKeyframe], step: int, direction: str) -> bool:
+def _cannot_split(chosen: Optional[ShapeKeyframe], step: int, direction: str,
+                  chain: Sequence[ShapeKeyframe] = ()) -> bool:
     """Would a split produce a keyframe covering no frame the old one kept?
 
     Annotating in reverse a split anchors the new shape at the current step, so
@@ -650,10 +768,19 @@ def _cannot_split(chosen: Optional[ShapeKeyframe], step: int, direction: str) ->
     everywhere, which is a re-trace wearing a second row.  Going forward the same
     thing happens at the other end -- the old keyframe would be pulled back to
     ``step - 1`` and inherit nothing.
+
+    That forward case is read off ``chain`` (U16 review, M2): when the
+    keyframe below the one in force is anchored at ``step - 1`` the pulled-back
+    one would land on that anchor and, a version newer, replace it on every
+    frame it covered -- with nothing re-checked.  Re-traced instead.
     """
     if chosen is None:
         return False
-    return direction == REVERSE and int(chosen.anchor_step) == int(step)
+    if direction == REVERSE:
+        return int(chosen.anchor_step) == int(step)
+    lower = [int(kf.anchor_step) for kf in chain
+             if kf is not chosen and int(kf.anchor_step) < int(step)]
+    return bool(lower) and max(lower) == int(step) - 1
 
 
 #: ``ShapeKeyframe.source`` of a shape the annotator took from a Label Studio

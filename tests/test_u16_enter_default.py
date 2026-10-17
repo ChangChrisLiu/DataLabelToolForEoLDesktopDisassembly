@@ -139,6 +139,32 @@ def test_the_forward_walk_is_the_mirror_image(session):
         assert np.array_equal(shape_at(session, step, COOLER), cell(3)), step
 
 
+def test_a_forward_split_on_a_versions_first_frame_re_traces(session):
+    """Review M2: the forward split pulled the old version onto the anchor below.
+
+    Twice at 6 going forward: the second time 6 is where its version starts
+    (the one below ends at 5), so the split would land the old version on 5,
+    a version newer than the keyframe there, and replace frames 1-5 with
+    nothing re-checked. It re-traces instead and says so (``no_split``).
+    """
+    session_scene.seed_shapes(session, 3)                  # anchored at 14
+    session.browse_forward()
+    session.goto(6)
+    draw(session, CHASSIS, rect(2, 34, 34, 62), api.SCOPE_SPLIT)
+    session.clear_edit()
+    assert anchors(session, CHASSIS) == [5, 14]
+    before = {st: shape_at(session, st, CHASSIS) for st in range(1, 6)}
+    again = rect(4, 36, 30, 60)
+    result = draw(session, CHASSIS, again, api.SCOPE_SPLIT)
+    session.clear_edit()
+    assert result["no_split"] is True
+    assert anchors(session, CHASSIS) == [5, 14]
+    for step in range(1, 6):
+        assert np.array_equal(shape_at(session, step, CHASSIS), before[step]), step
+    for step in (6, 14):
+        assert np.array_equal(shape_at(session, step, CHASSIS), again), step
+
+
 def test_a_frame_without_an_image_carries_nothing(qapp, tmp_path):
     made = session_scene.make_session(tmp_path, missing=(12,))
     try:
@@ -229,6 +255,13 @@ def press(win: MainWindow, slot: str) -> None:
         getattr(win, slot)()
 
 
+def ctrl_enter(win: MainWindow) -> None:
+    """The key, and again while the size warning waits for it (a clip is "too big")."""
+    win.handle_key(key_event("Ctrl+Return"))
+    if win._pending_warning is not None:
+        win.handle_key(key_event("Ctrl+Return"))
+
+
 def snapshot(session, steps) -> dict:
     """``step -> (review status, compiled rows)`` as stored, after a full refresh."""
     session.truth.refresh_range(DESKTOP, VIEW, session.available_steps(), ignore_digest=True)
@@ -296,6 +329,124 @@ def test_enter_names_the_frames_behind_that_keep_the_old_shape(window):
     press(window, "act_commit")
     assert anchors(session, CHASSIS) == [10, 14]
     assert "仍是旧样子" not in window.status_message(), window.status_message()
+
+
+def kf_rows(session, instance: str) -> list[tuple]:
+    """The part's keyframes as rows, the version left out (every update bumps it)."""
+    return sorted((kf.id, kf.anchor_step, kf.source, kf.placement,
+                   tuple((p.name, str(p.rle), p.box) for p in kf.parts))
+                  for kf in session.db.keyframes(DESKTOP, VIEW, instance))
+
+
+def test_ctrl_enter_after_enters_split_writes_the_shape_behind_too(window):
+    """Review M1: the hint is not a dead end -- the reviewer's invariant scene.
+
+    12 and 13 confirmed, Enter at 10 splits; Ctrl+Enter right after (nothing
+    loaded: the part the hint named) asks, then writes the version into the
+    one behind and drops 10's own: 1-14 carry it, 12 and 13 come back as
+    conflicts, one keyframe is left. Ctrl+Z restores the split.
+    """
+    session = window.session
+    confirm_12_and_13(window)
+    goto(window, 10)
+    paint(window, CHASSIS, NEW)
+    press(window, "act_commit")
+    assert anchors(session, CHASSIS) == [10, 14]
+    split_rows = kf_rows(session, CHASSIS)
+    split_shapes = {st: shape_at(session, st, CHASSIS) for st in range(1, 15)}
+    assert session.editing_instance is None
+    window.refresh_guidance()
+    assert window.palette.button("commit_all").isEnabled()     # the hint's part
+
+    window.handle_key(key_event("Ctrl+Return"))                # asks
+    assert window.all_asked() and session.editing_instance == CHASSIS
+    assert ("把这版形状也写到第 11–14 帧（其中已确认 2 帧，会重新检查）？再按 Ctrl+Enter"
+            in window.scope_bar_text()), window.scope_bar_text()
+    assert anchors(session, CHASSIS) == [10, 14]               # nothing written yet
+    press(window, "act_commit_all")                            # the second press
+
+    assert session.editing_instance is None, window.status_message()
+    assert window.status_message() == ("已把这版形状也写到第 11–14 帧"
+                                       "（其中已确认 2 帧，会重新检查）")
+    assert anchors(session, CHASSIS) == [14]
+    for step in range(1, 15):
+        assert np.array_equal(shape_at(session, step, CHASSIS), NEW), step
+    assert {12, 13} <= set(session.db.rechecks(DESKTOP, VIEW))
+    session.truth.run_pending_rechecks(DESKTOP, VIEW)
+    assert sorted(int(c["step"]) for c in session.db.conflicts(DESKTOP, VIEW, open_only=True)
+                  if c["instance"] == CHASSIS) == [12, 13]
+
+    window.act_undo()                                          # one op: both keyframes back
+    assert kf_rows(session, CHASSIS) == split_rows
+    for step in range(1, 15):
+        assert np.array_equal(shape_at(session, step, CHASSIS), split_shapes[step]), step
+
+
+def test_a_first_draw_then_a_fix_at_the_same_frame_reaches_the_draft_behind(window):
+    """The rough-draft case: drawn at 10 (it reaches 1-14), fixed at 10 (from 10 on)."""
+    session = window.session
+    session.db.conn.execute("DELETE FROM shape_keyframe WHERE instance=?", (CHASSIS,))
+    session.db.conn.commit()
+    session.refresh_all()
+    goto(window, 10)
+    paint(window, CHASSIS, NEW)
+    press(window, "act_commit")                                # the first draw
+    assert anchors(session, CHASSIS) == [14]
+    fix = rect(4, 36, 30, 60)
+    paint(window, CHASSIS, fix)
+    press(window, "act_commit")                                # the fix: a split at 10
+    assert anchors(session, CHASSIS) == [10, 14]
+    assert window.status_message() == ("已从这帧起新版本；第 11–14 帧仍是旧样子，"
+                                       "要一起改用 Ctrl+Enter")
+    window.handle_key(key_event("Ctrl+Return"))                # nothing confirmed: at once
+    assert not window.all_asked() and session.editing_instance is None
+    assert window.status_message() == "已把这版形状也写到第 11–14 帧"
+    assert anchors(session, CHASSIS) == [14]
+    for step in (1, 10, 11, 14):
+        assert np.array_equal(shape_at(session, step, CHASSIS), fix), step
+
+
+def test_ctrl_enter_does_not_fold_a_version_across_a_state_boundary(window):
+    """Enter on a ✂ row (open at 12, closed from 13): the frames behind are the other state's."""
+    session = window.session
+    latch = "ram_latch.02"
+    goto(window, 12)
+    assert window.instances.select_instance(latch)
+    window.act_cycle_state()                                   # open at 12: ✂ here
+    window.expire_visibility_note()
+    goto(window, 12)
+    paint(window, latch, rect(40, 40, 60, 60))
+    press(window, "act_commit")
+    assert "仍是旧样子" not in window.status_message()          # a ✂ row names nothing
+    before = kf_rows(session, latch)
+    window.on_request_edit(latch)                              # the stored shape, untouched
+    ctrl_enter(window)
+    assert "这一帧和后面第 13 步之间是状态边界（✂）" in window.last_error_message()
+    assert kf_rows(session, latch) == before
+
+
+def test_ctrl_enter_inside_a_ctrl_t_span_reaches_the_spans_top(window):
+    """Ctrl+T 10-12 open; Enter at 11 leaves 12; Ctrl+Enter at 11 reaches 12, not 13-14."""
+    session = window.session
+    latch = "ram_latch.02"
+    old = {st: shape_at(session, st, latch) for st in range(8, 15)}
+    goto(window, 12)
+    assert window.instances.select_instance(latch)
+    window.ask_state_range = lambda *a: ("open", 10)
+    window.act_state_range()
+    window.expire_visibility_note()
+    goto(window, 11)
+    opened = rect(40, 40, 60, 60)
+    paint(window, latch, opened)
+    press(window, "act_commit")
+    assert window.status_message().endswith("已从这帧起新版本；第 12 帧仍是旧样子，"
+                                            "要一起改用 Ctrl+Enter"), window.status_message()
+    ctrl_enter(window)
+    assert session.editing_instance is None, window.last_error_message()
+    for step in (10, 11, 12):
+        assert np.array_equal(shape_at(session, step, latch), opened), step
+    for step in (13, 14):
+        assert np.array_equal(shape_at(session, step, latch), old[step]), step
 
 
 def test_ctrl_enter_asks_then_writes_everywhere_and_queues_the_re_check(window):

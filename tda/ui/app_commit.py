@@ -55,6 +55,12 @@ ALL_BUTTON_CONFIRM = "Ctrl+Enter 确定改全部"
 #: After ``Enter`` wrote a split because the version was carried (task U16):
 #: the frames behind that keep the old shape, and the key that reaches them.
 BEHIND_KEPT = "已从这帧起新版本；第 {steps} 帧{confirmed}仍是旧样子，要一起改用 Ctrl+Enter"
+#: ``Ctrl+Enter`` on a version that starts here, the frames behind on the
+#: previous one (U16 review): asked first when confirmed frames are among them,
+#: and said once written.
+INTO_QUESTION = ("把这版形状也写到第 {steps} 帧{confirmed}？再按 Ctrl+Enter（或点「"
+                 + ALL_BUTTON_CONFIRM + "」）确定，Esc 取消")
+INTO_DONE = "已把这版形状也写到第 {steps} 帧{confirmed}"
 #: The key of each commit action, as the area warning names it (task U16).
 WARNING_KEYS = {"commit": "Enter", "commit_all": "Ctrl+Enter",
                 "commit_override": "Alt+Enter"}
@@ -215,11 +221,18 @@ class CommitMixin:
         writes; ``Esc`` takes the question back; ``Enter`` and ``L`` say which
         key answers. With no confirmed frame in reach it writes at once.
 
-        Where the version starts there is nothing behind to reach: it is what
-        ``Enter`` writes, written, and said. On an open ✂ row the session
-        refuses it with its own sentence (it would rewrite the other state's
-        frames), so it is not asked first. The shape only on a layering
-        suggestion, like every key but ``L`` (task U6).
+        Where the version starts here there are two cases (U16 review, M1).
+        The frames behind still on the *previous* version -- the split ``Enter``
+        just wrote, which the status line named with "要一起改用 Ctrl+Enter" --
+        get this shape too: it is written into that version and this frame's
+        own is dropped (:data:`~tda.ui.session_api.SCOPE_INTO_PREVIOUS`), asked
+        first when confirmed frames are among them; the layer when it holds
+        pixels, the stored shape when not -- and right after that ``Enter``,
+        with nothing loaded, the part it named. Nothing behind on another
+        version: it is what ``Enter`` writes, written, and said. On an open ✂
+        row the session refuses it with its own sentence (it would rewrite the
+        other state's frames), so it is not asked first. The shape only on a
+        layering suggestion, like every key but ``L`` (task U6).
         """
         if self.refuse_under_shape() or self.refuse_under_ghost():
             return
@@ -227,10 +240,17 @@ class CommitMixin:
             self.report(LAYERING_ASKED)
             return
         if self._all_asked:
-            self._commit(api.SCOPE_KEYFRAME, action="commit_all")
+            self._commit(self._all_scope, action="commit_all",
+                         note=self._all_note)
             return
-        if getattr(self.session, "editing_instance", None) is None \
-                or self.session.editing_mask() is None or not self.has_uncommitted_edit():
+        if not self._load_hinted_part():
+            self.report(NOTHING_TO_COMMIT)
+            return
+        behind = compat.previous_behind(self.session)
+        if behind is not None:
+            self._commit_into_previous(behind)
+            return
+        if not self.has_uncommitted_edit():
             self.report(NOTHING_TO_COMMIT)
             return
         if self._enter_scope() == api.SCOPE_KEYFRAME:
@@ -240,13 +260,55 @@ class CommitMixin:
         if not counts.get("verified_steps") or self._open_split_editing():
             self._commit(api.SCOPE_KEYFRAME, action="commit_all")
             return
-        self._all_asked = True
-        self._show_scope_buttons(question=True)
-        self.scope_bar.show_text(self._all_question(counts))
+        self._ask_all(api.SCOPE_KEYFRAME, self._all_question(counts), "")
         self.logger.info("commit_all asked: %s", counts.get("verified_steps"))
+
+    def _ask_all(self, scope: str, question: str, note: str) -> None:
+        """Put 改全部's question on the bar; the second press writes ``scope``."""
+        self._all_asked = True
+        self._all_scope, self._all_note = scope, note
+        self._show_scope_buttons(question=True)
+        self.scope_bar.show_text(question)
         self.report("改全部先看范围：画布下方提示条写着影响哪些帧，再按 Ctrl+Enter 确定，"
                     "Esc 取消 / check the reach on the bar, then Ctrl+Enter again")
         self.refresh_guidance()
+
+    def _commit_into_previous(self, behind: dict) -> None:
+        """改全部 on a version that starts here: write it into the previous one too.
+
+        A state boundary in the way is the session's refusal (the commit path
+        says it); confirmed frames behind are asked about first.
+        """
+        steps = behind.get("steps") or []
+        frozen = behind.get("frozen") or []
+        confirmed = f"（其中已确认 {len(frozen)} 帧，会重新检查）" if frozen else ""
+        done = INTO_DONE.format(steps=steps_text(steps), confirmed=confirmed)
+        if behind.get("refuse") or not frozen:
+            self._commit(api.SCOPE_INTO_PREVIOUS, action="commit_all", note=done)
+            return
+        self._ask_all(api.SCOPE_INTO_PREVIOUS,
+                      INTO_QUESTION.format(steps=steps_text(steps), confirmed=confirmed),
+                      done)
+        self.logger.info("commit_all into the previous version asked: %s", frozen)
+
+    def _load_hinted_part(self) -> bool:
+        """Is a part being drawn -- or loaded now, the one ``Enter`` just named?
+
+        Right after ``Enter``'s split the layer is gone and the status line
+        says "要一起改用 Ctrl+Enter" about the part it wrote: with nothing
+        being drawn on that frame, ``Ctrl+Enter`` loads that part's stored
+        shape and answers for it (U16 review, M1).
+        """
+        if getattr(self.session, "editing_instance", None) is not None \
+                and self.session.editing_mask() is not None:
+            return True
+        hint, self._behind_hint = self._behind_hint, None
+        if hint is None or hint[0] != self.session.current():
+            return False
+        if compat.previous_behind(self.session, hint[1]) is None:
+            return False                 # undone, or changed since: nothing to fold
+        self.on_request_edit(hint[1])
+        return getattr(self.session, "editing_instance", None) == hint[1]
 
     def _all_question(self, counts: dict) -> str:
         """What ``Ctrl+Enter`` asks before it writes (task U16).
@@ -477,9 +539,11 @@ class CommitMixin:
         # happens at confirm time, where the answer is actually used.
         cut = cut_note(result, steps_text)
         old = self._behind_note(kept, result)
+        # what a bare Ctrl+Enter on this frame now acts on (U16 review)
+        self._behind_hint = (key, instance) if old else None
         if old:
             # U16: the frames behind kept the old shape -- said where the
-            # annotator looks, with the key that would have reached them
+            # annotator looks, with the key that reaches them
             self.flash_visibility_note(old)
         if cut:
             # the commit stopped at a state boundary (U8 round 3): say where,
@@ -788,6 +852,7 @@ class CommitMixin:
         if not moved:
             self.report(f"nothing to {what}")
             return
+        self._behind_hint = None        # the split it named may be gone (U16)
         self.refresh_overlay()
         self._sync_editing_layer()
         # An undo can take the layer back to what begin_edit loaded, and then

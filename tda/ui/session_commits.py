@@ -227,6 +227,15 @@ class CommitMixin:
             # a components-gallery shot is one segment of its own (task U10):
             # there is no "from this frame on", only this shot
             raise SessionRefusal(gallery_refusal(key.view, "commit_split"))
+        if scope == api.SCOPE_INTO_PREVIOUS:
+            # 「把这一版也写到后面的帧」 (U16 review): the layer as it is --
+            # painted, or the stored version loaded and untouched
+            self._refuse_mask_on_bench(key, instance)
+            result = edit.commit_into_previous(self.db, self.truth, key, instance,
+                                               self.layer.mask(), direction,
+                                               self.annotator, extra=extra)
+            self.layer.settle()
+            return self._after_edit(result)
         pair = edit.split_zorder_scope(scope)
         unchanged_split = False
         if pair is None and not self.layer.changed():
@@ -520,6 +529,27 @@ class CommitMixin:
         reach = edit.preview(self.db, self.truth, key, str(target), scope, self.browsing,
                              geom_type=geom)
         return {"steps": list(reach["steps"]), "frozen": list(reach["verified_steps"])}
+
+    def previous_behind(self, instance: Optional[str] = None) -> Optional[dict]:
+        """``{"steps", "frozen", "refuse"}`` when 改全部 here folds into the previous version.
+
+        U16 review: where the version of ``instance`` (default: the part being
+        drawn) starts on this frame and the frames behind in the walk are still
+        on the previous one, ``Ctrl+Enter`` writes the shape into that one
+        (:data:`~tda.ui.session_api.SCOPE_INTO_PREVIOUS`): ``steps`` are the
+        frames behind it would reach, ``frozen`` the confirmed ones among them,
+        ``refuse`` the session's sentence when a state boundary is in the way.
+        ``None`` otherwise -- 改全部 is then the plain re-trace. Writes nothing.
+        """
+        target = instance or self.editing_instance
+        if not target or not self.is_open or getattr(self, "gallery", False):
+            return None
+        found = edit.version_behind(self.db, self.truth, self.current(), str(target),
+                                    self.browsing)
+        if found is None:
+            return None
+        return {"steps": list(found["steps"]), "frozen": list(found["frozen"]),
+                "refuse": found["refuse"]}
 
     def enter_scope(self, instance: Optional[str] = None,
                     direction: Optional[str] = None) -> str:

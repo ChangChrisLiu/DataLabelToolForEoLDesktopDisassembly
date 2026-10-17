@@ -241,6 +241,13 @@ def _window_conflicts(win) -> None:
     app_scene.seed_shapes(session, 12)
     session.goto(13)
     assert session.confirm_frame() and session.confirm_frame()
+    # on 14, where the version starts, Enter is the re-trace: the warning stands
+    session.goto(14)
+    win.on_request_edit(CHASSIS)
+    assert "重画会影响 2 个已确认帧（第 12、13 帧），提交后用 Shift+N 一次接受" \
+        in win.status_message(), win.status_message()
+    assert "重画会影响 2 个已确认帧" in win.guide_plan().now
+    win.act_clear_edit()
     session.goto(10)
     win.on_request_edit(CHASSIS)
     assert "重画会影响" not in win.status_message()

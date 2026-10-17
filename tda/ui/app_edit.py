@@ -237,8 +237,14 @@ class EditMixin:
         #: asking whether the reach it shows is meant (task U6).
         self._layering_asked = False
         #: ``Ctrl+Enter`` (改全部) was pressed once and the bar is asking about
-        #: the confirmed frames it reaches (task U16).
+        #: the confirmed frames it reaches (task U16): the scope the second
+        #: press writes, and what it says once written.
         self._all_asked = False
+        self._all_scope: str = "keyframe"
+        self._all_note = ""
+        #: ``(frame, instance)`` of the split ``Enter`` just wrote whose frames
+        #: behind kept the old shape: what a bare ``Ctrl+Enter`` there acts on.
+        self._behind_hint: Optional[tuple] = None
         self._restore_offer: Optional[dict] = None
         #: The instance an ``add_bench_box`` card item armed the box tool for.
         self.bench_instance: Optional[str] = None
@@ -354,6 +360,7 @@ class EditMixin:
         :attr:`_roi_dismissed`).
         """
         self._drop_scope_bar()
+        self._behind_hint = None        # Ctrl+Enter's target was this frame's (U16)
         self.disarm_bench()
         # A draft ghost is about one instance on one frame.  ``_sync_editing_layer``
         # covers the frames that repaint; this covers the ones that do not,
