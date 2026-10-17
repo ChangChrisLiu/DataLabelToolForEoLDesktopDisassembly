@@ -52,6 +52,9 @@ ALL_CANCELLED = "没有改全部 / nothing was written"
 #: The scope bar's 改全部 button, before and while the question is asked.
 ALL_BUTTON = "Ctrl+Enter 改全部"
 ALL_BUTTON_CONFIRM = "Ctrl+Enter 确定改全部"
+#: After ``Enter`` wrote a split because the version was carried (task U16):
+#: the frames behind that keep the old shape, and the key that reaches them.
+BEHIND_KEPT = "已从这帧起新版本；第 {steps} 帧{confirmed}仍是旧样子，要一起改用 Ctrl+Enter"
 #: The key of each commit action, as the area warning names it (task U16).
 WARNING_KEYS = {"commit": "Enter", "commit_all": "Ctrl+Enter",
                 "commit_override": "Alt+Enter"}
@@ -126,8 +129,11 @@ class CommitMixin:
             # Task U6: Enter on a layering suggestion commits the shape only,
             # from this frame on (U16). The layering itself is L's, asked and
             # confirmed.
-            self._commit(self._enter_scope() if is_layering(self._pending_scope)
-                         else self._pending_scope)
+            if is_layering(self._pending_scope):
+                enter = self._enter_scope()
+                self._commit(enter, behind=enter == api.SCOPE_SPLIT)
+            else:
+                self._commit(self._pending_scope)
             return
         instance = getattr(self.session, "editing_instance", None)
         if instance is not None and self.session.editing_mask() is not None:
@@ -146,7 +152,8 @@ class CommitMixin:
                 return
             scope = self.session.suggest_scope()
             if scope == api.SCOPE_KEYFRAME:
-                self._commit(self._enter_scope())
+                enter = self._enter_scope()
+                self._commit(enter, behind=enter == api.SCOPE_SPLIT)
             else:
                 self._offer_scope(scope)
 
@@ -412,7 +419,8 @@ class CommitMixin:
         return (f"层级改动作用于整个位姿段：{where}，{frozen}。把「{upper}」放到「{lower}」"
                 f"上面，确定？再按 L（或点「{LAYER_BUTTON_CONFIRM}」）确定，Esc 取消")
 
-    def _commit(self, scope: str, *, action: str = "commit", note: str = "") -> None:
+    def _commit(self, scope: str, *, action: str = "commit", note: str = "",
+                behind: bool = False) -> None:
         """Write the edit, or show why the session will not take it.
 
         A refusal -- "this part is on the bench, use the bench box" -- is an
@@ -424,6 +432,9 @@ class CommitMixin:
         ``action`` is the key's action that asked (an area warning names the
         key to press again); ``note`` is said in place of the plain
         "committed" line when nothing more particular happened (task U16).
+        ``behind``: ``Enter`` wrote this split because the version was carried
+        from frames the walk has passed -- which keep the old shape, and are
+        then named (:meth:`_kept_behind`).
         """
         instance = getattr(self.session, "editing_instance", None)
         if instance is None:
@@ -431,6 +442,7 @@ class CommitMixin:
             return
         if not self._area_is_plausible(instance, scope, action):
             return
+        kept = self._kept_behind(instance) if behind and scope == api.SCOPE_SPLIT else None
         key = self.session.current()
         mask = self.session.editing_mask()
         pixels = int(mask.sum()) if mask is not None else 0
@@ -464,12 +476,20 @@ class CommitMixin:
         # assist_result, so a re-split would run against nothing.  The real one
         # happens at confirm time, where the answer is actually used.
         cut = cut_note(result, steps_text)
+        old = self._behind_note(kept, result)
+        if old:
+            # U16: the frames behind kept the old shape -- said where the
+            # annotator looks, with the key that would have reached them
+            self.flash_visibility_note(old)
         if cut:
             # the commit stopped at a state boundary (U8 round 3): say where,
             # and which frames the edit reached
             self.logger.info("commit of %s at step %s cut at %s / %s", instance, key.step,
                              result.get("cut_below"), result.get("cut_top"))
-            self.report(cut, hold_ms=6000)
+            self.report(f"{cut}。{old}" if old else cut, hold_ms=6000)
+            return
+        if old:
+            self.report(old, hold_ms=6000)
             return
         if result.get("unchanged_split"):
             # Enter on an open ✂ row, layer untouched: only the boundary (U8 2b)
@@ -485,6 +505,39 @@ class CommitMixin:
             self.report(note, hold_ms=6000)
             return
         self.report(f"committed ({scope}): {result.get('changed', '')}".strip())
+
+    def _kept_behind(self, instance: str) -> Optional[dict]:
+        """What 改全部 would reach here, asked *before* ``Enter``'s split is written.
+
+        Task U16, the review's discoverability gap: an annotator who drew a
+        rough first draft two frames back and fixes it here expects the fix to
+        reach those frames, and the split leaves them as they were.  This is
+        ``retrace_reach(scope=keyframe)`` -- the frames ``Ctrl+Enter`` would
+        write, after the cuts at state boundaries -- read while the version in
+        force is still the carried one; :meth:`_behind_note` takes off the
+        frames the split reached.  ``None`` on an open ✂ row (the frames
+        behind are the other state's and keep their shape on purpose; 改全部
+        is refused there) and when the session cannot answer.
+        """
+        reach = getattr(self.session, "retrace_reach", None)
+        if not callable(reach) or self._open_split_here(instance):
+            return None
+        try:
+            return reach(instance, api.SCOPE_KEYFRAME)
+        except Exception:  # noqa: BLE001 - a hint is never worth a failed commit
+            return None
+
+    def _behind_note(self, kept: Optional[dict], result: dict) -> str:
+        """「已从这帧起新版本；第 … 帧（其中已确认 n 帧）仍是旧样子…」, or ``""``."""
+        if not kept:
+            return ""
+        reached = set(result.get("edit_reach") or result.get("affected") or ())
+        steps = [int(s) for s in kept.get("steps") or () if int(s) not in reached]
+        if not steps:
+            return ""
+        frozen = [s for s in kept.get("frozen") or () if int(s) in set(steps)]
+        confirmed = f"（其中已确认 {len(frozen)} 帧）" if frozen else ""
+        return BEHIND_KEPT.format(steps=steps_text(steps), confirmed=confirmed)
 
     def _commit_extra(self, key, instance: str,
                       mask: Optional[np.ndarray]) -> Optional[dict]:

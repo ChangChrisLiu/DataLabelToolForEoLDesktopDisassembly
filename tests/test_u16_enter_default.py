@@ -270,6 +270,34 @@ def test_enter_on_a_carried_frame_leaves_every_frame_behind_byte_identical(windo
         assert not np.array_equal(shape_at(session, step, CHASSIS), NEW), step
 
 
+def test_enter_names_the_frames_behind_that_keep_the_old_shape(window):
+    """The review's gap: a fix made here does not reach the draft two frames back.
+
+    After Enter's split on a carried frame the status line and the canvas say
+    which frames still show the old version (and how many are confirmed), and
+    which key would have reached them; where the version starts, nothing.
+    """
+    session = window.session
+    confirm_12_and_13(window)
+    goto(window, 10)
+    paint(window, CHASSIS, NEW)
+    press(window, "act_commit")
+    said = "已从这帧起新版本；第 11–14 帧（其中已确认 2 帧）仍是旧样子，要一起改用 Ctrl+Enter"
+    assert window.status_message() == said
+    assert window.canvas.banner_text() == said
+    # on 10 the new version starts now: Enter re-traces it, nothing is left behind
+    paint(window, CHASSIS, rect(2, 34, 34, 60))
+    press(window, "act_commit")
+    assert session.editing_instance is None
+    assert "仍是旧样子" not in window.status_message(), window.status_message()
+    # ... and on the anchor frame of a version nobody is behind of, the same
+    goto(window, 14)
+    paint(window, CHASSIS, rect(4, 34, 34, 62))
+    press(window, "act_commit")
+    assert anchors(session, CHASSIS) == [10, 14]
+    assert "仍是旧样子" not in window.status_message(), window.status_message()
+
+
 def test_ctrl_enter_asks_then_writes_everywhere_and_queues_the_re_check(window):
     session = window.session
     confirm_12_and_13(window)
