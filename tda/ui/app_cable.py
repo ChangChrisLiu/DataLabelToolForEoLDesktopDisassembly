@@ -36,8 +36,8 @@ from tda.ui.canvas.overlay import palette_color
 from tda.ui.session_cable import CABLE_EDITING, CABLE_GALLERY, LABEL_ZH
 
 __all__ = ["CABLE_DONE", "CABLE_NO_TARGET", "HAND_NOT_BACK", "HAND_REPLACED",
-           "MEASURED_NOTE", "STALE_OFF", "CableMixin", "CableRangeDialog", "cable_note",
-           "range_note"]
+           "MEASURED_NOTE", "STALE_OFF", "WITHHELD_NOTE", "CableMixin", "CableRangeDialog",
+           "cable_note", "range_note"]
 
 #: ``I`` / ``Ctrl+I`` on a sequence frame with nothing to act on. It names the
 #: gallery's meaning too: on a gallery shot the same key is 「看不见」 (U10).
@@ -56,6 +56,8 @@ HAND_REPLACED = "这一帧手画的形状被替换，Ctrl+Z 找回"
 HAND_NOT_BACK = "「完全」替换掉的手画形状没有回来（Ctrl+Z 退到那一步才找回）"
 #: 撤回 because the frame cannot carry the label any more (M1): ``{why}``.
 STALE_OFF = "{label}：这一帧已经不能标被线挡住（{why}），标签撤回（Ctrl+Z 撤销）"
+#: Confirmed frames a 部分 / 撤回 showed pixels on that nobody confirmed (round 4).
+WITHHELD_NOTE = "。其余 {n} 帧（第 {steps} 步）恢复出的像素没人确认过，留在 Review 里"
 #: ``Ctrl+I`` that had to read image sizes first (M6), when it took a while.
 MEASURED_NOTE = "（其中 {n} 帧第一次读图量尺寸，以后不用）"
 #: ... said when ``Ctrl+I`` took longer than this, seconds.
@@ -252,6 +254,10 @@ class CableMixin:
             self.report(f"{label}：这一段本来就是这样，没有改")
             return
         note = range_note(label, value, frames)
+        withheld = sorted(set(result.get("withheld") or []))
+        if withheld:
+            note += WITHHELD_NOTE.format(n=len(withheld),
+                                         steps="、".join(str(s) for s in withheld))
         if time.perf_counter() - started > SLOW_RANGE_S and result.get("measured"):
             note += MEASURED_NOTE.format(n=int(result["measured"]))
         self._after_cable(note)

@@ -476,6 +476,61 @@ def test_a_retrace_waiting_for_its_recheck_is_not_signed_by_the_label(tmp_path, 
     assert not {12, 13, 14} & set(db.rechecks(DESKTOP, VIEW))
 
 
+@pytest.mark.parametrize("label", [None, PARTIAL])
+def test_pixels_a_full_label_hid_are_not_signed_unseen_after_a_retrace(tmp_path, label):
+    """Review round 4 (p12_r3): 12-14 confirmed with 完全 (empty rows); the chassis
+    redrawn at 11 changes nothing those rows show, so no conflict; Ctrl+I 撤回 / 部分
+    from 14 to 12 reveals the redrawn 400 px. Only 14, the frame on screen, is signed;
+    12 and 13 keep their conflicts for Review."""
+    session = make_session(tmp_path)
+    session.sweeper_enabled = False
+    db = session.db
+    _seed_all(session, (12, 13, 14))
+    for step in (14, 13, 12):
+        session.goto(step, force=True)
+        assert session.confirm_frame(), step
+    session.goto(STEP, force=True)
+    assert sorted(session.set_cable_range(CHASSIS, FULL, 12)["accepted"]) == [12, 13, 14]
+    session.goto(11, force=True)
+    session.begin_edit(CHASSIS)
+    session.set_editing_mask(rect(10, 40, 30, 60))
+    session.commit_edit("keyframe")
+    session.goto(STEP, force=True)
+    assert open_conflicts(session) == []                # empty rows: nothing differs
+
+    result = session.set_cable_range(CHASSIS, label, 12)
+    assert result["accepted"] == [STEP] and sorted(result["withheld"]) == [12, 13]
+    assert sorted(int(c["step"]) for c in open_conflicts(session)) == [12, 13]
+    for step in (12, 13):
+        row = db.compiled(FrameKey(DESKTOP, step, VIEW))[CHASSIS]
+        assert masks.rle_area(row["visible_rle"]) == 0 and row["visibility"] == FULL
+        assert label_at(session, step) == label          # the label is written all the same
+    signed = db.compiled(FrameKey(DESKTOP, STEP, VIEW))[CHASSIS]
+    assert signed["status"] == "verified" and masks.rle_area(signed["visible_rle"]) == 400
+    assert not {12, 13, 14} & set(db.rechecks(DESKTOP, VIEW))
+    # Ctrl+Z hides them again: nothing left to argue about
+    assert session.undo()
+    assert open_conflicts(session) == []
+    assert all(label_at(session, s) == FULL for s in (12, 13, 14))
+    assert all(masks.rle_area(db.compiled(FrameKey(DESKTOP, s, VIEW))[CHASSIS]["visible_rle"])
+               == 0 for s in (12, 13, 14))
+
+
+def test_a_full_label_confirmed_by_space_is_not_signed_off_screen(tmp_path):
+    """The strict rule without any history: 完全 confirmed with Space, then 撤回 from 14."""
+    session = make_session(tmp_path)
+    session.sweeper_enabled = False
+    _seed_all(session, (12, 13, 14))
+    for step in (14, 13, 12):
+        session.goto(step, force=True)
+        session.cycle_cable(CHASSIS)                     # unconfirmed: nothing to sign
+        assert session.confirm_frame(), step
+    session.goto(STEP, force=True)
+    result = session.set_cable_range(CHASSIS, None, 12)
+    assert result["accepted"] == [STEP] and sorted(result["withheld"]) == [12, 13]
+    assert sorted(int(c["step"]) for c in open_conflicts(session)) == [12, 13]
+
+
 def test_a_signed_frame_is_not_left_waiting_for_a_recheck(tmp_path):
     """The plain case over several frames: re-signed, and off the re-check queue."""
     session = make_session(tmp_path)

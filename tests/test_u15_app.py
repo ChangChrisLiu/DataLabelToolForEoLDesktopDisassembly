@@ -332,6 +332,18 @@ def test_a_slow_ctrl_i_says_it_was_reading_image_sizes(window, monkeypatch):
     assert "其中 3 帧第一次读图量尺寸" in window.status_message()
 
 
+def test_ctrl_i_says_which_confirmed_frames_it_left_for_review(window, monkeypatch):
+    """Review round 4: pixels a 部分 / 撤回 reveals off screen are not signed."""
+    real = window.session.set_cable_range
+    monkeypatch.setattr(window.session, "set_cable_range",
+                        lambda *a: real(*a) | {"withheld": [11, 10]})
+    monkeypatch.setattr(window, "ask_cable_range", lambda *a: (FULL, 10))
+    assert window.instances.select_instance(CHASSIS)
+    window.handle_key(key_event("Ctrl+I"))
+    assert "其余 2 帧（第 10、11 步）恢复出的像素没人确认过，留在 Review 里" in (
+        window.status_message())
+
+
 def test_ctrl_i_names_the_frames_the_part_has_no_shape_on(window, monkeypatch):
     monkeypatch.setattr(window, "ask_cable_range", lambda *a: (PARTIAL, 10))
     # the cooler has no shape on 10-12: the frames are refused by name, nothing written

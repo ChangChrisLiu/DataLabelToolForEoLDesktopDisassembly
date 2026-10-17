@@ -39,7 +39,7 @@ from tda.core.occluder import (
     shape_applies,
 )
 from tda.core.truth import TruthService
-from tda.core.truth_conflicts import payload_labels
+from tda.core.truth_conflicts import payload_geometry, payload_labels
 from tda.core.truth_inputs import (
     HW_MEASURED,
     InputCache,
@@ -159,7 +159,7 @@ def cable_one(db: Db, truth: TruthService, key: FrameKey, instance: str,
     out = _settled(db, truth, key, [key.step], Op("set_frame_override", payload, inverse),
                    label, replaced_hand_mask=label == FULL and _hand_mask(previous))
     return _signed(db, truth, key.desktop, key.view, instance, [key.step], annotator,
-                   disputed, out)
+                   disputed, out, key.step)
 
 
 def open_about(db: Db, desktop: int, view: str, instance: str, steps) -> set[int]:
@@ -187,8 +187,40 @@ def disputed_before(db: Db, truth: TruthService, desktop: int, view: str, instan
     return open_about(db, desktop, view, instance, steps)
 
 
+def _reveals(conflict: dict) -> bool:
+    """Does accepting ``conflict`` put pixels where the frozen row had none?
+
+    The frozen side's visible mask is empty (a 完全 the frame was confirmed
+    with) and the new side's is not (部分 / 撤回): pixels nobody confirmed --
+    the shape may have been redrawn elsewhere since, and an empty row cannot
+    disagree with that (review round 4).
+    """
+    old = payload_geometry(conflict.get("old_rle"))[1]
+    new = payload_geometry(conflict.get("new_rle"))[1]
+    return ((old is None or masks.rle_area(old) == 0)
+            and new is not None and masks.rle_area(new) > 0)
+
+
+def _confirmed_once(db: Db, conflict: dict) -> bool:
+    """Are the pixels ``conflict`` would reveal the ones the row was confirmed with?
+
+    What ``Ctrl+Z`` of a 完全 brings back when nothing moved in between: the
+    row the 完全 replaced was signed by a human, and the ``accept_new`` that
+    replaced it kept it as its old side. Pixels redrawn since are not that.
+    """
+    new = masks.rle_counts(payload_geometry(conflict.get("new_rle"))[1])
+    earlier = [c for c in db.conflicts(conflict["desktop"], conflict["view"], open_only=False)
+               if int(c["step"]) == int(conflict["step"]) and c["instance"] == conflict["instance"]
+               and c.get("resolution") == "accept_new" and int(c["id"]) != int(conflict["id"])]
+    if not earlier or new is None:
+        return False
+    last = max(earlier, key=lambda c: int(c["id"]))
+    return masks.rle_counts(payload_geometry(last.get("old_rle"))[1]) == new
+
+
 def accept_own_label(db: Db, truth: TruthService, desktop: int, view: str, instance: str,
-                     steps, annotator: str, disputed=(), held=None) -> list[int]:
+                     steps, annotator: str, disputed=(), held=None,
+                     current: Optional[int] = None) -> tuple[list[int], list[int]]:
     """Keep a confirmed frame confirmed under a 被线挡住 label its annotator just set.
 
     Writing a label on a frozen frame makes its re-compilation disagree with
@@ -203,14 +235,27 @@ def accept_own_label(db: Db, truth: TruthService, desktop: int, view: str, insta
     and accepting it would answer it unread. Its conflict stays open, brought
     up to date with these inputs.
 
+    Nor does it sign pixels a write **reveals** (review round 4): a frame
+    confirmed with an empty visible mask (完全) that now shows pixels (部分,
+    撤回) is signed only when it is ``current`` -- the frame the annotator is
+    looking at; any other is ``withheld``, left with its conflict for Review,
+    because its row never said what is under the cable and the shape may have
+    been redrawn since -- unless they are exactly the pixels the row was
+    confirmed with before a 完全 replaced them (``Ctrl+Z`` with nothing moved
+    in between, :func:`_confirmed_once`). Hiding pixels (完全) or changing a
+    label over pixels that were confirmed is signed on every frame.
+
     Every frozen frame compiled here is taken off the re-check queue: it was
     compared with the very inputs a re-check would read, and showing it as
     "recheck" until the sweeper passes was showing a question already answered.
     The undo and the redo of the op go through here too (:func:`apply_cable`),
     so ``Ctrl+Z`` leaves the frame confirmed with its old row. ``held`` is the
     compilation the write's own settle made of the frame in hand.
+
+    Returns ``(signed steps, withheld steps)``.
     """
     done: list[int] = []
+    withheld: list[int] = []
     for step in frozen_among(db, desktop, view, steps):
         key = FrameKey(desktop, step, view)
         gen = db.recheck_generation(desktop, view, step)
@@ -219,21 +264,27 @@ def accept_own_label(db: Db, truth: TruthService, desktop: int, view: str, insta
             for cid, name in db.open_conflicts_at(key):
                 if name != instance:
                     continue
-                labels = payload_labels((db.get_conflict(cid) or {}).get("new_rle"))
+                conflict = db.get_conflict(cid) or {}
+                labels = payload_labels(conflict.get("new_rle"))
                 if {c.get("field") for c in labels} - {"visibility"}:
                     continue                     # a state or placement: not ours
+                if (step != current and _reveals(conflict)
+                        and not _confirmed_once(db, conflict)):
+                    withheld.append(step)        # pixels nobody confirmed: Review's
+                    continue
                 truth.resolve_conflict(cid, "accept_new", annotator, prepared=made)
                 done.append(step)
         if gen is not None:
             db.clear_recheck(desktop, view, step, gen)   # just compared: not owed one
-    return done
+    return done, withheld
 
 
 def _signed(db: Db, truth: TruthService, desktop: int, view: str, instance: str, steps,
-            annotator: str, disputed, out: dict) -> dict:
+            annotator: str, disputed, out: dict, current: Optional[int]) -> dict:
     """``out`` after :func:`accept_own_label`: what it signed, what is still owed a check."""
-    out["accepted"] = accept_own_label(db, truth, desktop, view, instance, steps, annotator,
-                                       disputed, out.get("frame"))
+    out["accepted"], out["withheld"] = accept_own_label(
+        db, truth, desktop, view, instance, steps, annotator, disputed, out.get("frame"),
+        current)
     out["conflicts"] = len(open_about(db, desktop, view, instance, steps))
     queued = set(db.rechecks(desktop, view))
     out["rechecks"] = [s for s in out.get("rechecks") or [] if s in queued]
@@ -255,7 +306,8 @@ def apply_cable(apply):
                  else [int(payload["step"])])
         disputed = disputed_before(db, truth, desktop, view, instance, steps)
         stats = apply(db, truth, payload, current)
-        return _signed(db, truth, desktop, view, instance, steps, by, disputed, stats)
+        return _signed(db, truth, desktop, view, instance, steps, by, disputed, stats,
+                       current)
 
     return run
 
@@ -331,7 +383,7 @@ def cable_range(db: Db, truth: TruthService, key: FrameKey, instance: str,
     out = _settled(db, truth, key, written, Op(OP_RANGE, payload, inverse), label,
                    frames=written, measured=measured)
     return _signed(db, truth, key.desktop, key.view, instance, written, annotator,
-                   disputed, out)
+                   disputed, out, key.step)
 
 
 def _same(a: dict, b: dict) -> bool:
