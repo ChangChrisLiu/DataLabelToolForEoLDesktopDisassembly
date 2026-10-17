@@ -20,6 +20,7 @@ from tda.ui import app_support as S
 from tda.ui import session_api as api
 from tda.ui.app_state import REMOVED_ROW, cut_note
 from tda.ui.class_names import instance_label, visibility_zh
+from tda.ui.session_cable import CABLE_NOW_PARTIAL
 # the frame-range wording lives with the guide's other sentences now (U7: the
 # add-parts dialog and the bulk accept say ranges too); importable from here
 from tda.ui.guide import steps_text  # noqa: F401
@@ -571,6 +572,11 @@ class CommitMixin:
         if result.get("cleared_absent"):
             # a shape drawn on a part marked 「看不见」 on a gallery shot (U10)
             self.report(ABSENT_CLEARED, hold_ms=6000)
+            return
+        if result.get("cable_partial"):
+            # pixels drawn on a part 被线挡住（完全）: part of it is seen (U15)
+            self.report(CABLE_NOW_PARTIAL.format(label=self._label_of(instance)[0] or instance),
+                        hold_ms=6000)
             return
         if note:
             self.report(note, hold_ms=6000)

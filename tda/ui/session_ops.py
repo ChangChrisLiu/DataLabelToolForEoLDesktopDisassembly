@@ -63,6 +63,7 @@ __all__ = [
     "REVERSE",
     "annotatable_steps",
     "apply_frame_override",
+    "apply_frame_overrides",
     "apply_keyframes",
     "apply_occluder",
     "apply_pair_override",
@@ -73,6 +74,7 @@ __all__ = [
     "default_anchor",
     "frozen_among",
     "keyframe_state",
+    "override_state",
     "new_keyframe",
     "occluder_union",
     "placement_of",
@@ -433,14 +435,44 @@ def apply_frame_override(db: Db, truth: TruthService, payload: dict,
     """Write, or drop, one instance's single-frame override, then settle."""
     key = FrameKey(payload["desktop"], payload["step"], payload["view"])
     with db.transaction():
-        if payload["exists"]:
-            db.set_frame_override(
-                FrameOverride(key, payload["instance"], payload.get("visible_rle"),
-                              payload.get("visibility"))
-            )
-        else:
-            db.delete_frame_override(key, payload["instance"])
+        _write_override(db, key, payload["instance"], payload)
     return settle(db, truth, key.desktop, key.view, payload["steps"], current)
+
+
+def override_state(fo: Optional[FrameOverride]) -> dict:
+    """One override row as an op's payload: ``exists`` and its three columns (U15)."""
+    if fo is None:
+        return {"exists": False, "visible_rle": None, "visibility": None, "occluder": None}
+    return {"exists": True, "visible_rle": fo.visible_rle, "visibility": fo.visibility,
+            "occluder": fo.occluder}
+
+
+def _write_override(db: Db, key: FrameKey, instance: str, state: dict) -> None:
+    """Make one override row look like ``state``; ``exists: False`` removes it.
+
+    ``occluder`` (task U15) is read with ``get``: an op logged before it
+    existed carries none, and its row had none.
+    """
+    if state["exists"]:
+        db.set_frame_override(FrameOverride(key, instance, state.get("visible_rle"),
+                                            state.get("visibility"), state.get("occluder")))
+    else:
+        db.delete_frame_override(key, instance)
+
+
+def apply_frame_overrides(db: Db, truth: TruthService, payload: dict,
+                          current: Optional[int] = None) -> dict:
+    """Write, or drop, one instance's override on several frames, then settle.
+
+    The range form of :func:`apply_frame_override` (task U15, ``Ctrl+I``): one
+    op, one row per frame in ``payload["frames"]`` (``{"step", "exists",
+    "visible_rle", "visibility", "occluder"}``), one transaction.
+    """
+    with db.transaction():
+        for state in payload["frames"]:
+            key = FrameKey(payload["desktop"], int(state["step"]), payload["view"])
+            _write_override(db, key, payload["instance"], state)
+    return settle(db, truth, payload["desktop"], payload["view"], payload["steps"], current)
 
 
 def apply_occluder(db: Db, truth: TruthService, payload: dict,

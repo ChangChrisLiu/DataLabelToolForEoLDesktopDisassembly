@@ -66,6 +66,8 @@ GALLERY_REFUSALS: dict[str, str] = {
     "tool_bench_box": "零件合照没有台面框：零件都画掩码",
     "edit_roi": "零件合照的工作范围就是整张图，没有机箱 ROI",
     "split_pose": "零件合照每张自成一段，不用断开位姿段",
+    # Ctrl+I (U15): 「被线挡住」 is the sequence's; here I means 看不见
+    "cable_range": "零件合照里没有「被线挡住」：不在这张里的零件按 I（看不见）",
 }
 
 

@@ -66,6 +66,11 @@ from tda.ui.gallery import (
     is_component_view,
 )
 from tda.ui.panels import session_is_open
+from tda.ui.session_cable import LABEL_ZH as CABLE_ZH
+
+#: A row's tail when the part is 被线挡住 on this frame (task U15).
+CABLE_SENTENCE = (" ⚠ 被线挡住（{how}）：形状照画，这一帧导出时写明被线缆挡住"
+                  "（再按 I 换，Ctrl+Z 撤销）")
 
 #: A components-gallery row marked 「看不见」 (task U10).
 GALLERY_ABSENT_SENTENCE = (f"不在这张里（看不见）；其实在的话：右键这一条「撤回看不见」"
@@ -333,6 +338,10 @@ def row_view(row: dict, editing: Optional[str] = None, bench: bool = False,
         # DB's chassis vanished from step 42 that way, after a stray "4".
         sentence += (f" ⚠ 已设为不可见（{visibility_zh(invisible)}）：这一帧不显示它的"
                      f"形状；选中后按 1 改回可见，或 Ctrl+Z 撤销")
+    cable = row.get("cable")
+    if cable:
+        # in its place under a cable (task U15): the shape is the row's answer
+        sentence += CABLE_SENTENCE.format(how=CABLE_ZH.get(cable, cable))
     if editing is not None and instance == editing:
         chip = CHIP_BOXING if bench else CHIP_EDITING
     elif gallery and row.get("absent"):

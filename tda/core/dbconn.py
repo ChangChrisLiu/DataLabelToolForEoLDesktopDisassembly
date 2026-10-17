@@ -41,6 +41,11 @@ MIGRATIONS: dict[str, dict[str, str]] = {
     "pose_segment": {
         "bench_roi_json": "TEXT",
     },
+    # schema version 5 (task U15): why a part in its place is not seen
+    # (「被线挡住」); NULL -- every row an older file holds -- is a bare label
+    "frame_override": {
+        "occluder": "TEXT",
+    },
 }
 #: Tables that arrived whole with a later schema version. ``schema.sql`` is
 #: replayed on every open and every statement in it is ``IF NOT EXISTS``, so an
@@ -49,6 +54,7 @@ MIGRATIONS: dict[str, dict[str, str]] = {
 #:
 #: * version 3: ``recheck_queue``
 #: * version 4: ``pose_break`` (per-view pose breaks, spec 2.5 v1.5)
+#: * version 5: no table -- ``frame_override.occluder`` (:data:`MIGRATIONS`)
 ADDED_TABLES: dict[int, tuple[str, ...]] = {3: ("recheck_queue",), 4: ("pose_break",)}
 
 

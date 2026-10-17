@@ -37,6 +37,9 @@ from tda.core import masks
 from tda.core.compiler import marked_absent, select_keyframe
 from tda.core.cut_follow import CUT, is_cut, same_parts
 from tda.core.db import Db
+from tda.core.occluder import FULL as CABLE_FULL
+from tda.core.occluder import PARTIAL as CABLE_PARTIAL
+from tda.core.occluder import cable_label, kept_mask
 from tda.core.model import (
     FrameKey,
     FrameOverride,
@@ -78,6 +81,7 @@ from tda.ui.session_ops import (
     mask_steps,
     new_keyframe,
     occluder_union,
+    override_state,
     placement_of,
     refresh_steps,
     segment_steps,
@@ -897,18 +901,23 @@ def _commit_frame_override(db: Db, truth: TruthService, key: FrameKey, instance:
     previous = db.frame_overrides(key).get(instance)
     common = {"desktop": key.desktop, "view": key.view, "step": key.step,
               "instance": instance, "steps": [key.step]}
+    # the pixels change, the label -- and the reason it gives (U15) -- do not;
+    # except that pixels drawn on a part 被线挡住（完全） say part of it is seen
+    label = None if previous is None else previous.visibility
+    seen = cable_label(previous) == CABLE_FULL and bool(visible.any())
     payload = _with_extra(common, extra) | {
         "exists": True, "visible_rle": masks.encode_rle_boxed(visible),
-        "visibility": None if previous is None else previous.visibility}
-    inverse = common | {"exists": previous is not None,
-                        "visible_rle": None if previous is None else previous.visible_rle,
-                        "visibility": None if previous is None else previous.visibility}
+        "visibility": CABLE_PARTIAL if seen else label,
+        "occluder": None if previous is None else previous.occluder}
+    inverse = common | override_state(previous)
     with db.transaction():
         db.set_frame_override(
-            FrameOverride(key, instance, payload["visible_rle"], payload["visibility"])
+            FrameOverride(key, instance, payload["visible_rle"], payload["visibility"],
+                          payload["occluder"])
         )
         db.log_op(key.desktop, key.view, "set_frame_override", payload, inverse, annotator)
-    return _result(db, truth, key, [key.step], Op("set_frame_override", payload, inverse))
+    return _result(db, truth, key, [key.step], Op("set_frame_override", payload, inverse),
+                   {"cable_partial": seen})
 
 
 # --------------------------------------------------------------------------- #
@@ -992,7 +1001,9 @@ def set_visibility(db: Db, truth: TruthService, key: FrameKey, instance: str, vi
 
     A label is a frame-level statement, so it is stored as a
     :class:`~tda.core.model.FrameOverride` -- merged into the one already there,
-    which keeps a hand-drawn single-frame mask intact.
+    which keeps a hand-drawn single-frame mask intact.  A 「被线挡住」 reason
+    (task U15) is not: a digit is a new statement without one, so the reason
+    goes, and so does the empty mask 完全 wrote (:func:`tda.core.occluder.kept_mask`).
     """
     if vis not in api.VISIBILITY_VALUES:
         raise SessionRefusal(
@@ -1000,11 +1011,9 @@ def set_visibility(db: Db, truth: TruthService, key: FrameKey, instance: str, vi
     previous = db.frame_overrides(key).get(instance)
     common = {"desktop": key.desktop, "view": key.view, "step": key.step,
               "instance": instance, "steps": [key.step]}
-    payload = common | {"exists": True, "visibility": vis,
-                        "visible_rle": None if previous is None else previous.visible_rle}
-    inverse = common | {"exists": previous is not None,
-                        "visibility": None if previous is None else previous.visibility,
-                        "visible_rle": None if previous is None else previous.visible_rle}
+    payload = common | {"exists": True, "visibility": vis, "occluder": None,
+                        "visible_rle": _mask_without_reason(previous)}
+    inverse = common | override_state(previous)
     with db.transaction():
         db.set_frame_override(FrameOverride(key, instance, payload["visible_rle"], vis))
         db.log_op(key.desktop, key.view, "set_frame_override", payload, inverse, annotator)
@@ -1018,24 +1027,32 @@ def clear_visibility(db: Db, truth: TruthService, key: FrameKey, instance: str,
     A single-frame mask in the same override stays; the row goes only when it
     held nothing else. What a second 「看不见」 on a components-gallery shot
     does (task U10): the part is to be drawn again, with no label of its own.
+    A 「被线挡住」 reason goes with its label, and so does 完全's empty mask.
     """
     previous = db.frame_overrides(key).get(instance)
     if previous is None or previous.visibility is None:
         return _result(db, truth, key, [key.step], None)
     common = {"desktop": key.desktop, "view": key.view, "step": key.step,
               "instance": instance, "steps": [key.step]}
-    keep = previous.visible_rle is not None
-    payload = common | {"exists": keep, "visibility": None,
-                        "visible_rle": previous.visible_rle}
-    inverse = common | {"exists": True, "visibility": previous.visibility,
-                        "visible_rle": previous.visible_rle}
+    mask = _mask_without_reason(previous)
+    keep = mask is not None
+    payload = common | {"exists": keep, "visibility": None, "occluder": None,
+                        "visible_rle": mask}
+    inverse = common | override_state(previous)
     with db.transaction():
         if keep:
-            db.set_frame_override(FrameOverride(key, instance, previous.visible_rle, None))
+            db.set_frame_override(FrameOverride(key, instance, mask, None))
         else:
             db.delete_frame_override(key, instance)
         db.log_op(key.desktop, key.view, "set_frame_override", payload, inverse, annotator)
     return _result(db, truth, key, [key.step], Op("set_frame_override", payload, inverse))
+
+
+def _mask_without_reason(previous: Optional[FrameOverride]) -> Optional[dict]:
+    """The single-frame mask left when a label is replaced: 完全's empty one goes (U15)."""
+    if previous is None:
+        return None
+    return kept_mask(previous) if previous.occluder else previous.visible_rle
 
 
 def commit_occluder(db: Db, truth: TruthService, key: FrameKey, mask: np.ndarray,

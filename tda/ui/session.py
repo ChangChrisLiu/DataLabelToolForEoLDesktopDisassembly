@@ -34,7 +34,9 @@ from tda.core.truth_refusals import blocking_reasons
 from tda.ui import session_edit as edit
 from tda.ui.commands import Op, UndoStack
 from tda.ui.session_api import SessionRefusal
+from tda.ui.session_cable import CableMixin, apply_cable
 from tda.ui.session_commits import CommitMixin
+from tda.ui.session_ops import apply_frame_overrides
 from tda.ui.session_images import ImageCache
 from tda.ui.session_layer import EditingLayer
 from tda.ui import session_rows as rows
@@ -49,8 +51,8 @@ __all__ = ["AnnotationSession"]
 
 log = logging.getLogger("tda.session")
 
-class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, TruthCacheMixin,
-                        QObject):
+class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, CableMixin,
+                        TruthCacheMixin, QObject):
     """One annotator's working set: a desktop, a view, and the frame in hand."""
 
     #: The current frame changed; payload is a :class:`~tda.core.model.FrameKey`.
@@ -130,7 +132,9 @@ class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, TruthCa
             ("commit_keyframe", edit.apply_keyframes),
             ("set_zorder", edit.apply_zorder),
             ("set_pair_override", edit.apply_pair_override),
-            ("set_frame_override", edit.apply_frame_override),
+            # a 被线挡住 op keeps a confirmed frame confirmed both ways (U15)
+            ("set_frame_override", apply_cable(edit.apply_frame_override)),
+            ("set_frame_overrides", apply_cable(apply_frame_overrides)),   # Ctrl+I
             ("set_occluder", edit.apply_occluder),
             ("assert_state", apply_assert_state),   # task U8
             ("correct_verb", apply_correct_verb),   # task U9
@@ -443,6 +447,7 @@ class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, TruthCa
             self._hidden,
             overridden=labelled,
             drawn=drawn,
+            cable=self.cable_labels(),     # 「被线挡住」 (task U15)
         )
         # which states each part can be set to here (task U8): the panel's combo;
         # which can be said to be taken out after all (task U9): its button
@@ -479,7 +484,8 @@ class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, TruthCa
         for row in card:
             if offered.get(str(row.get("instance", ""))) == "remove":
                 row["verb_fix"] = "remove"
-        return rows.mark_invisible(card, self._compiled_or_none())
+        card = rows.mark_invisible(card, self._compiled_or_none())
+        return rows.mark_cable(card, {} if self.gallery else self.cable_labels())
 
     def _compiled_or_none(self) -> Optional[CompiledFrame]:
         """The compiled frame (cached), or ``None`` when it cannot be had."""

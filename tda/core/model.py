@@ -268,12 +268,24 @@ class OccluderMask:
     rle: dict
 
 
+#: What a frame's ``visibility`` label may name as the reason a part in its
+#: place is not seen (task U15, 「被线挡住」): something nobody labels. The
+#: annotator's ``I`` writes ``cable``; ``other_unlabeled`` is for anything else
+#: that is not annotated (a later dialog), so far store-level only.
+OCCLUDER_CABLE = "cable"
+OCCLUDER_OTHER = "other_unlabeled"
+OCCLUDERS = (OCCLUDER_CABLE, OCCLUDER_OTHER)
+
+
 @dataclass
 class FrameOverride:
     frame: FrameKey
     instance: str
     visible_rle: Optional[dict] = None
     visibility: Optional[str] = None
+    #: Why the part is (partly) not seen although it is in its place: one of
+    #: :data:`OCCLUDERS`, or ``None`` for a bare label (task U15).
+    occluder: Optional[str] = None
 
 
 @dataclass

@@ -7,10 +7,13 @@ carries geometry, and the 23 taxonomy classes as categories 1..23 in
 ``configs/taxonomy.yaml`` keeps its order.
 
 Beyond the COCO fields every annotation carries an ``attributes`` block (state,
-placement, visibility, occlusion ratio, amodal completeness, provenance, the
-view's ``tier`` and whether it is ``verified``), because the spec's downstream
-users -- and the VLM export next door -- need the truth table's semantics, not
-only its pixels.
+placement, visibility, the ``occluder`` nobody labels that hides it, occlusion
+ratio, amodal completeness, provenance, the view's ``tier`` and whether it is
+``verified``), because the spec's downstream users -- and the VLM export next
+door -- need the truth table's semantics, not only its pixels. A part
+被线挡住 (task U15) also carries its whole shape, ``amodal_segmentation`` /
+``amodal_bbox``; one hidden completely is written with an empty segmentation,
+its amodal box and ``iscrowd: 1`` (:func:`_annotation`).
 
 ``tier`` and ``verified`` are two fields on purpose. The tier is the **view's**
 (spec 8.1: scanner and OAK1 gold, OAK2 silver, RealSense bronze) and is read
@@ -42,6 +45,8 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Sequence
+
+import numpy as np
 
 from tda.core import masks
 from tda.core.compiler import select_keyframe
@@ -449,7 +454,8 @@ def view_tier(view: str, tax: Taxonomy) -> str:
 
 def _attributes(ctx: DesktopCtx, instance: str, row: dict, step: int,
                 keyframe: Optional[ShapeKeyframe], tier: Optional[str],
-                disputed: bool = False, gallery: bool = False) -> dict:
+                disputed: bool = False, gallery: bool = False,
+                occluder: Optional[str] = None) -> dict:
     """The truth-table semantics carried alongside every annotation.
 
     ``tier`` and ``verified`` are deliberately two fields. The tier is the
@@ -471,6 +477,11 @@ def _attributes(ctx: DesktopCtx, instance: str, row: dict, step: int,
 
     ``gallery`` is a components-gallery shot (task U10): every part on it is
     ``removed`` and ``on_bench`` (:data:`~tda.core.states.GALLERY_EXPORT_STATE`).
+
+    ``occluder`` is why a part in its place is (partly) not seen on this frame
+    -- ``"cable"`` / ``"other_unlabeled"``, nothing annotated covers it -- or
+    ``None`` (task U15, 「被线挡住」): the frame's own statement, read off its
+    :class:`~tda.core.model.FrameOverride`.
     """
     inst_state = ctx.state_at(step).get(instance)
     rec = ctx.instances.get(instance)
@@ -485,6 +496,7 @@ def _attributes(ctx: DesktopCtx, instance: str, row: dict, step: int,
         "state": state,
         "placement": placement,
         "visibility": row.get("visibility"),
+        "occluder": occluder,
         "occlusion_ratio": row.get("occlusion_ratio"),
         "amodal_complete": None if keyframe is None else bool(keyframe.amodal_complete),
         "implied": bool(rec is not None and is_implied(rec)),
@@ -494,7 +506,8 @@ def _attributes(ctx: DesktopCtx, instance: str, row: dict, step: int,
 
 
 def _annotation(ann_id: int, img_id: int, category: int, row: dict, attributes: dict,
-                roi: Optional[tuple[int, int, int, int]], include_boxes: bool) -> Optional[dict]:
+                roi: Optional[tuple[int, int, int, int]], include_boxes: bool,
+                amodal: Optional[dict] = None) -> Optional[dict]:
     """One COCO annotation, or ``None`` when the row carries nothing to export.
 
     A ``mask`` row becomes a full segmentation; a ``box`` row -- a bench part
@@ -502,14 +515,40 @@ def _annotation(ann_id: int, img_id: int, category: int, row: dict, attributes: 
     ``include_boxes``, with ``segmentation: []``. Both geometries come from the
     compiled row itself, so nothing here re-derives what the truth service has
     already resolved.
+
+    ``amodal`` is the part's whole shape on this frame, handed in for a row
+    that names an occluder (task U15, 「被线挡住」) and written beside the
+    visible one as ``amodal_segmentation`` / ``amodal_bbox`` (spec 8.1's
+    extension field). A part 被线挡住（完全） has an empty visible mask: it is
+    exported anyway -- an empty ``segmentation``, ``area`` 0, the amodal box as
+    ``bbox`` and **``iscrowd: 1``**, so that COCOeval neither expects a
+    visible-mask detector to find it nor penalises one that does (a perfect
+    detector scored segm AP 0.972 against ``iscrowd: 0``, 1.000 against this);
+    its segmentation is the compressed RLE (``{"size", "counts"}``) that
+    pycocotools reads for a crowd region. A part with nothing visible and no
+    reason given is still dropped.
     """
+    if amodal is not None and roi is not None:
+        amodal = _crop_rle(amodal, roi)
+    hidden = (amodal is not None and bool(attributes.get("occluder"))
+              and attributes.get("visibility") == Visibility.OCCLUDED_FULL.value)
+    crowd = 0
     rle = row.get("visible_rle")
     if rle:
         if roi is not None:
-            rle = _crop_rle(rle, roi)
+            cropped = _crop_rle(rle, roi)
+            if cropped is None and hidden:
+                cropped = masks.encode_rle(np.zeros((roi[3] - roi[1], roi[2] - roi[0]),
+                                                    dtype=bool))
+            rle = cropped
             if rle is None:
                 return None
         box = mask_bbox_xywh(rle)
+        if box is None and hidden:
+            box = mask_bbox_xywh(amodal)       # nothing seen: where the part is
+            # ... and a crowd region: COCOeval neither expects a visible-mask
+            # detection there nor counts one against it (ruled, U15 review M5)
+            crowd = 1
         if box is None:
             return None
         area = float(masks.rle_area(rle))
@@ -526,11 +565,39 @@ def _annotation(ann_id: int, img_id: int, category: int, row: dict, attributes: 
                 return None
         area = float(box[2]) * float(box[3])
         segmentation = []
-    return {
+    ann = {
         "id": ann_id, "image_id": img_id, "category_id": category,
         "segmentation": segmentation, "bbox": box, "area": _round_int(area),
-        "iscrowd": 0, "attributes": attributes,
+        "iscrowd": crowd, "attributes": attributes,
     }
+    if amodal is not None:
+        ann["amodal_segmentation"] = amodal
+        ann["amodal_bbox"] = mask_bbox_xywh(amodal)
+    return ann
+
+
+def _occluders_of(db: Db, key: FrameKey) -> dict[str, str]:
+    """``instance -> occluder`` of the frame's 「被线挡住」 statements (task U15)."""
+    return {name: fo.occluder for name, fo in db.frame_overrides(key).items()
+            if fo.occluder}
+
+
+def _amodal_rles(service: TruthService, key: FrameKey, wanted) -> dict[str, dict]:
+    """The whole shape of each ``wanted`` instance on this frame, as RLE.
+
+    Compiled once per frame, and only for a frame that names an occluder: the
+    truth table stores the visible mask alone (spec 3.4), and a part under a
+    cable is the one annotation whose visible mask does not say where it is.
+    """
+    if not wanted:
+        return {}
+    compiled = service.compile(key)
+    out: dict[str, dict] = {}
+    for name in wanted:
+        found = compiled.instances.get(name)
+        if found is not None and found.amodal is not None:
+            out[name] = masks.encode_rle(found.amodal, getattr(found, "amodal_window", None))
+    return out
 
 
 def _round_int(value: float):
@@ -661,6 +728,9 @@ def export_coco(
             doc["images"].append(image)
 
             segment = pose_segment_of(db, key)
+            # 「被线挡住」 (task U15): the reason, and the amodal it keeps
+            occluders = _occluders_of(db, key)
+            amodals = _amodal_rles(service, key, sorted(set(occluders) & set(rows)))
             for instance in sorted(rows):
                 row = rows[instance]
                 cls = ctx.cls_of(instance)
@@ -671,8 +741,8 @@ def export_coco(
                 ann = _annotation(
                     ann_id, img_id, cat_of[cls], row,
                     _attributes(ctx, instance, row, key.step, keyframe, tier,
-                                key.step in disputed, gallery),
-                    roi, include_boxes,
+                                key.step in disputed, gallery, occluders.get(instance)),
+                    roi, include_boxes, amodals.get(instance),
                 )
                 if ann is not None:
                     doc["annotations"].append(ann)

@@ -265,11 +265,19 @@ ACTIONS: tuple[Action, ...] = (
            short="重做"),
     Action("toggle_hidden", ("H",), "act_toggle_hidden", "Hide/show instance",
            "隐藏或显示选中实例", "edit", (), _ANN),
-    # Task U10: ``I`` for invisible / 看不见 -- free in every mode.
+    # Task U10: ``I`` for invisible / 看不见 -- free in every mode. Task U15:
+    # on a sequence frame the part is there but under a cable (not labelled).
     Action("mark_absent", ("I",), "act_mark_absent",
-           "Components gallery: the card's part is not in this shot (again: take it back)",
-           "零件合照：任务卡上这个零件不在这张里（看不见；再按一次撤回）", "edit", (), _ANN,
+           "Hidden: on the sequence, the selected part is under a cable (full -> partial "
+           "-> off); in the components gallery, the card's part is not in this shot",
+           "看不见：拆解序列里 = 选中零件被线挡住（完全→部分→撤回）；"
+           "零件合照里 = 卡上这个零件不在这张里（再按撤回）", "edit", (), _ANN,
            short="看不见"),
+    # Task U15: the same over a span, as Ctrl+T is T's. Ctrl+I is free.
+    Action("cable_range", ("Ctrl+I",), "act_cable_range",
+           "Selected part under a cable from this frame to a given step (one op)",
+           "选中零件从这一帧到第 N 步都标被线挡住（完全 / 部分 / 撤回；一次撤销）",
+           "edit", (), _ANN),
     Action("cycle_visibility", ("V",), "act_cycle_visibility", "Cycle visibility",
            "循环切换可见性取值", "edit", (), _ANN),
     # Task U8: the state the picture shows when the log's is different (a clip

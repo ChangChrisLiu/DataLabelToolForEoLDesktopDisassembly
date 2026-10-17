@@ -20,8 +20,8 @@ from tda.core.compiler import CompiledFrame, Window
 from tda.core.model import InstanceRec, Placement, Visibility
 from tda.core.states import FrameState
 
-__all__ = ["HIDING_VISIBILITY", "hidden_by_label", "instance_rows", "mark_invisible",
-           "overlay_layers", "paint_order", "painted"]
+__all__ = ["HIDING_VISIBILITY", "hidden_by_label", "instance_rows", "mark_cable",
+           "mark_invisible", "overlay_layers", "paint_order", "painted"]
 
 IN_CHASSIS = Placement.IN_CHASSIS.value
 ON_BENCH = Placement.ON_BENCH.value
@@ -53,7 +53,8 @@ def paint_order(compiled: CompiledFrame) -> list[str]:
 def instance_rows(compiled: CompiledFrame, state: FrameState,
                   instances: dict[str, InstanceRec], hidden: set[str],
                   overridden: frozenset = frozenset(),
-                  drawn: frozenset = frozenset()) -> list[dict]:
+                  drawn: frozenset = frozenset(),
+                  cable: Optional[dict] = None) -> list[dict]:
     """``{"key","cls","state","placement","visibility","z","hidden"}``, top first.
 
     ``z`` counts from the bottom, so the top-most row carries the highest one and
@@ -63,8 +64,10 @@ def instance_rows(compiled: CompiledFrame, state: FrameState,
     ``overridden``) and ``has_shape`` -- a keyframe applies here, or a shape
     was drawn for this frame only (``drawn``: a frame override with pixels,
     which the compiled instance does not tell apart from "nothing drawn",
-    because it carries no keyframe id; task U2c).
+    because it carries no keyframe id; task U2c).  ``cable`` (task U15):
+    ``instance -> 完全/部分 label`` of the parts 被线挡住 here, as ``"cable"``.
     """
+    cable = cable or {}
     bottom_up = paint_order(compiled)
     rows = []
     for z, instance in enumerate(bottom_up):
@@ -81,6 +84,7 @@ def instance_rows(compiled: CompiledFrame, state: FrameState,
             "hidden": instance in hidden,
             "vis_override": instance in overridden,
             "has_shape": inst.keyframe_id is not None or instance in drawn,
+            "cable": cable.get(instance),
         })
     rows.reverse()
     return rows
@@ -110,6 +114,21 @@ def mark_invisible(card: list[dict], compiled: Optional[CompiledFrame]) -> list[
         label = hidden_by_label(compiled.instances.get(str(row.get("instance", ""))))
         if label is not None:
             row["invisible"] = label
+    return card
+
+
+def mark_cable(card: list[dict], cable: dict) -> list[dict]:
+    """Add ``"cable": label`` to card rows of parts 被线挡住 here (task U15).
+
+    That label explains a hidden shape on its own -- the row says why instead
+    of :func:`mark_invisible`'s "set to invisible", which is dropped. Whether
+    the row is done does not change: the shape is what the row asks for.
+    """
+    for row in card:
+        label = cable.get(str(row.get("instance", "")))
+        if label is not None:
+            row["cable"] = label
+            row.pop("invisible", None)
     return card
 
 

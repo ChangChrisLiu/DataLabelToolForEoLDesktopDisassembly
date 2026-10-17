@@ -36,6 +36,7 @@ from tda.core.dbconn import ConnectionMixin
 from tda.core.dbdelete import DeleteMixin
 from tda.core.db_digest import DigestMixin
 from tda.core.model import (
+    OCCLUDERS,
     ActionRec,
     FrameKey,
     FrameOverride,
@@ -50,7 +51,10 @@ from tda.core.model import (
     ZOrderRec,
 )
 
-SCHEMA_VERSION = 4
+#: 5: ``frame_override.occluder`` (task U15, 「被线挡住」) -- an older build
+#: would rewrite a label and leave the reason standing beside it, so it is
+#: refused the file rather than allowed to.
+SCHEMA_VERSION = 5
 #: ``desktop`` meta key holding the classes whose implied instance the annotator
 #: has deleted (:meth:`Db.declined_implied`). Meta rather than a table: it is one
 #: short list per desktop and it has to survive a ``--force`` re-import, which
@@ -592,10 +596,17 @@ class Db(ConnectionMixin, PoseSegmentMixin, StatusMixin, DeleteMixin,
         return [OccluderMask(key, r["occluder_type"], R.loads(r["rle_json"])) for r in rows]
 
     def set_frame_override(self, fo: FrameOverride) -> None:
-        """Store a frame-local mask/visibility override for one instance."""
+        """Store a frame-local mask/visibility override for one instance.
+
+        The whole row: an ``occluder`` left ``None`` clears the stored one, so
+        a label written without its reason cannot keep an old reason beside it.
+        """
+        if fo.occluder is not None and fo.occluder not in OCCLUDERS:
+            raise ValueError(f"occluder must be one of {OCCLUDERS}, got {fo.occluder!r}")
         self._upsert(
             "frame_override", self._fk(fo.frame) | {"instance": fo.instance},
-            {"visible_rle_json": R.dumps(fo.visible_rle), "visibility": fo.visibility},
+            {"visible_rle_json": R.dumps(fo.visible_rle), "visibility": fo.visibility,
+             "occluder": fo.occluder},
             desktop=fo.frame.desktop,
         )
 
@@ -606,8 +617,19 @@ class Db(ConnectionMixin, PoseSegmentMixin, StatusMixin, DeleteMixin,
             (key.desktop, key.step, key.view),
         ).fetchall()
         return {r["instance"]: FrameOverride(key, r["instance"],
-                                             R.loads(r["visible_rle_json"]), r["visibility"])
+                                             R.loads(r["visible_rle_json"]), r["visibility"],
+                                             r["occluder"])
                 for r in rows}
+
+    def occluded_overrides(self, desktop: int, view: str) -> list[FrameOverride]:
+        """Every override of one view naming an occluder (task U15), by step and instance."""
+        rows = self.conn.execute(
+            "SELECT * FROM frame_override WHERE desktop=? AND view=? AND occluder IS NOT NULL "
+            "ORDER BY step, instance", (desktop, view),
+        ).fetchall()
+        return [FrameOverride(FrameKey(desktop, int(r["step"]), view), r["instance"],
+                              R.loads(r["visible_rle_json"]), r["visibility"], r["occluder"])
+                for r in rows]
 
     def set_pose_segment(self, desktop: int, view: str, seg: int, start: int, end: int,
                          ref_step: int, corners: list | None, homography: list | None) -> None:

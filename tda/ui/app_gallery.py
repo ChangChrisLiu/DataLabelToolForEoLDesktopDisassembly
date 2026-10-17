@@ -8,6 +8,8 @@ one is what it does on any other.  Three things are its own and live here:
   label and no pixels -- which settles its card row and its
   ``missing_shape`` (:func:`tda.core.compiler.marked_absent`).  ``I`` or the
   card row's right-click menu set it on the card's part; again takes it back.
+  On a sequence frame the same key is 「被线挡住」 (task U15,
+  :mod:`tda.ui.app_cable`).
 * **what the gallery refuses**: the sequence's keys that have nothing to act
   on here (``T``, ``Ctrl+Enter``, the difference map, ``Tab``, the bench box,
   the ROI, a pose break), each with its reason (:mod:`tda.ui.gallery`).
@@ -128,17 +130,26 @@ class GalleryMixin:
 
     def absent_refusal(self, instance: Optional[str] = None,
                        dirty: Optional[bool] = None) -> str:
-        """Why 「看不见」 (``I``) would do nothing now, ``""`` if it may (its button, U13)."""
+        """Why 「看不见」 (``I``) would do nothing now, ``""`` if it may (its button, U13).
+
+        On a sequence frame ``I`` is 「被线挡住」 (task U15), with its own gates.
+        """
+        if compat.is_open(self.session) and not self.in_gallery():
+            return self.cable_refusal(instance, dirty)
         return self._absent_check(instance, dirty)[2]
 
     @S.guard
     def act_mark_absent(self, instance: Optional[str] = None) -> None:
         """「看不见」: ``instance`` is not in this gallery shot -- or, again, it is.
 
-        Refused outside the gallery, on a part the card does not ask for, on a
-        part that already has a shape here (a drawn part *is* in the shot), and
-        while pixels of it are being drawn.
+        Refused on a part the card does not ask for, on a part that already
+        has a shape here (a drawn part *is* in the shot), and while pixels of
+        it are being drawn. On a sequence frame the key is 「被线挡住」 instead
+        (task U15, :meth:`tda.ui.app_cable.CableMixin.act_cable`).
         """
+        if compat.is_open(self.session) and not self.in_gallery():
+            self.act_cable(instance)
+            return
         target, row, why = self._absent_check(instance)
         if why:
             self.report(why)
