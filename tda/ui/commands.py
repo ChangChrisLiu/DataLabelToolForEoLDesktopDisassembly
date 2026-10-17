@@ -36,6 +36,7 @@ KINDS: frozenset[str] = frozenset(
         "commit_keyframe",  # write/split a ShapeKeyframe
         "assert_state",  # manual StateEvents: a part's state at one frame (U8)
         "correct_verb",  # an action's open <-> remove: opened, or taken out (U9)
+        "captive_fix",  # a screw's captive flag: unscrewed and out, or left in its part (U14)
     }
 )
 

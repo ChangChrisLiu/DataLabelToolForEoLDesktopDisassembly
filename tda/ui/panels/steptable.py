@@ -73,6 +73,8 @@ from tda.ui.steps_model import (
     DEFAULT_PARENT,
     EditError,
     StepTableData,
+    captive_signature,
+    forget_deleted,
     stored_signature,
     table_signature,
     thumb_path,
@@ -278,14 +280,22 @@ class StepTablePanel(MergeIntoMixin, QWidget):
         """
         self.loaded_db = stored_signature(self.db, self.desktop)
         self.loaded_data = table_signature(self.data.steps, self.data.actions)
+        # the screws' captive fields too (task U14): Shift+T on a screw writes
+        # them from Annotate mode
+        self.loaded_db_captive = captive_signature(self.db.instances(self.desktop))
+        self.loaded_captive = captive_signature(self.data.instances)
 
     def database_moved(self) -> bool:
-        """Has the stored step table changed since this panel loaded or applied it?"""
-        return stored_signature(self.db, self.desktop) != self.loaded_db
+        """Has the stored step table (or a screw's captive) changed since the last load / Apply?"""
+        return (stored_signature(self.db, self.desktop) != self.loaded_db
+                or captive_signature(self.db.instances(self.desktop))
+                != getattr(self, "loaded_db_captive", None))
 
     def has_unapplied_edits(self) -> bool:
-        """Does the panel hold steps, actions, parts or edges not written yet?"""
+        """Does the panel hold steps, actions, captive flags, parts or edges not written yet?"""
         return (table_signature(self.data.steps, self.data.actions) != self.loaded_data
+                or captive_signature(self.data.instances)
+                != getattr(self, "loaded_captive", None)
                 or bool(self.data.extras) or bool(self.data.relations.dirty))
 
     def show_step(self, step: int) -> None:
@@ -382,6 +392,11 @@ class StepTablePanel(MergeIntoMixin, QWidget):
         self._command(lambda: self.data.delete_instance(self.db, key),
                       f"Removed the staged {key}." if staged else f"Deleted {key}.",
                       staged=staged)
+        if not staged and key not in self.data.instances:
+            # written through: both sides lost it alike (U14's snapshot of the
+            # screws' captive fields must not read that as a move or an edit)
+            self.loaded_db_captive = forget_deleted(self.loaded_db_captive, key)
+            self.loaded_captive = forget_deleted(self.loaded_captive, key)
 
     def add_parts(self, cls: str, count: int = 1, parent=DEFAULT_PARENT,
                   state: Optional[str] = None, note: str = "",

@@ -544,7 +544,13 @@ def test_panel_paints_every_row(qapp, db, tmp_path, tax):
     widget.tabs.setCurrentIndex(1)
     qapp.processEvents()
     assert not widget.instances_view.grab().isNull()
+    # The only test here that shows its panel: hide it and let the deletion run,
+    # or a live top-level window keeps the application focus and every key test
+    # of a later module (test_app_actions.py run after this file) finds the
+    # main window's keyboard switched off.
+    widget.hide()
     widget.deleteLater()
+    qapp.processEvents()
 
 
 def test_split_step_refreshes_both_tables(qapp, db, tmp_path, tax):

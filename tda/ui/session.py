@@ -46,13 +46,14 @@ from tda.ui.session_state import StateMixin, apply_assert_state
 from tda.ui.session_truth import TruthCacheMixin
 from tda.ui.session_sweep import TruthSweeper
 from tda.ui.session_verb import VerbMixin, apply_correct_verb
+from tda.ui.session_captive import CaptiveMixin, apply_captive_fix
 
 __all__ = ["AnnotationSession"]
 
 log = logging.getLogger("tda.session")
 
-class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, CableMixin,
-                        TruthCacheMixin, QObject):
+class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, CaptiveMixin,
+                        CableMixin, TruthCacheMixin, QObject):
     """One annotator's working set: a desktop, a view, and the frame in hand."""
 
     #: The current frame changed; payload is a :class:`~tda.core.model.FrameKey`.
@@ -138,6 +139,7 @@ class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, CableMi
             ("set_occluder", edit.apply_occluder),
             ("assert_state", apply_assert_state),   # task U8
             ("correct_verb", apply_correct_verb),   # task U9
+            ("captive_fix", apply_captive_fix),     # task U14
         ):
             handler = self._make_handler(apply)
             self.undo_stack.register(kind, handler, handler)
@@ -484,6 +486,8 @@ class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, CableMi
         for row in card:
             if offered.get(str(row.get("instance", ""))) == "remove":
                 row["verb_fix"] = "remove"
+        # a loosened captive screw may have been taken out after all (task U14)
+        self._mark_loosened_screws(card, key)
         card = rows.mark_invisible(card, self._compiled_or_none())
         return rows.mark_cable(card, {} if self.gallery else self.cable_labels())
 

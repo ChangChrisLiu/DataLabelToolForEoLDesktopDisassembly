@@ -11,7 +11,8 @@ steps is skipped unless ``force`` is given, and even a forced run
 * says per desktop what it is about to replace,
 * carries the imported ``LS:`` note lines over to the new steps,
 * keeps the verb the step table carries on every action corrected with
-  ``Shift+T`` (:mod:`tda.core.verb_replay`),
+  ``Shift+T`` (:mod:`tda.core.verb_replay`), and the ``captive`` flag of every
+  screw flipped with it (:mod:`tda.core.captive_replay`),
 * keeps the instances merged in S1 merged (:mod:`tda.core.merge_replay`), and
 * leaves the hand-written (``auto=False``) state events alone.
 
@@ -43,6 +44,7 @@ from tda.core.states import INITIAL_STEP, events_from_actions, initial_overrides
 from tda.core.taxonomy import Taxonomy
 from tda.core.merge_replay import OP_REPLAY_MERGES, MergeReplay, replay_merges_for_import
 from tda.core.verb_replay import OP_REPLAY, Replay, replay_for_import
+from tda.core.captive_replay import OP_REPLAY_CAPTIVE, CaptiveReplay, replay_captive_for_import
 from tda.pipeline import Log, merge_desktop_meta, settle_gallery, split_pose_segments, wanted
 
 #: Mirrors :data:`tda.core.ls_import.NOTES_PREFIX`; repeated so importing the
@@ -742,11 +744,11 @@ def _write_import(
     db: Db, li: LogImport, tax: Taxonomy, previous: list[StepRec], plan: DropPlan,
     adopt: Optional[dict[str, str]] = None,
 ) -> tuple[int, int, int, list[str], list[str], list[str], list[str], list[str], list[str],
-           Replay, MergeReplay]:
+           Replay, MergeReplay, CaptiveReplay]:
     """Write one desktop's import atomically.
 
     Returns ``(events, steps with LS notes, notes dropped, fills, unresolved,
-    implied, dropped instances, drop issues, adopted, replay, merges)``.
+    implied, dropped instances, drop issues, adopted, replay, merges, captive)``.
     ``adopt`` is :func:`extra_clash` when ``--adopt-extras`` was given (see
     :func:`_adopt_extras`).
 
@@ -763,6 +765,12 @@ def _write_import(
     the parsed action before it is written (:mod:`tda.core.verb_replay`), and
     one ``replay_corrections`` row in the op log says which were kept, which
     the sheet already agrees with, and which no longer fit it.
+
+    Every screw whose ``captive`` was flipped with ``Shift+T`` (task U14) keeps
+    the value the replaced instance table carries over the importer's guess,
+    matched by key (:mod:`tda.core.captive_replay`), before the relational
+    inference below fills a captive screw's ``parent``; one ``replay_captive``
+    row says which were kept, which agree and which no longer fit.
 
     The relational heuristic of spec 7.3 runs here, *before* the instances are
     written and inside the same transaction: ``logs.py`` leaves ``fastens``,
@@ -789,6 +797,10 @@ def _write_import(
     # events and the relational inference below see the corrected verbs
     li.actions, replay = replay_for_import(db, li.desktop, li.actions, li.instances, tax,
                                            rename=merges.rename)
+    # the captive flag of the screws flipped with Shift+T (task U14), read off
+    # the instance table this replaces, before the inference fills parents
+    li.instances, captive = replay_captive_for_import(db, li.desktop, li.instances,
+                                                      rename=merges.rename)
     adopt = dict(adopt or {})
     extras = {key: rec for key, rec in db.instances(li.desktop).items()
               if is_extra(rec) and key not in li.instances and key not in adopt}
@@ -801,6 +813,9 @@ def _write_import(
         if replay:
             db.log_op(li.desktop, OP_VIEW, OP_REPLAY, replay.payload(),
                       {"actions": replay.inverse}, IMPLIED_ANNOTATOR)
+        if captive:
+            db.log_op(li.desktop, OP_VIEW, OP_REPLAY_CAPTIVE, captive.payload(),
+                      {"instances": captive.inverse}, IMPLIED_ANNOTATOR)
         if merges:
             db.log_op(li.desktop, OP_VIEW, OP_REPLAY_MERGES, merges.payload(),
                       merges.inverse, IMPLIED_ANNOTATOR)
@@ -821,7 +836,7 @@ def _write_import(
         split_pose_segments(db, li.desktop)
     return (len(events), kept, dropped, fills,
             unresolved_relations(li.instances, tax, li.actions, declined), implied,
-            gone, drop_issues, adopted, replay, merges)
+            gone, drop_issues, adopted, replay, merges, captive)
 
 
 def dropped_notes_line(desktop: int, dropped: int) -> str:
@@ -852,7 +867,8 @@ def _force_warning(db: Db, desktop: int, previous: list[StepRec]) -> str:
     return (
         f"[import-logs] D{desktop:02d}: --force, replacing {len(previous)} steps / "
         f"{len(db.actions(desktop))} actions; {notes}the open/remove corrections made "
-        f"with Shift+T are replayed where the sheet still has that action, and so are "
+        f"with Shift+T are replayed where the sheet still has that action, the captive "
+        f"flags flipped with Shift+T where it still has that screw, and so are "
         f"the instances merged in S1 (合并到…); every other "
         f"manual edit to the step table is lost, and so is every relational field a "
         f"human set on an instance "
@@ -974,13 +990,14 @@ def _import_one(
             f"kept the file's number"
         )
     (events, kept, dropped, fills, unresolved, implied,
-     gone, drop_issues, adopted, replay, merges) = _write_import(db, li, tax, previous, plan,
-                                                                 clash)
+     gone, drop_issues, adopted, replay, merges, captive) = _write_import(
+        db, li, tax, previous, plan, clash)
     extras_kept = extra_keys(db.instances(desktop))
     if dropped:
         issues.append(dropped_notes_line(desktop, dropped))
     corrections = ([replay.kept_line()] if replay.kept_line() else []) + \
-        replay.unmatched_lines() + merges.lines()
+        replay.unmatched_lines() + merges.lines() + \
+        ([captive.kept_line()] if captive.kept_line() else []) + captive.unmatched_lines()
     issues.extend(drop_issues)
     if log:
         for text in adopted:
