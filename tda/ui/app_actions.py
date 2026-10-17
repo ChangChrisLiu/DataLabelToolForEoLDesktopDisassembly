@@ -208,16 +208,22 @@ ACTIONS: tuple[Action, ...] = (
     Action("despeckle", ("Shift+D",), "act_despeckle", "Remove specks",
            "删除小碎块（默认 <16 像素）", "tool", (), _ANN),
     # -- editing ------------------------------------------------------------
-    # Enter and Esc answer a half-drawn P / Y shape first (task U5a).
-    Action("commit", ("Return", "Enter"), "act_commit", "Commit edit",
-           "提交编辑（有层级建议时只改形状，层级用 L；多边形没画完时先填上它）", "edit", (),
+    # Enter and Esc answer a half-drawn P / Y shape first (task U5a).  Task
+    # U16: Enter is "from this frame on" -- the frames the walk has passed keep
+    # their shape -- and Ctrl+K, which used to be that key, is now its alias.
+    Action("commit", ("Return", "Enter", "Ctrl+K"), "act_commit",
+           "Commit edit: from this frame on (the frames already walked keep theirs)",
+           "提交编辑：从这帧起生效，走过的帧不变（这帧就是这版的起点时重画这一版；"
+           "有层级建议时只改形状，层级用 L；多边形没画完时先填上它）", "edit", (),
            _ANN, short="提交"),
     Action("commit_override", ("Alt+Return", "Alt+Enter"), "act_commit_override",
            "Commit for this frame only", "只对当前帧生效（帧覆盖）", "edit", (), _ANN,
            short="只改这一帧"),
-    Action("commit_split", ("Ctrl+K",), "act_commit_split", "Split keyframe here",
-           "从这一帧起拆分关键帧（这一帧就是起点时等于重画这一版）", "edit", (), _ANN,
-           short="从这帧起新版本"),
+    Action("commit_all", ("Ctrl+Return", "Ctrl+Enter"), "act_commit_all",
+           "Commit everywhere the version applies, walked frames included "
+           "(asks first when it reaches confirmed ones)",
+           "改全部：这一版形状用到的每一帧都改，走过的、已确认的也改（会碰到已确认帧时先说"
+           "哪些帧，再按一次确定，Esc 取消）", "edit", (), _ANN, short="改全部"),
     # Task U6: the layering answer is not Enter's any more.  ``L`` for 层 /
     # layer -- free in every mode (no plain L, no Shift/Ctrl+L anywhere).
     # Task U11 round 2: the cut copy on this frame is its shape after all (a
@@ -271,7 +277,7 @@ ACTIONS: tuple[Action, ...] = (
     Action("cycle_state", ("T",), "act_cycle_state",
            "Selected part's state at this frame: the next one (log correction)",
            "选中零件这一帧的状态换成下一个（如 打开→关上；下一帧起自动恢复；"
-           "之后按任务卡 ✂ 条用 Ctrl+K 画形状）", "edit", (), _ANN, short="换状态"),
+           "之后按任务卡 ✂ 条画形状、Enter 提交）", "edit", (), _ANN, short="换状态"),
     # Task U9: the open cover / latch the card asks for is on the pile.  Next to
     # T because it is the other half of "the log is wrong about this part";
     # ``Shift+T`` is free in every mode.
@@ -397,8 +403,10 @@ PALETTE_TOOLS: tuple[str, ...] = (
     "tool_brush", "tool_eraser", "tool_polygon", "tool_circle",
     "tool_sam_point", "tool_sam_box", "tool_occluder", "tool_bench_box", "edit_roi",
 )
+#: 「改全部」 took the slot of 「从这帧起新版本」 (task U16), whose key became
+#: Enter's alias: the strip keeps its height (U13 fitted it to a 1080p window).
 PALETTE_ACTIONS: tuple[str, ...] = (
-    "commit", "commit_override", "commit_split", "confirm", "undo", "redo",
+    "commit", "commit_override", "commit_all", "confirm", "undo", "redo",
     "toggle_heat",
 )
 #: The 「状态」 group (task U13): the keys that say the log is wrong about a part
@@ -449,7 +457,8 @@ def key_caption(action: Action) -> str:
 
 
 def _compact_keys(action: Action) -> str:
-    return " / ".join(k for k in action.keys if k not in ("Return", "Alt+Return"))
+    return " / ".join(k for k in action.keys
+                      if k not in ("Return", "Alt+Return", "Ctrl+Return"))
 
 
 def mode_cheat_rows(mode: str) -> list[tuple[str, str]]:

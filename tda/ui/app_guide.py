@@ -50,13 +50,14 @@ __all__ = ["BANNER_CIRCLE", "BANNER_CUT_COPY", "BANNER_EMPTY", "BANNER_PIXELS",
 BANNER_EMPTY = "用 S 在零件上点一下，或 X 拖框"
 BANNER_EMPTY_NO_SAM = "用 B 画笔涂出它（SAM 还没准备好）"
 BANNER_PIXELS = "Enter 提交 / Esc 放弃"
-#: A ✂ row: the new version is committed with Ctrl+K (U2b round 2, I1).
-BANNER_SPLIT = "Ctrl+K 从这帧起新版本 / Esc 放弃"
+#: A ✂ row: a new version from this frame on -- what Enter writes there (U16;
+#: Ctrl+K before it, U2b round 2, I1).
+BANNER_SPLIT = "Enter 从这帧起新版本 / Esc 放弃"
 #: A stored shape, loaded and untouched: Enter has nothing to write (item 2).
 BANNER_LOADED = "这是已存的形状：要改就画，改完 Enter；不改按 Esc"
-BANNER_LOADED_SPLIT = "这是前一版的形状：画出这一帧的样子，Ctrl+K 提交；不改按 Esc"
+BANNER_LOADED_SPLIT = "这是前一版的形状：画出这一帧的样子，Enter 提交；不改按 Esc"
 #: A ✂ row whose frame shows a cut copy (U11 round 2): the row's own sentence.
-BANNER_CUT_COPY = ("待画：这帧上是另一状态的形状副本，画好后 Ctrl+K"
+BANNER_CUT_COPY = ("待画：这帧上是另一状态的形状副本，画好后 Enter"
                    "（形状确实没变：Ctrl+Shift+K）/ Esc 放弃")
 #: A ``P`` polygon or a ``Y`` circle half drawn (task U5a): Enter and Esc are
 #: the shape's until it is filled or dropped.
@@ -67,9 +68,9 @@ BANNER_CIRCLE = "圆形：拖到零件边缘松手填上，Esc 取消"
 HINT_DWELL_MS = 120
 #: How long a "可见性 → …（Ctrl+Z 撤销）" note stays across the canvas.
 VIS_NOTE_MS = 4000
-#: ``Alt+Enter`` / ``Ctrl+K``: refused on an untouched layer with the greyed
-#: button's own reason (round 3, item 6).
-_SCOPE_KEYS = frozenset({"commit_override", "commit_split"})
+#: ``Alt+Enter`` / ``Ctrl+Enter``: refused on an untouched layer with the
+#: greyed button's own reason (round 3, item 6; 改全部 since task U16).
+_SCOPE_KEYS = frozenset({"commit_override", "commit_all"})
 #: Keys :meth:`GuideMixin.key_refusal` looks at: the drawing and committing
 #: ones.  Undo, redo and Esc are never refused by it.
 _KEY_GUARD_NAMES = frozenset(A.PALETTE_TOOLS) | _SCOPE_KEYS | frozenset(
@@ -149,6 +150,9 @@ class GuideMixin:
         #: The confirmed frames re-tracing that instance's shape would put in
         #: conflict (task U7), read once when its edit starts.
         self._edit_reach: tuple[int, ...] = ()
+        #: Its version starts here and the frames behind are on the previous
+        #: one, so 改全部 has something to write untouched (U16 review).
+        self._edit_behind = False
         #: The SAM tool a new shape starts with: the last one chosen, S until
         #: then (ruling U2b-4, round 2).
         self._last_sam_tool = "sam_point"
@@ -307,9 +311,15 @@ class GuideMixin:
         dirty = facts.layer_dirty
         # A half-drawn shape owns Enter too (task U5a): it closes the polygon.
         owner = (facts.ghost or facts.roi_editing or bool(facts.scope) or facts.warning
-                 or bool(facts.shape))
+                 or bool(facts.shape) or facts.all_asked)
         nothing = "没有可提交的修改：先在任务卡上单击一个零件，画好再提交"
-        states["commit"] = (bool(not closed and (owner or dirty)), False, closed or nothing)
+        # ... and Enter on an open ✂ row of the part being drawn writes even
+        # untouched: the version boundary is the edit (U8 round 2b; Ctrl+K's
+        # until task U16)
+        cut_only = bool(not closed and not facts.ghost and not facts.roi_editing
+                        and not facts.shape and self._open_split_editing())
+        states["commit"] = (bool(not closed and (owner or dirty or cut_only)), False,
+                            closed or nothing)
         if facts.shape:
             why_scope = SHAPE_BUSY
         elif facts.ghost:
@@ -325,11 +335,13 @@ class GuideMixin:
         no_shape = self.override_refusal() if scoped else ""
         states["commit_override"] = (scoped and not no_shape, False,
                                      closed or no_shape or why_scope)
-        # ... and Ctrl+K on an open ✂ row of the part being drawn writes even
-        # untouched: the version boundary is the edit (U8 round 2b)
-        cut_only = bool(not closed and not facts.ghost and not facts.roi_editing
-                        and not facts.shape and self._open_split_editing())
-        states["commit_split"] = (scoped or cut_only, False, closed or why_scope)
+        # 改全部 (task U16): pixels to write -- or, untouched, a version that
+        # starts here with the frames behind on the previous one (U16 review):
+        # the part loaded, or the one Enter just named on this frame
+        foldable = bool(not closed and not facts.ghost and not facts.roi_editing
+                        and not facts.shape
+                        and (self._edit_behind if facts.editing else self._hint_here()))
+        states["commit_all"] = (scoped or foldable, False, closed or why_scope)
         if facts.shape:
             why_confirm = SHAPE_BUSY
         elif dirty:
@@ -406,8 +418,8 @@ class GuideMixin:
 
         One guard for the key and its greyed button (round 3): both read
         :meth:`palette_states`.  It applies on a frame with no image (every
-        drawing and committing key) and to ``Alt+Enter`` / ``Ctrl+K`` on an
-        untouched layer, where the button was grey with one reason and the
+        drawing and committing key) and to ``Alt+Enter`` / ``Ctrl+Enter`` on
+        an untouched layer, where the button was grey with one reason and the
         key answered with another.
         """
         if not getattr(self, "_guidance_ready", False) or name not in _KEY_GUARD_NAMES:
@@ -422,6 +434,13 @@ class GuideMixin:
             return ""
         enabled, _checked, why = self.palette_states(facts).get(name, (True, False, ""))
         return "" if enabled else (why or "现在不能用")
+
+    def _hint_here(self) -> bool:
+        """Did ``Enter`` just name frames behind on this frame (Ctrl+Enter's target)?"""
+        hint = getattr(self, "_behind_hint", None)
+        return bool(hint is not None and getattr(self, "_hint_live", False)
+                    and compat.is_open(self.session)
+                    and hint[0] == self.session.current())
 
     def _open_split_editing(self) -> bool:
         """Is the part being drawn an open ✂ row of this frame's card? (U8 round 2b)
@@ -497,9 +516,13 @@ class GuideMixin:
             layer_pixels=bool(pixels), layer_dirty=bool(dirty),
             warning=warning is not None,
             warning_scope=str(warning[0]) if warning is not None else "",
+            # the key that raised it (U16): one scope is Enter's or Ctrl+Enter's
+            warning_action=(str(warning[3]) if warning is not None and len(warning) > 3
+                            else ""),
             scope=scope,
             scope_text=self.scope_text(scope),
             layering_asked=self.layering_asked(),
+            all_asked=self.all_asked(),
             ghost=self.showing_draft_ghost(),
             bench=self._label_of(self.bench_instance)[0] if self.bench_instance else None,
             flashing=self.is_flashing(),
@@ -706,6 +729,7 @@ class GuideMixin:
             label, raw = self._label_of(instance)
             self._edit_label = (instance, label, raw)
             self._edit_reach = self._retrace_frozen(instance)
+            self._edit_behind = self._behind_here(instance)
         changed = facts != self._edit_facts
         self._edit_facts = facts
         if changed and refresh:
@@ -723,22 +747,33 @@ class GuideMixin:
         for a new shape, a session that cannot answer, or any failure: a hint
         is never worth one.
 
-        Empty on a ✂ row too (round 2): the count is ``Enter``'s reach -- the
-        version in force -- and a ✂ row is committed with ``Ctrl+K``, a new
-        version from this frame on.  Standing on frame 13 with 14 confirmed,
-        the bar said "重画会影响 1 个已确认帧…Shift+N" while the guide said
-        Ctrl+K, whose new version reaches neither frame 14 nor any conflict.
+        The reach of what ``Enter`` writes (task U16): where the version in
+        force is carried from the frames behind -- a ✂ row always is -- that
+        is a new version from this frame on, which reaches none of them.
+        Standing on frame 13 with 14 confirmed, the bar used to say "重画会影响
+        1 个已确认帧…Shift+N" about a key that never touches frame 14 (round 2).
         """
         reach = getattr(self.session, "retrace_reach", None)
         if not instance or not callable(reach):
-            return ()
-        if self._card_kind(instance) == api.KIND_SPLIT_KEYFRAME:
             return ()
         try:
             found = reach(instance)
         except Exception:  # noqa: BLE001 - a hint is never worth a failure
             return ()
         return tuple(int(s) for s in (found or {}).get("frozen") or ())
+
+    def _behind_here(self, instance: Optional[str]) -> bool:
+        """Would 改全部 fold ``instance``'s version into the previous one? (U16 review)
+
+        Asked once when its edit starts, like :meth:`_retrace_frozen`; ``False``
+        for nothing being drawn, a session that cannot answer, or any failure.
+        """
+        if not instance:
+            return False
+        try:
+            return compat.previous_behind(self.session, instance) is not None
+        except Exception:  # noqa: BLE001 - a grey button is never worth a failure
+            return False
 
     def retrace_note(self) -> str:
         """The status line's clause for a re-trace that reaches confirmed frames (U7)."""

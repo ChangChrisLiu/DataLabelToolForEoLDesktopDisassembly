@@ -246,7 +246,7 @@ def test_the_palette_goes_through_every_gate_its_key_does(window, monkeypatch):
     committed: list = []
     monkeypatch.setattr(window.session, "commit_edit",
                         lambda *a, **k: committed.append(a) or {})
-    window.run_palette_action("commit_split")
+    window.run_palette_action("commit_all")          # 改全部: commit_split's slot (U16)
     assert committed == [] and window.status_message() == ADOPT_FIRST
     monkeypatch.undo()
     # Review is read-only: a tool button does nothing there
@@ -330,7 +330,7 @@ def test_commit_is_enabled_only_when_there_is_something_to_commit(window):
     # yet (U2d): greyed, with the reason its key and the session give
     override = window.palette.button("commit_override")
     assert not override.isEnabled() and override.reason() == api.OVERRIDE_NEEDS_SHAPE
-    assert window.palette.button("commit_split").isEnabled()
+    assert window.palette.button("commit_all").isEnabled()     # U16: commit_split's slot
     confirm = window.palette.button("confirm")
     assert not confirm.isEnabled() and "Enter" in confirm.reason()
     assert window.palette.button("clear_edit").isEnabled()
@@ -342,7 +342,7 @@ def test_the_roi_rectangle_owns_the_commit_button(window):
     assert window.roi_editing
     assert window.palette.button("commit").isEnabled()
     assert window.palette.button("commit").suggested()
-    assert not window.palette.button("commit_split").isEnabled()
+    assert not window.palette.button("commit_all").isEnabled()
 
 
 def test_review_mode_keeps_only_what_works_there(window):
@@ -356,7 +356,7 @@ def test_review_mode_keeps_only_what_works_there(window):
     for name in A.PALETTE_TOOLS:
         assert palette.button(name).isHidden()
     assert palette.radius_slider.isHidden() and palette.radius_spin.isHidden()
-    for name in ("commit", "commit_override", "commit_split", "confirm", "undo",
+    for name in ("commit", "commit_override", "commit_all", "confirm", "undo",
                  "redo", "flash_compare", "cycle_candidate", "clear_edit"):
         assert palette.button(name).isHidden(), name
     shown = [n for n, b in palette.buttons().items() if not b.isHidden()]
@@ -651,7 +651,7 @@ def test_the_start_frame_says_what_a_complete_shape_is_once(window):
 
 
 @pytest.mark.parametrize("kind,sentence", [
-    (api.KIND_SPLIT_KEYFRAME, "Ctrl+K"),
+    (api.KIND_SPLIT_KEYFRAME, "用 Enter 提交"),        # Ctrl+K until U16
     (api.KIND_STATE_ONLY, "不用画"),
     (api.KIND_ADD_BENCH_BOX, "台面框 R"),
     (api.KIND_CONFIRM, "Space"),

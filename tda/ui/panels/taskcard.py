@@ -104,7 +104,7 @@ DONE_COLOR = QColor(128, 128, 132)
 KIND_SENTENCES: dict[str, str] = {
     api.KIND_ADD_SHAPE: "在这一帧画出它的完整形状",
     api.KIND_SPLIT_KEYFRAME: ("它的形状从这一帧起变了（例如盖子关上了），画出这一帧的样子，"
-                              "用 Ctrl+K 提交"),
+                              "用 Enter 提交"),
     api.KIND_STATE_ONLY: "只是状态变了，不用画",
     api.KIND_ADD_BENCH_BOX: "它放在台面上，用台面框 R 框一下",
     api.KIND_REMOVE_BENCH_BOX: "它回到机箱里了：台面框到这一帧为止，不用画",
@@ -112,7 +112,7 @@ KIND_SENTENCES: dict[str, str] = {
 }
 #: A ✂ row whose frame shows a cut copy -- the other state's shape left there
 #: by a commit that stopped at the boundary (U11 round 2): a placeholder.
-CUT_COPY_SENTENCE = ("待画：这帧上是另一状态的形状副本，画好后 Ctrl+K"
+CUT_COPY_SENTENCE = ("待画：这帧上是另一状态的形状副本，画好后 Enter"
                      "（形状确实没变：Ctrl+Shift+K）")
 #: Kinds a click starts work on; the others only explain themselves.  A ⌫
 #: row (the bench box ends here) is not a mask to draw (U2b round 2).
@@ -128,7 +128,7 @@ CHIP_CONFIRM = "待确认"
 #: What the icons mean, for the header's tooltip.
 ICON_LEGEND = (
     "✚ 要画：这一帧多出来的零件，画出它的完整形状\n"
-    "✂ 形状变了：画这一帧的新样子，Ctrl+K 提交（从这帧起新版本）\n"
+    "✂ 形状变了：画这一帧的新样子，Enter 提交（从这帧起新版本）\n"
     "≡ 只是状态变了（例如螺丝拧紧），不用画\n"
     "▭ 零件放在台面上：用台面框 R 拖一个框\n"
     "⌫ 零件回到机箱：台面框到这里结束\n"
@@ -263,7 +263,7 @@ def card_header(step: Optional[int], neighbour: Optional[int],
                 f"{space_or_blocked(blockers)}")
     if present == {api.KIND_SPLIT_KEYFRAME}:
         return (f"第 {step} 帧：下面这些零件的形状从这一帧起变了"
-                f"（画这一帧的新样子，Ctrl+K 提交）")
+                f"（画这一帧的新样子，Enter 提交）")
     if present == {api.KIND_ADD_BENCH_BOX}:
         return f"第 {step} 帧：下面这些零件放在台面上，用台面框 R 框出来"
     if present == {api.KIND_REMOVE_BENCH_BOX}:

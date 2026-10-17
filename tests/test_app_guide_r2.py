@@ -110,7 +110,8 @@ def on_split_row(win: MainWindow) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# item 1: a ✂ row -- the guide says Ctrl+K, and the row is done only once split
+# item 1: a ✂ row -- the guide names the split's key (Enter since U16, Ctrl+K
+# before), and the row is done only once split
 # --------------------------------------------------------------------------- #
 def test_a_split_row_is_not_done_because_the_old_shape_reaches_it(window):
     """The neighbour's shape covering this frame is exactly *not* a split."""
@@ -148,6 +149,13 @@ def test_a_frame_override_here_also_ends_the_old_version(qapp, tmp_path):
 
 
 def test_following_the_guide_on_a_split_row_starts_a_new_version(window):
+    """U16: the guide says Enter now, and Enter is the split here.
+
+    Until U16 it said Ctrl+K -- Enter re-traced the version in force and so
+    rewrote the neighbour's shape too.  Enter is "from this frame on" since,
+    so the one key the guide, the banner and the blue border name is Enter,
+    and following it leaves the other version exactly as it was.
+    """
     on_split_row(window)
     before = keyframe_rles(window, LATCH)
     assert list(before) == [LAST_STEP]
@@ -155,19 +163,19 @@ def test_following_the_guide_on_a_split_row_starts_a_new_version(window):
     brush_stroke(window)
     plan = window.guide.plan()
     assert plan.phase == G.PHASE_DRAW_PIXELS
-    assert plan.action == "commit_split"
-    assert "Ctrl+K" in plan.now and "从这帧起新版本" in plan.now
-    assert "Ctrl+K" in window.canvas.banner_text()
-    assert window.palette.button("commit_split").suggested()
-    assert not window.palette.button("commit").suggested()
-    assert window.palette.button("commit").isEnabled(), "Enter stays available"
+    assert plan.action == "commit"
+    assert "按 Enter" in plan.now and "从这帧起新版本" in plan.now
+    assert "Ctrl+K" not in plan.now
+    assert window.canvas.banner_text().endswith("Enter 从这帧起新版本 / Esc 放弃")
+    assert window.palette.button("commit").suggested()
+    assert not window.palette.button("commit_all").suggested()
 
     window.run_palette_action(plan.action)      # do exactly what the guide says
     if window._pending_warning is not None:     # the synthetic latch is "too big"
         plan = window.guide.plan()
         assert plan.phase == G.PHASE_WARNING
-        assert plan.action == "commit_split" and "Ctrl+K" in plan.now, plan
-        window.run_palette_action(plan.action)  # ... and the guide still says Ctrl+K
+        assert plan.action == "commit" and "再按一次 Enter" in plan.now, plan
+        window.run_palette_action(plan.action)  # ... and the guide still says Enter
 
     after = keyframe_rles(window, LATCH)
     assert after[LAST_STEP] == before[LAST_STEP], "the other version was rewritten"
@@ -175,14 +183,14 @@ def test_following_the_guide_on_a_split_row_starts_a_new_version(window):
     assert card_row(window, LATCH)["done"] is True
 
 
-def test_on_a_split_row_the_step_line_names_ctrl_k_too():
+def test_on_a_split_row_the_step_line_names_enter_too():
     facts = G.GuideFacts(step=13, neighbour=14, roi_stored=True, editing="x",
                          editing_kind=api.KIND_SPLIT_KEYFRAME, layer_pixels=True,
                          layer_dirty=True,
                          items=(G.CardItem("x", api.KIND_SPLIT_KEYFRAME, False, "x"),))
     plan = G.plan_for(facts)
     line = [text for state, text in plan.steps if state == G.NOW][0]
-    assert line.startswith("Ctrl+K")
+    assert line == G.COMMIT_SPLIT and line.startswith("Enter")      # Ctrl+K until U16
 
 
 # --------------------------------------------------------------------------- #

@@ -11,9 +11,9 @@ other:
   (:func:`stale_split_rows`, ``shape_predates_state``) -- and must not import
   Qt to do it;
 * the commit rule of round 3: **a shape commit never crosses an open state
-  boundary** (:func:`open_split_steps`), so ``Enter`` or ``Ctrl+K`` on one
-  frame of a state run cuts the version at the run's edge instead of
-  rewriting the frames of the other state.
+  boundary** (:func:`open_split_steps`), so a commit (``Enter``, or
+  ``Ctrl+Enter``'s 改全部) on one frame of a state run cuts the version at the
+  run's edge instead of rewriting the frames of the other state.
 
 So the decisions live here once -- :func:`kind_for`, :func:`has_split`,
 :func:`keyframe_at` -- and the card calls them.
@@ -23,7 +23,7 @@ commit cuts at the boundary below it (``source="cut"``, :data:`CUT`) confines
 the edit to its own run; it is the *old* shape, drawn for whichever state it
 was drawn for. On D2/scan that was the open cover, left on the closed frames.
 So a ✂ row whose frame shows a cut copy is not done until somebody draws the
-frame (``Ctrl+K``, which re-traces the copy and clears its mark) or says the
+frame (``Enter``, which re-traces the copy and clears its mark) or says the
 copy is right (``Ctrl+Shift+K``); :func:`cut_copy_at` is the question.
 """
 from __future__ import annotations
@@ -300,7 +300,7 @@ def stale_split_rows(db: Db, tax: Taxonomy, desktop: int,
     ``state: closed`` next to the open mask, and the only place that said so was
     its task card. This is the card's answer for every confirmed frame, so
     ``cli check`` counts exactly the rows an annotator standing on the frame
-    would see -- and names the frame where ``Ctrl+K`` cuts the version.
+    would see -- and names the frame where ``Enter`` cuts the version.
     """
     cache = InputCache()
     steps = reverse_walk(db, desktop, view)

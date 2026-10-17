@@ -98,8 +98,9 @@ def test_a_scope_suggestion_names_the_three_answers():
     plan = G.plan_for(replace(FRESH, editing="x", layer_pixels=True,
                               layer_dirty=True, scope="zorder:above:chassis"))
     assert plan.phase == G.PHASE_SCOPE
-    for key in ("Enter", "Alt+Enter", "Ctrl+K"):
+    for key in ("Enter", "Alt+Enter", "Ctrl+Enter"):     # Ctrl+K until U16
         assert key in plan.now
+    assert "Ctrl+K" not in plan.now
 
 
 def test_a_draft_ghost_owns_enter_and_esc():

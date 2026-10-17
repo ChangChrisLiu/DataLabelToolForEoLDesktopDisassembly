@@ -95,12 +95,19 @@ TASK_KINDS: tuple[str, ...] = (
 # --------------------------------------------------------------------------- #
 # edit scope (spec 4.3)
 # --------------------------------------------------------------------------- #
-#: Edit the keyframe in force: affects its whole interval.
+#: Edit the keyframe in force: affects its whole interval (``Ctrl+Enter``
+#: 改全部; ``Enter`` on the frame where that version starts -- task U16).
 SCOPE_KEYFRAME = "keyframe"
 #: Write a ``FrameOverride``: this frame only (``Alt``).
 SCOPE_FRAME_OVERRIDE = "frame_override"
-#: New shape version from this step on, in the browsing direction (``Ctrl+K``).
+#: New shape version from this step on, in the browsing direction: ``Enter``
+#: where the version in force is carried from frames the walk has passed
+#: (``Ctrl+K`` is the same key; task U16).
 SCOPE_SPLIT = "split"
+#: ``Ctrl+Enter`` where this frame's version starts here and the frames behind
+#: are still on the previous one: write the shape into that one and drop this
+#: frame's own version (U16 review; :func:`tda.ui.session_edit.commit_into_previous`).
+SCOPE_INTO_PREVIOUS = "into_previous"
 
 COMMIT_SCOPES: tuple[str, ...] = (SCOPE_KEYFRAME, SCOPE_FRAME_OVERRIDE, SCOPE_SPLIT)
 

@@ -552,7 +552,7 @@ def test_alt_enter_on_an_undrawn_part_is_greyed_and_refused_with_one_reason(
         button = win.palette.button("commit_override")
         assert not button.isEnabled()
         assert button.reason() == api.OVERRIDE_NEEDS_SHAPE
-        assert win.palette.button("commit_split").isEnabled()   # only Alt+Enter
+        assert win.palette.button("commit_all").isEnabled()     # only Alt+Enter
 
         ops = len(win.db.ops(DESKTOP, VIEW, limit=10_000))
         win.report("")

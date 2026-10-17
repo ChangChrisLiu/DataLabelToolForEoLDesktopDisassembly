@@ -7,13 +7,13 @@ annotator says what the frame shows: select the part, press ``T`` (or pick the
 state in the instance list), and the session writes "at this step it is
 closed" with the next step put back as it was
 (:meth:`tda.ui.session_state.StateMixin.assert_state`).  The task card then
-shows the ✂ rows of the new boundaries and ``Ctrl+K`` draws them, exactly as
-for a boundary the step table made.
+shows the ✂ rows of the new boundaries and ``Enter`` draws them -- from this
+frame on (task U16) -- exactly as for a boundary the step table made.
 
 The trial annotator's attempt -- re-drawing the shape at frame 21 with
 ``Enter`` -- re-traced the version covering 14-41 and raised 48 conflicts.  The
 status line therefore says, after every change, which frames now hold which
-state and whether this frame's shape has to be drawn again with ``Ctrl+K``.
+state and whether this frame's shape has to be drawn again.
 
 Task U11: on D2/scan the annotator walked an opened cover down from 45 to 37
 pressing ``T`` at every frame.  ``Ctrl+T`` says it once -- "from this frame to
@@ -65,7 +65,7 @@ REFUSED = "改不了状态："
 CUT_CONFIRMED = ("{label}：切开时留下的形状就是这几帧的样子（到第 {step} 步），✂ 完成"
                  "（Ctrl+Z 撤销）")
 #: ``Ctrl+Shift+K`` over painted, uncommitted pixels.
-CONFIRM_DIRTY = ("正在画的像素还没提交：画的就是这一帧的样子按 Ctrl+K；要确认副本先 Esc 放弃")
+CONFIRM_DIRTY = ("正在画的像素还没提交：画的就是这一帧的样子按 Enter；要确认副本先 Esc 放弃")
 #: ``T`` on the walk's next frame, same part, same state (U11): there is a key for a run.
 HINT_RANGE = "同一状态持续多帧？Ctrl+T 一次设到某一步"
 #: ... from the third frame on: perhaps it is the log that misses the action.
@@ -76,12 +76,14 @@ def redraw_text(state: str, run: tuple[int, int], redraw) -> str:
     """Which key draws the run's shape, or ``""`` when nothing has to be drawn.
 
     ``redraw`` is :func:`tda.ui.session_state.redraw_needed`'s ``{"top",
-    "below"}`` (``True`` reads as a ✂ at the top). Any frame of the run takes
-    ``Enter`` -- the commit cuts the version at both edges -- except the run's
-    top frame when it is an open ✂ row: there ``Enter`` is refused and
-    ``Ctrl+K`` is the key. A ✂ row only *below* the run is on the other
-    state's side (the clip still open at 38 under a closed 39-41): Ctrl+K there
-    would draw the wrong frames, so it is not offered.
+    "below"}`` (``True`` reads as a ✂ at the top). The key is ``Enter`` on the
+    run's top frame -- the first of it the reverse walk reaches: ``Enter`` is
+    "from this frame on" (task U16), so from there it covers the whole run,
+    and the commit cuts the version at the run's lower edge itself. On a lower
+    frame of the run it would leave the frames above it with the other
+    state's shape. A ✂ row only *below* the run is on the other state's side
+    (the clip still open at 38 under a closed 39-41): drawing there would draw
+    the wrong frames, so it is not offered.
     """
     if redraw is True:
         redraw = {"top": True, "below": False}
@@ -90,12 +92,9 @@ def redraw_text(state: str, run: tuple[int, int], redraw) -> str:
     first, last = run
     look = f"「{state_zh(state)}」"
     if first == last:
-        key = "Ctrl+K" if redraw.get("top") else "Enter"
-        return f"这帧的形状要重画：画{look}后 {key}；{SPLIT_NOW}"
-    where = f"在第 {first}–{last} 步任一帧画{look}后 Enter"
-    if redraw.get("top"):
-        where += f"（第 {last} 步是 ✂ 行，那里用 Ctrl+K）"
-    return f"这几帧的形状要重画：{where}；{SPLIT_NOW}"
+        return f"这帧的形状要重画：画{look}后 Enter；{SPLIT_NOW}"
+    return (f"这几帧的形状要重画：在第 {last} 步画{look}后 Enter，第 {first}–{last} 步"
+            f"都用它；{SPLIT_NOW}")
 
 
 def cut_note(result: dict, steps_text) -> str:

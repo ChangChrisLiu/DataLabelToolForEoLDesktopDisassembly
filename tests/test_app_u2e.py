@@ -708,4 +708,5 @@ def test_the_confirmed_headers_of_the_other_space_frames():
     assert "挡住 Space" in card_header(5, 6, [api.KIND_STATE_ONLY], blockers=1,
                                        confirmed=True)
     # a header that never said Space is left as it is
-    assert "Ctrl+K" in card_header(5, 6, [api.KIND_SPLIT_KEYFRAME], confirmed=True)
+    # (the ✂ header's key is Enter since U16, Ctrl+K before)
+    assert "Enter 提交" in card_header(5, 6, [api.KIND_SPLIT_KEYFRAME], confirmed=True)

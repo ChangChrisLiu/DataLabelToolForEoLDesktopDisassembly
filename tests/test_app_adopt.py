@@ -691,9 +691,11 @@ def test_the_ghost_is_refused_while_a_bar_owns_enter_and_esc(window):
 # --------------------------------------------------------------------------- #
 # round 1 I2: every commit key belongs to the ghost while one is showing
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("slot", ["act_commit_override", "act_commit_split",
+@pytest.mark.parametrize("slot", ["act_commit_override", "act_commit_all",
                                   "act_confirm"])
 def test_the_other_commit_keys_are_refused_under_a_ghost(window, slot):
+    # U16: Ctrl+Enter (改全部) took Ctrl+K's place here; Ctrl+K is Enter now,
+    # and Enter is the ghost's own answer
     seed_cooler_draft(window)
     instance = edit_the_cooler(window)
     keyframes = len(window.db.keyframes(DESKTOP, VIEW, instance))
@@ -712,7 +714,7 @@ def test_the_commit_buttons_are_refused_under_a_ghost(window):
     seed_cooler_draft(window)
     edit_the_cooler(window)
     window.act_adopt_draft()
-    window.run_palette_action("commit_split")
+    window.run_palette_action("commit_all")           # U16: the slot commit_split had
     assert window.showing_draft_ghost()
     assert adopt.ADOPT_FIRST in window.status_message()
 
