@@ -1,0 +1,133 @@
+L5 decision rule -- written 2026-10-17 before any L5 inference, evaluation or
+training result (only the ground-truth counts of gt.py had been looked at:
+230 verified scan frames, 6 020 visible masks, 245 instances; per desktop
+D2 1 225 / D3 1 268 / D4 1 146 / D5 1 262 / D13 1 119 masks).  Committed before
+the first SAM run; copied to D:\DataSet\experiments_out\l5_sam\decision_rule.txt.
+
+QUESTION
+Does fine-tuning SAM 2.1 Hiera-L's prompt encoder + mask decoder (image
+encoder frozen) on the annotator's verified scan masks make the masks the app
+shows more accurate on a desktop the model has never seen?
+
+DATA (experiments/l5_sam/gt.py)
+- Every verified scan frame of D2, D3, D4, D5, D13 in the DB copy
+  (.cache/tmp/l5/tda_l5.sqlite, mode=ro); compiled_mask rows with placement
+  in_chassis, visibility in {visible, visible_tiny, occluded_partial,
+  too_small}, non-empty visible mask.  occluded_full is skipped.
+- Target = the compiled VISIBLE mask.  The app's editing layer is the amodal
+  shape keyframe and the compiler derives visible = amodal minus the parts above
+  it (spec 3.3); SAM only sees pixels, and a newly drawn part goes on top of the
+  stack (spec 4.2), so the visible mask is what a SAM answer should be.
+- Instance = (desktop, instance key).  Every frame of an instance is a separate
+  mask; statistics are clustered by instance.
+
+FOLDS (leave one desktop out)
+- F13: train D2, D3, D4, D5; evaluate D13.
+- F5:  train D2, D3, D4, D13; evaluate D5.
+- all: train all five (the shipping candidate; no held-out score exists).
+- If training is slower than ~1.5 h per fold, F5 is dropped and said so; the
+  gate is then evaluated on F13 alone and the report says the evidence is one
+  desktop.
+
+RECIPE (fixed here, identical for F13, F5 and all; nothing is selected on a
+held-out desktop; the model is the last step)
+- Init: stock sam2.1_hiera_large.pt, config configs/sam2.1/sam2.1_hiera_l.yaml
+  (the app's).  Trainable: sam_prompt_encoder + sam_mask_decoder (including its
+  conv_s0/conv_s1 high-res projections and the IoU head).  Frozen: the image
+  encoder (trunk + neck) and every memory/video module.  The architecture is
+  unchanged; the result is saved as a full state dict {"model": ...} loadable by
+  sam2.build_sam.build_sam2 with the same config.
+- Sample: a target mask of a training desktop; crop = a square window around it
+  of side longest*U(1.2, 3.0) clamped to [512, 1024] native px (downscaled to
+  1024 only when the object is larger), centre shifted by up to 25 % of the side
+  with the target kept inside; random horizontal/vertical flip.  Up to 7 other
+  masks lying entirely inside the window are trained in the same crop.
+- Prompts per target, as the app makes them: 1/3 box, 1/3 point, 1/3 point+box.
+  Box = the bbox with each edge moved by U(-n, +n), n = max(2, 0.1*side) capped
+  at 12 px.  Point = a random mask pixel whose distance to the boundary is >= 30
+  % of the mask's maximum.
+- Round 1: multimask_output=True (the app's first prompt); loss on the best of
+  the three masks; IoU head supervised on all three.  Rounds 2-3: one corrective
+  click from the largest error region (positive in a miss, negative in an
+  extra; at its distance-transform maximum) appended to the points, the box
+  kept, mask_input = the previous round's binarised mask as +/-8 logits at
+  256x256 (the app's mask_to_low_res_logits), multimask_output=False.
+- Loss per round: 20 * focal(alpha 0.25, gamma 2) + 1 * dice on the logits
+  upsampled to 1024x1024 against the window mask resized to 1024, + 1 * L1(IoU
+  prediction, actual IoU).  AdamW lr 2e-5, weight decay 0.01, 200 warm-up steps,
+  cosine to 0.1x, grad-norm clip 0.1, bf16 autocast, batch 4 crops, 4 epochs (an
+  epoch = every training mask once as the primary target), seed 0.
+- One rerun with lr 1e-5 is allowed only if a run diverges (NaN, or training
+  loss at the end above its first-epoch mean); reported if used.
+
+EVALUATION (held-out desktop's verified masks, every one; identical for stock
+and fine-tuned models -- same windows, same prompts, same seed)
+- Window = sam_compare's crop_window: side = 1.4 x the bbox's longest side,
+  clamped to [512, 1024], native resolution, shifted inside the frame.
+- Model call = tda.models.sam_service.SamService (the app's code path: bf16,
+  candidates ranked by SAM's predicted IoU, the app shows candidate 0).
+- Prompts:
+  box       GT bbox, each edge jittered by an integer U[-2, +2] px (the
+            detector-box case), multimask=True (the app's first prompt)
+  point     the distance-transform argmax (the first click), multimask=True
+  point_box both, multimask=True
+  Not gated, reported: box_loose (each edge pushed out by max(3, 0.15*side) px,
+  the difference-map case); refine (point_box's shown mask + one corrective
+  click at the largest error region's distance maximum, mask_input = that mask,
+  SamService's local-blend refinement path); the oracle best-of-3; the
+  single-mask output (multimask=False).
+- Metrics per mask: IoU and boundary F at 2 px (sam_compare.common.boundary_f1)
+  of the shown candidate vs the visible mask inside the window; set_image ms and
+  decoder ms (CUDA-synchronised).
+- Groups: SMALL (area < 400 px), SCREW (cls screw), CONNECTOR (cls connector),
+  LATCH (ram_latch, psu_latch, drive_latch), LARGE (area > 20 000 px).  Every
+  class and size bucket is reported as well.
+- "Prompt-averaged" = the mean over box, point, point_box of the group's mean.
+  Delta = fine-tuned - stock, paired per mask; 95 % CI by bootstrap over the
+  held-out desktop's instances (2 000 resamples, seed 0).
+  "Macro" = the mean of the four small-part groups SMALL, SCREW, CONNECTOR,
+  LATCH.
+
+GATE -- a fold PASSES when ALL hold on its held-out desktop:
+- G1 gain: macro prompt-averaged dIoU >= +0.02 with its 95 % CI lower bound
+  > 0, AND macro prompt-averaged dBF >= +0.01 with its CI lower bound > 0.
+- G2 no small group harmed: each of SMALL, SCREW, CONNECTOR, LATCH has
+  prompt-averaged dIoU >= -0.01, and no (group, prompt) cell has dIoU < -0.03.
+- G3 large parts: LARGE dIoU >= -0.01 for each of box, point, point_box.
+- G4 refinement not broken: macro dIoU on refine >= -0.01.
+- G5 latency: median decoder ms and median set_image ms of the fine-tuned model
+  within +10 % of stock's, measured in the same process on the same prompts.
+
+SHIP
+- Both folds pass -> train `all` with the recipe above and save it as the
+  CANDIDATE D:\DataSet\models\weights\sam2.1_hiera_large_tda_v1.pt.  Nothing
+  in tda/ or configs/ changes; the report states how the app would switch and
+  the controller decides.
+- Otherwise -> no candidate.  The fold checkpoints stay as experiment outputs
+  (sam2.1_hiera_large_tda_<fold>.pt) and the report says what the measurement
+  points to instead (prompt quality, candidate choice, SAM 3, ...).
+
+AMENDMENT 1 -- written 2026-10-17 01:45, after the F13 v1 evaluation and
+BEFORE any F5 result (F5 v1 was 50 steps into training).  The rule above is
+unchanged and is applied to v1 as written: F13 v1 FAILS G3 (LARGE point dIoU
+-0.012 < -0.01), so v1 yields no candidate whatever F5 shows.  F13 v1 also
+showed a regression the rule did not gate: box_loose on large parts 0.419 ->
+0.261 (motherboard 0.485 -> 0.012, drive_cage 0.461 -> 0.001), i.e. v1 learned
+that a box is always tight, and the difference-map box is often loose.
+
+RECIPE v2 = v1 with one change: half of the box prompts (box and point+box
+steps alike) are loose -- each edge pushed outward by U(0, 0.25) x that side
+before the v1 jitter, clipped to the window.  Everything else (data, lr,
+epochs, steps, seed, loss) is v1's.  Checkpoints:
+sam2.1_hiera_large_tda_<fold>_v2.pt.
+
+ORDER: F5 v2 first, then F13 v2.  F5 is blind to the v2 change (designed
+before any D5 result); F13 v2 is NOT blind (v2 was designed from F13's
+held-out failure) and the report says so.
+
+GATE v2 = G1-G5 above, unchanged, PLUS
+- G3b loose box, large parts: LARGE dIoU on box_loose >= -0.01.
+- G6 loose box, small parts: macro dIoU on box_loose >= -0.01.
+A v2 fold passes only when all seven hold.  Both v2 folds pass -> train `all`
+with v2 and save it as the candidate sam2.1_hiera_large_tda_v1.pt.  Otherwise
+no candidate.  No v3 inside L5.
