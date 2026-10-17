@@ -25,7 +25,8 @@ takes the keyboard focus: a focused combo swallows every shortcut.
 The **verb** button (task U9) next to it says 「其实拆下来了」 for an open cover
 or removable latch (the row's ``verb_fix``) and 「其实只是打开了」 for one in the
 ``Removed`` rows -- the same gesture as ``Shift+T``; it reports, the window
-writes.
+writes. On a screw the log unscrews (task U14) it says 「其实拧下来了」 when the
+screw is captive and 「其实留在零件里」 when it is not.
 
 Every mutating gesture is followed by a re-read of ``instance_rows()``, so the
 table can never drift from the session's state -- hitting ``H`` after clicking
@@ -85,10 +86,15 @@ STATE_TIP = ("这一帧画面里的状态和日志不一样时（例如卡扣中
 #: The verb button (task U9): what it says for each direction, and its tooltip.
 VERB_TAKEN_OUT = "其实拆下来了"
 VERB_ONLY_OPENED = "其实只是打开了"
-VERB_CAPTIONS = {"remove": VERB_TAKEN_OUT, "open": VERB_ONLY_OPENED}
+#: ... and on a screw the log unscrews (task U14): its ``captive`` flag.
+VERB_UNSCREWED = "其实拧下来了"
+VERB_STAYS_IN = "其实留在零件里"
+VERB_CAPTIONS = {"remove": VERB_TAKEN_OUT, "open": VERB_ONLY_OPENED,
+                 "unscrewed": VERB_UNSCREWED, "stays_in": VERB_STAYS_IN}
 VERB_TIP = ("打开着的盖板/卡扣其实被拆走了（画面里没有它）：选中后点这里或按 Shift+T，"
-            "日志里那一步的「打开」改成「拆下」；拆下的零件（勾上 Removed）反过来 / "
-            "the log's open was a removal, or the other way round")
+            "日志里那一步的「打开」改成「拆下」；拆下的零件（勾上 Removed）反过来。"
+            "螺丝：拧松后其实拿走了 → 其实拧下来了；拧下后其实留在零件里 → 其实留在零件里 / "
+            "the log's open was a removal, or the other way round; a screw: captive or not")
 
 #: The Vis cell of a part that has no shape on this frame yet (task U2c).
 NOT_DRAWN = "—"

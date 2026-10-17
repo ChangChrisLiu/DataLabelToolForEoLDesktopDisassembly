@@ -476,6 +476,9 @@ def removed_rows(session: Any) -> list[dict]:
     # a cover / latch taken out by its own action may only have been opened (U9)
     offers = getattr(session, "verb_offers", None)
     offered = offers(state, known) if callable(offers) else {}
+    # ... and a screw unscrewed out of it may have stayed in its part (U14)
+    screws = getattr(session, "captive_offers", None)
+    offered = {**(screws(state, known) if callable(screws) else {}), **offered}
     rows = []
     for instance, held in sorted(state.items()):
         # ``known`` keeps the pseudo-nodes out: a state map also carries the

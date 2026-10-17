@@ -153,10 +153,18 @@ class VerbMixin:
         return offers(self.tax, instances, state, self.db.actions(key.desktop), key.step)
 
     def _with_verb_offers(self, rows: list[dict], state, instances) -> list[dict]:
-        """Add ``verb_fix`` to instance-list rows (``None`` where not offered)."""
+        """Add ``verb_fix`` to instance-list rows (``None`` where not offered).
+
+        A screw's row carries the captive flip instead (task U14,
+        :meth:`tda.ui.session_captive.CaptiveMixin.captive_offers`):
+        ``"unscrewed"`` / ``"stays_in"``, the same button and key.
+        """
         found = self.verb_offers(state, instances)
+        captive = getattr(self, "captive_offers", None)
+        screws = captive(state, instances) if callable(captive) else {}
         for row in rows:
-            row["verb_fix"] = found.get(str(row.get("key", "")))
+            key = str(row.get("key", ""))
+            row["verb_fix"] = found.get(key) or screws.get(key)
         return rows
 
     def verb_gate(self, instance: str) -> str:

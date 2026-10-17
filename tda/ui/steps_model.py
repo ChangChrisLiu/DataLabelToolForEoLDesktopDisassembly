@@ -152,6 +152,26 @@ def stored_signature(db: Db, desktop: int) -> tuple:
     return table_signature(db.steps(desktop), db.actions(desktop))
 
 
+def captive_signature(instances: dict[str, InstanceRec]) -> dict[str, tuple]:
+    """``screw -> (captive, captive_source, parent, attached)`` (task U14).
+
+    What ``Shift+T`` on a screw writes from Annotate mode: the Steps panel's
+    copy of the instance table would write the old values back on its next
+    Apply, as its copy of the actions would an old verb (U9). Only these
+    fields of the screws, so the write-through commands of Steps mode (a
+    delete repairs its neighbours) have little to keep in step with.
+    """
+    return {key: ((rec.attrs or {}).get("captive"), (rec.attrs or {}).get("captive_source"),
+                  rec.parent or None, bool(rec.attached))
+            for key, rec in instances.items() if rec.cls == "screw"}
+
+
+def forget_deleted(signature: dict[str, tuple], key: str) -> dict[str, tuple]:
+    """``signature`` after a write-through delete of ``key``: gone, and nobody's parent."""
+    return {other: ((value[0], value[1], None, False) if value[2] == key else value)
+            for other, value in signature.items() if other != key}
+
+
 def _reorients_moved(before: list[StepRec], after: list[StepRec]) -> bool:
     """Did any step become, or stop being, a ``reorient``?
 

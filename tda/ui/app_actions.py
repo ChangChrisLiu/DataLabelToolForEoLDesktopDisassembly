@@ -289,11 +289,13 @@ ACTIONS: tuple[Action, ...] = (
     # Task U9: the open cover / latch the card asks for is on the pile.  Next to
     # T because it is the other half of "the log is wrong about this part";
     # ``Shift+T`` is free in every mode.
+    # Task U14: on a screw the log unscrews, the same key flips its captive flag.
     Action("correct_verb", ("Shift+T",), "act_correct_verb",
            "Selected cover/latch: taken out, not opened (the log's open -> remove; "
-           "a removed one: back to open)",
+           "a removed one: back to open); a screw: captive or not",
            "选中的盖板/卡扣其实拆下来了：日志里那一步的「打开」改成「拆下」"
-           "（Removed 里的零件反过来：其实只是打开了）", "edit", (), _ANN, short="其实拆下"),
+           "（Removed 里的零件反过来：其实只是打开了）；螺丝：其实拧下来了 / 其实留在零件里",
+           "edit", (), _ANN, short="其实拆下"),
     # Task U11: the same over a span, "from here to step N" -- D2/scan walked
     # 45 -> 37 with T at every frame.  Ctrl+T is free in every mode.
     Action("state_range", ("Ctrl+T",), "act_state_range",
