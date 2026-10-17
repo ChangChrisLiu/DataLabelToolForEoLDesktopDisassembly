@@ -369,6 +369,12 @@ def _check_one(db, tax, args: argparse.Namespace, desktop: int, view: str) -> in
     copies = cut_copies_in_force(db, tax, desktop, view, skip=stale)
     problems.extend(f"{CUT_COPY_IN_FORCE}:{instance} (step {step})"
                     for step, instance in copies)
+    # a chassis, or a motherboard over a part it lies under, stored too high in
+    # a layer order (U17): reported, never reordered
+    from tda.core.zorder_floor import ZORDER_FLOOR, floor_problems
+
+    floor = floor_problems(db, tax, desktop, view, stats["truth"])
+    problems.extend(floor)
     if is_component_view(view):
         # a relocated sheet photo whose sheet row was retyped later (U10):
         # first, a per-shot list of missing shapes would hide it past --limit
@@ -394,6 +400,11 @@ def _check_one(db, tax, args: argparse.Namespace, desktop: int, view: str) -> in
               f"state's shape kept off the run -- nobody has drawn or confirmed "
               f"({CUT_COPY_IN_FORCE}; Ctrl+K or Ctrl+Shift+K at the ✂ frame): "
               + ", ".join(f"{instance}@{step}" for step, instance in copies[:10]))
+    if floor:
+        print(f"[check] {len(floor)} layer order(s) put the chassis, or the motherboard "
+              f"over a part lying on it, too high ({ZORDER_FLOOR}; not changed -- select "
+              f"it and Ctrl+Down in the instance list): "
+              + "; ".join(text.split(":", 1)[1] for text in floor[:10]))
     for text in problems[: int(args.limit)]:
         print(f"  - {text}")
     if len(problems) > int(args.limit):
