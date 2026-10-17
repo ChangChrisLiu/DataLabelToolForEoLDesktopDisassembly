@@ -246,7 +246,8 @@ def _commit_shape(db: Db, truth: TruthService, key: FrameKey, instance: str,
                   cache: InputCache, annotator: str,
                   pair: Optional[str] = None,
                   extra: Optional[dict] = None,
-                  dropped: Optional[tuple[dict, dict]] = None) -> dict:
+                  dropped: Optional[tuple[dict, dict]] = None,
+                  cut_from: Optional[ShapeKeyframe] = None) -> dict:
     """The shared body of :func:`commit_edit` and :func:`commit_box`.
 
     ``pair`` is the instance this one is to be put *above* in the same gesture
@@ -257,7 +258,9 @@ def _commit_shape(db: Db, truth: TruthService, key: FrameKey, instance: str,
     ``dropped`` -- ``(before, after)`` keyframe states -- is a keyframe the
     caller deleted in its own enclosing transaction just before this commit
     (:func:`commit_into_previous`): it goes into the same op, so the undo
-    puts it back with everything else.
+    puts it back with everything else.  ``cut_from`` is that keyframe: the
+    frames a cut below keeps were showing *its* shape, not the version the
+    re-trace writes into (U16 review, R1), so the copy is made of it.
     """
     seg = pose_segment_of(db, key, cache)
     placement = placement_of(db, truth.tax, key, instance, cache)
@@ -289,7 +292,8 @@ def _commit_shape(db: Db, truth: TruthService, key: FrameKey, instance: str,
             # the old shape keeps the frames of the other state: the version in
             # force is cut at the boundary, pixels unchanged, in this same op
             cut_ref: dict = {"keyframe_id": None}
-            cut_kf = _copy_keyframe(chosen, key, cuts["below"])
+            cut_kf = _copy_keyframe(chosen if cut_from is None else cut_from, key,
+                                    cuts["below"])
             before.append(keyframe_state(None, cut_ref, template=cut_kf))
             cut_ref["keyframe_id"] = db.add_keyframe(cut_kf)
             after.append(keyframe_state(cut_kf, cut_ref))
@@ -626,6 +630,8 @@ def carried_here(db: Db, truth: TruthService, key: FrameKey, instance: str,
 INTO_PREVIOUS_ACROSS_BOUNDARY = (
     "这一帧和后面第 {there} 步之间是状态边界（✂）：后面的帧是{what}的样子，"
     "不能把这一版写过去")
+#: ... its tail when pixels wait in the layer: the key that keeps them (R2).
+REDRAW_WITH_ENTER = "；只重画这一版用 Enter"
 #: ... and where there is no previous version behind to write into.
 NOTHING_BEHIND = "后面的帧用的就是这一版（或没有要它形状的帧）：用 Enter"
 
@@ -693,7 +699,8 @@ def version_behind(db: Db, truth: TruthService, key: FrameKey, instance: str,
 
 def commit_into_previous(db: Db, truth: TruthService, key: FrameKey, instance: str,
                          mask: np.ndarray, direction: str = REVERSE,
-                         annotator: str = "system", extra: Optional[dict] = None) -> dict:
+                         annotator: str = "system", extra: Optional[dict] = None,
+                         painted: bool = False) -> dict:
     """「把这一版也写到后面的帧」: this frame's version folds into the previous one.
 
     U16 review, M1 -- what ``Ctrl+Enter`` does where :func:`version_behind`
@@ -702,15 +709,18 @@ def commit_into_previous(db: Db, truth: TruthService, key: FrameKey, instance: s
     every part, and this frame's own version is deleted so the frame falls back
     to it. That is a re-trace of the previous version from here (the same
     :func:`_commit_shape` path, cuts at open state boundaries included), with
-    the deleted keyframe in the same op: one ``Ctrl+Z`` restores both. The
-    previous version's frozen frames are re-checked as any re-trace's are.
-    Refused across a state boundary and where there is nothing behind.
+    the deleted keyframe in the same op: one ``Ctrl+Z`` restores both. A cut
+    below is a copy of the deleted version -- what those frames were showing
+    (R1). The previous version's frozen frames are re-checked as any
+    re-trace's are. Refused across a state boundary -- with the other key
+    named when ``painted`` pixels wait in the layer (R2) -- and where there is
+    nothing behind.
     """
     found = version_behind(db, truth, key, instance, direction)
     if found is None:
         raise SessionRefusal(NOTHING_BEHIND)
     if found["refuse"]:
-        raise SessionRefusal(found["refuse"])
+        raise SessionRefusal(found["refuse"] + (REDRAW_WITH_ENTER if painted else ""))
     here = found["here"]
     edited = as_mask(mask, frame_hw(db, key, truth.cache_dir))
     parts = [ShapePart(MAIN, masks.encode_rle_boxed(edited))]
@@ -722,7 +732,7 @@ def commit_into_previous(db: Db, truth: TruthService, key: FrameKey, instance: s
         db.delete_keyframe(here.id)
         result = _commit_shape(db, truth, key, instance, parts, GEOM_MASK,
                                api.SCOPE_KEYFRAME, direction, InputCache(), annotator,
-                               extra=note, dropped=dropped)
+                               extra=note, dropped=dropped, cut_from=here)
     result["into_previous"] = list(found["steps"])
     return result
 

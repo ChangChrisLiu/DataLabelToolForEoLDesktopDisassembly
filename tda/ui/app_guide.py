@@ -438,7 +438,8 @@ class GuideMixin:
     def _hint_here(self) -> bool:
         """Did ``Enter`` just name frames behind on this frame (Ctrl+Enter's target)?"""
         hint = getattr(self, "_behind_hint", None)
-        return bool(hint is not None and compat.is_open(self.session)
+        return bool(hint is not None and getattr(self, "_hint_live", False)
+                    and compat.is_open(self.session)
                     and hint[0] == self.session.current())
 
     def _open_split_editing(self) -> bool:

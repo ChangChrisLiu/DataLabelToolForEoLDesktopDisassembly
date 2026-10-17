@@ -244,7 +244,10 @@ class EditMixin:
         self._all_note = ""
         #: ``(frame, instance)`` of the split ``Enter`` just wrote whose frames
         #: behind kept the old shape: what a bare ``Ctrl+Enter`` there acts on.
+        #: Kept through the merge-in and its undo (U16 review, R3); ``live``
+        #: says whether there is something to fold right now.
         self._behind_hint: Optional[tuple] = None
+        self._hint_live = False
         self._restore_offer: Optional[dict] = None
         #: The instance an ``add_bench_box`` card item armed the box tool for.
         self.bench_instance: Optional[str] = None
@@ -360,7 +363,10 @@ class EditMixin:
         :attr:`_roi_dismissed`).
         """
         self._drop_scope_bar()
-        self._behind_hint = None        # Ctrl+Enter's target was this frame's (U16)
+        if self._behind_hint is not None and self._behind_hint[0] != key:
+            # Ctrl+Enter's target belongs to its frame (U16); a commit or an
+            # undo re-announces the same frame, which keeps it (R3)
+            self._behind_hint, self._hint_live = None, False
         self.disarm_bench()
         # A draft ghost is about one instance on one frame.  ``_sync_editing_layer``
         # covers the frames that repaint; this covers the ones that do not,

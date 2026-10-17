@@ -302,11 +302,12 @@ class CommitMixin:
         if getattr(self.session, "editing_instance", None) is not None \
                 and self.session.editing_mask() is not None:
             return True
-        hint, self._behind_hint = self._behind_hint, None
-        if hint is None or hint[0] != self.session.current():
+        hint = self._behind_hint
+        if hint is None or not self._hint_here():
             return False
         if compat.previous_behind(self.session, hint[1]) is None:
-            return False                 # undone, or changed since: nothing to fold
+            self._hint_live = False      # undone, or changed since: nothing to fold
+            return False
         self.on_request_edit(hint[1])
         return getattr(self.session, "editing_instance", None) == hint[1]
 
@@ -539,8 +540,14 @@ class CommitMixin:
         # happens at confirm time, where the answer is actually used.
         cut = cut_note(result, steps_text)
         old = self._behind_note(kept, result)
-        # what a bare Ctrl+Enter on this frame now acts on (U16 review)
-        self._behind_hint = (key, instance) if old else None
+        # what a bare Ctrl+Enter on this frame now acts on (U16 review); the
+        # merge-in keeps it, idle, for its own undo to bring back (R3)
+        if old:
+            self._behind_hint, self._hint_live = (key, instance), True
+        elif scope == api.SCOPE_INTO_PREVIOUS:
+            self._hint_live = False
+        else:
+            self._behind_hint, self._hint_live = None, False
         if old:
             # U16: the frames behind kept the old shape -- said where the
             # annotator looks, with the key that reaches them
@@ -852,7 +859,12 @@ class CommitMixin:
         if not moved:
             self.report(f"nothing to {what}")
             return
-        self._behind_hint = None        # the split it named may be gone (U16)
+        # the split the hint named may be gone -- or back, after undoing the
+        # merge-in (U16 review, R3): asked again, once per undo/redo
+        hint = self._behind_hint
+        self._hint_live = bool(
+            hint is not None and hint[0] == self.session.current()
+            and compat.previous_behind(self.session, hint[1]) is not None)
         self.refresh_overlay()
         self._sync_editing_layer()
         # An undo can take the layer back to what begin_edit loaded, and then

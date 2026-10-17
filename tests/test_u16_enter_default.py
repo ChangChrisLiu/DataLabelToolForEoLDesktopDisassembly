@@ -380,6 +380,12 @@ def test_ctrl_enter_after_enters_split_writes_the_shape_behind_too(window):
     assert kf_rows(session, CHASSIS) == split_rows
     for step in range(1, 15):
         assert np.array_equal(shape_at(session, step, CHASSIS), split_shapes[step]), step
+    # R3: the hint survives the undo -- a bare Ctrl+Enter targets the part again
+    window.refresh_guidance()
+    assert window.palette.button("commit_all").isEnabled()
+    window.handle_key(key_event("Ctrl+Return"))
+    assert window.all_asked() and session.editing_instance == CHASSIS
+    assert "把这版形状也写到第 11–14 帧" in window.scope_bar_text()
 
 
 def test_a_first_draw_then_a_fix_at_the_same_frame_reaches_the_draft_behind(window):
@@ -422,7 +428,47 @@ def test_ctrl_enter_does_not_fold_a_version_across_a_state_boundary(window):
     window.on_request_edit(latch)                              # the stored shape, untouched
     ctrl_enter(window)
     assert "这一帧和后面第 13 步之间是状态边界（✂）" in window.last_error_message()
+    assert "只重画这一版用 Enter" not in window.last_error_message()
     assert kf_rows(session, latch) == before
+    # R2: with pixels in the layer the refusal names the key that keeps them
+    window.set_editing_mask(rect(42, 42, 60, 60), undoable=True)
+    ctrl_enter(window)
+    assert window.last_error_message().endswith("只重画这一版用 Enter"), \
+        window.last_error_message()
+    assert kf_rows(session, latch) == before and session.editing_instance == latch
+
+
+def test_merging_in_keeps_what_a_cut_below_was_showing(window):
+    """R1: split at 10, T at 5 makes an un-drawn ✂ below, back at 10 Ctrl+Enter.
+
+    The re-trace cuts the version at the ✂ below; the copy is of the version
+    being folded in -- what 1-5 were showing -- not of the one behind (which
+    would have put the old shape back on 1-5 while saying 「形状不变」).
+    """
+    session = window.session
+    latch = "ram_latch.02"
+    split = rect(40, 40, 60, 60)
+    goto(window, 10)
+    paint(window, latch, split)
+    press(window, "act_commit")
+    assert anchors(session, latch) == [10, 14]
+    goto(window, 5)
+    assert window.instances.select_instance(latch)
+    window.act_cycle_state()                                   # open at 5: ✂ at 4 and 5
+    window.expire_visibility_note()
+    for step in range(1, 11):
+        assert np.array_equal(shape_at(session, step, latch), split), step
+    goto(window, 10)
+    fix = rect(42, 42, 62, 62)
+    paint(window, latch, fix)
+    ctrl_enter(window)                                         # nothing confirmed: at once
+    assert session.editing_instance is None, window.last_error_message()
+    assert window.status_message().startswith("已先在第 5 步切开旧版本（形状不变）"), \
+        window.status_message()
+    for step in range(1, 6):                                   # what they were showing
+        assert np.array_equal(shape_at(session, step, latch), split), step
+    for step in range(6, 15):
+        assert np.array_equal(shape_at(session, step, latch), fix), step
 
 
 def test_ctrl_enter_inside_a_ctrl_t_span_reaches_the_spans_top(window):

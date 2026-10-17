@@ -233,7 +233,8 @@ class CommitMixin:
             self._refuse_mask_on_bench(key, instance)
             result = edit.commit_into_previous(self.db, self.truth, key, instance,
                                                self.layer.mask(), direction,
-                                               self.annotator, extra=extra)
+                                               self.annotator, extra=extra,
+                                               painted=self.layer.changed())
             self.layer.settle()
             return self._after_edit(result)
         pair = edit.split_zorder_scope(scope)
