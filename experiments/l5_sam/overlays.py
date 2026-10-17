@@ -47,8 +47,9 @@ def tile(crop, win, rec, gt_mask, pred, label, prompt):
     if prompt in ("point", "point_box"):
         px, py = rec.point[0] - win.x0 - a0, rec.point[1] - win.y0 - b0
         cv2.circle(bgr, (int((px + 0.5) * f), int((py + 0.5) * f)), 3, (0, 255, 255), -1)
-    if prompt in ("box", "point_box"):
-        bx = C.jittered_box(rec.bbox, C.seed_of(rec.desktop, rec.step, rec.instance))
+    if prompt in ("box", "point_box", "box_loose"):
+        bx = (C.loose_box(rec.bbox) if prompt == "box_loose"
+              else C.jittered_box(rec.bbox, C.seed_of(rec.desktop, rec.step, rec.instance)))
         p0 = (int((bx[0] - win.x0 - a0) * f), int((bx[1] - win.y0 - b0) * f))
         p1 = (int((bx[2] - win.x0 - a0) * f), int((bx[3] - win.y0 - b0) * f))
         cv2.rectangle(bgr, p0, p1, (0, 255, 255), 1)
@@ -98,8 +99,10 @@ def main(argv=None) -> int:
             seed = C.seed_of(rec.desktop, rec.step, rec.instance)
             jbox = C.box_in_crop(C.jittered_box(rec.bbox, seed), win)
             px, py = C.to_crop((rec.point[0] + 0.5, rec.point[1] + 0.5), win)
-            pts = [] if args.prompt == "box" else [(px, py, 1)]
+            pts = [] if args.prompt in ("box", "box_loose") else [(px, py, 1)]
             box = None if args.prompt == "point" else jbox
+            if args.prompt == "box_loose":
+                box = C.box_in_crop(C.loose_box(rec.bbox), win)
             tiles = []
             for name, svc in models:
                 res = svc.predict(SamRequest(image_crop=crop, points=pts, box=box, multimask=True))
