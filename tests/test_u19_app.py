@@ -9,6 +9,7 @@ inside SAM's turn.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -154,10 +155,12 @@ def test_sam_still_loads_first_and_reads_its_heads_inside_its_turn(qapp, tmp_pat
 
     events: list = []
     handed: list = []
+    asked: list = []
     config = SamHeadConfig(off="a test")
 
-    def load_config(path=None):
+    def load_config(path=None, weights_dir=None):
         events.append(("heads", load_gate.HEAVY._is_owned()))
+        asked.append(weights_dir)
         return config
 
     class FakeService:
@@ -186,6 +189,124 @@ def test_sam_still_loads_first_and_reads_its_heads_inside_its_turn(qapp, tmp_pat
         assert [name for name, _held in events] == ["heads", "sam", "det_build"], events
         assert all(held for _name, held in events), "a load ran outside the lock"
         assert handed == [config]
+        # the head is looked for where the app's own paths put the weights (N2)
+        assert asked == [win.paths["weights_dir"]]
         assert win.sam_available and win.det_state == "on"
+    finally:
+        close_window(win)
+
+
+# --------------------------------------------------------------------------- #
+# the U19 review
+# --------------------------------------------------------------------------- #
+def test_box_drag_then_point_correction_goes_back_to_the_box_head(window):
+    """M1: ``X`` (the tuned head answers the drag), then ``S`` to correct it.
+
+    The switch detaches the box tool and its reset dropped the tag, so the
+    correcting click went out with ``mask_input`` and no head, and for a class
+    in ``stock_point_classes`` the stock head refined the tuned head's mask.
+    The tag goes over with the switch now; every other reset still drops it.
+    """
+    from tda.models.sam_heads import Routing, choose_head
+    from test_u19_heads import STOCK_POINT
+
+    row = _card(window)[0]
+    window.task_card.sigRequestEdit.emit(str(row["instance"]))
+    for tool in (window.sam_point, window.sam_box):     # a large part, as on a real desk
+        tool.instance_cls = "motherboard"
+    window.act_tool("sam_box")
+    _answer_as(window.sam_queue, TUNED)
+    window.sam_box.on_press(10.0, 10.0, None)
+    window.sam_box.on_move(50.0, 50.0, None)
+    window.sam_box.on_release(50.0, 50.0, None)
+    _answer(window)
+    assert window.sam_box.answer_head == TUNED and window.overlay.editing.any()
+
+    window.act_tool("sam_point")
+    req = _click(window, 30.0, 30.0)
+    assert req.box is None and req.mask_input is not None
+    assert req.mask_input_head == TUNED
+    assert choose_head(Routing(stock_point_classes=STOCK_POINT), has_box=False,
+                       instance_cls=req.instance_cls,
+                       mask_input_head=req.mask_input_head) == TUNED
+
+    # ... and back: S's own answer (stock this time) goes over to X
+    _answer_as(window.sam_queue, STOCK)
+    _answer(window)
+    window.act_tool("sam_box")
+    assert window.sam_box.answer_head == STOCK
+    window.act_tool("sam_point")
+    assert window.sam_point.answer_head == STOCK
+
+    # a detour through the brush is not a SAM-to-SAM switch: the tag goes
+    window.act_tool("brush")
+    window.act_tool("sam_point")
+    assert window.sam_point.answer_head is None
+
+
+@pytest.mark.parametrize("action", ["commit", "esc", "undo"])
+def test_the_tag_carried_over_a_switch_still_goes_with_the_layer(window, action):
+    window.task_card.sigRequestEdit.emit(str(_card(window)[0]["instance"]))
+    window.act_tool("sam_box")
+    _answer_as(window.sam_queue, TUNED)
+    window.sam_box.on_press(10.0, 10.0, None)
+    window.sam_box.on_release(50.0, 50.0, None)
+    _answer(window)
+    window.act_tool("sam_point")
+    assert window.sam_point.answer_head == TUNED
+    {"commit": window.act_commit, "esc": window.act_clear_edit, "undo": window.act_undo}[action]()
+    QApplication.processEvents()
+    assert window.sam_point.answer_head is None and window.sam_box.answer_head is None
+
+
+def test_start_sam_reads_the_real_head_config_and_says_it_is_off(qapp, tmp_path, monkeypatch):
+    """M2: no GPU, the real ``load_sam_head_config`` -- the conftest's ``off`` replaced."""
+    import yaml
+
+    import tda.models.sam_service as sam_service
+    from tda.models.sam_heads import ENV_VAR
+    from tda.ui.app_support import log_path
+
+    config_file = tmp_path / "sam_test.yaml"
+    config_file.write_text(yaml.safe_dump({
+        "enabled": True, "head": "gone_head.pt",
+        "route": {"box_prompts": "tuned",
+                  "point_only": {"stock_point_classes": "stock", "other": "tuned"}},
+        "stock_point_classes": ["motherboard", "ram_module"]}), encoding="utf-8")
+    monkeypatch.setenv(ENV_VAR, str(config_file))
+    handed: list = []
+
+    class FakeService:
+        """What the window reads of a ``SamService``: its heads and why one is off."""
+
+        def __init__(self, checkpoint=None, heads=None, **kwargs):
+            handed.append(heads)
+            self.heads = (STOCK,)
+            self.head_off_reason = heads.off if heads is not None else ""
+
+    class QueueWithService(StubSamQueue):
+        def __init__(self, service):
+            super().__init__()
+            self.service = service
+
+    monkeypatch.setattr(sam_service, "SamService", FakeService)
+    monkeypatch.setattr(sam_service, "SamQueue", QueueWithService)
+    monkeypatch.setattr(sam_service, "checkpoint_in", lambda paths: None)
+    win = _bare_window(tmp_path)
+    try:
+        win.start_sam()
+        _settle_sam(win)
+        [config] = handed
+        assert isinstance(config, SamHeadConfig) and config.source == config_file
+        assert not config.wanted
+        # a bare name is looked for in the app's own weights_dir (N2)
+        missing = Path(win.paths["weights_dir"]) / "gone_head.pt"
+        assert f"the head file {missing} does not exist" in config.off
+        lines = open(log_path(win.paths), encoding="utf-8").read().splitlines()
+        warned = [line for line in lines
+                  if " WARNING " in line and "SAM fine-tuned head OFF" in line]
+        assert len(warned) == 1, warned
+        assert any("SAM: ready (heads: stock; fine-tuned head off:" in line for line in lines)
+        assert win.sam_status_text() == f"SAM ready{HEAD_OFF_NOTE}"
     finally:
         close_window(win)

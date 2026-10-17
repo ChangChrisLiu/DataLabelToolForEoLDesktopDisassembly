@@ -21,7 +21,8 @@ regression cannot happen by construction:
 ``stock_point_classes`` is the large classes of the ruling -- the scan area
 bands above 20 000 px (:func:`large_classes_from_bands`) and two large classes
 the bands do not cover -- plus the classes where L5 measured the tuned head
-worse on a single click on both blind desktops (U19 review).
+worse on a single click on both held-out desktops, each with its own fold's
+model (U19 review).
 
 This module is the half that needs neither Qt nor torch at import: the
 configuration (``configs/sam.yaml``, :func:`load_sam_head_config`), the routing
@@ -51,7 +52,7 @@ __all__ = [
     "HEAD_MODULES", "STOCK", "TUNED", "Routing", "SamHeadConfig",
     "SamHeadConfigError", "SamHeadError", "choose_head", "fingerprint",
     "large_classes_from_bands", "load_sam_head_config", "parse_sam_head_config",
-    "read_head", "tensor_digest",
+    "read_head", "resolve_head", "tensor_digest",
 ]
 
 log = logging.getLogger(__name__)
@@ -180,8 +181,27 @@ def _known_classes() -> frozenset:
     return frozenset(str(c) for c in load_taxonomy().classes)
 
 
+def resolve_head(raw: str, source: Optional[Path] = None,
+                 weights_dir: Optional[Any] = None) -> Path:
+    """Where ``head:`` points (U19 review, N2).
+
+    An absolute path is used as it is.  A bare file name -- or any relative
+    path -- is looked for under ``weights_dir``, the one the app was started
+    with (``paths.yaml`` / ``--paths``), where the stock checkpoint the head is
+    a delta on lives too; without a ``weights_dir`` (library use) it is beside
+    the configuration file.
+    """
+    head = Path(str(raw).strip())
+    if head.is_absolute():
+        return head
+    if isinstance(weights_dir, (str, Path)) and str(weights_dir).strip():
+        return Path(weights_dir) / head
+    return source.parent / head if source is not None else head
+
+
 def parse_sam_head_config(data: Any, source: Optional[Path] = None,
-                          known_classes: Optional[Iterable[str]] = None) -> SamHeadConfig:
+                          known_classes: Optional[Iterable[str]] = None,
+                          weights_dir: Optional[Any] = None) -> SamHeadConfig:
     """A :class:`SamHeadConfig`, or :class:`SamHeadConfigError` saying why not.
 
     Refused: anything but a mapping; a key it does not know (``stock_point_class``
@@ -189,7 +209,8 @@ def parse_sam_head_config(data: Any, source: Optional[Path] = None,
     ``enabled`` that is not true/false; a ``head`` that is not a path; a route
     that is not ``stock`` or ``tuned``; ``stock_point_classes`` that is not a
     list of taxonomy classes.  Whether the head file exists is
-    :func:`load_sam_head_config`'s question, not this one's.
+    :func:`load_sam_head_config`'s question, not this one's; where a relative
+    ``head`` points is :func:`resolve_head`'s.
     """
     if not isinstance(data, dict):
         raise SamHeadConfigError("the SAM head file is not a mapping of keys")
@@ -202,9 +223,7 @@ def parse_sam_head_config(data: Any, source: Optional[Path] = None,
     raw_head = data.get("head")
     if not isinstance(raw_head, str) or not raw_head.strip():
         raise SamHeadConfigError(f"head must be a path (head: {raw_head!r})")
-    head = Path(raw_head.strip())
-    if not head.is_absolute() and source is not None:
-        head = source.parent / head
+    head = resolve_head(raw_head, source, weights_dir)
     route = _mapping(data.get("route"), "route", _ROUTE_KEYS)
     point = _mapping(route["point_only"], "route.point_only", _POINT_KEYS)
     raw_listed = data.get("stock_point_classes")
@@ -241,11 +260,14 @@ def _read_yaml(path: Path) -> Any:
                                  f"{type(exc).__name__}: {exc}") from exc
 
 
-def load_sam_head_config(path: Optional[str] = None) -> SamHeadConfig:
+def load_sam_head_config(path: Optional[str] = None,
+                         weights_dir: Optional[Any] = None) -> SamHeadConfig:
     """``configs/sam.yaml`` (or ``path``) checked; never raises, never ``None``.
 
     Without ``path`` the environment's :data:`ENV_VAR` is read first: ``off``
     is a configuration that is off, anything else a file to read instead.
+    ``weights_dir`` is where a ``head:`` that is not an absolute path is
+    looked for (:func:`resolve_head`); the app passes its own.
     An unusable file is one WARNING and a configuration that is off (its
     ``off`` says why); ``enabled: false`` and ``off`` are one INFO line.  The
     line that says the head is **on** comes from the service, once the head
@@ -260,7 +282,7 @@ def load_sam_head_config(path: Optional[str] = None) -> SamHeadConfig:
         path = chosen or None
     target = Path(path) if path else DEFAULT_FILE
     try:
-        config = parse_sam_head_config(_read_yaml(target), target)
+        config = parse_sam_head_config(_read_yaml(target), target, weights_dir=weights_dir)
         if config.wanted and not config.head.is_file():
             raise SamHeadConfigError(f"the head file {config.head} does not exist")
     except Exception as exc:  # noqa: BLE001 - see the docstring

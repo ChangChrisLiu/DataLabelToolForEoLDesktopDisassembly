@@ -377,6 +377,25 @@ def test_a_head_that_fails_mid_session_is_dropped_once(toy, tmp_path, caplog):
     assert svc.heads == (STOCK,)
 
 
+def test_a_failing_embedding_keeps_no_raw_levels(toy, tmp_path):
+    """U19 review N3: the hook's levels go even when the stock ``set_image`` raises."""
+    ckpt, _built = toy
+    svc = _service(ckpt, _config(_head(tmp_path)))
+    stock = svc._predictor
+    real = stock.set_image
+
+    def out_of_memory(image):
+        real(image)                       # the hook has the raw levels by now
+        raise RuntimeError("CUDA out of memory (simulated)")
+
+    stock.set_image = out_of_memory
+    with pytest.raises(RuntimeError, match="out of memory"):
+        svc.set_image(CROP)
+    assert svc._raw_fpn is None and svc.image_id is None
+    del stock.set_image                   # the predictor's own again
+    assert svc.predict(_req(CROP, box=BOX)).head == TUNED and svc.tuned_loaded
+
+
 def test_the_queue_says_which_service_it_runs(toy):
     from tda.models.sam_service import SamQueue
 

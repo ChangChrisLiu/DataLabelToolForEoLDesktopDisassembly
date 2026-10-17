@@ -35,8 +35,9 @@ BANDS = ROOT / "configs" / "prompt_box_bands.yaml"
 BY_BAND = frozenset({"cpu_cooler", "cpu_socket_lever", "drive_cage", "motherboard",
                      "optical_drive", "psu", "storage_drive"})
 NAMED_BY_THE_RULING = frozenset({"chassis", "expansion_card"})
-#: L5, per-class single-click IoU of the tuned head minus the stock head's,
-#: D5 / D13 (the U19 review's addition).
+#: L5, per-class single-click IoU of the tuned head minus the stock head's on
+#: the two held-out desktops, each with its own fold's model: D5 (f5_v2, blind)
+#: / D13 (f13_v2, not blind) -- the U19 review's addition.
 MEASURED_WORSE = {"ram_module": (-0.096, -0.023), "drive_latch": (-0.027, -0.191)}
 STOCK_POINT = BY_BAND | NAMED_BY_THE_RULING | frozenset(MEASURED_WORSE)
 ROUTING = Routing(stock_point_classes=STOCK_POINT)
@@ -120,7 +121,8 @@ def test_the_stock_point_classes_are_the_bands_the_ruling_and_two_measured():
     assert shipped - by_band == NAMED_BY_THE_RULING | {"ram_module", "drive_latch"}
     for cls in NAMED_BY_THE_RULING:          # large, with no scan band to say so
         assert cls not in scan["classes"]
-    # the two measured additions: not large by any band, worse on both blind desktops
+    # the two measured additions: not large by any band, worse on both held-out
+    # desktops (each with its own fold's model)
     assert scan["classes"]["ram_module"]["hi_px"] < 20_000
     assert "drive_latch" not in scan["classes"]
     for d5, d13 in MEASURED_WORSE.values():
@@ -197,6 +199,35 @@ def test_the_parser_refuses(data, says):
     with pytest.raises(SamHeadConfigError) as refused:
         parse_sam_head_config(data, Path("x/sam.yaml"))
     assert says in str(refused.value)
+
+
+def test_a_bare_head_name_is_in_the_weights_dir_and_an_absolute_one_is_kept():
+    """U19 review N2: the head follows the weights_dir the app was started with."""
+    source = Path("C:/cfg/sam.yaml")
+    weights = Path("E:/other_disk/weights")
+    bare = parse_sam_head_config(_good(), source, weights_dir=str(weights))
+    assert bare.head == weights / "head.pt"
+    nested = parse_sam_head_config(_with(("head",), "heads/head.pt"), source, weights_dir=weights)
+    assert nested.head == weights / "heads" / "head.pt"
+    absolute = parse_sam_head_config(_with(("head",), "D:/DataSet/models/weights/h.pt"), source,
+                                     weights_dir=weights)
+    assert absolute.head == Path("D:/DataSet/models/weights/h.pt")
+    # no weights_dir to go by (library use): beside the configuration file
+    for empty in (None, "", "  "):
+        assert parse_sam_head_config(_good(), source, weights_dir=empty).head == \
+            Path("C:/cfg/head.pt")
+
+
+def test_load_hands_the_weights_dir_to_the_head(tmp_path, caplog):
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    (weights / "head.pt").write_bytes(b"x")
+    path = _write(tmp_path, _good())
+    with caplog.at_level(logging.INFO):
+        found = load_sam_head_config(str(path), weights_dir=str(weights))
+        missing = load_sam_head_config(str(path))           # beside the file: not there
+    assert found.wanted and found.head == weights / "head.pt"
+    assert not missing.wanted and "does not exist" in missing.off
 
 
 def test_a_relative_head_is_beside_the_file_and_enabled_false_is_off():

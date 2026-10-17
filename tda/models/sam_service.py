@@ -593,13 +593,18 @@ class SamService:
                 if predictor is not self._predictor:
                     predictor.reset_predictor()
             t0 = time.perf_counter()
-            with self._torch.inference_mode(), self._autocast():
-                self._predictor.set_image(img)
-                if TUNED in self._predictors:
-                    try:
-                        self._project_tuned()
-                    except Exception as exc:  # noqa: BLE001 - the stock head still works
-                        self._detach_tuned(f"{type(exc).__name__}: {exc}")
+            try:
+                with self._torch.inference_mode(), self._autocast():
+                    self._predictor.set_image(img)
+                    if TUNED in self._predictors:
+                        try:
+                            self._project_tuned()
+                        except Exception as exc:  # noqa: BLE001 - the stock head still works
+                            self._detach_tuned(f"{type(exc).__name__}: {exc}")
+            finally:
+                # The hook's raw levels (~40 MB in bf16 at 1024 px) never outlive
+                # this call -- not even when the stock embedding itself fails.
+                self._raw_fpn = None
             self.last_set_image_ms = (time.perf_counter() - t0) * 1000.0
             self._image_id = image_id
             self._image_src = image_crop

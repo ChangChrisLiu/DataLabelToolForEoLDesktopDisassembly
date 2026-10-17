@@ -272,6 +272,22 @@ class SamToolBase(CandidatesMixin, Tool):
         # Whoever writes the layer next, it is not this prompt's answer any more.
         self._answer_head = None
 
+    @property
+    def answer_head(self) -> Optional[str]:
+        """The head whose answer this prompt last put in the layer, or ``None`` (U19)."""
+        return self._answer_head
+
+    def take_answer_head(self, head: Optional[str]) -> None:
+        """Take over the other SAM tool's tag across an ``S`` / ``X`` switch (U19 review M1).
+
+        The switch detaches the tool being left, and the detach resets its
+        prompt -- but the layer still holds that tool's answer, and a correcting
+        click on it is a refinement of that head's mask.  The window hands the
+        tag over (:meth:`~tda.ui.app_view.ToolsMixin.act_tool`) the way it hands
+        over the prompt box; every other reset still drops it.
+        """
+        self._answer_head = head if isinstance(head, str) and head else None
+
     # -- frame identity -----------------------------------------------------
     @property
     def frame_token(self) -> Any:

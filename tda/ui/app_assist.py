@@ -1445,8 +1445,10 @@ class AssistMixin(DetectMixin):
                     # configs/paths.yaml: --paths was being ignored for the weights.
                     checkpoint = sam_service.checkpoint_in(paths)
                     # Task U19: the fine-tuned head, or a WARNING and the stock
-                    # head alone -- configs/sam.yaml (TDA_SAM_HEAD overrides).
-                    heads = sam_heads.load_sam_head_config()
+                    # head alone -- configs/sam.yaml (TDA_SAM_HEAD overrides); a
+                    # head named without a directory is in the same weights_dir.
+                    heads = sam_heads.load_sam_head_config(
+                        weights_dir=paths.get("weights_dir"))
                     service = (sam_service.SamService(checkpoint=str(checkpoint), heads=heads)
                                if checkpoint is not None
                                else sam_service.SamService(heads=heads))
