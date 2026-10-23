@@ -252,7 +252,13 @@ def test_the_key_it_had_comes_back_and_a_kept_key_is_never_reused(tax):
     stored["drive_latch.05"] = replace(stored[LATCH], key="drive_latch.05")   # an older copy
     del stored[LATCH]
     plan = cage_latches(d6_instances(), d6_actions(), tax, stored=stored)
-    assert [rec.key for rec in plan.created] == ["drive_latch.05"]
+    # made again under its key, and said to be kept, not created (review N3)
+    assert not plan.created and [rec.key for rec in plan.carried] == ["drive_latch.05"]
+    assert [rec.key for rec in plan.made] == ["drive_latch.05"]
+    assert plan.kept == [{"latch": "drive_latch.05", "cage": CAGE, "how": "implied"}]
+    assert plan.opens == {"drive_latch.05": 13} and not plan.implied_lines()
+    assert plan.lines() == ["cage latch kept: drive_latch.05 (implied) is drive_cage.01's "
+                            "own latch"]
     # a stored drive_latch key that is not this cage's latch is skipped over
     held = {"drive_latch.02": inst("drive_latch.02", "drive_latch")}
     plan = cage_latches(d6_instances(), d6_actions(), tax, stored=held)

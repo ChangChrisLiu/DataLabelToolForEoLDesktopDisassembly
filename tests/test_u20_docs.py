@@ -35,9 +35,14 @@ def test_the_quickstart_has_one_paragraph_with_the_d5_d6_example():
     for needed in ("D5/D6", "HDD shield locker", "第 13 帧", "`drive_latch.02`",
                    "「跟 drive_cage.01 一起装回来的」", cage_latch_hint(), "第 12 帧它是 ✂",
                    "`Ctrl+T`", "「添加零件」", "Steps → Instances 右键删掉", "重导不会回来",
-                   "回到待复核"):
+                   "回到待复核",
+                   # review round: Shift+T latches the cage at once (M2), the dialog
+                   # proposes open from the frame (N1), delete rather than merge (M1)
+                   "按 `Shift+T` 说它其实拆下了，机架立刻自动得到隐含的 `drive_latch.02`",
+                   "`Ctrl+Z` 一起撤销", "到第 11 帧按 `Ctrl+T`（对话框已选「打开」）",
+                   "不要合并"):
         assert needed in para, needed
-    assert len(para) < 520
+    assert len(para) < 620
 
 
 def test_the_spec_has_the_paragraph_in_3_2_and_v1_20_on_top():

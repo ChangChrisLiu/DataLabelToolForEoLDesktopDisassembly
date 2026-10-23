@@ -56,7 +56,13 @@ from tda.core.extra import extra_keys
 from tda.core.model import ALL_VIEWS, StepRec, StepType, is_context, is_extra
 from tda.core.states import INITIAL_STEP, events_from_actions, initial_overrides
 from tda.core.taxonomy import Taxonomy
-from tda.core.merge_replay import OP_REPLAY_MERGES, MergeReplay, replay_merges_for_import
+from tda.core.merge_replay import (
+    OP_MERGE,
+    OP_REPLAY_MERGES,
+    MergeReplay,
+    effective_merges,
+    replay_merges_for_import,
+)
 from tda.core.verb_replay import OP_REPLAY, Replay, replay_for_import
 from tda.core.captive_replay import OP_REPLAY_CAPTIVE, CaptiveReplay, replay_captive_for_import
 from tda.pipeline import Log, merge_desktop_meta, settle_gallery, split_pose_segments, wanted
@@ -424,37 +430,57 @@ def add_implied_instances(db: Db, li: LogImport, tax: Taxonomy) -> list[str]:
     return lines
 
 
-def _cage_inputs(db: Db, desktop: int, instances: dict, extras: Optional[dict] = None
-                 ) -> tuple[dict, dict, list[dict]]:
-    """``(extras, stored, deletions)`` the drive-cage latch rule reads, before any write."""
+@dataclass
+class CageInputs:
+    """What the drive-cage latch rule reads off the database, before any write (U20)."""
+
+    extras: dict
+    stored: dict
+    deleted: list[dict]
+    #: ``gone -> gone_record`` of the merges in effect (U20 review, M1).
+    merged: dict
+
+
+def _cage_inputs(db: Db, desktop: int, instances: dict,
+                 extras: Optional[dict] = None) -> CageInputs:
+    """The parts added in S1, the table being replaced, the deletions and the merges."""
     stored = db.instances(desktop)
     if extras is None:
         extras = {key: rec for key, rec in stored.items()
                   if is_extra(rec) and key not in instances}
-    return extras, stored, db.ops_of_kind(desktop, OP_DELETE_IMPLIED)
+    in_effect = {entry["gone"] for entry in effective_merges(db, desktop)}
+    merged = {}
+    for op in db.ops_of_kind(desktop, OP_MERGE):
+        payload = op.get("payload") or {}
+        if payload.get("gone") in in_effect and payload.get("gone_record"):
+            merged[str(payload["gone"])] = payload["gone_record"]
+    return CageInputs(extras, stored, db.ops_of_kind(desktop, OP_DELETE_IMPLIED), merged)
 
 
-def add_cage_latches(db: Db, li: LogImport, tax: Taxonomy, extras: dict, stored: dict,
-                     deleted: list[dict], rename: Optional[dict[str, str]] = None
-                     ) -> CageLatches:
+def add_cage_latches(db: Db, li: LogImport, tax: Taxonomy, inputs: CageInputs,
+                     rename: Optional[dict[str, str]] = None) -> CageLatches:
     """Give every drive cage of the sheet its own latch (task U20). **In the transaction.**
 
     Runs right after :func:`add_implied_instances` and before the relational
     heuristic: :func:`tda.core.implied.cage_latches` decides, this carries it
     out on the parsed records -- the adopted latch gets ``parent = cage`` and
-    ``attached``, the created ones are added -- and writes **one** ``op_log``
-    row of kind :data:`~tda.core.implied.OP_CAGE_LATCH` (inverse: the adopted
-    ones unparented, the created keys), nothing when the sheet has no cage.
-    ``extras``, ``stored`` and ``deleted`` were read before the transaction
-    opened (:func:`_cage_inputs`): the table being replaced and the
-    :data:`~tda.core.implied.OP_DELETE_IMPLIED` rows, which keep a latch an
-    annotator deleted in Steps deleted.
+    ``attached``, the implied ones (new, or made again under the key an earlier
+    import gave them) are added -- and writes **one** ``op_log`` row of kind
+    :data:`~tda.core.implied.OP_CAGE_LATCH` (inverse: the adopted ones
+    unparented, the newly created keys). Nothing is written when the plan is
+    empty: no cage the log removes, and no deletion or merge to report on --
+    D22-D33 have a cage and get no row. ``inputs`` were read before the
+    transaction opened (:func:`_cage_inputs`): the parts added in S1, the table
+    being replaced, the :data:`~tda.core.implied.OP_DELETE_IMPLIED` rows (a
+    latch deleted in Steps stays deleted) and the merges in effect (a latch
+    merged in Steps stays merged).
     """
-    plan = cage_latches(li.instances, li.actions, tax, extras, stored, deleted, rename)
+    plan = cage_latches(li.instances, li.actions, tax, inputs.extras, inputs.stored,
+                        inputs.deleted, rename, inputs.merged)
     for entry in plan.adopted:
         rec = li.instances[entry["latch"]]
         rec.parent, rec.attached = entry["cage"], True
-    for rec in plan.created:
+    for rec in plan.made:
         li.instances[rec.key] = rec
     if plan:
         db.log_op(li.desktop, OP_VIEW, OP_CAGE_LATCH, plan.payload(), plan.inverse(),
@@ -476,9 +502,10 @@ def _cage_keys(db: Db, li: LogImport, tax: Taxonomy) -> set[str]:
                                                           li.actions)
     actions, _replay = replay_for_import(db, li.desktop, actions, instances, tax,
                                          rename=merges.rename)
-    extras, stored, deleted = _cage_inputs(db, li.desktop, instances)
-    plan = cage_latches(instances, actions, tax, extras, stored, deleted, merges.rename)
-    return {rec.key for rec in plan.created}
+    got = _cage_inputs(db, li.desktop, instances)
+    plan = cage_latches(instances, actions, tax, got.extras, got.stored, got.deleted,
+                        merges.rename, got.merged)
+    return {rec.key for rec in plan.made}
 
 
 #: ``relation.source`` this pipeline owns. A derived edge naming a key that is
@@ -897,8 +924,8 @@ def _write_import(
     initial = {key: state for key, state in initial_overrides(
         e for e in db.events(li.desktop) if not e.auto).items() if key not in adopt}
     # the drive cages' own latches (task U20): the table being replaced (the
-    # key an implied latch had) and the latches deleted in Steps
-    _extras, stored, deleted = _cage_inputs(db, li.desktop, li.instances, extras)
+    # key an implied latch had), the latches deleted and merged in Steps
+    cage_inputs = _cage_inputs(db, li.desktop, li.instances, extras)
     with db.transaction():
         kept, dropped = carry_ls_notes(li.steps, previous)
         merge_desktop_meta(db, li.desktop, desktop_fields(li.meta))
@@ -914,7 +941,7 @@ def _write_import(
                       merges.inverse, IMPLIED_ANNOTATOR)
         adopted = _adopt_extras(db, li.desktop, adopt)
         implied = add_implied_instances(db, li, tax)
-        cage = add_cage_latches(db, li, tax, extras, stored, deleted, merges.rename)
+        cage = add_cage_latches(db, li, tax, cage_inputs, merges.rename)
         implied += cage.implied_lines()
         fills = infer_relational_fields(li.instances, tax, li.actions)
         for inst in li.instances.values():
@@ -1091,7 +1118,8 @@ def _import_one(
     if dropped:
         issues.append(dropped_notes_line(desktop, dropped))
     corrections = ([replay.kept_line()] if replay.kept_line() else []) + \
-        replay.unmatched_lines() + merges.lines() + \
+        replay.unmatched_lines() + \
+        merges.lines(skip={e["latch"] for e in cage.merged}) + \
         ([captive.kept_line()] if captive.kept_line() else []) + captive.unmatched_lines()
     issues.extend(drop_issues)
     if log:

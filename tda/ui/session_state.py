@@ -41,6 +41,7 @@ from tda.core.states import (
     FrameState,
     events_from_actions,
     initial_overrides,
+    is_cage_latch_event,
     needs_geom,
     state_at,
 )
@@ -362,6 +363,12 @@ class StateMixin:
         backwards, the step after the last such event at or below this frame
         (the table's first step when there is none); forwards, the step before
         the next one (the last step).
+
+        A drive cage's implied latch (task U20) on a frame at or before the
+        step it opens at by default proposes what its card row says --
+        「默认这里是打开的；更早就开着的话到那一帧 Ctrl+T」 -- ``open``, to this very
+        frame: the annotator says how far. That default is no action of the
+        log, so it never bounds a span either.
         """
         key = self.current()
         rows = sorted(self.db.steps(key.desktop), key=lambda r: int(r.step))
@@ -370,7 +377,9 @@ class StateMixin:
             return None, key.step
         dupli = {int(r.step) for r in rows if r.dupli or r.step_type == "dupli"}
         log = derived_log(self.db, self.tax, key.desktop)
-        mine = [e.step for e in log if e.target == instance and e.step >= 1]
+        default = [e for e in log if e.target == instance and is_cage_latch_event(e)]
+        mine = [e.step for e in log
+                if e.target == instance and e.step >= 1 and not is_cage_latch_event(e)]
         if self.browsing == FORWARD_WALK:
             above = [s for s in mine if s > key.step]
             step = (min(above) - 1) if above else table[-1]
@@ -384,6 +393,9 @@ class StateMixin:
                           self.tax).get(instance)
         if held is not None and logged is not None and held.state != logged.state:
             return held.state, int(step)
+        if default and key.step <= default[0].step:
+            # the cage latch's card row (U20 review, N1): open, from here
+            return str(default[0].new), int(key.step)
         return self.next_state(instance), int(step)
 
     def _state_gate_here(self, instance: str, state: str) -> FrameKey:

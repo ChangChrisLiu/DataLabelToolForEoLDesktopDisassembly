@@ -25,6 +25,8 @@ import pytest
 
 from tda.core.db import Db
 from tda.core.implied import OP_CAGE_LATCH, OP_DELETE_IMPLIED, is_cage_latch
+from tda.core.merge_instances import merge_instances
+from tda.core.merge_replay import effective_merges
 from tda.core.model import FrameKey
 from tda.core.state_assert import assert_state
 from tda.core.states import gone_with_parent, validate_events
@@ -81,10 +83,18 @@ def d5(tmp_path, tax):
 
 @pytest.fixture
 def d6(d5, tax):
-    """D5's sheet with the locker taken out at 10 (Shift+T), as on D5 and D6."""
-    commit_verb_fix(d5, TruthService(d5, tax), FrameKey(D5, 12, "scan"), LOCKER, "remove",
-                    "tester")
+    """D5's sheet with the locker taken out at 10 (Shift+T), as on D5 and D6 before U20.
+
+    ``Shift+T`` now gives the cage its implied latch at once (review M2,
+    ``test_u20_round2.py``); the live D5/D6 were flipped before that existed,
+    so the latch it made is taken away again to stand for them.
+    """
+    result = commit_verb_fix(d5, TruthService(d5, tax), FrameKey(D5, 12, "scan"), LOCKER,
+                             "remove", "tester")
     assert [a.verb for a in d5.actions(D5) if a.target == LOCKER] == ["remove"]
+    assert result["cage"]["added"] == [LATCH]
+    d5.delete_auto_events(D5, LATCH)
+    d5.delete_instance(D5, LATCH)
     return d5
 
 
@@ -154,10 +164,17 @@ def test_d6_gets_its_cages_latch_on_a_forced_re_import(d6, tmp_path, tax):
 def test_a_second_forced_import_gives_back_the_same_latch(d6, tmp_path, tax):
     reimport(d6, tmp_path, tax)
     first = d6.instances(D5)[LATCH]
-    run, _printed = reimport(d6, tmp_path, tax)
+    run, printed = reimport(d6, tmp_path, tax)
     assert d6.instances(D5)[LATCH] == first
     assert not run.dropped and not d6.ops_of_kind(D5, DROP_OP_KIND)
     assert sorted(k for k, r in d6.instances(D5).items() if is_cage_latch(r)) == [LATCH]
+    # said as kept, not as created again (review N3)
+    line = "cage latch kept: drive_latch.02 (implied) is drive_cage.01's own latch"
+    assert run.cage_latches == [line] and line in printed
+    assert not run.implied and "implied instance(s)" not in printed
+    op = d6.ops_of_kind(D5, OP_CAGE_LATCH)[-1]
+    assert op["payload"]["created"] == [] and op["inverse"]["created"] == []
+    assert [c["instance"] for c in op["payload"]["carried"]] == [LATCH]
 
 
 def test_d5s_latch_added_by_hand_is_kept(d6, tmp_path, tax):
@@ -172,6 +189,29 @@ def test_d5s_latch_added_by_hand_is_kept(d6, tmp_path, tax):
     assert not [k for k, r in d6.instances(D5).items() if is_cage_latch(r)]
     assert d6.instances(D5)[LATCH].attrs.get("added_by")
     assert states(d6, tax, D5, LATCH, (12, 13, 14)) == ["closed", "open", "removed"]
+
+
+# --------------------------------------------------------------------------- #
+# merged in Steps: stays merged (review M1, probe p3d)
+# --------------------------------------------------------------------------- #
+def test_the_implied_latch_merged_into_the_locker_stays_merged(d6, tmp_path, tax):
+    reimport(d6, tmp_path, tax)
+    merge_instances(d6, tax, D5, LATCH, LOCKER, "tester")
+    before = d6.instances(D5)[LOCKER]
+    locker_states = states(d6, tax, D5, LOCKER, (9, 10, 13, 14))
+    for _ in range(2):
+        run, printed = reimport(d6, tmp_path, tax)
+        assert LATCH not in d6.instances(D5)
+        assert not [k for k, r in d6.instances(D5).items() if is_cage_latch(r)]
+        line = ("cage latch merged: drive_latch.02 → drive_latch.01 (merged in Steps; "
+                "drive_latch.01 is drive_cage.01's latch now - not made again)")
+        assert run.cage_latches == [line] and line in printed
+        assert not run.implied and not run.dropped
+        # the merge's own line would say "the sheet no longer needs" it: not said
+        assert not any("drive_latch.02 -> drive_latch.01" in text for text in run.corrections)
+        assert LATCH in {m["gone"] for m in effective_merges(d6, D5)}       # still in effect
+        assert d6.instances(D5)[LOCKER].parent == before.parent
+        assert states(d6, tax, D5, LOCKER, (9, 10, 13, 14)) == locker_states
 
 
 # --------------------------------------------------------------------------- #

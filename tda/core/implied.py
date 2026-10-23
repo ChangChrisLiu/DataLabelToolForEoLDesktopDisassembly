@@ -67,6 +67,7 @@ from tda.core.taxonomy import Taxonomy
 __all__ = [
     "CAGE_CLASS",
     "CAGE_LATCH_RULE",
+    "CageFix",
     "CageLatches",
     "IMPLIED_ATTR",
     "IMPLIED_RULE_ATTR",
@@ -75,6 +76,7 @@ __all__ = [
     "OP_CAGE_LATCH",
     "OP_DELETE_IMPLIED",
     "OP_KIND",
+    "cage_fix",
     "cage_latch_note",
     "cage_latches",
     "implied_instances",
@@ -242,10 +244,15 @@ class CageLatches:
     * ``adopted`` -- ``{"latch", "cage", "opened"}``: a latch the log opens
       and never removes on its own, which is the cage's (D13);
     * ``kept`` -- ``{"latch", "cage", "how"}``: the cage already has its latch,
-      added in S1 (D5) or implied before; nothing is done;
-    * ``created`` -- the implied latches (records), ``opens`` the step each
-      opens at by default (``None``: the cage leaves at step 1, no frame is
-      before it);
+      added in S1 (D5, ``how="added in S1"``) or implied by an earlier import
+      (``how="implied"``) -- the latter is made again under its key, the record
+      being in ``carried``, because the import re-creates every row it owns;
+    * ``created`` -- the implied latches made for the first time (records);
+      ``opens`` the step each implied latch -- created or carried -- opens at
+      by default (``None``: the cage leaves at step 1, no frame is before it);
+    * ``merged`` -- ``{"latch", "into", "cage"}``: the cage's implied latch was
+      merged in Steps (「合并到…」) into ``into``, which is the cage's latch
+      now; nothing is made;
     * ``kept_deleted`` -- ``{"latch", "cage", "ops"}``: the latch an annotator
       deleted in Steps; not made again;
     * ``unmatched`` -- ``{"latch", "cage", "ops", "why"}``: a deletion this
@@ -256,20 +263,29 @@ class CageLatches:
     adopted: list[dict] = field(default_factory=list)
     kept: list[dict] = field(default_factory=list)
     created: list[InstanceRec] = field(default_factory=list)
+    carried: list[InstanceRec] = field(default_factory=list)
     opens: dict[str, Optional[int]] = field(default_factory=dict)
+    merged: list[dict] = field(default_factory=list)
     kept_deleted: list[dict] = field(default_factory=list)
     unmatched: list[dict] = field(default_factory=list)
 
     def __bool__(self) -> bool:
-        return bool(self.adopted or self.kept or self.created or self.kept_deleted
-                    or self.unmatched)
+        return bool(self.adopted or self.kept or self.created or self.merged
+                    or self.kept_deleted or self.unmatched)
+
+    @property
+    def made(self) -> list[InstanceRec]:
+        """Every implied latch the import writes: the new ones and the carried ones."""
+        return self.created + self.carried
 
     def payload(self) -> dict:
         """The op-log payload of :data:`OP_CAGE_LATCH`."""
-        return {"adopted": self.adopted, "kept": self.kept,
-                "created": [{"instance": rec.key, "cage": rec.parent,
-                             "attrs": dict(rec.attrs), "opens": self.opens.get(rec.key)}
-                            for rec in self.created],
+        def rows(recs: list[InstanceRec]) -> list[dict]:
+            return [{"instance": rec.key, "cage": rec.parent, "attrs": dict(rec.attrs),
+                     "opens": self.opens.get(rec.key)} for rec in recs]
+
+        return {"adopted": self.adopted, "kept": self.kept, "created": rows(self.created),
+                "carried": rows(self.carried), "merged": self.merged,
                 "kept_deleted": self.kept_deleted, "unmatched": self.unmatched}
 
     def inverse(self) -> dict:
@@ -289,17 +305,75 @@ class CageLatches:
         return out
 
     def lines(self) -> list[str]:
-        """The adopted / kept / kept-deleted / not-matched lines, in that order."""
+        """The adopted / kept / merged / kept-deleted / not-matched lines, in that order."""
         out = [f"cage latch adopted: {e['latch']} is {e['cage']}'s own latch (opened at "
                f"step {e['opened']}, never removed on its own) - parent {e['cage']}, attached"
                for e in self.adopted]
         out += [f"cage latch kept: {e['latch']} ({e['how']}) is {e['cage']}'s own latch"
                 for e in self.kept]
+        out += [f"cage latch merged: {e['latch']} → {e['into']} (merged in Steps; "
+                f"{e['into']} is {e['cage']}'s latch now - not made again)"
+                for e in self.merged]
         out += [f"cage latch kept deleted: {e['latch']} of {e['cage']} was deleted in "
                 f"Steps - not made again" for e in self.kept_deleted]
         out += [f"cage latch delete not matched: {e['latch']} of {e['cage']} ({e['why']})"
                 for e in self.unmatched]
         return out
+
+
+@dataclass
+class CageFix:
+    """What the cage rule asks for after ``Shift+T`` flipped a cage's latch (U20 review, M2).
+
+    ``add`` -- the implied latch the cage gets now that its adopted latch was
+    taken out on its own; ``drop`` -- the cage's implied latches it no longer
+    needs now that its latch is only opened again; ``out_at`` -- the step the
+    cage comes out at, ``opens`` the step the added latch opens at by default.
+    """
+
+    cage: str
+    add: list[InstanceRec] = field(default_factory=list)
+    drop: list[str] = field(default_factory=list)
+    out_at: Optional[int] = None
+    opens: Optional[int] = None
+
+    def __bool__(self) -> bool:
+        return bool(self.add or self.drop)
+
+
+def cage_fix(instances: dict[str, InstanceRec], actions: Iterable[ActionRec],
+             tax: Taxonomy, latch: str,
+             deleted: Optional[Iterable[dict]] = None) -> Optional[CageFix]:
+    """The cage rule for the cage of ``latch``, on the stored table after a verb flip. Pure.
+
+    Only for a cage's **adopted** latch -- a ``drive_latch`` of the log (not
+    implied, not added in S1) whose ``parent`` is a drive cage it is attached
+    to -- because that is the one whose verb decides whether the cage has a
+    latch at all: D5/D6/D7's "HDD shield locker" was adopted from the sheet's
+    ``open`` and then said with ``Shift+T`` to be taken out at step 10, which
+    left the cage silently without a latch until the next forced re-import.
+    ``actions`` are the stored actions **with the flip**; :func:`cage_latches`
+    runs on the stored table (keys never reused) and the answer for this one
+    cage is kept: the implied latch it creates, or -- when the flip made the
+    latch adoptable again -- the cage's implied latches, now surplus. ``None``
+    when there is nothing to do.
+    """
+    rec = instances.get(latch)
+    cage_rec = instances.get(rec.parent) if rec is not None and rec.parent else None
+    if (rec is None or rec.cls != LATCH_CLASS or is_implied(rec) or is_extra(rec)
+            or not rec.attached or cage_rec is None or cage_rec.cls != CAGE_CLASS):
+        return None
+    cage = cage_rec.key
+    actions = list(actions)
+    plan = cage_latches(instances, actions, tax, stored=instances, deleted=deleted)
+    out = CageFix(cage=cage, out_at=removal_steps(instances, actions, tax, [cage]).get(cage))
+    out.add = [made for made in plan.created if made.parent == cage]
+    if out.add:
+        out.opens = plan.opens.get(out.add[0].key)
+    if any(e["cage"] == cage and e["latch"] == latch for e in plan.adopted):
+        out.drop = sorted(key for key, other in instances.items()
+                          if is_cage_latch(other) and other.parent == cage)
+    return out if out else None
 
 
 def _of(rec: Optional[InstanceRec]) -> str:
@@ -358,20 +432,44 @@ def _ordinal(key: str) -> int:
     return int(tail) if head == LATCH_CLASS and tail.isdigit() else 0
 
 
-def _latch_key(cage: str, busy: set[str], stored: dict[str, InstanceRec]) -> str:
-    """The key of the latch implied for ``cage``: the one it had, or the next free.
+def _latch_key(cage: str, busy: set[str], stored: dict[str, InstanceRec]) -> tuple[str, bool]:
+    """``(key, had it)`` of the latch implied for ``cage``: the one it had, or the next free.
 
     Re-importing must give the same key back -- shapes are drawn on it -- so a
     latch this rule made for the same cage before keeps its key while nothing
-    else (the sheet, a part added in S1) has taken it. Otherwise the next
-    ordinal after every ``drive_latch`` key in use or stored, so a key held by
-    an instance the import keeps for review is never written over.
+    else (the sheet, a part added in S1) has taken it (``had it`` is then
+    true). Otherwise the next ordinal after every ``drive_latch`` key in use or
+    stored, so a key held by an instance the import keeps for review is never
+    written over.
     """
     for key, rec in sorted(stored.items()):
         if is_cage_latch(rec) and rec.parent == cage and key not in busy:
-            return key
+            return key, True
     top = max((_ordinal(k) for k in busy | set(stored)), default=0)
-    return f"{LATCH_CLASS}.{top + 1:02d}"
+    return f"{LATCH_CLASS}.{top + 1:02d}", False
+
+
+def _merged_into(cage: str, merged: Optional[dict[str, dict]],
+                 rename: Optional[dict[str, str]], pool: dict[str, InstanceRec]
+                 ) -> Optional[tuple[str, str]]:
+    """``(gone, keep)`` when this cage's implied latch was merged away in Steps.
+
+    ``merged`` is ``gone -> the record it had`` of every merge in effect (the
+    ``gone_record`` of the ``merge_instances`` row). A ``gone`` that was this
+    cage's implied latch, merged into a part the import keeps, means the
+    annotator said which part the cage's latch is: making it again would undo
+    the merge (task U20 review, M1).
+    """
+    for gone, record in sorted((merged or {}).items()):
+        attrs = (record or {}).get("attrs") or {}
+        parent = _follow((record or {}).get("parent"), rename)
+        if not (attrs.get(IMPLIED_ATTR) and attrs.get(IMPLIED_RULE_ATTR) == CAGE_LATCH_RULE
+                and parent == cage):
+            continue
+        keep = _follow(gone, rename)
+        if keep and keep != gone and keep in pool:
+            return gone, keep
+    return None
 
 
 def cage_latches(
@@ -382,6 +480,7 @@ def cage_latches(
     stored: Optional[dict[str, InstanceRec]] = None,
     deleted: Optional[Iterable[dict]] = None,
     rename: Optional[dict[str, str]] = None,
+    merged: Optional[dict[str, dict]] = None,
 ) -> CageLatches:
     """Give every drive cage of the sheet its own latch (task U20). Pure.
 
@@ -389,8 +488,9 @@ def cage_latches(
     ``Shift+T`` corrections replayed); ``extras`` the parts added in S1 the
     import keeps; ``stored`` the instance table being replaced (for the key an
     implied latch had); ``deleted`` the desktop's :data:`OP_DELETE_IMPLIED`
-    rows; ``rename`` the merges in effect. For each ``drive_cage`` the log
-    removes (its own action, at step ``c``), in that order:
+    rows; ``rename`` the merges in effect (``gone -> keep``) and ``merged``
+    their ``gone -> gone_record``. For each ``drive_cage`` the log removes (its
+    own action, at step ``c``), in that order:
 
     1. **adopt** -- a ``drive_latch`` of the sheet that the log opens before the
        cage comes out and never removes on its own, whose ``of`` does not
@@ -399,11 +499,16 @@ def cage_latches(
        (D13's "SSD shield locker");
     2. **keep** -- else a latch added in S1, or implied before, whose
        ``parent`` is the cage: nothing to do (D5's, added by hand);
-    3. **kept deleted** -- else, if an annotator deleted the latch implied for
+    3. **merged** -- else, if the cage's implied latch was merged in Steps into
+       a part the import keeps (:func:`_merged_into`): that part is its latch,
+       nothing is made;
+    4. **kept deleted** -- else, if an annotator deleted the latch implied for
        this cage in Steps: nothing is made;
-    4. **create** -- else an implied ``drive_latch.NN`` (:func:`_latch_key`),
-       ``parent = cage``, ``attached``, closed until the frame before the cage
-       comes out and open there (:func:`tda.core.states.cage_latch_opens`).
+    5. **implied** -- else a ``drive_latch.NN`` (:func:`_latch_key`), ``parent
+       = cage``, ``attached``, closed until the frame before the cage comes out
+       and open there (:func:`tda.core.states.cage_latch_opens`): **kept** under
+       the key an earlier import gave it (``carried``), **created** the first
+       time.
 
     A cage the log never removes (or only displaces) is left alone: it never
     "comes back", which is the one frame the ruling asks for its latch on, and
@@ -418,7 +523,7 @@ def cage_latches(
     machine = {key: rec for key, rec in machine_only(instances).items()
                if not is_provisional(key)}
     plan = CageLatches()
-    gone = _deletions(deleted, rename)
+    deletions = _deletions(deleted, rename)
     actions = list(actions or ())
     removed = removal_steps(machine, actions, tax,
                             [key for key, rec in machine.items() if rec.cls == CAGE_CLASS])
@@ -455,22 +560,33 @@ def cage_latches(
             plan.kept.append({"latch": own[0], "cage": cage,
                               "how": "added in S1" if is_extra(pool[own[0]]) else "implied"})
             continue
-        if cage in gone:
-            plan.kept_deleted.append(gone.pop(cage))
+        into = _merged_into(cage, merged, rename, pool)
+        if into is not None:
+            assigned.add(into[1])
+            plan.merged.append({"latch": into[0], "into": into[1], "cage": cage})
             continue
-        key = _latch_key(cage, busy, stored)
+        if cage in deletions:
+            plan.kept_deleted.append(deletions.pop(cage))
+            continue
+        key, had = _latch_key(cage, busy, stored)
         busy.add(key)
         attrs = {IMPLIED_ATTR: True, IMPLIED_RULE_ATTR: CAGE_LATCH_RULE}
         if _of(rec):
             attrs["of"] = _of(rec)
         attrs[NOTE_ATTR] = cage_latch_note(cage)
-        plan.created.append(InstanceRec(key=key, desktop=rec.desktop, cls=LATCH_CLASS,
-                                        attrs=attrs, parent=cage, attached=True))
+        made = InstanceRec(key=key, desktop=rec.desktop, cls=LATCH_CLASS, attrs=attrs,
+                           parent=cage, attached=True)
+        if had:     # an earlier import made it: the same record, under the same key
+            plan.carried.append(made)
+            plan.kept.append({"latch": key, "cage": cage, "how": "implied"})
+        else:
+            plan.created.append(made)
         plan.opens[key] = out_at - 1 if out_at > 1 else None
-    for cage, entry in sorted(gone.items()):
+    for cage, entry in sorted(deletions.items()):
         held = next((e for e in plan.adopted + plan.kept if e["cage"] == cage), None)
-        if held is not None:
-            why = f"{cage} has its latch {held['latch']} now"
+        into = next((e for e in plan.merged if e["cage"] == cage), None)
+        if held is not None or into is not None:
+            why = f"{cage} has its latch {(held or {}).get('latch') or into['into']} now"
         elif cage in machine and machine[cage].cls == CAGE_CLASS:
             why = f"the log no longer removes {cage}"
         else:
