@@ -54,6 +54,9 @@ def window(qapp, tmp_path: Path):
         win.act_clear_edit()
     seed_shapes(win.session, LAST_STEP)
     win.session.goto(LAST_STEP, force=True)
+    # task U21: Shift+T on a drive latch asks which correction -- the verb or
+    # 「其实是硬盘架」; these tests mean the verb, the first choice
+    win.ask_verb_or_reclass = lambda _instance, choices: choices[0][0]
     QApplication.processEvents()
     yield win
     close_window(win)

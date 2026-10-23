@@ -479,6 +479,9 @@ def removed_rows(session: Any) -> list[dict]:
     # ... and a screw unscrewed out of it may have stayed in its part (U14)
     screws = getattr(session, "captive_offers", None)
     offered = {**(screws(state, known) if callable(screws) else {}), **offered}
+    # ... and a drive cage / its latch may be the other one (task U21)
+    bay = getattr(session, "reclass_offers", None)
+    reclass = bay(known) if callable(bay) else {}
     rows = []
     for instance, held in sorted(state.items()):
         # ``known`` keeps the pseudo-nodes out: a state map also carries the
@@ -491,7 +494,7 @@ def removed_rows(session: Any) -> list[dict]:
         rows.append({"key": instance, "cls": "" if rec is None else rec.cls,
                      "state": held.state, "placement": held.placement,
                      "visibility": "", "z": "", "hidden": False,
-                     "verb_fix": offered.get(instance)})
+                     "verb_fix": offered.get(instance), "reclass": reclass.get(instance)})
     return rows
 
 

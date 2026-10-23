@@ -38,6 +38,7 @@ KINDS: frozenset[str] = frozenset(
         "correct_verb",  # an action's open <-> remove: opened, or taken out (U9)
         "captive_fix",  # a screw's captive flag: unscrewed and out, or left in its part (U14)
         "add_context",  # a 框外零件: an object outside the machine, made (or taken back) (U18)
+        "reclass_instance",  # 其实是硬盘架 / 其实是卡扣: a drive cage <-> its latch (U21)
     }
 )
 

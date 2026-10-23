@@ -26,7 +26,10 @@ The **verb** button (task U9) next to it says 「其实拆下来了」 for an op
 or removable latch (the row's ``verb_fix``) and 「其实只是打开了」 for one in the
 ``Removed`` rows -- the same gesture as ``Shift+T``; it reports, the window
 writes. On a screw the log unscrews (task U14) it says 「其实拧下来了」 when the
-screw is captive and 「其实留在零件里」 when it is not.
+screw is captive and 「其实留在零件里」 when it is not. On a drive latch it
+offers 「其实是硬盘架」 and on a drive cage 「其实是卡扣」 (task U21, the row's
+``reclass``); with a verb offered as well it says 「其实…」 and the window asks
+which.
 
 Every mutating gesture is followed by a re-read of ``instance_rows()``, so the
 table can never drift from the session's state -- hitting ``H`` after clicking
@@ -52,6 +55,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from tda.core.reclass_replay import CAPTION as RECLASS_CAPTION
 from tda.ui import context_text as CONTEXT_T
 from tda.ui import session_api as api
 from tda.ui.canvas.overlay import palette_color
@@ -92,10 +96,18 @@ VERB_UNSCREWED = "其实拧下来了"
 VERB_STAYS_IN = "其实留在零件里"
 VERB_CAPTIONS = {"remove": VERB_TAKEN_OUT, "open": VERB_ONLY_OPENED,
                  "unscrewed": VERB_UNSCREWED, "stays_in": VERB_STAYS_IN}
+#: ... and on a drive cage / its latch (task U21): 「其实是硬盘架」 / 「其实是卡扣」,
+#: by the class the row's ``reclass`` says it would become. With a verb offered
+#: too the button says 「其实…」 and the window shows a picker.
+RECLASS = "reclass"
+RECLASS_CAPTIONS = dict(RECLASS_CAPTION)
+VERB_OR_RECLASS = "其实…"
 VERB_TIP = ("打开着的盖板/卡扣其实被拆走了（画面里没有它）：选中后点这里或按 Shift+T，"
             "日志里那一步的「打开」改成「拆下」；拆下的零件（勾上 Removed）反过来。"
-            "螺丝：拧松后其实拿走了 → 其实拧下来了；拧下后其实留在零件里 → 其实留在零件里 / "
-            "the log's open was a removal, or the other way round; a screw: captive or not")
+            "螺丝：拧松后其实拿走了 → 其实拧下来了；拧下后其实留在零件里 → 其实留在零件里。"
+            "硬盘架和它的卡扣被日志弄混了 → 其实是硬盘架 / 其实是卡扣 / "
+            "the log's open was a removal, or the other way round; a screw: captive or not; "
+            "a drive cage logged as its latch, or the other way round")
 
 #: The State cell of a 框外零件 (task U18): it has none; it is outside the machine.
 CONTEXT_STATE = "框外"
@@ -586,26 +598,40 @@ class InstanceListPanel(QWidget):
             self.sigAssertState.emit(instance, state)
 
     # -- verb (task U9) -------------------------------------------------------
-    def verb_offer(self) -> tuple[Optional[str], Optional[str]]:
-        """``(key, "remove" | "open")`` the button offers for the selection, or Nones.
-
-        An open cover / latch in the frame offers "taken out"; a removed one
-        (the ``Removed`` rows) "only opened" -- the session's ``verb_fix``.
-        """
+    def _selected_row(self) -> Optional[dict]:
         row = self._table.currentRow()
         if 0 <= row < len(self._rows):
-            data = self._rows[row]
-        elif self.selected_is_removed() and 0 <= row - len(self._rows) < len(self._gone):
-            data = self._gone[row - len(self._rows)]
-        else:
+            return self._rows[row]
+        if self.selected_is_removed() and 0 <= row - len(self._rows) < len(self._gone):
+            return self._gone[row - len(self._rows)]
+        return None
+
+    def verb_offer(self) -> tuple[Optional[str], Optional[str]]:
+        """``(key, "remove" | "open" | ... | "reclass")`` the button offers, or Nones.
+
+        An open cover / latch in the frame offers "taken out"; a removed one
+        (the ``Removed`` rows) "only opened" -- the session's ``verb_fix``. A
+        drive cage or its latch offers ``"reclass"`` (task U21) when no verb
+        is; with both, the verb is reported and the window offers both.
+        """
+        data = self._selected_row()
+        if data is None:
             return None, None
-        verb = data.get("verb_fix")
+        verb = data.get("verb_fix") or (RECLASS if data.get("reclass") else None)
         return (str(data.get("key", "")), str(verb)) if verb else (None, None)
 
     def _sync_verb_button(self) -> None:
         """Caption and enable the button for the selected row."""
         _key, verb = self.verb_offer()
-        self.verb_button.setText(VERB_CAPTIONS.get(verb or "", VERB_TAKEN_OUT))
+        data = self._selected_row() or {}
+        reclass = data.get("reclass")
+        if verb == RECLASS:
+            caption = RECLASS_CAPTIONS.get(str(reclass), VERB_TAKEN_OUT)
+        elif verb and reclass:
+            caption = VERB_OR_RECLASS
+        else:
+            caption = VERB_CAPTIONS.get(verb or "", VERB_TAKEN_OUT)
+        self.verb_button.setText(caption)
         self.verb_button.setEnabled(bool(verb) and self.state_editable())
 
     def _on_verb_clicked(self) -> None:
