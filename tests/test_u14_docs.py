@@ -48,8 +48,8 @@ def test_the_spec_has_the_paragraph_and_the_entry():
     assert "**不脱落螺丝 `captive`（v1.17，U14）**" in spec
     assert "**v1.17（2026-10-16）**：**其实拧下来了**（U14，§3.2）" in spec
     changelog = spec.split("## 14. 修订记录", 1)[1]
-    # at the top of §14 when it landed; U18's v1.18, U19's v1.19 and U20's
-    # v1.20 have gone on top of it since
+    # at the top of §14 when it landed; U18's v1.18, U19's v1.19, U20's v1.20
+    # and U21's v1.21 have gone on top of it since
     assert changelog.lstrip().startswith(("- **v1.17", "- **v1.18", "- **v1.19",
-                                          "- **v1.20"))
+                                          "- **v1.20", "- **v1.21"))
     assert changelog.index("- **v1.17") < changelog.index("- **v1.16")
