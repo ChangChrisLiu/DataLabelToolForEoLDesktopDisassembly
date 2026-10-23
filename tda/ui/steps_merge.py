@@ -52,8 +52,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from tda.ui.steps_model import StepTableData
 
 __all__ = ["APPLY_AND_MERGE", "KEEP_BUTTON", "MENU_TEXT", "OVERLAP_KEEP", "STAGED",
-           "AppliedMerge", "MergeOverlap", "choice_label", "merge", "merge_choices", "plan",
-           "staged_edits"]
+           "AppliedMerge", "MergeOverlap", "choice_label", "merge", "merge_choices",
+           "overlap_question", "plan", "staged_edits"]
 
 #: The second button of the confirmation when the plain merge is refused only
 #: because both are drawn or confirmed on the same frames (task U21 round 2).
@@ -62,6 +62,24 @@ KEEP_BUTTON = "合并，重叠处保留 {keep}"
 
 class MergeOverlap(EditError):
     """The plain merge is refused only for overlap; ``overlap="keep"`` would take it."""
+
+
+def overlap_question(planned: MergePlan) -> str:
+    """The first sentence of the overlap confirmation (U21 review, M4).
+
+    Not U12's 「…是两个零件，不能合并」 followed by a merge button: it says
+    what is usually true, and what merging anyway keeps and drops. A merge is
+    undone from the op log, not with ``Ctrl+Z`` (Steps writes it through).
+    """
+    from tda.core.merge_instances import _frames_text
+
+    shapes = bool(planned.overlap_shapes)
+    frames = _frames_text(planned.overlap_frames)
+    what = "都有形状" if shapes else "都有已确认的行（或单帧覆盖、逐帧标记）"
+    kept = "形状和确认行" if shapes else "确认行"
+    return (f"两者在 {frames}{what}：通常是两个零件。确定是同一个的话，可以合并并在重叠处保留 "
+            f"{planned.keep} 的{kept}（{planned.gone} 在这些帧上的会被丢弃，原样记在操作日志里，"
+            f"能整个撤回，但不是 Ctrl+Z）")
 
 
 def _refusal(error: MergeError) -> EditError:

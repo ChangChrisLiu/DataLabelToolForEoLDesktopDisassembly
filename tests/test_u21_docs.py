@@ -50,7 +50,11 @@ def test_the_spec_has_the_paragraph_in_3_2_and_v1_21_on_top():
                    "机架规则跟着跑", "`reclass_instance` op", "「其实拆下来了」/「其实只是打开了」",
                    "Steps → Instances 右键「其实是硬盘架…」", "挂上机架", "`cage.repoint`",
                    "reclass_replay.py", "步号和原始名称", "「reclass kept: drive_latch.02 -> "
-                   "drive_cage.01 (…)」", "reclass not matched", "已知限制"):
+                   "drive_cage.01 (…)」", "reclass not matched", "已知限制",
+                   # review round: M1 and M2
+                   "按每个已确认帧**存着的行**", "5 帧，不是 32 帧",
+                   "**把新键作 `gone` 并进 S1 加的机架**", "**静默撤掉改类别**",
+                   "locker 被解开", "locker 的 `parent` 丢了", "S1 机架的拆下动作全丢"):
         assert needed in section, needed
     changes = body.split("## 14. 修订记录", 1)[1]
     first = next(line for line in changes.splitlines() if line.startswith("- "))
@@ -64,5 +68,6 @@ def test_the_spec_says_what_overlap_keep_does_in_3_2a():
     section = body.split("### 3.2a", 1)[1].split("### 3.2b", 1)[0]
     for needed in ("**重叠处保留（v1.21 评审轮，U21）**", "`OverlapError`",
                    "「合并，重叠处保留 <keep>」", "`merge_instances(..., overlap=\"keep\")`",
-                   "撤销逐表放回", "D5 的 locker"):
+                   "撤销逐表放回", "D5 的 locker", "形状锚在 9、12、13",
+                   "第 10–12 帧用手加那块第 12 帧画的形状", "通常是两个零件", "默认按钮是取消"):
         assert needed in section, needed

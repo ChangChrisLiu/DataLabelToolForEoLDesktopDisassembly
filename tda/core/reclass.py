@@ -74,6 +74,7 @@ from tda.core.model import (
     InstanceRec,
     is_component_view,
     is_context,
+    is_context_key,
     is_provisional,
 )
 from tda.core.reclass_replay import (
@@ -214,8 +215,12 @@ class ReclassPlan:
     #: ``view -> steps`` of the frozen frames queued for a re-check.
     rechecks: dict[str, list[int]] = field(default_factory=dict)
     #: ``{"gained" | "lost": {view: {step: [keys]}}}``: confirmed frames whose
-    #: parts change, which the re-check will send back to 待复核.
+    #: stored rows no longer name the parts they need, which the re-check will
+    #: send back to 待复核 (:func:`_demotions`).
     demotes: dict = field(default_factory=dict)
+    #: ``view -> steps`` of those that were already waiting for a re-check
+    #: before this write -- an earlier edit moved them too (U21 review, M1).
+    pending: dict[str, list[int]] = field(default_factory=dict)
     steps: list[int] = field(default_factory=list)
     verbs: list[list] = field(default_factory=list)
 
@@ -276,6 +281,10 @@ class ReclassPlan:
             demoted = self.demoted()
             out = (f"，其中 {sum(len(v) for v in demoted.values())} 帧会退回待复核"
                    f"（{_frames_text(demoted)}：{self._demote_reason()}）" if demoted else "")
+            pending = sum(len(v) for v in self.pending.values())
+            if pending:
+                out += (f"；这些帧里有 {pending} 帧在这之前就在等复检，之前的修改也算在里面"
+                        f"（按确认时的行比）")
             lines.append(f"{n} 个已确认帧会在后台重新核对{out}。")
         lines.append(f"立即写入，不经 Apply{undo_hint}。")
         return lines
@@ -346,31 +355,58 @@ def _needs(db: Db, tax: Taxonomy, desktop: int) -> dict[tuple[str, int], set[str
     return out
 
 
-def _changes(before: dict, after: dict, old: str, new: str, verified: set
-             ) -> tuple[dict, dict[str, list[int]]]:
-    """``(demotes, rechecks)``: the frozen frames whose parts change, ``old`` read as ``new``."""
-    demotes: dict = {"gained": {}, "lost": {}}
+def _changes(before: dict, after: dict, old: str, new: str) -> dict[str, list[int]]:
+    """``view -> steps`` of the frozen frames whose parts this write changes (re-checks).
+
+    ``old`` is read as ``new``: a rename alone changes nothing.
+    """
     rechecks: dict[str, list[int]] = {}
     for (view, step), had in sorted(before.items()):
         had = {new if k == old else k for k in had}
+        if had != after.get((view, step), set()):
+            rechecks.setdefault(view, []).append(step)
+    return rechecks
+
+
+def _demotions(db: Db, desktop: int, after: dict) -> dict:
+    """``{"gained" | "lost": {view: {step: [keys]}}}`` -- the re-check's own verdict.
+
+    A confirmed frame goes back to 待复核 when the parts it now needs differ
+    from the ones its **stored rows** -- what was confirmed, renamed by this
+    write -- name (:meth:`tda.core.truth.TruthService.refresh`; ``check``
+    decides it the same way). Read off the rows, not off "the parts it needed
+    before this write": an earlier edit whose re-check has not run yet (D2's
+    reverse ``Shift+T`` right before the reclass) has already moved those, and
+    comparing with them counted 32 frames where ``check`` demotes 5 (U21
+    review, M1). 框外零件 are left out on both sides.
+    """
+    rows: dict[tuple[str, int], set[str]] = {}
+    for r in db.conn.execute("SELECT view, step, instance FROM compiled_mask WHERE desktop=?",
+                             (int(desktop),)):
+        if not is_context_key(r["instance"]):
+            rows.setdefault((str(r["view"]), int(r["step"])), set()).add(str(r["instance"]))
+    demotes: dict = {"gained": {}, "lost": {}}
+    for view, step in sorted(_verified(db, desktop)):
         has = after.get((view, step), set())
+        had = rows.get((view, step), set())
         gained, lost = sorted(has - had), sorted(had - has)
-        if not (gained or lost):
-            continue
-        rechecks.setdefault(view, []).append(step)
-        if (view, step) not in verified:
-            continue
         if gained:
             demotes["gained"].setdefault(view, {})[step] = gained
         if lost:
             demotes["lost"].setdefault(view, {})[step] = lost
-    return {k: v for k, v in demotes.items() if v}, rechecks
+    return {k: v for k, v in demotes.items() if v}
 
 
 def _verified(db: Db, desktop: int) -> set[tuple[str, int]]:
     return {(str(r["view"]), int(r["step"])) for r in db.conn.execute(
         "SELECT view, step FROM frame WHERE desktop=? AND review_status=?",
         (int(desktop), VERIFIED))}
+
+
+def _queued(db: Db, desktop: int) -> set[tuple[str, int]]:
+    """``(view, step)`` of the frames waiting in the re-check queue right now."""
+    return {(str(r["view"]), int(r["step"])) for r in db.conn.execute(
+        "SELECT view, step FROM recheck_queue WHERE desktop=?", (int(desktop),))}
 
 
 # --------------------------------------------------------------------------- #
@@ -441,6 +477,7 @@ def _stage(db: Db, tax: Taxonomy, desktop: int, key: str, new_cls: Optional[str]
     record, left_out = reclassed_record(rec, target, new, tax)
     own = sorted(_own_actions(db, desktop, key), key=lambda a: (a.step, a.idx))
     needs_before = _needs(db, tax, desktop)
+    queued = _queued(db, desktop)
     db.upsert_instance(record)
     try:
         merge = plan_merge(db, tax, desktop, key, new, reclass=True)
@@ -457,10 +494,14 @@ def _stage(db: Db, tax: Taxonomy, desktop: int, key: str, new_cls: Optional[str]
     except P.CagePatchError as refused:
         raise ReclassError(str(refused)) from refused
     _settle(db, tax, desktop, merge.frames, {})
-    plan.demotes, changed = _changes(needs_before, _needs(db, tax, desktop), key, new,
-                                     _verified(db, desktop))
+    needs_after = _needs(db, tax, desktop)
+    changed = _changes(needs_before, needs_after, key, new)
+    plan.demotes = _demotions(db, desktop, needs_after)
+    plan.pending = {view: [s for s in steps if (view, s) in queued]
+                    for view, steps in plan.demoted().items()}
+    plan.pending = {view: steps for view, steps in plan.pending.items() if steps}
     rechecks = {view: set(steps) for view, steps in merge.rechecks.items()}
-    for view, steps in changed.items():
+    for view, steps in list(changed.items()) + list(plan.demoted().items()):
         rechecks.setdefault(view, set()).update(steps)
     plan.rechecks = {view: sorted(steps) for view, steps in sorted(rechecks.items()) if steps}
     for view, steps in plan.rechecks.items():
@@ -507,6 +548,7 @@ def _payload(plan: ReclassPlan) -> dict:
         "demotes": {kind: {view: {str(s): ks for s, ks in steps.items()}
                            for view, steps in views.items()}
                     for kind, views in plan.demotes.items()},
+        "pending": plan.pending,
     }
 
 

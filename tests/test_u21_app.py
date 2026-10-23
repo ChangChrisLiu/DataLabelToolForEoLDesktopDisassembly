@@ -166,6 +166,25 @@ def test_a_declined_confirmation_writes_nothing(window):
     assert not window.db.ops_of_kind(DESKTOP, OP_RECLASS)
 
 
+def test_uncommitted_pixels_are_refused_before_the_confirmation(window):
+    """U21 review, nit 1: said at once, not after 「是」."""
+    from tda.ui import session_api as api
+
+    session = window.session
+    session.begin_edit(LOCKER)
+    mask = session.editing_mask().copy()
+    mask[0:3, 0:3] = ~mask[0:3, 0:3]
+    session.set_editing_mask(mask)
+    window.instances.select_instance(LOCKER)
+    window.answer_pick = RECLASS
+    window.act_correct_verb()
+    assert not window.asked["confirm"]
+    assert window.status_message() == \
+        f"改不了：{api.VERB_NEEDS_CLEAN_LAYER.format(instance=LOCKER)}"
+    assert cls_of(window, LOCKER) == "drive_latch"
+    session.clear_edit()
+
+
 def test_refused_while_steps_holds_edits(window):
     select_removed(window, CAGE)
     window._steps_dirty = True

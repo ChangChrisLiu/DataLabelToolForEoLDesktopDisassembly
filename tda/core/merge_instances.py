@@ -228,6 +228,8 @@ class MergePlan:
     overlap: str = OVERLAP_REFUSE
     #: ``view -> steps`` where both are drawn or confirmed and ``keep``'s stays.
     overlap_frames: dict[str, list[int]] = field(default_factory=dict)
+    #: Of those, the ones where both are **drawn** (both keyframe chains pick a shape).
+    overlap_shapes: dict[str, list[int]] = field(default_factory=dict)
     #: What of ``gone`` goes on those frames, as stored rows (the inverse puts
     #: them back): keyframes (with their parts), overrides, flags, conflicts.
     #: Its compiled rows there are in :attr:`compiled_dropped`.
@@ -896,6 +898,7 @@ def plan_merge(db: Db, tax: Taxonomy, desktop: int, gone: str, keep: str,
         for view, step in kept:
             by_view.setdefault(view, set()).add(step)
         plan.overlap_frames = {view: sorted(steps) for view, steps in sorted(by_view.items())}
+        plan.overlap_shapes = {view: sorted(steps) for view, steps in sorted(clashes.items())}
     both_verified = {}
     for (step, view), row in sorted(g_rows.items()):
         other = k_rows.get((step, view))

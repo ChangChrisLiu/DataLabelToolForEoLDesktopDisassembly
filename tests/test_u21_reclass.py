@@ -175,6 +175,38 @@ def test_the_open_locker_is_hung_on_the_new_cage(opened):
     assert opened.statuses() == {s: "needs_review" if s >= 5 else "verified" for s in STEPS}
 
 
+def test_the_prediction_reads_the_confirmed_rows_not_a_pending_edit(removed):
+    """U21 review, M1: D2's §7 sequence -- the reverse Shift+T, no re-check, then the reclass.
+
+    The reverse Shift+T leaves the locker open from 3 with nothing to hang on
+    (no cage yet) and queues 4-8 for a re-check that nobody runs. The reclass
+    then hangs it on the cage, out at 5. What ``check`` will demote is what
+    the confirmed rows no longer match: frame 4 in both views (3 went at once,
+    with the Shift+T's own compile) -- not 5-8, which "the parts needed just
+    before" would have said.
+    """
+    db, tax = removed.db, removed.tax
+    from tda.core.model import FrameKey
+    from tda.ui.session_verb import commit_verb_fix
+
+    commit_verb_fix(db, removed.svc, FrameKey(DESKTOP, 3, "scan"), LOCKER, "open", "tester")
+    assert removed.status(3) == "needs_review" and 4 in db.rechecks(DESKTOP, "scan")
+    plan = plan_reclass(db, tax, DESKTOP, SHIELD)
+    assert plan.cage["adopted"] == [LOCKER]
+    assert plan.demoted() == {"oak1": [4], "scan": [4]}
+    assert plan.pending == {"scan": [4]}
+    line = next(x for x in plan.summary_lines() if "退回待复核" in x)
+    assert "其中 2 帧会退回待复核（oak1 第 4 帧；scan 第 4 帧：多了 drive_latch.01）" in line
+    assert "这些帧里有 1 帧在这之前就在等复检" in line
+    reclass_instance(db, tax, DESKTOP, SHIELD, annotator="tester")
+    removed.refresh_all()
+    assert removed.statuses() == {1: "verified", 2: "verified", 3: "needs_review",
+                                  4: "needs_review", 5: "verified", 6: "verified",
+                                  7: "verified", 8: "verified"}
+    assert [removed.status(s, "oak1") for s in (4, 5, 6, 7, 8)] == \
+        ["needs_review", "verified", "verified", "verified", "verified"]
+
+
 # --------------------------------------------------------------------------- #
 # undo / redo
 # --------------------------------------------------------------------------- #

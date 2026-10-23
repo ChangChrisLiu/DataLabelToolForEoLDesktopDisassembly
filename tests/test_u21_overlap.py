@@ -218,16 +218,18 @@ def test_the_confirmation_offers_keep_only_for_the_overlap(panel, d5, monkeypatc
     monkeypatch.setattr(QMessageBox, "question",
                         lambda *_a, **_k: pytest.fail("the plain confirmation is not shown"))
 
-    def ask(gone, keep, refusal, lines):
-        seen.update(gone=gone, keep=keep, refusal=refusal, lines=lines)
+    def ask(gone, keep, question, lines):
+        seen.update(gone=gone, keep=keep, question=question, lines=lines)
         return True
 
     panel.ask_merge_overlap = ask
     panel.prompt_merge(LATCH)
     assert (seen["gone"], seen["keep"]) == (LATCH, LOCKER)
-    # the plain path's refusal, in U12's words, comes first
-    assert seen["refusal"] == ("drive_latch.02 和 drive_latch.01 在同一帧上各有一行已确认的结果"
-                               "（scan 第 1–9 帧）：是两个零件，不能合并")
+    # review M4: not U12's 「…不能合并」 next to a merge button
+    assert seen["question"] == ("两者在 scan 第 1–9 帧都有形状：通常是两个零件。确定是同一个的话，"
+                                "可以合并并在重叠处保留 drive_latch.01 的形状和确认行（drive_latch.02 "
+                                "在这些帧上的会被丢弃，原样记在操作日志里，能整个撤回，但不是 Ctrl+Z）")
+    assert "不能合并" not in seen["question"]
     assert seen["lines"][0] == ("把 drive_latch.02 合并到 drive_latch.01（HDD shield locker）"
                                 "（重叠处保留 drive_latch.01）：")
     assert ("  · 重叠处（scan 第 1–9 帧）保留 drive_latch.01 的，drive_latch.02 在这些帧上的"
@@ -248,6 +250,11 @@ def test_the_second_button_is_the_only_way_on(panel, d5, monkeypatch):
 
     monkeypatch.setattr(QMessageBox, "exec", click("合并，重叠处保留 drive_latch.01"))
     assert panel.ask_merge_overlap(LATCH, LOCKER, "refused", ["line"]) is True
+    defaults: list = []
+    monkeypatch.setattr(QMessageBox, "exec",
+                        lambda box: (defaults.append(box.buttonRole(box.defaultButton())), 0)[1])
+    assert panel.ask_merge_overlap(LATCH, LOCKER, "refused", ["line"]) is False
+    assert defaults == [QMessageBox.RejectRole]                  # Cancel is the default
     monkeypatch.setattr(QMessageBox, "exec",
                         lambda box: (next(b for b in box.buttons()
                                           if box.buttonRole(b) == QMessageBox.RejectRole).click(),

@@ -16,8 +16,9 @@ staged edits in the table. The logic is in :mod:`tda.ui.steps_merge` and
 :mod:`tda.core.merge_instances`.
 
 When the plain merge is refused only because both are drawn or confirmed on
-the same frames (task U21 round 2), the refusal is shown as U12 words it with a
-second button, 「合并，重叠处保留 <keep>」: ``keep``'s shapes and rows stay
+the same frames (task U21 round 2), the box says so -- "usually two parts; if
+it is one, merge keeping <keep>'s there" -- with a second button,
+「合并，重叠处保留 <keep>」, Cancel the default: ``keep``'s shapes and rows stay
 there, ``gone``'s go (:meth:`MergeIntoMixin.ask_merge_overlap`).
 """
 from __future__ import annotations
@@ -63,10 +64,10 @@ class MergeIntoMixin:
         staged = M.staged_edits(self.data, self.db)
         try:
             planned = M.plan(self.data, self.db, key, keep, with_staged=bool(staged))
-        except M.MergeOverlap as overlap:
-            # both drawn on the same frames: the refusal stands as U12 says
-            # it, and the merge keeping keep's there is offered (U21 round 2)
-            self.prompt_merge_overlap(key, keep, str(overlap), bool(staged), staged)
+        except M.MergeOverlap:
+            # both drawn on the same frames: "usually two parts", and the
+            # merge keeping keep's there is offered (U21 round 2, review M4)
+            self.prompt_merge_overlap(key, keep, bool(staged), staged)
             return
         except EditError as error:
             self._show_error(str(error))
@@ -82,7 +83,7 @@ class MergeIntoMixin:
             return
         self.merge_instance(key, keep, with_staged=bool(staged))
 
-    def prompt_merge_overlap(self, gone: str, keep: str, refusal: str, with_staged: bool,
+    def prompt_merge_overlap(self, gone: str, keep: str, with_staged: bool,
                              staged: list) -> Optional[MergeReport]:
         """The plain merge is refused for overlap: offer 「合并，重叠处保留 <keep>」."""
         try:
@@ -94,21 +95,23 @@ class MergeIntoMixin:
         lines = planned.summary_lines(with_apply=with_staged)
         if staged:
             lines = [M.APPLY_AND_MERGE.format(what="、".join(staged)), "", *lines]
-        if not self.ask_merge_overlap(gone, keep, refusal, lines):
+        if not self.ask_merge_overlap(gone, keep, M.overlap_question(planned), lines):
             self.status.setText(f"没有合并 / {gone} was not merged.")
             return None
         return self.merge_instance(gone, keep, with_staged=with_staged, overlap=M.OVERLAP_KEEP)
 
-    def ask_merge_overlap(self, gone: str, keep: str, refusal: str, lines: list[str]) -> bool:
-        """The plain merge's refusal, then the overlap merge's confirmation; ``True``: merge.
+    def ask_merge_overlap(self, gone: str, keep: str, question: str, lines: list[str]) -> bool:
+        """The overlap merge's confirmation; ``True``: merge.
 
-        The second button, 「合并，重叠处保留 <keep>」, is the only way on; a
-        method so a test answers it without a modal loop.
+        ``question`` says both are drawn there, usually two parts, and what
+        merging anyway keeps and drops (:func:`tda.ui.steps_merge.overlap_question`).
+        The second button, 「合并，重叠处保留 <keep>」, is the only way on; Cancel
+        is the default. A method so a test answers it without a modal loop.
         """
         box = QMessageBox(self)
         box.setWindowTitle(PICK_TITLE)
         box.setIcon(QMessageBox.Question)
-        box.setText("\n".join([refusal, "", *lines]))
+        box.setText("\n".join([question, "", *lines]))
         merge = box.addButton(M.KEEP_BUTTON.format(keep=keep), QMessageBox.AcceptRole)
         cancel = box.addButton(QMessageBox.Cancel)
         box.setDefaultButton(cancel)

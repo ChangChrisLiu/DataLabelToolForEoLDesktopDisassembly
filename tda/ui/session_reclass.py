@@ -148,6 +148,9 @@ class ReclassMixin:
             return NO_VERB
         if is_context_key(instance):
             return CONTEXT_NO_VERB.format(instance=instance)
+        if self.layer.instance == instance and self.layer.changed():
+            # said before the confirmation, not after its 「是」 (U21 review, nit 1)
+            return VERB_NEEDS_CLEAN_LAYER.format(instance=instance)
         return reclass_gate(self.db, self.tax, self.current().desktop, str(instance))
 
     def reclass_plan(self, instance: str) -> ReclassPlan:
