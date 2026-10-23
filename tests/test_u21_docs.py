@@ -55,4 +55,14 @@ def test_the_spec_has_the_paragraph_in_3_2_and_v1_21_on_top():
     changes = body.split("## 14. 修订记录", 1)[1]
     first = next(line for line in changes.splitlines() if line.startswith("- "))
     assert first.startswith("- **v1.21（2026-10-23）**：**其实是硬盘架**（U21，§3.2）")
+    assert "「合并，重叠处保留 <keep>」" in first
     assert changes.index("- **v1.21") < changes.index("- **v1.20")
+
+
+def test_the_spec_says_what_overlap_keep_does_in_3_2a():
+    body = SPEC.read_text(encoding="utf-8")
+    section = body.split("### 3.2a", 1)[1].split("### 3.2b", 1)[0]
+    for needed in ("**重叠处保留（v1.21 评审轮，U21）**", "`OverlapError`",
+                   "「合并，重叠处保留 <keep>」", "`merge_instances(..., overlap=\"keep\")`",
+                   "撤销逐表放回", "D5 的 locker"):
+        assert needed in section, needed

@@ -14,6 +14,11 @@ the session is reopened -- and the frozen frames re-checked -- only once,
 against the merged state; a refusal anywhere writes nothing and leaves the
 staged edits in the table. The logic is in :mod:`tda.ui.steps_merge` and
 :mod:`tda.core.merge_instances`.
+
+When the plain merge is refused only because both are drawn or confirmed on
+the same frames (task U21 round 2), the refusal is shown as U12 words it with a
+second button, 「合并，重叠处保留 <keep>」: ``keep``'s shapes and rows stay
+there, ``gone``'s go (:meth:`MergeIntoMixin.ask_merge_overlap`).
 """
 from __future__ import annotations
 
@@ -58,6 +63,11 @@ class MergeIntoMixin:
         staged = M.staged_edits(self.data, self.db)
         try:
             planned = M.plan(self.data, self.db, key, keep, with_staged=bool(staged))
+        except M.MergeOverlap as overlap:
+            # both drawn on the same frames: the refusal stands as U12 says
+            # it, and the merge keeping keep's there is offered (U21 round 2)
+            self.prompt_merge_overlap(key, keep, str(overlap), bool(staged), staged)
+            return
         except EditError as error:
             self._show_error(str(error))
             return
@@ -72,16 +82,51 @@ class MergeIntoMixin:
             return
         self.merge_instance(key, keep, with_staged=bool(staged))
 
-    def merge_instance(self, gone: str, keep: str,
-                       with_staged: bool = False) -> Optional[MergeReport]:
+    def prompt_merge_overlap(self, gone: str, keep: str, refusal: str, with_staged: bool,
+                             staged: list) -> Optional[MergeReport]:
+        """The plain merge is refused for overlap: offer 「合并，重叠处保留 <keep>」."""
+        try:
+            planned = M.plan(self.data, self.db, gone, keep, with_staged=with_staged,
+                             overlap=M.OVERLAP_KEEP)
+        except EditError as error:
+            self._show_error(str(error))
+            return None
+        lines = planned.summary_lines(with_apply=with_staged)
+        if staged:
+            lines = [M.APPLY_AND_MERGE.format(what="、".join(staged)), "", *lines]
+        if not self.ask_merge_overlap(gone, keep, refusal, lines):
+            self.status.setText(f"没有合并 / {gone} was not merged.")
+            return None
+        return self.merge_instance(gone, keep, with_staged=with_staged, overlap=M.OVERLAP_KEEP)
+
+    def ask_merge_overlap(self, gone: str, keep: str, refusal: str, lines: list[str]) -> bool:
+        """The plain merge's refusal, then the overlap merge's confirmation; ``True``: merge.
+
+        The second button, 「合并，重叠处保留 <keep>」, is the only way on; a
+        method so a test answers it without a modal loop.
+        """
+        box = QMessageBox(self)
+        box.setWindowTitle(PICK_TITLE)
+        box.setIcon(QMessageBox.Question)
+        box.setText("\n".join([refusal, "", *lines]))
+        merge = box.addButton(M.KEEP_BUTTON.format(keep=keep), QMessageBox.AcceptRole)
+        cancel = box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(cancel)
+        box.exec()
+        return box.clickedButton() is merge
+
+    def merge_instance(self, gone: str, keep: str, with_staged: bool = False,
+                       overlap: str = "refuse") -> Optional[MergeReport]:
         """Merge ``gone`` into ``keep`` now; reload and tell the window.
 
         ``with_staged`` is 「Apply 并合并」: the staged edits are written in
-        the same transaction. Refused, nothing is written and the table keeps
-        its edits.
+        the same transaction. ``overlap="keep"`` keeps ``keep``'s shapes and rows
+        where both are drawn or confirmed. Refused, nothing is written and the
+        table keeps its edits.
         """
         try:
-            result = M.merge(self.data, self.db, gone, keep, with_staged=with_staged)
+            result = M.merge(self.data, self.db, gone, keep, with_staged=with_staged,
+                             overlap=overlap)
         except EditError as error:
             self._show_error(str(error))
             return None

@@ -48,6 +48,15 @@ problem the two logs did not have, a confirmed frame on which the merged part
 would no longer match what was confirmed, a ``parent`` loop or a constraint
 deadlock the merge would create.
 
+**Overlap** (task U21 round 2): the refusals that only say "both are drawn,
+confirmed, overridden or flagged on these frames" are :class:`OverlapError`,
+and ``overlap="keep"`` merges anyway -- D5's locker and the latch added by hand
+for it are one blue tab drawn twice on frames 1-9. On those frames ``keep``'s
+stays; ``gone``'s compiled rows, overrides, flags and conflicts there are
+dropped, and so is every keyframe of ``gone``'s the merged chain would still
+pick on a frame both are drawn on (anchored there, or reaching back over it);
+``gone``'s other shapes move as always. The dropped rows are in the inverse.
+
 Afterwards the automatic event log is recompiled, ``graph_version`` re-stamped,
 the digests of the frames ``gone`` reached cleared and every frozen frame the
 merged part touches queued for a re-check. :func:`undo_merge` applies the
@@ -97,8 +106,9 @@ from tda.core.merge_replay import (
 )
 
 __all__ = [
-    "OP_MERGE", "OP_UNDO", "OP_VIEW", "MergeError", "MergePlan", "MergeReport",
-    "apply_merge", "merge_instances", "plan_merge", "ranges", "redo_merge", "undo_merge",
+    "OP_MERGE", "OP_UNDO", "OP_VIEW", "OVERLAP_KEEP", "OVERLAP_REFUSE", "MergeError",
+    "MergePlan", "MergeReport", "OverlapError", "apply_merge", "merge_instances", "plan_merge",
+    "ranges", "redo_merge", "undo_merge",
 ]
 
 VERIFIED = "verified"
@@ -115,8 +125,23 @@ GONE_COLUMNS = ("parent", "attached", "mounted_on", "fastens", "socket_host",
 THEN_MERGE = "（不用先 Apply），再「合并到…」：确认框会提供「Apply 并合并」，一次写入"
 
 
+#: How a merge treats the frames on which **both** instances are drawn (or both
+#: carry a confirmed row, an override, a flag): refuse, as U12 always did, or
+#: keep ``keep``'s there and drop ``gone``'s (task U21 round 2: D5's locker and
+#: the latch added by hand for it are one part drawn twice on frames 1-9).
+OVERLAP_REFUSE = "refuse"
+OVERLAP_KEEP = "keep"
+
+
 class MergeError(ValueError):
     """A merge (or its undo) that is refused; the text is UI-ready Chinese."""
+
+
+class OverlapError(MergeError):
+    """Refused only because both are drawn or confirmed on the same frames.
+
+    ``overlap="keep"`` merges anyway, keeping ``keep``'s on those frames.
+    """
 
 
 # --------------------------------------------------------------------------- #
@@ -199,6 +224,20 @@ class MergePlan:
     #: ``view -> steps`` of the frozen frames to queue for a re-check.
     rechecks: dict[str, list[int]] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    #: :data:`OVERLAP_REFUSE` or :data:`OVERLAP_KEEP` (task U21 round 2).
+    overlap: str = OVERLAP_REFUSE
+    #: ``view -> steps`` where both are drawn or confirmed and ``keep``'s stays.
+    overlap_frames: dict[str, list[int]] = field(default_factory=dict)
+    #: What of ``gone`` goes on those frames, as stored rows (the inverse puts
+    #: them back): keyframes (with their parts), overrides, flags, conflicts.
+    #: Its compiled rows there are in :attr:`compiled_dropped`.
+    keyframes_dropped: list[dict] = field(default_factory=list)
+    parts_dropped: list[dict] = field(default_factory=list)
+    overrides_dropped: list[dict] = field(default_factory=list)
+    flags_dropped: list[dict] = field(default_factory=list)
+    conflicts_dropped: list[dict] = field(default_factory=list)
+    #: ``gone``'s confirmed rows among :attr:`compiled_dropped` (overlap frames).
+    verified_dropped: int = 0
 
     # -- counts ---------------------------------------------------------- #
     def moved(self) -> dict[str, int]:
@@ -226,6 +265,10 @@ class MergePlan:
             "pair_override": len(self.pairs_dropped),
             "relation": len(self.relations_dropped),
             "state_event": len(self.events_dropped),
+            "shape_keyframe": len(self.keyframes_dropped),
+            "frame_override": len(self.overrides_dropped),
+            "instance_frame_flags": len(self.flags_dropped),
+            "conflict": len(self.conflicts_dropped),
         }
         return {k: n for k, n in counts.items() if n}
 
@@ -238,7 +281,8 @@ class MergePlan:
         """
         name = lambda rec: (f"{rec.key}（{'、'.join(rec.raw_names)}）"   # noqa: E731
                             if rec.raw_names else rec.key)
-        lines = [f"把 {name(self.gone_record)} 合并到 {name(self.keep_record)}：",
+        keeping = f"（重叠处保留 {self.keep}）" if self.overlap == OVERLAP_KEEP else ""
+        lines = [f"把 {name(self.gone_record)} 合并到 {name(self.keep_record)}{keeping}：",
                  "搬过去 / moves:"]
         lines.extend(self.moved_lines())
         drops = self.dropped_lines()
@@ -300,8 +344,20 @@ class MergePlan:
     def dropped_lines(self) -> list[str]:
         """The 「丢掉」 lines of the confirmation (empty when nothing goes)."""
         drops: list[str] = []
-        if self.compiled_dropped:
-            drops.append(f"  · 缓存行 {len(self.compiled_dropped)} 行（会重新编译）")
+        if self.overlap_frames:
+            what = [f"形状 {len(self.keyframes_dropped)} 个"] if self.keyframes_dropped else []
+            if self.verified_dropped:
+                what.append(f"已确认的行 {self.verified_dropped} 行")
+            for label, rows in (("单帧覆盖", self.overrides_dropped),
+                                ("逐帧标记", self.flags_dropped),
+                                ("冲突记录", self.conflicts_dropped)):
+                if rows:
+                    what.append(f"{label} {len(rows)}")
+            drops.append(f"  · 重叠处（{_frames_text(self.overlap_frames)}）保留 {self.keep} 的，"
+                         f"{self.gone} 在这些帧上的{'、'.join(what) or '缓存行'}不要了")
+        cache = len(self.compiled_dropped) - self.verified_dropped
+        if cache:
+            drops.append(f"  · 缓存行 {cache} 行（会重新编译）")
         for z in self.zorder:
             for inst, part in z["dropped"]:
                 drops.append(f"  · {z['view']} 位姿段 {z['seg']} 层级里 {inst}/{part} 原来的位置"
@@ -480,13 +536,87 @@ def _shape_at(kfs, seg: int, step: int, placement: Optional[str]):
     return select_keyframe(chain, step)
 
 
+def _clash_frames(db: Db, tax: Taxonomy, desktop: int, gone: str, keep: str
+                  ) -> dict[str, dict[int, tuple[int, Optional[str]]]]:
+    """Where both are present **with a shape**: ``view -> {step: (segment, keep's chain)}``.
+
+    In a sequence view both have to be asked for there (their states) and both
+    keyframe chains -- each in its own placement -- have to select a shape; in a
+    components-gallery view two shapes on one shot are two parts whatever the
+    log says (``keep``'s chain is then ``None``: any placement).
+    """
+    instances = db.instances(desktop)
+    events = events_of(db, tax, desktop)
+    states: dict[int, dict] = {}
+    rois: dict[tuple[str, int], object] = {}
+    out: dict[str, dict[int, tuple[int, Optional[str]]]] = {}
+    for view in _views(db, desktop, (gone, keep)):
+        kf_gone = db.keyframes(desktop, view, gone)
+        kf_keep = db.keyframes(desktop, view, keep)
+        if not (kf_gone and kf_keep):
+            continue
+        sequence = view in VIEWS
+        for frame in db.frames_for(desktop, view):
+            step = int(frame["step"])
+            seg = pose_segment_of(db, FrameKey(desktop, step, view))
+            if not sequence:
+                # no state semantics outside the sequence views: two shapes on
+                # one shot are two parts, whatever the log says
+                if _shape_at(kf_gone, seg, step, None) and _shape_at(kf_keep, seg, step, None):
+                    out.setdefault(view, {})[step] = (seg, None)
+                continue
+            if (view, seg) not in rois:
+                rois[(view, seg)] = db.bench_roi(desktop, view, seg)
+            if step not in states:
+                states[step] = state_at(instances, events, step, tax)
+            pre = states[step]
+            needs = needs_geom(instances, pre, tax, bench_roi=rois[(view, seg)])
+            if (gone in needs and keep in needs
+                    and _shape_at(kf_gone, seg, step, pre[gone].placement)
+                    and _shape_at(kf_keep, seg, step, pre[keep].placement)):
+                out.setdefault(view, {})[step] = (seg, pre[keep].placement)
+    return out
+
+
+def _overlap_keyframes(db: Db, plan: MergePlan,
+                       clashes: dict[str, dict[int, tuple[int, Optional[str]]]]) -> set[int]:
+    """``gone``'s keyframes that would still be the shape on a frame ``keep`` keeps.
+
+    A keyframe covers its anchor and the frames back to the one before it, so
+    one of ``gone``'s that the merged chain would select on an overlap frame --
+    anchored there, or reaching back over it -- goes; until none is selected
+    (dropping one can hand the frame to an older one of ``gone``'s).
+    """
+    dropped: set[int] = set()
+    for view, frames in sorted(clashes.items()):
+        kf_gone = db.keyframes(plan.desktop, view, plan.gone)
+        kf_keep = db.keyframes(plan.desktop, view, plan.keep)
+        mine = {int(kf.id) for kf in kf_gone}
+        changed = True
+        while changed:
+            changed = False
+            chain = kf_keep + [kf for kf in kf_gone if int(kf.id) not in dropped]
+            for step, (seg, placement) in sorted(frames.items()):
+                picked = _shape_at(chain, seg, step, placement)
+                if picked is not None and int(picked.id) in mine and int(picked.id) not in dropped:
+                    dropped.add(int(picked.id))
+                    changed = True
+    return dropped
+
+
 def _plan_frames(db: Db, tax: Taxonomy, plan: MergePlan, instances_post: dict,
                  events_post: list, gone_rows: dict, keep_rows: dict) -> None:
-    """The two shape checks, the confirmed-frame check and the re-check queue."""
+    """The two shape checks, the confirmed-frame check and the re-check queue.
+
+    With ``overlap="keep"`` the frames both are drawn on are no refusal: ``gone``'s
+    rows there are dropped, so they count as not there.
+    """
     desktop, gone, keep = plan.desktop, plan.gone, plan.keep
     instances_pre = db.instances(desktop)
     events_pre = events_of(db, tax, desktop)
-    clashes: dict[str, list[int]] = {}
+    clashes = {view: sorted(steps) for view, steps in
+               _clash_frames(db, tax, desktop, gone, keep).items()}
+    kept = {(view, int(step)) for view, steps in plan.overlap_frames.items() for step in steps}
     breaks: dict[str, dict[str, list[int]]] = {}
     stale: dict[str, list[int]] = {}
     states_pre: dict[int, dict] = {}
@@ -499,8 +629,6 @@ def _plan_frames(db: Db, tax: Taxonomy, plan: MergePlan, instances_post: dict,
         return cache[step]
 
     for view in _views(db, desktop, (gone, keep)):
-        kf_gone = db.keyframes(desktop, view, gone)
-        kf_keep = db.keyframes(desktop, view, keep)
         frozen = set(db.frozen_steps(desktop, view))
         sequence = view in VIEWS
         for frame in db.frames_for(desktop, view):
@@ -511,33 +639,31 @@ def _plan_frames(db: Db, tax: Taxonomy, plan: MergePlan, instances_post: dict,
                 rois[(view, seg)] = db.bench_roi(desktop, view, seg)
             roi = rois[(view, seg)]
             if not sequence:
-                # no state semantics outside the sequence views: two shapes on
-                # one shot are two parts, whatever the log says
-                if (kf_gone and kf_keep and _shape_at(kf_gone, seg, step, None)
-                        and _shape_at(kf_keep, seg, step, None)):
-                    clashes.setdefault(view, []).append(step)
                 if step in frozen and ((step, view) in gone_rows or (step, view) in keep_rows):
                     plan.rechecks.setdefault(view, []).append(step)
                 continue
             pre = state(states_pre, instances_pre, events_pre, step)
             needs_pre = needs_geom(instances_pre, pre, tax, bench_roi=roi)
-            if (kf_gone and kf_keep and gone in needs_pre and keep in needs_pre
-                    and _shape_at(kf_gone, seg, step, pre[gone].placement)
-                    and _shape_at(kf_keep, seg, step, pre[keep].placement)):
-                clashes.setdefault(view, []).append(step)
             if step not in frozen:
                 continue
             post = state(states_post, instances_post, events_post, step)
             needs_post = needs_geom(instances_post, post, tax, bench_roi=roi)
             flag = frame.get("review_status") == VERIFIED
             g_row, k_row = gone_rows.get((step, view)), keep_rows.get((step, view))
+            if (view, step) in kept:
+                # keep's stays here; gone's row is dropped -- read as not there
+                # after the merge (the check before it still sees both)
+                g_pre, g_row = g_row, None
+            else:
+                g_pre = g_row
             g_ver = bool(g_row and g_row["status"] == VERIFIED)
+            g_pre_ver = bool(g_pre and g_pre["status"] == VERIFIED)
             k_ver = bool(k_row and k_row["status"] == VERIFIED)
 
             def off(has_row: bool, row_verified: bool, needed: bool) -> bool:
                 return (flag and has_row != needed) or (row_verified and not needed)
 
-            pre_off = (off(g_row is not None, g_ver, gone in needs_pre)
+            pre_off = (off(g_pre is not None, g_pre_ver, gone in needs_pre)
                        or off(k_row is not None, k_ver, keep in needs_pre))
             has_keep = g_ver or k_ver or (k_row is not None and g_row is None)
             post_off = off(has_keep, g_ver or k_ver, keep in needs_post)
@@ -546,11 +672,11 @@ def _plan_frames(db: Db, tax: Taxonomy, plan: MergePlan, instances_post: dict,
                 breaks.setdefault(kind, {}).setdefault(view, []).append(step)
             elif post_off:
                 stale.setdefault(view, []).append(step)
-            if (g_row is not None or k_row is not None or keep in needs_post
+            if (g_pre is not None or k_row is not None or keep in needs_post
                     or gone in needs_pre or keep in needs_pre):
                 plan.rechecks.setdefault(view, []).append(step)
-    if clashes:
-        raise MergeError(
+    if clashes and plan.overlap != OVERLAP_KEEP:
+        raise OverlapError(
             f"{gone} 和 {keep} 在同一帧上都在、都有形状（{_frames_text(clashes)}）："
             f"是两个零件，不能合并。真是同一个，先删掉其中一个的形状")
     if breaks:
@@ -686,14 +812,25 @@ def _deadlocks(db: Db, plan: MergePlan, instances_post: dict, tax: Taxonomy) -> 
 
 # -- the plan ------------------------------------------------------------ #
 def plan_merge(db: Db, tax: Taxonomy, desktop: int, gone: str, keep: str,
-               reclass: bool = False) -> MergePlan:
+               reclass: bool = False, overlap: str = OVERLAP_REFUSE) -> MergePlan:
     """Read everything a merge of ``gone`` into ``keep`` would write; nothing is.
 
-    Raises :class:`MergeError` with the reason when the merge is refused.
-    ``reclass`` lifts the class check for one caller: 「其实是硬盘架」 / 「其实是卡扣」
-    (:mod:`tda.core.reclass`, task U21) merges a part into a fresh instance of
-    the other class, which it has just written.
+    Raises :class:`MergeError` with the reason when the merge is refused --
+    :class:`OverlapError` when only because both are drawn (or confirmed, or
+    overridden, or flagged) on the same frames. ``reclass`` lifts the class
+    check for one caller: 「其实是硬盘架」 / 「其实是卡扣」 (:mod:`tda.core.reclass`,
+    task U21) merges a part into a fresh instance of the other class, which it
+    has just written.
+
+    ``overlap="keep"`` (task U21 round 2) merges those anyway: on the frames
+    both are drawn on, both carry a confirmed row, an override or a flag,
+    ``keep``'s stays and ``gone``'s compiled rows, overrides, flags and
+    conflicts there are dropped, and so is every keyframe of ``gone``'s the
+    merged chain would still pick on a frame both are drawn on; ``gone``'s
+    shapes elsewhere move as always. Everything dropped is in the inverse.
     """
+    if overlap not in (OVERLAP_REFUSE, OVERLAP_KEEP):
+        raise ValueError(f"overlap must be {OVERLAP_REFUSE!r} or {OVERLAP_KEEP!r}, got {overlap!r}")
     desktop = int(desktop)
     gone, keep = str(gone).strip(), str(keep).strip()
     if gone == keep:
@@ -712,7 +849,8 @@ def plan_merge(db: Db, tax: Taxonomy, desktop: int, gone: str, keep: str,
         raise MergeError(f"{gone} 是 {g_rec.cls}，{keep} 是 {k_rec.cls}：只有同一类的两个实例"
                          f"才能合并")
     plan = MergePlan(desktop=desktop, gone=gone, keep=keep, cls=k_rec.cls,
-                     gone_record=copy.deepcopy(g_rec), keep_record=copy.deepcopy(k_rec))
+                     gone_record=copy.deepcopy(g_rec), keep_record=copy.deepcopy(k_rec),
+                     overlap=overlap)
 
     # actions: never two of the merged part at one step
     actions = db.actions(desktop)
@@ -740,9 +878,31 @@ def plan_merge(db: Db, tax: Taxonomy, desktop: int, gone: str, keep: str,
             db, f"SELECT * FROM {table} WHERE desktop=? AND instance=?", desktop, key)}
 
     g_rows, k_rows = by_frame("compiled_mask", gone), by_frame("compiled_mask", keep)
+    # overlap="keep" (U21 round 2): the frames both are drawn or confirmed on
+    # keep keep's; gone's rows, overrides, flags, conflicts and the keyframes
+    # that would still be the shape there go, recorded for the undo
+    kept: set[tuple[str, int]] = set()
+    clashes: dict[str, dict[int, tuple[int, Optional[str]]]] = {}
+    if plan.overlap == OVERLAP_KEEP:
+        clashes = _clash_frames(db, tax, desktop, gone, keep)
+        kept = {(view, step) for view, steps in clashes.items() for step in steps}
+        kept |= {(view, step) for (step, view), row in g_rows.items()
+                 if row["status"] == VERIFIED
+                 and (k_rows.get((step, view)) or {}).get("status") == VERIFIED}
+        for table in ("frame_override", "instance_frame_flags"):
+            kept |= {(view, step) for step, view in
+                     set(by_frame(table, gone)) & set(by_frame(table, keep))}
+        by_view: dict[str, set[int]] = {}
+        for view, step in kept:
+            by_view.setdefault(view, set()).add(step)
+        plan.overlap_frames = {view: sorted(steps) for view, steps in sorted(by_view.items())}
     both_verified = {}
     for (step, view), row in sorted(g_rows.items()):
         other = k_rows.get((step, view))
+        if (view, step) in kept:
+            plan.compiled_dropped.append(row)        # keep's row stays as it is
+            plan.verified_dropped += int(row["status"] == VERIFIED)
+            continue
         if row["status"] == VERIFIED:
             if other is not None and other["status"] == VERIFIED:
                 both_verified.setdefault(view, []).append(step)
@@ -755,22 +915,36 @@ def plan_merge(db: Db, tax: Taxonomy, desktop: int, gone: str, keep: str,
             if other is not None and other["status"] != VERIFIED:
                 plan.compiled_dropped.append(other)
     if both_verified:
-        raise MergeError(f"{gone} 和 {keep} 在同一帧上各有一行已确认的结果"
-                         f"（{_frames_text(both_verified)}）：是两个零件，不能合并")
-    for table, label, target in (("frame_override", "单帧覆盖", plan.overrides),
-                                 ("instance_frame_flags", "逐帧标记", plan.flags)):
+        raise OverlapError(f"{gone} 和 {keep} 在同一帧上各有一行已确认的结果"
+                           f"（{_frames_text(both_verified)}）：是两个零件，不能合并")
+    for table, label, target, gone_rows in (
+            ("frame_override", "单帧覆盖", plan.overrides, plan.overrides_dropped),
+            ("instance_frame_flags", "逐帧标记", plan.flags, plan.flags_dropped)):
         mine, theirs = by_frame(table, gone), by_frame(table, keep)
         clash: dict[str, list[int]] = {}
         for step, view in sorted(set(mine) & set(theirs)):
             clash.setdefault(view, []).append(step)
-        if clash:
-            raise MergeError(f"{gone} 和 {keep} 在同一帧上都有{label}（{_frames_text(clash)}）："
-                             f"是两个零件，不能合并")
-        target.extend(sorted(mine))
-    plan.conflicts = [int(r["id"]) for r in _rows(
-        db, "SELECT id FROM conflict WHERE desktop=? AND instance=? ORDER BY id", desktop, gone)]
+        if clash and plan.overlap != OVERLAP_KEEP:
+            raise OverlapError(f"{gone} 和 {keep} 在同一帧上都有{label}（{_frames_text(clash)}）："
+                               f"是两个零件，不能合并")
+        for step, view in sorted(mine):
+            if (view, step) in kept:
+                gone_rows.append(mine[(step, view)])
+            else:
+                target.append((step, view))
+    for row in _rows(db, "SELECT * FROM conflict WHERE desktop=? AND instance=? ORDER BY id",
+                     desktop, gone):
+        if (str(row["view"]), int(row["step"])) in kept:
+            plan.conflicts_dropped.append(row)
+        else:
+            plan.conflicts.append(int(row["id"]))
+    dropped_kfs = _overlap_keyframes(db, plan, clashes) if clashes else set()
+    for kf_id in sorted(dropped_kfs):
+        plan.keyframes_dropped.extend(_rows(db, "SELECT * FROM shape_keyframe WHERE id=?", kf_id))
+        plan.parts_dropped.extend(_rows(db, "SELECT * FROM shape_part WHERE keyframe_id=? "
+                                            "ORDER BY idx", kf_id))
     for view in _views(db, desktop, (gone,)):
-        kfs = db.keyframes(desktop, view, gone)
+        kfs = [kf for kf in db.keyframes(desktop, view, gone) if int(kf.id) not in dropped_kfs]
         if kfs:
             plan.keyframes[view] = sorted(((int(kf.id), int(kf.anchor_step)) for kf in kfs),
                                           key=lambda item: (item[1], item[0]))
@@ -785,6 +959,9 @@ def plan_merge(db: Db, tax: Taxonomy, desktop: int, gone: str, keep: str,
     reached |= {(view, step) for step, view in plan.overrides + plan.flags}
     reached |= {(r["view"], int(r["step"])) for r in _rows(
         db, "SELECT view, step FROM conflict WHERE desktop=? AND instance=?", desktop, gone)}
+    reached |= kept
+    reached |= {(str(r["view"]), int(r["step"]))
+                for r in plan.overrides_dropped + plan.flags_dropped}
     plan.frames = sorted(reached)
     by_view: dict[str, set[int]] = {}
     for view, step in plan.frames:
@@ -826,6 +1003,12 @@ class MergeReport:
             parts.append(f"手写事件 {len(plan.events_moved)}")
         moved = "、".join(parts) or "没有形状和动作"
         dropped = f"；丢掉手写事件 {len(plan.events_dropped)} 条" if plan.events_dropped else ""
+        if plan.overlap_frames:
+            lost = [f"形状 {len(plan.keyframes_dropped)}"] if plan.keyframes_dropped else []
+            if plan.verified_dropped:
+                lost.append(f"已确认的行 {plan.verified_dropped}")
+            dropped += (f"；重叠处（{_frames_text(plan.overlap_frames)}）保留 {plan.keep} 的"
+                        + (f"，丢掉 {plan.gone} 的{'、'.join(lost)}" if lost else ""))
         queued = sum(len(v) for v in plan.rechecks.values())
         rechecks = f"；{queued} 个已确认帧在后台重新核对" if queued else ""
         return (f"已把 {plan.gone} 合并到 {plan.keep}（{moved}{dropped}{rechecks}）"
@@ -847,6 +1030,10 @@ def _payload(plan: MergePlan) -> dict:
         "warnings": list(plan.warnings),
         "frames": len(plan.frames),
         "rechecks": {view: steps for view, steps in plan.rechecks.items()},
+        "overlap": plan.overlap,
+        "overlap_frames": {view: steps for view, steps in plan.overlap_frames.items()},
+        "keyframes_dropped": [[r["view"], int(r["anchor_step"])] for r in plan.keyframes_dropped],
+        "verified_dropped": plan.verified_dropped,
     }
 
 
@@ -872,6 +1059,13 @@ def _inverse(plan: MergePlan) -> dict:
         "events_moved": [int(r["id"]) for r in plan.events_moved],
         "events_dropped": [row for row, _why in plan.events_dropped],
         "frames": [[v, s] for v, s in plan.frames],
+        # overlap="keep" (U21 round 2): what of gone's went where keep's stays
+        "overlap": plan.overlap,
+        "keyframes_dropped": list(plan.keyframes_dropped),
+        "parts_dropped": list(plan.parts_dropped),
+        "overrides_dropped": list(plan.overrides_dropped),
+        "flags_dropped": list(plan.flags_dropped),
+        "conflicts_dropped": list(plan.conflicts_dropped),
     }
 
 
@@ -914,6 +1108,17 @@ def write_merge(db: Db, plan: MergePlan) -> None:
         for rec in plan.neighbours_after:
             db.upsert_instance(rec)
         c.execute("UPDATE action SET target=? WHERE desktop=? AND target=?", (keep, d, gone))
+        # overlap="keep": gone's that keep's replaces go first (U21 round 2)
+        for row in plan.keyframes_dropped:
+            c.execute("DELETE FROM shape_part WHERE keyframe_id=?", (row["id"],))
+            c.execute("DELETE FROM shape_keyframe WHERE id=?", (row["id"],))
+        for table, rows in (("frame_override", plan.overrides_dropped),
+                            ("instance_frame_flags", plan.flags_dropped)):
+            for row in rows:
+                c.execute(f"DELETE FROM {table} WHERE desktop=? AND step=? AND view=? "
+                          f"AND instance=?", (d, row["step"], row["view"], gone))
+        for row in plan.conflicts_dropped:
+            c.execute("DELETE FROM conflict WHERE id=?", (row["id"],))
         c.execute("UPDATE shape_keyframe SET instance=? WHERE desktop=? AND instance=?",
                   (keep, d, gone))
         for row in plan.compiled_dropped:
@@ -985,9 +1190,14 @@ def _confirmed_since(db: Db, desktop: int, inverse: dict) -> dict[str, list[int]
 
 
 def merge_instances(db: Db, tax: Taxonomy, desktop: int, gone: str, keep: str,
-                    annotator: str = "") -> MergeReport:
-    """Fold ``gone`` into ``keep`` (same class), atomically; see the module docstring."""
-    return apply_merge(db, tax, plan_merge(db, tax, desktop, gone, keep), annotator)
+                    annotator: str = "", overlap: str = OVERLAP_REFUSE) -> MergeReport:
+    """Fold ``gone`` into ``keep`` (same class), atomically; see the module docstring.
+
+    ``overlap="keep"``: where both are drawn or confirmed, ``keep``'s stays
+    (:func:`plan_merge`); the default refuses there, as U12 always did.
+    """
+    return apply_merge(db, tax, plan_merge(db, tax, desktop, gone, keep, overlap=overlap),
+                       annotator)
 
 
 # --------------------------------------------------------------------------- #
@@ -1033,7 +1243,8 @@ def undo_merge(db: Db, tax: Taxonomy, op: dict, annotator: str = "") -> int:
                 db.queue_rechecks_for_view(d, view)
             return db.log_op(d, OP_VIEW, OP_UNDO,
                              {"undid": int(op["id"]), "gone": gone, "keep": keep},
-                             {"redo": {"gone": gone, "keep": keep}},
+                             {"redo": {"gone": gone, "keep": keep,
+                                       "overlap": inv.get("overlap") or OVERLAP_REFUSE}},
                              annotator or str(op.get("annotator") or ""))
     except MergeError:
         raise
@@ -1067,6 +1278,16 @@ def undo_rows(db: Db, tax: Taxonomy, d: int, inv: dict) -> list[tuple[str, int]]
                       "AND view=? AND instance=?", (gone, d, step, view, keep))
         for row in inv.get("compiled_dropped") or []:
             _insert(db, "compiled_mask", row, replace=True)
+        # overlap="keep" (U21 round 2): gone's that keep's replaced come back
+        for row in inv.get("keyframes_dropped") or []:
+            _insert(db, "shape_keyframe", row)
+        for row in inv.get("parts_dropped") or []:
+            _insert(db, "shape_part", row)
+        for table, key in (("frame_override", "overrides_dropped"),
+                           ("instance_frame_flags", "flags_dropped"),
+                           ("conflict", "conflicts_dropped")):
+            for row in inv.get(key) or []:
+                _insert(db, table, row)
         for table, key in (("frame_override", "overrides"),
                            ("instance_frame_flags", "flags")):
             for step, view in inv.get(key) or []:
@@ -1115,4 +1336,5 @@ def redo_merge(db: Db, tax: Taxonomy, op: dict, annotator: str = "") -> MergeRep
     else:
         raise MergeError(f"op {op.get('id')} 不是一次合并")
     return merge_instances(db, tax, int(op["desktop"]), str(names["gone"]),
-                           str(names["keep"]), annotator or str(op.get("annotator") or ""))
+                           str(names["keep"]), annotator or str(op.get("annotator") or ""),
+                           overlap=str(names.get("overlap") or OVERLAP_REFUSE))
