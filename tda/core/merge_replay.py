@@ -128,17 +128,24 @@ class MergeReplay:
         return {"replayed": self.replayed, "already": self.already,
                 "unmatched": self.unmatched}
 
-    def lines(self) -> list[str]:
-        """What the import log says, one line per merge that did not just work."""
+    def lines(self, skip: Iterable[str] = ()) -> list[str]:
+        """What the import log says, one line per merge that did not just work.
+
+        ``skip`` are ``gone`` keys another rule reports on in its own words:
+        a drive cage's implied latch merged away is no part the sheet ever
+        named, so "the sheet no longer needs" it would mislead (task U20).
+        """
         out: list[str] = []
         if self.replayed:
             out.append("merges kept: " + ", ".join(
                 f"{e['gone']} -> {e['keep']}"
                 + (f" (steps {ranges(e['steps'])})" if e.get("steps") else "")
                 for e in self.replayed))
-        if self.already:
+        skipped = set(skip)
+        already = [e for e in self.already if e["gone"] not in skipped]
+        if already:
             out.append("merges the sheet no longer needs: " + ", ".join(
-                f"{e['gone']} -> {e['keep']}" for e in self.already))
+                f"{e['gone']} -> {e['keep']}" for e in already))
         out.extend(f"merge not matched: {e['gone']} -> {e['keep']} ({e['why']})"
                    for e in self.unmatched)
         return out

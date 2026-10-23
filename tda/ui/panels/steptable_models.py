@@ -29,7 +29,9 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QComboBox, QSpinBox, QStyledItemDelegate
 
 from tda.core import extra as X
-from tda.core.model import CONTEXT_LABEL, is_extra
+from tda.core.implied import NOTE_ATTR as IMPLIED_NOTE
+from tda.core.implied import is_implied
+from tda.core.model import CONTEXT_LABEL, is_cage_latch, is_extra
 from tda.core.taxonomy import Taxonomy
 from tda.ui import context_text as CONTEXT_T
 from tda.ui.steps_model import StepTableData
@@ -469,7 +471,8 @@ class InstanceTableModel(_TableModel):
         inst = self.data_model.instances[self.keys[index.row()]]
         column = self.columns[index.column()]
         if role == Qt.ToolTipRole:
-            return extra_tooltip(inst, self.data_model.staged_extra(inst.key))
+            return (extra_tooltip(inst, self.data_model.staged_extra(inst.key))
+                    or implied_tooltip(inst))
         if role == Qt.CheckStateRole:
             if column.kind != "check" or not self._applies(index):
                 return None
@@ -554,12 +557,38 @@ class InstanceTableModel(_TableModel):
         if column.field == "raw_names":
             if is_extra(inst):  # no sheet ever named it: say where it came from
                 return EXTRA_RAW_NAMES
+            if is_implied(inst) and not value:  # nor this one: the importer made it
+                return implied_raw_names(inst)
             return " | ".join(value or [])
         return BLANK if value is None else value
 
 
 #: What the Raw names cell of a part added in S1 reads: it has no raw name.
 EXTRA_RAW_NAMES = "＋ 手动添加（日志里没有）/ added in S1"
+#: ... and of an implied instance (:mod:`tda.core.implied`): the importer made
+#: it, no sheet named it.
+IMPLIED_RAW_NAMES = "隐含（日志里没有）/ implied"
+
+
+def implied_raw_names(inst) -> str:
+    """The Raw names cell of an implied instance: 「隐含」 and, for a cage's latch, why."""
+    if is_cage_latch(inst):
+        return f"隐含：{(inst.attrs or {}).get(IMPLIED_NOTE, '')} / implied"
+    return IMPLIED_RAW_NAMES
+
+
+def implied_tooltip(inst) -> Optional[str]:
+    """Where an implied instance came from, for its row's tooltip; ``None`` otherwise."""
+    if not is_implied(inst):
+        return None
+    lines = [f"{inst.key}: 隐含 / implied（import-logs 补的，日志里没有）"]
+    note = (inst.attrs or {}).get(IMPLIED_NOTE)
+    if note:
+        lines.append(f"note: {note}")
+    if is_cage_latch(inst):
+        lines.append("默认关着，机架拆下前一帧打开，跟着机架一起拆下")
+    lines.append("这台机器没有它的话：右键删除（删除会被记住，重新导入也不会回来）")
+    return "\n".join(lines)
 
 
 def extra_tooltip(inst, staged: bool = False) -> Optional[str]:

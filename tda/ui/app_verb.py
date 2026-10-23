@@ -32,8 +32,8 @@ from tda.ui import app_support as S
 from tda.ui import session_api as api
 from tda.ui.gallery import NO_VERB
 
-__all__ = ["CAPTIVE_STAGED", "NO_VERB_TARGET", "STEPS_MOVED", "VerbMixin", "captive_note",
-           "verb_note"]
+__all__ = ["CAPTIVE_STAGED", "NO_VERB_TARGET", "STEPS_MOVED", "VerbMixin", "cage_note",
+           "captive_note", "verb_note"]
 
 #: ``Shift+T`` with nothing selected and nothing being drawn.
 NO_VERB_TARGET = ("Shift+T 改的是实例表里选中的零件（拆下的零件勾上 Removed 才列出）："
@@ -102,7 +102,32 @@ def verb_note(label: str, result: dict) -> str:
         todo = result.get("todo") or []
         if todo:
             text += f"，要画出来（{len(todo)} 帧）"
+    cage = cage_note(result.get("cage"))
+    if cage:
+        text += f"；{cage}"
     return text + "（Ctrl+Z 撤销）"
+
+
+def cage_note(cage: Optional[dict]) -> str:
+    """What a correction did to a drive cage's latches (task U20 review, M2), or ``""``.
+
+    ``机架 drive_cage.01 因此自动得到隐含卡扣 drive_latch.02（默认第 13 帧打开）`` when the
+    cage's adopted latch was said to be taken out; the mirror when it is only
+    opened again and the implied one is not needed any more.
+    """
+    if not cage:
+        return ""
+    parts = []
+    for key in cage.get("added") or ():
+        opens = cage.get("opens")
+        when = f"默认第 {opens} 帧打开" if opens is not None else "默认关着"
+        parts.append(f"机架 {cage['cage']} 因此自动得到隐含卡扣 {key}（{when}）")
+    for key in cage.get("dropped") or ():
+        parts.append(f"机架 {cage['cage']} 的隐含卡扣 {key} 用不着了，已删掉")
+    for key in cage.get("kept") or ():
+        parts.append(f"机架 {cage['cage']} 的隐含卡扣 {key} 画过了，留着：不要的话到 Steps "
+                     f"右键删除")
+    return "；".join(parts)
 
 
 class VerbMixin:

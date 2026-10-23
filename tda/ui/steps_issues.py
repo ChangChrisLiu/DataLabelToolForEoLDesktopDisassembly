@@ -31,7 +31,7 @@ from typing import Callable, Iterable, Iterator, Optional
 from tda.core.graph_infer import is_provisional, real_instances
 from tda.core.implied import is_implied
 from tda.core.logs import CHASSIS_KEY, NO_ACTION_TYPES, UNRESOLVED
-from tda.core.model import ActionRec, InstanceRec, StepType, is_extra
+from tda.core.model import ActionRec, InstanceRec, StepType, is_cage_latch, is_extra
 from tda.core.taxonomy import Taxonomy
 from tda.ui.steps_values import DIFFICULTY_MAX, DIFFICULTY_MIN, RELATION_FIELDS
 
@@ -171,7 +171,10 @@ def unresolved_issues(
       desktop clearly has one and the log simply stops before touching it (the
       motherboard of D49/D62/D63/D64). It is a judgement, so it is put to the
       annotator once: keeping it costs a mask on every frame, deleting it leaves
-      the references unresolved again.
+      the references unresolved again. A drive cage's own latch (task U20,
+      :func:`tda.core.implied.cage_latches`) is asked about in its own words:
+      kept, it is closed, open on the frame before the cage comes out and
+      leaves with it; deleted (the cage has no latch), it stays deleted.
 
     Deliberately yielded *after* :func:`orphan_issues` and
     :func:`dangling_issues`: none is a broken record, only work still to do.
@@ -197,7 +200,15 @@ def unresolved_issues(
                 f"{mount} and has none - it will be asked for a shape on every "
                 f"frame after the {mount} is out"
             )
-        if is_implied(inst):
+        if is_cage_latch(inst):
+            yield (
+                f"implied instance {key}: the own latch of {inst.parent or 'its drive cage'} "
+                f"(机架自带卡扣, 日志里没有) - closed, open on the frame before the cage "
+                f"comes out, then out with it; keep it, or delete it in the Instances tab "
+                f"if this cage has no latch; deleting it is remembered, so no re-import "
+                f"brings it back"
+            )
+        elif is_implied(inst):
             yield (
                 f"implied instance {key}: never operated in the log - keep it (it "
                 f"gets a mask on every frame) or delete it in the Instances tab; "

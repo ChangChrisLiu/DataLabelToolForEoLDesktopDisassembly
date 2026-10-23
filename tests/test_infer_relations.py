@@ -711,7 +711,8 @@ def test_a_desktop_with_verified_frames_is_refused_without_force(env, capsys):
     db = open_db(env)
     try:
         assert db.instances(13)[COOLER_SCREWS[0]].parent is None  # nothing written
-        assert not db.ops(13, OP_VIEW)
+        # the one row is the import's own: D13's cage latch adopted (task U20)
+        assert [op["kind"] for op in db.ops(13, OP_VIEW)] == ["cage_latch"]
     finally:
         db.close()
 
@@ -814,7 +815,8 @@ def test_infer_relations_logs_every_change_with_its_old_value(env):
 
     db = open_db(env)
     try:
-        ops = db.ops(13, OP_VIEW)
+        # the import's own row (D13's cage latch adopted, task U20) aside
+        ops = [op for op in db.ops(13, OP_VIEW) if op["kind"] != "cage_latch"]
         assert ops and all(op["kind"] == "infer_relations" for op in ops)
         screw = [op for op in ops if op["payload"]["instance"] == COOLER_SCREWS[0]]
         assert len(screw) == 1

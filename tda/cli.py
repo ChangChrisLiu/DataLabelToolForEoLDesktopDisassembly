@@ -66,9 +66,10 @@ from tda.cli_relations import _add_infer_relations
 from tda.core import rawroot
 from tda.core.db import Db
 from tda.core.extra import extra_keys
+from tda.core.implied import implied_keys
 from tda.core.index import build_index, load_index, respell_paths, save_index
 from tda.core.index_report import write_report
-from tda.core.model import ALL_VIEWS, COMPONENT_VIEWS, VIEWS, is_context
+from tda.core.model import ALL_VIEWS, COMPONENT_VIEWS, VIEWS, is_cage_latch, is_context
 from tda.core.taxonomy import load_taxonomy
 
 __all__ = ["main"]
@@ -559,11 +560,19 @@ def format_desktop(db: Db, row: dict) -> str:
         f"  steps {row['steps']} ({types or 'none'}), actions {row['actions']}, "
         f"instances {row['instances']}, state events {row['events']}",
     ]
-    added = extra_keys(db.instances(row["desktop"]))
+    table = db.instances(row["desktop"])
+    added = extra_keys(table)
     if added:
         # counted among the instances above; said apart because no sheet
         # names them, so nothing but this line says they exist (task U5b)
         lines.append(f"  added in S1 (not in the log): {len(added)} - {', '.join(added)}")
+    implied = implied_keys(table)
+    if implied:
+        # the same for the ones the importer made (the never-lifted board, a
+        # drive cage's own latch -- task U20): counted above, named here
+        lines.append(f"  implied (not in the log): {len(implied)} - " + ", ".join(
+            f"{key} ({table[key].parent}'s own latch)" if is_cage_latch(table[key]) else key
+            for key in implied))
     outside = (sorted(key for key, rec in db.instances(row["desktop"]).items()
                       if is_context(rec)) if row.get("context") else [])
     if outside:

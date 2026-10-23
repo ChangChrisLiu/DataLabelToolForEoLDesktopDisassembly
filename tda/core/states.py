@@ -44,6 +44,7 @@ from tda.core.model import (
     InstanceRec,
     Placement,
     StateEvent,
+    is_cage_latch,
     is_context,
     is_provisional,
 )
@@ -52,22 +53,26 @@ from tda.core.taxonomy import Taxonomy
 __all__ = [
     "AFTER_LAST_STEP",
     "ANY_VIEW",
+    "CAGE_LATCH_EVIDENCE",
     "GALLERY_EXPORT_STATE",
     "GALLERY_PLACEMENT",
     "INITIAL_STEP",
     "InstState",
     "FrameState",
     "EventProblem",
+    "cage_latch_opens",
     "diff_states",
     "event_problems",
     "events_from_actions",
     "gallery_state",
     "gone_with_parent",
     "initial_overrides",
+    "is_cage_latch_event",
     "is_gallery_part",
     "initial_state",
     "is_virtual_target",
     "needs_geom",
+    "removal_steps",
     "state_at",
     "validate_events",
 ]
@@ -86,6 +91,21 @@ IN_CHASSIS = Placement.IN_CHASSIS.value
 ON_BENCH = Placement.ON_BENCH.value
 _PLACEMENTS = frozenset(p.value for p in Placement)
 _SUCCESS = "success"
+#: ``StateEvent.evidence_view`` of the one derived event no action stands
+#: behind: a drive cage's own latch (:func:`tda.core.model.is_cage_latch`, task
+#: U20) opens on the frame before its cage comes out (:func:`cage_latch_opens`).
+#: It is a default, not a record of what was done, so it gives way to a manual
+#: state: :func:`event_problems` does not hold it against a latch the annotator
+#: already said was open (``T`` / ``Ctrl+T`` earlier), and a ``Ctrl+T`` span may
+#: run across it (:mod:`tda.core.state_assert`).
+CAGE_LATCH_EVIDENCE = "rule:drive_cage_latch"
+#: The verb whose effect that event has.
+_OPEN = "open"
+
+
+def is_cage_latch_event(event: StateEvent) -> bool:
+    """Is ``event`` the derived "the cage's latch is open here" default?"""
+    return bool(event.auto) and event.evidence_view == CAGE_LATCH_EVIDENCE
 
 
 class _AnyView:
@@ -204,6 +224,62 @@ def _cascades_on_removal(rec: InstanceRec) -> bool:
     return rec.cls != CONNECTOR_CLASS
 
 
+def removal_steps(
+    instances: dict[str, InstanceRec],
+    actions: Iterable[ActionRec],
+    tax: Taxonomy,
+    keys: Optional[Iterable[str]] = None,
+) -> dict[str, int]:
+    """``key -> the step of the first successful action that removes it``.
+
+    Only the instance's **own** actions count (a ``remove``, or whatever verb
+    the taxonomy makes ``removed`` for its class); one that never leaves is not
+    in the result. ``keys`` limits the answer to those instances.
+    """
+    wanted = None if keys is None else set(keys)
+    out: dict[str, int] = {}
+    for action in sorted(actions, key=lambda a: (a.step, a.idx)):
+        target = action.target
+        if action.result != _SUCCESS or target in out:
+            continue
+        if wanted is not None and target not in wanted:
+            continue
+        rec = instances.get(target)
+        if rec is None:
+            continue
+        if tax.apply_verb(rec.cls, rec.attrs, action.verb) == (ATTR_STATE, REMOVED):
+            out[target] = int(action.step)
+    return out
+
+
+def cage_latch_opens(
+    instances: dict[str, InstanceRec],
+    actions: Iterable[ActionRec],
+    tax: Taxonomy,
+) -> list[tuple[int, str]]:
+    """``(step, latch)`` of every drive cage's own latch that opens by default.
+
+    A cage's own latch (:func:`tda.core.model.is_cage_latch`, task U20) is in no
+    log, so nothing says when it was opened -- only that it must have been
+    before the cage came out. The ruling: it is ``closed`` from the start and
+    ``open`` on the frame before its cage's removal step ``c``, i.e. at
+    ``c - 1``, and it leaves with the cage at ``c`` by the ordinary cascade. A
+    cage the log never removes (or only displaces) keeps its latch closed, and
+    so does a cage removed at step 1 (there is no frame before it).
+    """
+    latches = {key: rec for key, rec in instances.items()
+               if is_cage_latch(rec) and rec.parent and rec.parent in instances}
+    if not latches:
+        return []
+    removed = removal_steps(instances, actions, tax, {rec.parent for rec in latches.values()})
+    out = []
+    for key, rec in latches.items():
+        step = removed.get(str(rec.parent))
+        if step is not None and step - 1 >= 1:
+            out.append((step - 1, key))
+    return sorted(out)
+
+
 def events_from_actions(
     instances: dict[str, InstanceRec],
     actions: list[ActionRec],
@@ -220,11 +296,31 @@ def events_from_actions(
     state an instance with no action starts in when it is not its class
     default. Without it the cascade that takes an ``open`` added clip out with
     its board would be recorded as ``closed -> removed``.
+
+    One derived event has no action behind it: a drive cage's own latch opens
+    at the step before its cage comes out (:func:`cage_latch_opens`, task U20),
+    after the actions of that step, marked :data:`CAGE_LATCH_EVIDENCE`. Nothing
+    is emitted when the latch is already open or gone by then.
     """
+    actions = list(actions)
     frame = initial_state(instances, tax, initial)
     cable_states: dict[str, str] = {}
     children = _attached_children(instances)
     events: list[StateEvent] = []
+    defaults = cage_latch_opens(instances, actions, tax)
+
+    def open_by_default(step: int, target: str) -> None:
+        """The cage's latch is open here unless something said otherwise."""
+        inst, rec = frame.get(target), instances[target]
+        effect = tax.apply_verb(rec.cls, rec.attrs, _OPEN)
+        if inst is None or effect is None or effect[0] != ATTR_STATE:
+            return
+        if inst.state in (REMOVED, effect[1]) or inst.placement != IN_CHASSIS:
+            return
+        events.append(StateEvent(desktop=rec.desktop, step=step, target=target,
+                                 attr=ATTR_STATE, old=inst.state, new=effect[1],
+                                 evidence_view=CAGE_LATCH_EVIDENCE, auto=True))
+        inst.state = effect[1]
 
     def emit(action: ActionRec, target: str, attr: str, new: str) -> None:
         inst = frame[target]
@@ -259,6 +355,8 @@ def events_from_actions(
             detach(action, child, seen)
 
     for action in sorted(actions, key=lambda a: (a.step, a.idx)):
+        while defaults and defaults[0][0] < action.step:
+            open_by_default(*defaults.pop(0))
         if action.result != _SUCCESS:
             continue
         if is_virtual_target(action.target, instances):
@@ -295,6 +393,8 @@ def events_from_actions(
         emit(action, action.target, attr, new)
         if attr == ATTR_STATE and new == REMOVED and _cascades_on_removal(rec):
             detach(action, action.target, {action.target})
+    for step, target in defaults:   # after the last action: nothing left to remove it
+        open_by_default(step, target)
     return events
 
 
@@ -636,7 +736,10 @@ def event_problems(
         # the log's account of the state, not a precondition of the removal.
         into_removed = (event.attr == ATTR_STATE and event.new == REMOVED
                         and held != REMOVED)
-        if event.old != held and not into_removed:
+        # The cage latch's default "open here" (task U20) is no action: when the
+        # annotator already said it was open earlier, it simply holds already.
+        default_held = is_cage_latch_event(event) and held == event.new
+        if event.old != held and not into_removed and not default_held:
             reasons.append((OLD_MISMATCH,
                             f"the current {event.attr} at that step is {held!r}"))
         if event.attr == ATTR_STATE:

@@ -54,7 +54,7 @@ from tda.core.truth_refusals import (
     conflict_of,
     is_blocking,
 )
-from tda.core.model import EXTRA_ATTR
+from tda.core.model import CAGE_LATCH_RULE, EXTRA_ATTR, IMPLIED_RULE_ATTR
 from tda.ui import app_actions as A
 from tda.ui import session_api as api
 from tda.ui.class_names import instance_label, state_zh, visibility_zh
@@ -298,6 +298,37 @@ def captive_hint() -> str:
     return CAPTIVE_HINT.format(key=A.action_named("correct_verb").keys[0])
 
 
+#: On the row of a drive cage's own latch where it is open (task U20): the log
+#: never says when it was opened, so the frame before the cage comes out is a
+#: default, and the span key says "it was open earlier" in one go.
+CAGE_LATCH_HINT = "机架卡扣：默认这里是打开的；更早就开着的话到那一帧 {key}"
+
+
+def cage_latch_hint() -> str:
+    """:data:`CAGE_LATCH_HINT` with the key ``state_range`` is bound to."""
+    return CAGE_LATCH_HINT.format(key=A.action_named("state_range").keys[0])
+
+
+def _cage_latch_open_here(row: dict) -> bool:
+    """Is this the row of a cage's implied latch, open on this frame?"""
+    attrs = row.get("attrs") or {}
+    transition = row.get("transition") or ()
+    return (attrs.get(IMPLIED_RULE_ATTR) == CAGE_LATCH_RULE and bool(attrs.get("implied"))
+            and len(transition) == 2 and transition[1] == "open")
+
+
+#: The log-name line of an implied row (:mod:`tda.core.implied`): no sheet
+#: names it, the importer made it.
+IMPLIED_RAW = "隐含（日志里没有）"
+
+
+def _implied_raw(attrs: dict) -> str:
+    """:data:`IMPLIED_RAW`, or the cage latch's own note (task U20)."""
+    if attrs.get(IMPLIED_RULE_ATTR) == CAGE_LATCH_RULE and attrs.get("note"):
+        return f"隐含：{attrs['note']}"
+    return IMPLIED_RAW
+
+
 #: What "完整形状" means, said once -- in the start frame's header -- where
 #: every part is drawn for the first time (round 1 item 6, round 1b).
 START_NOTE = "（被别的零件挡住的部分也算它的，层级程序会处理）"
@@ -337,6 +368,8 @@ def row_view(row: dict, editing: Optional[str] = None, bench: bool = False,
         sentence += f"（{state_zh(transition[0])} → {state_zh(transition[1])}）"
     if kind == api.KIND_ADD_SHAPE and row.get("parent") and not start:
         sentence += f"（跟 {row['parent']} 一起装回来的）"
+    if kind != api.KIND_CONFIRM and _cage_latch_open_here(row):
+        sentence += f"（{cage_latch_hint()}）"
     span = row.get("span")
     if span:
         sentence += f"（这一条跨了第 {span[0]}–{span[-1]} 步：中间的帧没有图像）"
@@ -372,6 +405,9 @@ def row_view(row: dict, editing: Optional[str] = None, bench: bool = False,
     elif (row.get("attrs") or {}).get(EXTRA_ATTR):
         # a part added in S1 has no name in the log: say so rather than nothing
         raw = ADDED_RAW
+    elif (row.get("attrs") or {}).get("implied"):
+        # nor has an implied one (task U20): the importer made it
+        raw = _implied_raw(row.get("attrs") or {})
     return {"icon": KIND_ICONS.get(kind, "•"), "title": title,
             "raw": raw, "sentence": sentence, "chip": chip,
             "done": done, "editing": chip in (CHIP_EDITING, CHIP_BOXING)}
