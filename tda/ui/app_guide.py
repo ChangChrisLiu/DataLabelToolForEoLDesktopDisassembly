@@ -638,6 +638,11 @@ class GuideMixin:
         else:
             self.task_card.set_editing(self.bench_instance,
                                        bench=self.bench_instance is not None)
+        # 主视角 (task U23): the frame, the selection, the card row and the
+        # edit all end up here; it does nothing unless one of them moved.
+        follow = getattr(self, "follow_locator", None)
+        if follow is not None:
+            follow()
 
     def guide_plan(self) -> G.GuidePlan:
         """The plan the panel is showing (for the tests and the report)."""
