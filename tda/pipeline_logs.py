@@ -13,8 +13,14 @@ steps is skipped unless ``force`` is given, and even a forced run
 * keeps the verb the step table carries on every action corrected with
   ``Shift+T`` (:mod:`tda.core.verb_replay`), and the ``captive`` flag of every
   screw flipped with it (:mod:`tda.core.captive_replay`),
-* keeps the instances merged in S1 merged (:mod:`tda.core.merge_replay`), and
+* keeps the instances merged in S1 merged (:mod:`tda.core.merge_replay`),
+* keeps a drive cage's implied latch that an annotator deleted in Steps
+  deleted (:func:`tda.core.implied.cage_latches`, task U20), and
 * leaves the hand-written (``auto=False``) state events alone.
+
+Every drive cage of the sheet gets its own latch (task U20): adopted from the
+sheet when it opens one and never removes it, kept when S1 added one, else
+implied -- closed, open on the frame before the cage comes out, out with it.
 
 One desktop is one transaction, and a sheet that cannot be read is recorded as
 ``failed`` and skipped rather than ending the run.
@@ -33,7 +39,15 @@ from tda.core.graph_rules import (
     unresolved_relations,
 )
 from tda.core.implied import OP_KIND as IMPLIED_OP_KIND
-from tda.core.implied import implied_instances, is_implied
+from tda.core.implied import (
+    CAGE_CLASS,
+    OP_CAGE_LATCH,
+    OP_DELETE_IMPLIED,
+    CageLatches,
+    cage_latches,
+    implied_instances,
+    is_implied,
+)
 from tda.core.index import DesktopIndex
 from tda.core.log_report import _expected_steps
 from tda.core.logs import LogImport, import_log, iter_desktop_csvs, read_desktop_csv
@@ -74,7 +88,8 @@ REFUSED_IMPLAUSIBLE = "implausible_shrink"
 REFUSED_EXTRAS = "extra_keys"
 
 __all__ = [
-    "DesktopRun", "INFERRED_HEADING", "LogsRun", "add_implied_instances", "brand_model",
+    "DesktopRun", "INFERRED_HEADING", "LogsRun", "add_cage_latches", "add_implied_instances",
+    "brand_model",
     "chassis_type", "desktop_fields", "expected_steps", "extra_clash", "import_logs_into_db",
     "inferred_section", "REFUSED_EXTRAS",
 ]
@@ -196,6 +211,10 @@ class DesktopRun:
     #: the ones the new sheet no longer fits (one line each), task U9 round 2;
     #: then the same for the merges made in S1 (task U12).
     corrections: list[str] = field(default_factory=list)
+    #: What the drive-cage latch rule did besides creating (task U20): a latch
+    #: of the sheet adopted as a cage's own, one kept, one kept deleted, a
+    #: deletion that no longer fits. The created ones are in ``implied``.
+    cage_latches: list[str] = field(default_factory=list)
 
 
 def inferred_section(run: DesktopRun) -> list[str]:
@@ -205,10 +224,12 @@ def inferred_section(run: DesktopRun) -> list[str]:
     everything adds no noise. Kept here rather than in :mod:`tda.cli` so the
     heading and the bullet format live next to the run record that carries them.
     """
-    if not (run.fills or run.unresolved or run.implied):
+    cage = getattr(run, "cage_latches", [])
+    if not (run.fills or run.unresolved or run.implied or cage):
         return []
     lines = [f"**{INFERRED_HEADING}**", ""]
     lines.extend(f"- {text}" for text in run.implied)
+    lines.extend(f"- {text}" for text in cage)
     lines.extend(f"- {text}" for text in run.fills)
     lines.extend(f"- {text}" for text in run.unresolved)
     lines.append("")
@@ -403,6 +424,63 @@ def add_implied_instances(db: Db, li: LogImport, tax: Taxonomy) -> list[str]:
     return lines
 
 
+def _cage_inputs(db: Db, desktop: int, instances: dict, extras: Optional[dict] = None
+                 ) -> tuple[dict, dict, list[dict]]:
+    """``(extras, stored, deletions)`` the drive-cage latch rule reads, before any write."""
+    stored = db.instances(desktop)
+    if extras is None:
+        extras = {key: rec for key, rec in stored.items()
+                  if is_extra(rec) and key not in instances}
+    return extras, stored, db.ops_of_kind(desktop, OP_DELETE_IMPLIED)
+
+
+def add_cage_latches(db: Db, li: LogImport, tax: Taxonomy, extras: dict, stored: dict,
+                     deleted: list[dict], rename: Optional[dict[str, str]] = None
+                     ) -> CageLatches:
+    """Give every drive cage of the sheet its own latch (task U20). **In the transaction.**
+
+    Runs right after :func:`add_implied_instances` and before the relational
+    heuristic: :func:`tda.core.implied.cage_latches` decides, this carries it
+    out on the parsed records -- the adopted latch gets ``parent = cage`` and
+    ``attached``, the created ones are added -- and writes **one** ``op_log``
+    row of kind :data:`~tda.core.implied.OP_CAGE_LATCH` (inverse: the adopted
+    ones unparented, the created keys), nothing when the sheet has no cage.
+    ``extras``, ``stored`` and ``deleted`` were read before the transaction
+    opened (:func:`_cage_inputs`): the table being replaced and the
+    :data:`~tda.core.implied.OP_DELETE_IMPLIED` rows, which keep a latch an
+    annotator deleted in Steps deleted.
+    """
+    plan = cage_latches(li.instances, li.actions, tax, extras, stored, deleted, rename)
+    for entry in plan.adopted:
+        rec = li.instances[entry["latch"]]
+        rec.parent, rec.attached = entry["cage"], True
+    for rec in plan.created:
+        li.instances[rec.key] = rec
+    if plan:
+        db.log_op(li.desktop, OP_VIEW, OP_CAGE_LATCH, plan.payload(), plan.inverse(),
+                  IMPLIED_ANNOTATOR)
+    return plan
+
+
+def _cage_keys(db: Db, li: LogImport, tax: Taxonomy) -> set[str]:
+    """The keys the drive-cage latch rule will create, decided before anything is written.
+
+    Asked on the records as the import will see them -- the merges and the
+    ``Shift+T`` corrections replayed (both pure) -- because a corrected verb is
+    exactly what decides it: D5's "HDD shield locker" opened by the sheet is the
+    cage's latch, taken out at step 10 by ``Shift+T`` it is not.
+    """
+    if not any(rec.cls == CAGE_CLASS for rec in li.instances.values()):
+        return set()
+    instances, actions, merges = replay_merges_for_import(db, li.desktop, li.instances,
+                                                          li.actions)
+    actions, _replay = replay_for_import(db, li.desktop, actions, instances, tax,
+                                         rename=merges.rename)
+    extras, stored, deleted = _cage_inputs(db, li.desktop, instances)
+    plan = cage_latches(instances, actions, tax, extras, stored, deleted, merges.rename)
+    return {rec.key for rec in plan.created}
+
+
 #: ``relation.source`` this pipeline owns. A derived edge naming a key that is
 #: about to go is machinery and goes with it; anything else is somebody's work.
 RULE_SOURCE = "rule"
@@ -469,11 +547,14 @@ def _would_exist(db: Db, li: LogImport, tax: Taxonomy) -> set[str]:
 
     :func:`implied_instances` is pure, so asking it here -- before anything is
     written -- costs nothing and lets the whole plan be decided outside the
-    transaction. ``add_implied_instances`` asks it again for real.
+    transaction. ``add_implied_instances`` asks it again for real, and so does
+    :func:`add_cage_latches` for the drive cages' latches (:func:`_cage_keys`):
+    without them a latch implied by an earlier import would be planned as
+    vanished, dropped and made again in one run.
     """
     implied = implied_instances(li.instances, li.actions, tax,
                                db.declined_implied(li.desktop))
-    return set(li.instances) | {rec.key for rec in implied}
+    return set(li.instances) | {rec.key for rec in implied} | _cage_keys(db, li, tax)
 
 
 def _hold_reasons(db: Db, desktop: int, vanished: set[str]) -> tuple[dict[str, str], int]:
@@ -747,13 +828,19 @@ def _write_import(
     db: Db, li: LogImport, tax: Taxonomy, previous: list[StepRec], plan: DropPlan,
     adopt: Optional[dict[str, str]] = None,
 ) -> tuple[int, int, int, list[str], list[str], list[str], list[str], list[str], list[str],
-           Replay, MergeReplay, CaptiveReplay]:
+           Replay, MergeReplay, CaptiveReplay, CageLatches]:
     """Write one desktop's import atomically.
 
     Returns ``(events, steps with LS notes, notes dropped, fills, unresolved,
-    implied, dropped instances, drop issues, adopted, replay, merges, captive)``.
-    ``adopt`` is :func:`extra_clash` when ``--adopt-extras`` was given (see
-    :func:`_adopt_extras`).
+    implied, dropped instances, drop issues, adopted, replay, merges, captive,
+    cage latches)``. ``adopt`` is :func:`extra_clash` when ``--adopt-extras``
+    was given (see :func:`_adopt_extras`).
+
+    Right after the implied instances, every drive cage of the sheet gets its
+    own latch (:func:`add_cage_latches`, task U20) -- adopted from the sheet,
+    kept, kept deleted or created -- before the relational heuristic, and the
+    events below already open a created one on the frame before its cage
+    comes out.
 
     Every merge made with 「合并到…」 that is still in effect is applied to the
     parsed records first (:mod:`tda.core.merge_replay`, task U12): the sheet
@@ -809,6 +896,9 @@ def _write_import(
               if is_extra(rec) and key not in li.instances and key not in adopt}
     initial = {key: state for key, state in initial_overrides(
         e for e in db.events(li.desktop) if not e.auto).items() if key not in adopt}
+    # the drive cages' own latches (task U20): the table being replaced (the
+    # key an implied latch had) and the latches deleted in Steps
+    _extras, stored, deleted = _cage_inputs(db, li.desktop, li.instances, extras)
     with db.transaction():
         kept, dropped = carry_ls_notes(li.steps, previous)
         merge_desktop_meta(db, li.desktop, desktop_fields(li.meta))
@@ -824,6 +914,8 @@ def _write_import(
                       merges.inverse, IMPLIED_ANNOTATOR)
         adopted = _adopt_extras(db, li.desktop, adopt)
         implied = add_implied_instances(db, li, tax)
+        cage = add_cage_latches(db, li, tax, extras, stored, deleted, merges.rename)
+        implied += cage.implied_lines()
         fills = infer_relational_fields(li.instances, tax, li.actions)
         for inst in li.instances.values():
             db.upsert_instance(inst)
@@ -839,7 +931,7 @@ def _write_import(
         split_pose_segments(db, li.desktop)
     return (len(events), kept, dropped, fills,
             unresolved_relations(li.instances, tax, li.actions, declined), implied,
-            gone, drop_issues, adopted, replay, merges, captive)
+            gone, drop_issues, adopted, replay, merges, captive, cage)
 
 
 def dropped_notes_line(desktop: int, dropped: int) -> str:
@@ -993,7 +1085,7 @@ def _import_one(
             f"kept the file's number"
         )
     (events, kept, dropped, fills, unresolved, implied,
-     gone, drop_issues, adopted, replay, merges, captive) = _write_import(
+     gone, drop_issues, adopted, replay, merges, captive, cage) = _write_import(
         db, li, tax, previous, plan, clash)
     extras_kept = extra_keys(db.instances(desktop))
     if dropped:
@@ -1019,7 +1111,7 @@ def _import_one(
             f"actions, {len(li.instances)} instances, {events} events, "
             f"{filled} durations, {len(fills)} inferred relational fields, "
             f"{len(li.issues) + len(issues)} issues{extra}")
-        for text in implied:
+        for text in implied + cage.lines():
             log(f"[import-logs]   {text}")
         for text in gone:
             log(f"[import-logs]   {text}")
@@ -1037,7 +1129,7 @@ def _import_one(
         issues=list(li.issues) + issues, fills=fills, unresolved=unresolved,
         implied=implied, dropped=gone, kept_for_review=len(plan.holding),
         kept_carrying_work=plan.carrying_work, extras_kept=extras_kept, adopted=adopted,
-        corrections=corrections,
+        corrections=corrections, cage_latches=cage.lines(),
     )
 
 

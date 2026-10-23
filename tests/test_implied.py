@@ -279,7 +279,10 @@ def test_import_logs_implies_nothing_for_a_sheet_that_removes_the_board(env):
         rec = db.instances(13).get("motherboard.01")
         assert rec is not None
         assert not rec.attrs.get(IMPLIED_ATTR)
-        assert db.ops(13, "-") == []
+        # nothing implied; the one row is the rule that adopts D13's "SSD shield
+        # locker" as its cage's own latch (task U20)
+        assert [op["kind"] for op in db.ops(13, "-")] == ["cage_latch"]
+        assert not any(r.attrs.get(IMPLIED_ATTR) for r in db.instances(13).values())
     finally:
         db.close()
 

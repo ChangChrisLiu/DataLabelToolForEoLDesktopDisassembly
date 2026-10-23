@@ -37,19 +37,33 @@ Two halves:
   :data:`tda.core.extra.OP_DELETE` with the whole stored record and its initial
   events as the inverse (:func:`tda.core.extra.undo_op` puts it back). Nothing
   in memory changes until the transaction has committed.
+
+  A drive cage's implied latch (task U20, :func:`tda.core.model.is_cage_latch`)
+  is refused per *cage*, not per class -- one desktop can have two cages -- so
+  deleting one declines nothing for the desktop: it logs
+  :data:`tda.core.implied.OP_DELETE_IMPLIED` with the cage and the whole
+  stored record (the inverse), and the importer reads those rows
+  (:func:`tda.core.implied.cage_latches`: 「cage latch kept deleted」).
 """
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Optional
 
 from tda.core import extra as X
 from tda.core.db import Db
 from tda.core.graph_derive import RULE
 from tda.core.graph_rules import HARD_TYPES, active_edges
-from tda.core.implied import is_implied
+from tda.core.implied import OP_DELETE_IMPLIED, is_cage_latch, is_implied
 from tda.core.logs import CHASSIS_KEY
 from tda.core.ls_import import SOURCE as LS_SOURCE
-from tda.core.model import ALL_VIEWS, InstanceRec, is_extra, is_provisional
+from tda.core.model import (
+    ALL_VIEWS,
+    CAGE_LATCH_RULE,
+    InstanceRec,
+    is_extra,
+    is_provisional,
+)
 from tda.ui.steps_values import RELATION_FIELDS, EditError
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle at runtime, fine for typing
@@ -181,7 +195,8 @@ OP_VIEW = "-"
 
 
 def _restamp(db: Db, data: "StepTableData", key: str, dropped: int,
-             extra_patch: Optional[tuple[dict, dict]] = None) -> None:
+             extra_patch: Optional[tuple[dict, dict]] = None,
+             implied_patch: Optional[tuple[dict, dict]] = None) -> None:
     """Re-stamp the desktop's graph meta after a delete. **In the transaction.**
 
     The delete takes the instance's rule edges with it, so the stored
@@ -192,7 +207,9 @@ def _restamp(db: Db, data: "StepTableData", key: str, dropped: int,
     ``extra_patch`` is the ``(payload, inverse)`` of a part added in S1
     (:func:`tda.core.extra.delete_patch`): its deletion is logged as
     :data:`tda.core.extra.OP_DELETE`, with the whole record as the inverse, so
-    :func:`tda.core.extra.undo_op` can put it back.
+    :func:`tda.core.extra.undo_op` can put it back. ``implied_patch`` is the
+    same of a drive cage's implied latch (:func:`_implied_patch`), logged as
+    :data:`tda.core.implied.OP_DELETE_IMPLIED` -- the row the next import reads.
     """
     from tda.core.graph import edges_from_db, graph_version   # local: import cycle
     from tda.core.graph_derive import settled_instances
@@ -213,9 +230,27 @@ def _restamp(db: Db, data: "StepTableData", key: str, dropped: int,
                   {**payload, "relations": dropped}, inverse,
                   getattr(data, "annotator", "") or ANNOTATOR)
         return
+    if implied_patch is not None:
+        payload, inverse = implied_patch
+        db.log_op(data.desktop, OP_VIEW, OP_DELETE_IMPLIED,
+                  {**payload, "relations": dropped}, inverse,
+                  getattr(data, "annotator", "") or ANNOTATOR)
+        return
     db.log_op(data.desktop, OP_VIEW, OP_KIND,
               {"instance": key, "relations": dropped},
               {"instance": key}, ANNOTATOR)
+
+
+def _implied_patch(stored) -> tuple[dict, dict]:
+    """``(payload, inverse)`` of deleting a drive cage's implied latch (task U20).
+
+    The payload names the rule and the cage -- what the importer matches on --
+    and both carry the whole stored record, so the row is the undo as well.
+    """
+    record = asdict(stored)
+    return ({"instance": stored.key, "rule": CAGE_LATCH_RULE, "cage": stored.parent,
+             "record": record},
+            {"instance": stored.key, "record": record})
 
 
 def _clear_pointers(rec: InstanceRec, key: str, revert_to: Optional[str]) -> None:
@@ -236,22 +271,29 @@ def delete_instance(data: "StepTableData", db: Db, key: str) -> None:
     creates implied instances from scratch on every run, so without a durable
     "no" the deleted motherboard is back after the next ``import-logs``, with a
     mask on every frame. A delete that rolls back therefore declines nothing
-    either.
+    either. A drive cage's implied latch (task U20) declines no class: its
+    :data:`~tda.core.implied.OP_DELETE_IMPLIED` row, written in the same
+    transaction, is the refusal, for that cage only.
 
     On any failure the transaction rolls back, the in-memory session is left
     exactly as it was, and the reason comes back as an :class:`EditError`.
     """
     check_deletable(data, db, key)
-    implied_cls = data.instances[key].cls if is_implied(data.instances[key]) else None
+    cage_latch = is_cage_latch(data.instances[key])
+    # a cage's latch is refused per cage (task U20), never for its whole class
+    implied_cls = (data.instances[key].cls
+                   if is_implied(data.instances[key]) and not cage_latch else None)
     neighbours = stored_neighbours(db, data.desktop, key, revert_to=implied_cls)
     derived = derived_relations(db, data.desktop, key)
-    patch = None
+    patch = implied_patch = None
     if is_extra(data.instances[key]):
         # the stored record, not the in-memory one: the inverse has to bring
         # back what the database held, not an edit nobody applied
         stored = db.instances(data.desktop).get(key, data.instances[key])
         patch = X.delete_patch(stored, X.initial_events(db, data.desktop, key),
                                X.relation_rows(db, data.desktop, key, RULE))
+    elif cage_latch:
+        implied_patch = _implied_patch(db.instances(data.desktop).get(key, data.instances[key]))
     try:
         with db.transaction():
             for triple in derived:
@@ -270,7 +312,7 @@ def delete_instance(data: "StepTableData", db: Db, key: str) -> None:
                 db.upsert_instance(rec)
             if implied_cls:
                 db.decline_implied(data.desktop, implied_cls)
-            _restamp(db, data, key, len(derived), patch)
+            _restamp(db, data, key, len(derived), patch, implied_patch)
     except Exception as error:  # the database rolled back; so must memory
         raise EditError(f"could not delete {key!r}: {error}") from error
 

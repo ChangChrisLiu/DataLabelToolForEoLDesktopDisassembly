@@ -164,6 +164,29 @@ def machine_only(instances: dict) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# a drive cage's own latch (task U20, spec 3.2 「机架自带卡扣」)
+# --------------------------------------------------------------------------- #
+#: ``attrs`` key naming the rule an implied instance (:mod:`tda.core.implied`)
+#: was created by; absent on the ``implied_when_referenced`` ones, which predate it.
+IMPLIED_RULE_ATTR = "implied_rule"
+#: The rule "a drive cage has a latch of its own, open on the frame before the
+#: cage comes out" (:func:`tda.core.implied.cage_latches`).
+CAGE_LATCH_RULE = "drive_cage_latch"
+
+
+def is_cage_latch(rec: Optional["InstanceRec"]) -> bool:
+    """Is this the implied latch of a drive cage (task U20)?
+
+    Here rather than in :mod:`tda.core.implied` for the reason :func:`is_extra`
+    is: the state machine reads it (:func:`tda.core.states.events_from_actions`
+    opens the latch on the frame before its cage comes out), and the state
+    machine may not import the importer's modules.
+    """
+    attrs = (rec.attrs or {}) if rec is not None else {}
+    return bool(attrs.get("implied")) and attrs.get(IMPLIED_RULE_ATTR) == CAGE_LATCH_RULE
+
+
+# --------------------------------------------------------------------------- #
 # what a step type means (spec 6.6)
 # --------------------------------------------------------------------------- #
 #: Step types that describe no annotatable moment of the teardown.

@@ -72,6 +72,7 @@ from tda.core.states import (
     event_problems,
     events_from_actions,
     initial_overrides,
+    is_cage_latch_event,
     state_at,
 )
 from tda.core.taxonomy import Taxonomy
@@ -282,19 +283,29 @@ def plan_range(db: Db, tax: Taxonomy, desktop: int, target: str, first: int, las
 
 
 def _crossed(derived: list[StateEvent], target: str, low: int, high: int,
-             name: Namer) -> Optional[str]:
+             name: Namer, new_state: Optional[str] = None) -> Optional[str]:
     """The refusal of a span over a derived event of the target, or ``None``.
 
     An event *at* the lower end is fine -- the span starts after it, as a
     single assertion there does -- and one at the restore step is the restore's
-    business. One strictly inside means the log changes the state there.
+    business. One strictly inside means the log changes the state there --
+    except a drive cage latch's default "open here" (task U20,
+    :func:`~tda.core.states.is_cage_latch_event`) when the span says the latch
+    is open as well: no action stands behind it, so "it was open earlier" may
+    run across it (it then changes nothing). A span saying otherwise over it is
+    refused with the frame to press ``T`` on instead.
     """
-    inside = [e for e in derived if e.target == target and low < e.step <= high]
+    inside = [e for e in derived if e.target == target and low < e.step <= high
+              and not (is_cage_latch_event(e) and e.new == new_state)]
     if not inside:
         return None
     event = inside[0]
     what = (f"「{name(event.old)}」→「{name(event.new)}」" if event.attr == ATTR_STATE
             else f"{event.old} → {event.new}")
+    if is_cage_latch_event(event):
+        return (f"第 {low}–{high} 步跨过了第 {event.step} 步：机架卡扣 {target} 默认在那一帧"
+                f"是「{name(event.new)}」（日志里没有它）。要那一帧也是「{name(new_state)}」，"
+                f"先到第 {event.step} 帧单独按 T，其余几帧再用 Ctrl+T")
     return (f"第 {low}–{high} 步跨过了日志第 {event.step} 步对 {target} 的动作（{what}），"
             f"不能整段设成同一个状态。日志本身要改：动作发生在哪一步，请在 Steps 模式里改")
 
@@ -351,7 +362,7 @@ def _plan(db: Db, tax: Taxonomy, desktop: int, target: str, low: int, high: int,
         if now[s] == REMOVED:
             raise StateAssertError(f"{target} 在第 {s} 步已经拆下，没有状态可改")
     if span:
-        crossed = _crossed(derived, target, step, high, name)
+        crossed = _crossed(derived, target, step, high, name, new_state)
         if crossed:
             raise StateAssertError(crossed)
     patch = StatePatch(desktop=desktop, target=target, step=step, state=new_state,
