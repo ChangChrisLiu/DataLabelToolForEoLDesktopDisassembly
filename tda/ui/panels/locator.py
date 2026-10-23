@@ -305,6 +305,10 @@ class LocatorPanel(QWidget):
         note = "" if scene is None else scene.note
         self.note.setText(note)
         self.note.setVisible(bool(note))
+        # A wrapped caption may have gained or lost a line: lay out now, not
+        # at the next pass of the event loop, so the picture is never drawn
+        # under a caption cut in half.
+        self.layout().activate()
         self.shown += 1
 
     def scene(self) -> Optional[LocatorScene]:

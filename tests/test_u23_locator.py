@@ -482,10 +482,14 @@ def test_one_refresh_per_frame_and_part_none_for_the_same_one(window):
     count = window.locator_refreshes
     for _ in range(3):
         window.refresh_guidance()
+    QApplication.processEvents()
     assert window.locator_refreshes == count
+    # the card and the table are rebuilt on the way (two or three passes through
+    # refresh_guidance with the old selection, no row, the new row): one refresh
     goto(window, STEP - 1)
-    assert window.locator_refreshes > count
+    assert window.locator_refreshes == count + 1
     assert scene(window).asked_step == STEP - 1
+    assert scene(window).instance == window.locator_target()
 
 
 def test_no_refresh_while_it_is_closed_or_on_the_scanner_view(window):

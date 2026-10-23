@@ -22,13 +22,15 @@ can decide is here:
   :meth:`~tda.ui.app_guide.GuideMixin.refresh_guidance` -- the one place a
   frame change, a selection, a card row or an edit all end up -- and does
   nothing unless the panel is on screen and its ``(machine, view, step, part,
-  edit epoch)`` moved.
+  edit epoch)`` moved; the refresh then waits for the event loop, so a frame
+  change -- which passes through here while the card and the instance table
+  are still being rebuilt -- is one refresh, for the part it ends on.
 """
 from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QToolButton
 
 from tda.core.model import VIEWS
@@ -101,6 +103,10 @@ class LocatorMixin:
         self._locator_key: Optional[tuple] = None
         #: Refreshes actually done -- a scene read and drawn (tests, report).
         self.locator_refreshes = 0
+        self._locator_timer = QTimer(self)
+        self._locator_timer.setSingleShot(True)
+        self._locator_timer.setInterval(0)
+        self._locator_timer.timeout.connect(self._refresh_locator_now)
         self._locator_ready = True
         self._sync_locator_button(False)
 
@@ -129,11 +135,22 @@ class LocatorMixin:
         return bool(getattr(self, "_locator_ready", False)) and not self.locator_dock.isHidden()
 
     # ------------------------------------------------------------- follow
+    def _locator_stamp(self) -> tuple:
+        """``(machine, view, step, part, edit epoch)``: what a scene is valid for."""
+        key = self.session.current()
+        return (int(key.desktop), str(key.view), int(key.step), self.locator_target(),
+                getattr(self.session, "_epoch", None))
+
     def follow_locator(self, force: bool = False) -> None:
         """Show or hide the panel by the rules, and refresh it when its key moved.
 
         Nothing is read while it is hidden -- closed, on the scanner view, on a
-        gallery shot, in Steps -- and nothing when its key has not moved.
+        gallery shot, in Steps -- and nothing when its key has not moved.  The
+        refresh itself waits for the event loop (:attr:`_locator_timer`): one
+        frame change passes through here two or three times while the card
+        and the instance table are rebuilt -- the old selection, no card row,
+        the new card row -- and only the last of those is the part to look for.
+        ``force`` refreshes now.
         """
         if not getattr(self, "_locator_ready", False) or self.closed:
             return
@@ -144,15 +161,22 @@ class LocatorMixin:
         self._sync_locator_button(applies)
         if not show:
             self._locator_key = None
+            self._locator_timer.stop()
             return
-        key = self.session.current()
-        target = self.locator_target()
-        stamp = (int(key.desktop), str(key.view), int(key.step), target,
-                 getattr(self.session, "_epoch", None))
-        if not force and stamp == self._locator_key:
+        if force:
+            self._locator_timer.stop()
+            self._refresh_locator_now()
+        elif self._locator_stamp() != self._locator_key:
+            self._locator_timer.start()
+
+    @S.guard
+    def _refresh_locator_now(self) -> None:
+        """The deferred half of :meth:`follow_locator`: one refresh, for what holds now."""
+        if self.closed or not self.locator_shown() or not self.locator_applies():
             return
+        stamp = self._locator_stamp()
         self._locator_key = stamp
-        self.refresh_locator(int(key.desktop), int(key.step), target)
+        self.refresh_locator(stamp[0], stamp[2], stamp[3])
 
     def refresh_locator(self, desktop: int, step: int, target: Optional[str]) -> None:
         """Read the scene and draw it; a failure is a sentence in the panel, not a crash."""
