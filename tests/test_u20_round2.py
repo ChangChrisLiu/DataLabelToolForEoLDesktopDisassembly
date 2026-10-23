@@ -168,8 +168,13 @@ def test_flipped_back_the_implied_latch_goes_unless_it_has_work(d5, tax):
     assert "画过了，留着" in cage_note(again["cage"])
 
 
-def test_a_latch_the_import_did_not_adopt_changes_no_cage(tmp_path, tax):
-    """D6 after its forced re-import: the locker has no parent, the cage has .02."""
+def test_a_latch_the_import_did_not_adopt_is_hung_on_the_cage_when_only_opened(tmp_path, tax):
+    """D6 after its forced re-import: the locker has no parent, the cage has .02.
+
+    Task U21 changed this (it used to touch no cage): the locker is never taken
+    off the cage, so 「其实只是打开了」 adopts it in the same op and the cage's
+    untouched implied latch goes; Ctrl+Z takes both back.
+    """
     db = Db(str(tmp_path / "tda.sqlite"))
     try:
         import_logs_into_db(db, sheets(tmp_path), tax, desktops={D5})
@@ -178,7 +183,12 @@ def test_a_latch_the_import_did_not_adopt_changes_no_cage(tmp_path, tax):
         import_logs_into_db(db, sheets(tmp_path), tax, desktops={D5}, force=True)
         assert db.instances(D5)[LOCKER].parent is None and LATCH in db.instances(D5)
         back = commit_verb_fix(db, truth, FrameKey(D5, 12, VIEW), LOCKER, "open", "tester")
-        assert back["cage"] is None and LATCH in db.instances(D5)
+        assert back["cage"]["adopted"] == [LOCKER] and back["cage"]["dropped"] == [LATCH]
+        rec = db.instances(D5)[LOCKER]
+        assert (rec.parent, rec.attached) == (CAGE, True) and LATCH not in db.instances(D5)
+        apply_correct_verb(db, truth, back["op"].inverse)         # Ctrl+Z
+        rec = db.instances(D5)[LOCKER]
+        assert (rec.parent, rec.attached) == (None, False) and LATCH in db.instances(D5)
     finally:
         db.close()
 

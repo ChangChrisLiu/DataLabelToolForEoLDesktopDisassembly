@@ -79,6 +79,7 @@ __all__ = [
     "cage_fix",
     "cage_latch_note",
     "cage_latches",
+    "cage_rule_for",
     "implied_instances",
     "implied_keys",
     "is_cage_latch",
@@ -327,18 +328,40 @@ class CageFix:
 
     ``add`` -- the implied latch the cage gets now that its adopted latch was
     taken out on its own; ``drop`` -- the cage's implied latches it no longer
-    needs now that its latch is only opened again; ``out_at`` -- the step the
-    cage comes out at, ``opens`` the step the added latch opens at by default.
+    needs now that its latch is only opened again; ``adopt`` -- the latch to
+    hang on the cage (``parent`` = cage, ``attached``) because the rule adopts
+    it now and its record does not say so yet (task U21); ``out_at`` -- the
+    step the cage comes out at, ``opens`` the step the added latch opens at by
+    default.
     """
 
     cage: str
     add: list[InstanceRec] = field(default_factory=list)
     drop: list[str] = field(default_factory=list)
+    adopt: list[str] = field(default_factory=list)
     out_at: Optional[int] = None
     opens: Optional[int] = None
 
     def __bool__(self) -> bool:
-        return bool(self.add or self.drop)
+        return bool(self.add or self.drop or self.adopt)
+
+
+def _for_cage(plan: "CageLatches", cage: str, instances: dict[str, InstanceRec],
+              actions: list[ActionRec], tax: Taxonomy) -> CageFix:
+    """``plan``'s answer for one cage: the latch it adopts (re-hung) or the one it makes."""
+    out = CageFix(cage=cage, out_at=removal_steps(instances, actions, tax, [cage]).get(cage))
+    adopted = next((e["latch"] for e in plan.adopted if e["cage"] == cage), None)
+    if adopted is not None:
+        rec = instances[adopted]
+        if rec.parent != cage or not rec.attached:
+            out.adopt = [adopted]
+        out.drop = sorted(key for key, other in instances.items()
+                          if is_cage_latch(other) and other.parent == cage)
+        return out
+    out.add = [made for made in plan.created if made.parent == cage]
+    if out.add:
+        out.opens = plan.opens.get(out.add[0].key)
+    return out
 
 
 def cage_fix(instances: dict[str, InstanceRec], actions: Iterable[ActionRec],
@@ -346,33 +369,63 @@ def cage_fix(instances: dict[str, InstanceRec], actions: Iterable[ActionRec],
              deleted: Optional[Iterable[dict]] = None) -> Optional[CageFix]:
     """The cage rule for the cage of ``latch``, on the stored table after a verb flip. Pure.
 
-    Only for a cage's **adopted** latch -- a ``drive_latch`` of the log (not
-    implied, not added in S1) whose ``parent`` is a drive cage it is attached
-    to -- because that is the one whose verb decides whether the cage has a
-    latch at all: D5/D6/D7's "HDD shield locker" was adopted from the sheet's
-    ``open`` and then said with ``Shift+T`` to be taken out at step 10, which
-    left the cage silently without a latch until the next forced re-import.
-    ``actions`` are the stored actions **with the flip**; :func:`cage_latches`
-    runs on the stored table (keys never reused) and the answer for this one
-    cage is kept: the implied latch it creates, or -- when the flip made the
-    latch adoptable again -- the cage's implied latches, now surplus. ``None``
-    when there is nothing to do.
+    For a ``drive_latch`` of the log (not implied, not added in S1), because
+    its verb decides whether a cage has a latch at all. ``actions`` are the
+    stored actions **with the flip**; :func:`cage_latches` runs on the stored
+    table (keys never reused):
+
+    * flipped to 「其实只是打开了」 and adopted by the rule for a cage -- opened
+      before the cage comes out, never taken out on its own (task U21: the blue
+      locker is never taken off the cage; it pivots open on the cage's big
+      screw and leaves with it): it is hung on that cage (``adopt``, unless its
+      record already says so) and the cage's implied latches are surplus
+      (``drop``). D2/D3 and D5/D6/D7's lockers were said with ``Shift+T`` to be
+      taken out, and the import never adopted them;
+    * flipped to taken out while it was the cage's **adopted** latch (``parent``
+      a drive cage it is attached to; D5/D6/D7's "HDD shield locker" adopted
+      from the sheet's ``open``): the cage gets the implied latch the rule
+      makes for it (``add``), U20 review M2.
+
+    ``None`` when there is nothing to do.
     """
     rec = instances.get(latch)
-    cage_rec = instances.get(rec.parent) if rec is not None and rec.parent else None
-    if (rec is None or rec.cls != LATCH_CLASS or is_implied(rec) or is_extra(rec)
-            or not rec.attached or cage_rec is None or cage_rec.cls != CAGE_CLASS):
+    if rec is None or rec.cls != LATCH_CLASS or is_implied(rec) or is_extra(rec):
         return None
-    cage = cage_rec.key
     actions = list(actions)
     plan = cage_latches(instances, actions, tax, stored=instances, deleted=deleted)
+    adopted = next((e for e in plan.adopted if e["latch"] == latch), None)
+    if adopted is not None:
+        out = _for_cage(plan, adopted["cage"], instances, actions, tax)
+        return out if out else None
+    cage_rec = instances.get(rec.parent) if rec.parent else None
+    if not rec.attached or cage_rec is None or cage_rec.cls != CAGE_CLASS:
+        return None
+    cage = cage_rec.key
     out = CageFix(cage=cage, out_at=removal_steps(instances, actions, tax, [cage]).get(cage))
     out.add = [made for made in plan.created if made.parent == cage]
     if out.add:
         out.opens = plan.opens.get(out.add[0].key)
-    if any(e["cage"] == cage and e["latch"] == latch for e in plan.adopted):
-        out.drop = sorted(key for key, other in instances.items()
-                          if is_cage_latch(other) and other.parent == cage)
+    return out if out else None
+
+
+def cage_rule_for(instances: dict[str, InstanceRec], actions: Iterable[ActionRec],
+                  tax: Taxonomy, cage: str,
+                  stored: Optional[dict[str, InstanceRec]] = None,
+                  deleted: Optional[Iterable[dict]] = None) -> Optional[CageFix]:
+    """The cage rule for one cage, on a stored table that just gained it (task U21). Pure.
+
+    「其实是硬盘架」 turns a part the log called a latch into ``cage``: the rule
+    then runs for it as an import would -- the desktop's logged locker opened
+    before the cage comes out and never taken out on its own is adopted (D2's
+    "SSD Locker", D3's "HDD Locker" once their verbs say opened), else the
+    cage's implied latch is made (D4). ``stored`` holds every key in use or
+    remembered, so a made latch never takes a key a part had before.
+    """
+    actions = list(actions)
+    if cage not in instances or instances[cage].cls != CAGE_CLASS:
+        return None
+    plan = cage_latches(instances, actions, tax, stored=stored or instances, deleted=deleted)
+    out = _for_cage(plan, cage, instances, actions, tax)
     return out if out else None
 
 

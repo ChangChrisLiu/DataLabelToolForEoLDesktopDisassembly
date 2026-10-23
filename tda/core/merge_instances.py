@@ -76,6 +76,7 @@ from tda.core.states import (
     INITIAL_STEP,
     LEAVES_REMOVED,
     OLD_MISMATCH,
+    UNKNOWN_VALUE,
     event_problems,
     events_from_actions,
     initial_overrides,
@@ -239,6 +240,35 @@ class MergePlan:
                             if rec.raw_names else rec.key)
         lines = [f"把 {name(self.gone_record)} 合并到 {name(self.keep_record)}：",
                  "搬过去 / moves:"]
+        lines.extend(self.moved_lines())
+        drops = self.dropped_lines()
+        if drops:
+            lines.append("丢掉 / dropped:")
+            lines.extend(drops)
+        rest = {k: v for k, v in self.gone_record.attrs.items()
+                if self.keep_record.attrs.get(k) != v}
+        tail = f"属性 {rest} " if rest else ""
+        lines.append(f"{self.gone} 这一行会删除；它的{tail}不带过去（记在操作日志里）。"
+                     f"{self.keep} 的属性不变。")
+        columns = [f"{name}={getattr(self.gone_record, name)}（{self.keep} 是 "
+                   f"{getattr(self.keep_record, name) or '空'}）"
+                   for name in GONE_COLUMNS
+                   if getattr(self.gone_record, name) not in (None, False, "")
+                   and getattr(self.gone_record, name) != getattr(self.keep_record, name)]
+        if columns:
+            lines.append(f"{self.gone} 的 {'、'.join(columns)} 也不带过去。")
+        for text in self.warnings:
+            lines.append(f"注意：{text}")
+        if self.rechecks:
+            n = sum(len(v) for v in self.rechecks.values())
+            lines.append(f"{n} 个已确认帧会在后台重新核对。")
+        lines.append("和 Apply 一起立即写入（Revert 撤不回）。" if with_apply
+                     else "立即写入，不经 Apply（Revert 撤不回）。")
+        return lines
+
+    def moved_lines(self) -> list[str]:
+        """The 「搬过去」 lines of the confirmation, one per table that moves."""
+        lines: list[str] = []
         for view, kfs in sorted(self.keyframes.items()):
             if kfs:
                 lines.append(f"  · 形状 {len(kfs)} 个（{view} 锚在第 "
@@ -265,6 +295,10 @@ class MergePlan:
                 rules = sum(1 for row, _t, _b in self.relations_renamed if row["source"] == RULE)
                 if rules:
                     lines.append(f"    （其中 {rules} 条规则边将按保留实例 {self.keep} 的属性重算）")
+        return lines
+
+    def dropped_lines(self) -> list[str]:
+        """The 「丢掉」 lines of the confirmation (empty when nothing goes)."""
         drops: list[str] = []
         if self.compiled_dropped:
             drops.append(f"  · 缓存行 {len(self.compiled_dropped)} 行（会重新编译）")
@@ -279,29 +313,7 @@ class MergePlan:
         for row, why in self.events_dropped:
             drops.append(f"  · 手写状态事件 {row['target']} 第 {row['step']} 步 "
                          f"{row['old']}→{row['new']}：{why}")
-        if drops:
-            lines.append("丢掉 / dropped:")
-            lines.extend(drops)
-        rest = {k: v for k, v in self.gone_record.attrs.items()
-                if self.keep_record.attrs.get(k) != v}
-        tail = f"属性 {rest} " if rest else ""
-        lines.append(f"{self.gone} 这一行会删除；它的{tail}不带过去（记在操作日志里）。"
-                     f"{self.keep} 的属性不变。")
-        columns = [f"{name}={getattr(self.gone_record, name)}（{self.keep} 是 "
-                   f"{getattr(self.keep_record, name) or '空'}）"
-                   for name in GONE_COLUMNS
-                   if getattr(self.gone_record, name) not in (None, False, "")
-                   and getattr(self.gone_record, name) != getattr(self.keep_record, name)]
-        if columns:
-            lines.append(f"{self.gone} 的 {'、'.join(columns)} 也不带过去。")
-        for text in self.warnings:
-            lines.append(f"注意：{text}")
-        if self.rechecks:
-            n = sum(len(v) for v in self.rechecks.values())
-            lines.append(f"{n} 个已确认帧会在后台重新核对。")
-        lines.append("和 Apply 一起立即写入（Revert 撤不回）。" if with_apply
-                     else "立即写入，不经 Apply（Revert 撤不回）。")
-        return lines
+        return drops
 
 
 # -- pointers ------------------------------------------------------------ #
@@ -372,10 +384,16 @@ class _Log:
         return problems, extra, merged
 
 
-def _why(problem, candidate: StateEvent) -> str:
-    """Why a hand-written event cannot follow the merge, in the annotator's words."""
+def _why(problem, candidate: StateEvent, cls: str = "") -> str:
+    """Why a hand-written event cannot follow the merge, in the annotator's words.
+
+    ``cls`` is the class of the part it would move to: a reclass (task U21)
+    moves a latch's events to a cage, which has no ``open``.
+    """
     event = problem.event
     if event is candidate:
+        if problem.code == UNKNOWN_VALUE and cls:
+            return f"{cls} 没有「{event.new}」这个状态"
         if problem.code == OLD_MISMATCH and problem.held == event.new:
             return f"合并后第 {event.step} 步它已经是 {event.new}，这条多余"
         if problem.code == LEAVES_REMOVED:
@@ -437,8 +455,11 @@ def _plan_events(db: Db, tax: Taxonomy, plan: MergePlan, instances_post: dict,
         problems, extra, _merged = log.check(trial)
         worse = extra - current_extra
         if worse:
-            first = next(p for p in problems if _problem_key(p) in worse)
-            plan.events_dropped.append((row, _why(first, candidate)))
+            hits = [p for p in problems if _problem_key(p) in worse]
+            # a state the class does not have says the most (a reclass, U21)
+            first = next((p for p in hits if p.code == UNKNOWN_VALUE and p.event is candidate),
+                         hits[0])
+            plan.events_dropped.append((row, _why(first, candidate, plan.keep_record.cls)))
             continue
         current, current_extra = trial, extra
         plan.events_moved.append(row)
@@ -664,10 +685,14 @@ def _deadlocks(db: Db, plan: MergePlan, instances_post: dict, tax: Taxonomy) -> 
 
 
 # -- the plan ------------------------------------------------------------ #
-def plan_merge(db: Db, tax: Taxonomy, desktop: int, gone: str, keep: str) -> MergePlan:
+def plan_merge(db: Db, tax: Taxonomy, desktop: int, gone: str, keep: str,
+               reclass: bool = False) -> MergePlan:
     """Read everything a merge of ``gone`` into ``keep`` would write; nothing is.
 
     Raises :class:`MergeError` with the reason when the merge is refused.
+    ``reclass`` lifts the class check for one caller: 「其实是硬盘架」 / 「其实是卡扣」
+    (:mod:`tda.core.reclass`, task U21) merges a part into a fresh instance of
+    the other class, which it has just written.
     """
     desktop = int(desktop)
     gone, keep = str(gone).strip(), str(keep).strip()
@@ -683,10 +708,10 @@ def plan_merge(db: Db, tax: Taxonomy, desktop: int, gone: str, keep: str) -> Mer
             # task U18: not a part of the machine; it is deleted, not merged
             raise MergeError(f"{key} 是框外零件：不能合并（不要了就在实例表右键删除）")
     g_rec, k_rec = instances[gone], instances[keep]
-    if g_rec.cls != k_rec.cls:
+    if g_rec.cls != k_rec.cls and not reclass:
         raise MergeError(f"{gone} 是 {g_rec.cls}，{keep} 是 {k_rec.cls}：只有同一类的两个实例"
                          f"才能合并")
-    plan = MergePlan(desktop=desktop, gone=gone, keep=keep, cls=g_rec.cls,
+    plan = MergePlan(desktop=desktop, gone=gone, keep=keep, cls=k_rec.cls,
                      gone_record=copy.deepcopy(g_rec), keep_record=copy.deepcopy(k_rec))
 
     # actions: never two of the merged part at one step
@@ -864,6 +889,25 @@ def _settle(db: Db, tax: Taxonomy, desktop: int, frames, rechecks: dict) -> None
 
 def apply_merge(db: Db, tax: Taxonomy, plan: MergePlan, annotator: str = "") -> MergeReport:
     """Write ``plan`` in one transaction with one ``op_log`` row; returns the report."""
+    with db.transaction():
+        write_merge(db, plan)
+        _settle(db, tax, plan.desktop, plan.frames, plan.rechecks)
+        inverse = _inverse(plan)
+        # what the frames an undo would rewrite were confirmed with right
+        # after the merge: an undo finding more refuses (round 3)
+        inverse["confirmed"] = _confirmed(db, plan.desktop, _undo_frames(inverse))
+        op_id = db.log_op(plan.desktop, OP_VIEW, OP_MERGE, _payload(plan), inverse,
+                          annotator or "ui:steps")
+    return MergeReport(op_id=op_id, plan=plan)
+
+
+def write_merge(db: Db, plan: MergePlan) -> None:
+    """The rows of ``plan``, ``gone``'s record deleted; **joins the caller's transaction**.
+
+    No settling and no op row: :func:`apply_merge` adds those, and so does the
+    reclass (:mod:`tda.core.reclass`, task U21), which writes its cage patch in
+    between and logs one op of its own.
+    """
     d, gone, keep = plan.desktop, plan.gone, plan.keep
     c = db.conn
     with db.transaction():
@@ -901,14 +945,6 @@ def apply_merge(db: Db, tax: Taxonomy, plan: MergePlan, annotator: str = "") -> 
             c.execute("UPDATE state_event SET target=? WHERE id=?", (keep, row["id"]))
         c.execute("DELETE FROM state_event WHERE desktop=? AND target=? AND auto=1", (d, gone))
         c.execute('DELETE FROM instance WHERE desktop=? AND "key"=?', (d, gone))
-        _settle(db, tax, d, plan.frames, plan.rechecks)
-        inverse = _inverse(plan)
-        # what the frames an undo would rewrite were confirmed with right
-        # after the merge: an undo finding more refuses (round 3)
-        inverse["confirmed"] = _confirmed(db, d, _undo_frames(inverse))
-        op_id = db.log_op(d, OP_VIEW, OP_MERGE, _payload(plan), inverse,
-                          annotator or "ui:steps")
-    return MergeReport(op_id=op_id, plan=plan)
 
 
 def _undo_frames(inverse: dict) -> list[tuple[str, int]]:
@@ -982,60 +1018,15 @@ def undo_merge(db: Db, tax: Taxonomy, op: dict, annotator: str = "") -> int:
     if since:
         raise MergeError(f"撤销不了：合并后又确认过这些帧（{_frames_text(since)}），撤销会把"
                          f"合并前的行写回去、盖掉那次确认")
-    c = db.conn
     try:
         with db.transaction():
-            db.upsert_instance(InstanceRec(**inv["gone_record"]))
-            for data in inv.get("neighbours") or []:
-                db.upsert_instance(InstanceRec(**data))
-            for step, idx in inv.get("actions") or []:
-                c.execute("UPDATE action SET target=? WHERE desktop=? AND step=? AND idx=? "
-                          "AND target=?", (gone, d, step, idx, keep))
-            for kf_id in inv.get("keyframes") or []:
-                c.execute("UPDATE shape_keyframe SET instance=? WHERE id=? AND instance=?",
-                          (gone, kf_id, keep))
-            for step, view in inv.get("compiled_renamed") or []:
-                c.execute("UPDATE compiled_mask SET instance=? WHERE desktop=? AND step=? "
-                          "AND view=? AND instance=?", (gone, d, step, view, keep))
-            for row in inv.get("compiled_dropped") or []:
-                _insert(db, "compiled_mask", row, replace=True)
-            for table, key in (("frame_override", "overrides"),
-                               ("instance_frame_flags", "flags")):
-                for step, view in inv.get(key) or []:
-                    c.execute(f"UPDATE {table} SET instance=? WHERE desktop=? AND step=? "
-                              f"AND view=? AND instance=?", (gone, d, step, view, keep))
-            for cid in inv.get("conflicts") or []:
-                c.execute("UPDATE conflict SET instance=? WHERE id=?", (gone, cid))
-            for z in inv.get("zorder") or []:
-                c.execute("UPDATE zorder SET order_json=?, version=? WHERE desktop=? AND view=? "
-                          "AND pose_segment=?",
-                          (z["order_json"], z["version"], d, z["view"], z["seg"]))
-            for pair in inv.get("pairs_renamed") or []:
-                new = pair["new"]
-                c.execute("DELETE FROM pair_override WHERE desktop=? AND view=? "
-                          "AND pose_segment=? AND above=? AND below=?",
-                          (d, new["view"], new["pose_segment"], new["above"], new["below"]))
-            for row in [p["old"] for p in inv.get("pairs_renamed") or []] + \
-                    list(inv.get("pairs_dropped") or []):
-                _insert(db, "pair_override", row, replace=True)
-            for rel in inv.get("relations_renamed") or []:
-                c.execute("UPDATE relation SET target=?, blocker=? WHERE id=?",
-                          (rel["target"], rel["blocker"], rel["id"]))
-            for row in inv.get("relations_dropped") or []:
-                _insert(db, "relation", row)
-            ids = [int(i) for i in inv.get("events_moved") or []]
-            for event_id in ids:
-                c.execute("UPDATE state_event SET target=? WHERE id=?", (gone, event_id))
-            for row in inv.get("events_dropped") or []:
-                _insert(db, "state_event", row)
-            frames = _undo_frames(inv)
-            _settle(db, tax, d, frames, {})
+            frames = undo_rows(db, tax, d, inv)
             # every frozen frame the restored instance reaches, in every view
             # it or keep is drawn or compiled in -- not just the merge-time
             # list: frames were confirmed and demoted since (round 3)
             views = {view for view, _step in frames}
             views |= set((op.get("payload") or {}).get("rechecks") or {})
-            views |= {str(r["view"]) for r in c.execute(
+            views |= {str(r["view"]) for r in db.conn.execute(
                 "SELECT DISTINCT view FROM shape_keyframe WHERE desktop=? AND instance IN (?, ?)",
                 (d, gone, keep))}
             for view in sorted(views):
@@ -1048,6 +1039,66 @@ def undo_merge(db: Db, tax: Taxonomy, op: dict, annotator: str = "") -> int:
         raise
     except Exception as error:  # the transaction rolled back
         raise MergeError(f"撤销不了：{type(error).__name__}: {error}") from error
+
+
+def undo_rows(db: Db, tax: Taxonomy, d: int, inv: dict) -> list[tuple[str, int]]:
+    """Put back every row a merge's ``inv`` names; **joins the caller's transaction**.
+
+    ``gone`` comes back with its record, its rows and events and every
+    pointer and edge that named it; the derived log is recompiled, the graph
+    re-stamped and the digests of the frames involved cleared. Returns those
+    frames. ``keep``'s own record is left alone -- the reclass undo deletes it
+    (:mod:`tda.core.reclass`, task U21).
+    """
+    gone, keep = str(inv["gone"]), str(inv["keep"])
+    c = db.conn
+    with db.transaction():
+        db.upsert_instance(InstanceRec(**inv["gone_record"]))
+        for data in inv.get("neighbours") or []:
+            db.upsert_instance(InstanceRec(**data))
+        for step, idx in inv.get("actions") or []:
+            c.execute("UPDATE action SET target=? WHERE desktop=? AND step=? AND idx=? "
+                      "AND target=?", (gone, d, step, idx, keep))
+        for kf_id in inv.get("keyframes") or []:
+            c.execute("UPDATE shape_keyframe SET instance=? WHERE id=? AND instance=?",
+                      (gone, kf_id, keep))
+        for step, view in inv.get("compiled_renamed") or []:
+            c.execute("UPDATE compiled_mask SET instance=? WHERE desktop=? AND step=? "
+                      "AND view=? AND instance=?", (gone, d, step, view, keep))
+        for row in inv.get("compiled_dropped") or []:
+            _insert(db, "compiled_mask", row, replace=True)
+        for table, key in (("frame_override", "overrides"),
+                           ("instance_frame_flags", "flags")):
+            for step, view in inv.get(key) or []:
+                c.execute(f"UPDATE {table} SET instance=? WHERE desktop=? AND step=? "
+                          f"AND view=? AND instance=?", (gone, d, step, view, keep))
+        for cid in inv.get("conflicts") or []:
+            c.execute("UPDATE conflict SET instance=? WHERE id=?", (gone, cid))
+        for z in inv.get("zorder") or []:
+            c.execute("UPDATE zorder SET order_json=?, version=? WHERE desktop=? AND view=? "
+                      "AND pose_segment=?",
+                      (z["order_json"], z["version"], d, z["view"], z["seg"]))
+        for pair in inv.get("pairs_renamed") or []:
+            new = pair["new"]
+            c.execute("DELETE FROM pair_override WHERE desktop=? AND view=? "
+                      "AND pose_segment=? AND above=? AND below=?",
+                      (d, new["view"], new["pose_segment"], new["above"], new["below"]))
+        for row in [p["old"] for p in inv.get("pairs_renamed") or []] + \
+                list(inv.get("pairs_dropped") or []):
+            _insert(db, "pair_override", row, replace=True)
+        for rel in inv.get("relations_renamed") or []:
+            c.execute("UPDATE relation SET target=?, blocker=? WHERE id=?",
+                      (rel["target"], rel["blocker"], rel["id"]))
+        for row in inv.get("relations_dropped") or []:
+            _insert(db, "relation", row)
+        ids = [int(i) for i in inv.get("events_moved") or []]
+        for event_id in ids:
+            c.execute("UPDATE state_event SET target=? WHERE id=?", (gone, event_id))
+        for row in inv.get("events_dropped") or []:
+            _insert(db, "state_event", row)
+        frames = _undo_frames(inv)
+        _settle(db, tax, d, frames, {})
+    return frames
 
 
 def redo_merge(db: Db, tax: Taxonomy, op: dict, annotator: str = "") -> MergeReport:

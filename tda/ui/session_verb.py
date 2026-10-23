@@ -27,15 +27,24 @@ carries the records both ways (``cage``: ``add`` / ``drop``), so Ctrl+Z takes
 the latch away with the verb and redo brings both back; the frames before the
 cage comes out are settled with the rest (frozen ones queued for a re-check, as
 after an import).
+
+**「其实只是打开了」 hangs the latch on its cage** (task U21): the blue locker
+is never taken off the cage -- it pivots open on the cage's big screw and leaves
+with it -- so a logged ``drive_latch`` flipped back to opened that the rule
+adopts for a logged ``drive_cage`` is adopted in the same op (``parent`` =
+cage, ``attached``; the patch's ``repoint``), whether or not the import had
+adopted it before, and the cage's untouched implied latch goes as above.
+Ctrl+Z hangs it back off and brings the implied latch back.
 """
 from __future__ import annotations
 
 from dataclasses import asdict, replace
 from typing import Optional
 
+from tda.core import cage_patch as P
 from tda.core.db import Db
-from tda.core.implied import OP_DELETE_IMPLIED, cage_fix, is_cage_latch
-from tda.core.model import ALL_VIEWS, FrameKey, InstanceRec, is_context_key
+from tda.core.implied import LATCH_CLASS, OP_DELETE_IMPLIED, cage_fix, is_cage_latch
+from tda.core.model import FrameKey, is_context_key
 from tda.core.states import needs_geom
 from tda.core.truth import TruthService
 from tda.core.truth_inputs import InputCache, annotatable_steps, instances_of, state_of
@@ -95,56 +104,24 @@ def apply_correct_verb(db: Db, truth: TruthService, payload: dict,
     return settle(db, truth, payload["desktop"], payload["view"], payload["reach"], current)
 
 
-#: ``payload`` / ``inverse`` key of the cage latches a correction adds and drops
-#: (task U20 review, M2): ``{"desktop", "cage", "add": [records], "drop":
-#: [records], "opens", "out_at"}`` -- the inverse has ``add`` and ``drop`` swapped.
+#: ``payload`` / ``inverse`` key of the cage latches a correction adds, drops
+#: and hangs on the cage (task U20 review, M2; task U21): ``{"desktop", "cage",
+#: "add": [records], "drop": [records], "repoint": [{"key", "before", "after"}],
+#: "opens", "out_at"}`` -- the inverse is :func:`tda.core.cage_patch.mirror`.
 CAGE_PATCH = "cage"
-#: ``relation.source`` of a derived edge: not somebody's work.
-_RULE = "rule"
-
-
-def has_work(db: Db, desktop: int, key: str) -> bool:
-    """Did a human do anything on ``key``: a shape, a hand-set state, an override, an edge?"""
-    if db.instance_reference_counts(desktop, key):
-        return True
-    if any(db.keyframes(desktop, view, key) for view in ALL_VIEWS):
-        return True
-    return any(key in (rel.get("target"), rel.get("blocker")) and rel.get("source") != _RULE
-               for rel in db.relations(desktop))
+#: Kept for the callers that imported it from here (task U20).
+has_work = P.has_work
 
 
 def apply_cage_patch(db: Db, patch: Optional[dict]) -> None:
-    """Drop, then add, the cage latches one direction of a correction carries.
+    """:func:`tda.core.cage_patch.apply_cage_patch`, refusing as the session does.
 
-    **Joins the caller's transaction.** A latch to drop that is no longer the
-    cage's implied latch, or that has work of its own now, is refused rather
-    than deleted with it; a key to add that another part holds is refused too.
+    **Joins the caller's transaction.**
     """
-    if not patch:
-        return
-    desktop = int(patch["desktop"])
-    stored = db.instances(desktop)
-    for record in patch.get("drop") or ():
-        key = str(record["key"])
-        held = stored.get(key)
-        if held is None:
-            continue                       # deleted in Steps since: nothing to take back
-        if not is_cage_latch(held):
-            raise SessionRefusal(f"{key} 已经不是机架 {patch.get('cage')} 的隐含卡扣了"
-                                 f"（在 Steps 里改过），这一步撤销不了")
-        if has_work(db, desktop, key):
-            raise SessionRefusal(f"{key} 已经画过形状或手设过状态：先撤销那些（或到 Steps 里"
-                                 f"处理），再撤销这一步")
-        db.delete_auto_events(desktop, key)
-        db.delete_instance(desktop, key)
-        del stored[key]
-    for record in patch.get("add") or ():
-        key = str(record["key"])
-        held = stored.get(key)
-        if held is not None and not is_cage_latch(held):
-            raise SessionRefusal(f"{key} 已经是另一个零件（{held.cls}）的键了：机架的隐含卡扣"
-                                 f"加不回来")
-        db.upsert_instance(InstanceRec(**record))
+    try:
+        P.apply_cage_patch(db, patch)
+    except P.CagePatchError as refused:
+        raise SessionRefusal(str(refused)) from refused
 
 
 def _cage_patch(db: Db, tax, desktop: int, fix) -> Optional[dict]:
@@ -152,7 +129,10 @@ def _cage_patch(db: Db, tax, desktop: int, fix) -> Optional[dict]:
 
     Read on the stored table with the flipped verb, before anything is
     written. A surplus implied latch that has work of its own is left where it
-    is (and said: ``kept``); ``None`` when the rule asks for nothing.
+    is (and said: ``kept``); a latch the rule adopts is hung on the cage
+    (``repoint``, task U21); ``None`` when the rule asks for nothing. ``also``
+    names the cage's other latches that are no implied ones -- D5's, added by
+    hand: the same part, merged into the locker with 「合并到…」.
     """
     instances = db.instances(desktop)
     actions = [replace(a, verb=fix.new)
@@ -162,19 +142,25 @@ def _cage_patch(db: Db, tax, desktop: int, fix) -> Optional[dict]:
                      db.ops_of_kind(desktop, OP_DELETE_IMPLIED))
     if found is None:
         return None
-    drop = [key for key in found.drop if not has_work(db, desktop, key)]
-    return {"desktop": int(desktop), "cage": found.cage,
-            "add": [asdict(rec) for rec in found.add],
-            "drop": [asdict(instances[key]) for key in drop],
-            "kept": [key for key in found.drop if key not in drop],
-            "opens": found.opens, "out_at": found.out_at}
+    drop = [key for key in found.drop if not P.has_work(db, desktop, key)]
+    repoint = [{"key": key, "before": [instances[key].parent, bool(instances[key].attached)],
+                "after": [found.cage, True]} for key in found.adopt]
+    patch = {"desktop": int(desktop), "cage": found.cage,
+             "add": [asdict(rec) for rec in found.add],
+             "drop": [asdict(instances[key]) for key in drop],
+             "kept": [key for key in found.drop if key not in drop],
+             "opens": found.opens, "out_at": found.out_at}
+    if repoint:
+        also = sorted(key for key, rec in instances.items()
+                      if rec.cls == LATCH_CLASS and rec.parent == found.cage
+                      and key not in found.adopt and not is_cage_latch(rec))
+        patch.update(repoint=repoint, adopted=list(found.adopt), also=also)
+    return patch
 
 
 def _mirror(patch: Optional[dict]) -> Optional[dict]:
     """The other direction of a cage patch: what was added is dropped, and back."""
-    if not patch:
-        return None
-    return {**patch, "add": patch["drop"], "drop": patch["add"], "kept": []}
+    return P.mirror(patch)
 
 
 def _frames(db: Db, tax, desktop: int, view: str, instance: str, steps,
@@ -211,7 +197,7 @@ def commit_verb_fix(db: Db, truth: TruthService, key: FrameKey, instance: str,
     table = sorted({int(r.step) for r in db.steps(key.desktop)})
     # the cage of an adopted latch gets (or no longer needs) its implied latch (U20, M2)
     cage = _cage_patch(db, truth.tax, key.desktop, fix)
-    moves = cage is not None and bool(cage["add"] or cage["drop"])
+    moves = cage is not None and bool(cage["add"] or cage["drop"] or cage.get("repoint"))
     out_at = cage.get("out_at") if moves else None
     reach = annotatable_steps(db, key.desktop, key.view, [
         s for s in table
@@ -247,9 +233,12 @@ def _cage_result(patch: Optional[dict]) -> Optional[dict]:
     """What the status line says about the cage (``None``: nothing happened to one)."""
     if not patch:
         return None
-    return {"cage": patch["cage"], "added": [r["key"] for r in patch["add"]],
-            "dropped": [r["key"] for r in patch["drop"]], "kept": list(patch.get("kept") or ()),
-            "opens": patch.get("opens")}
+    out = {"cage": patch["cage"], "added": [r["key"] for r in patch["add"]],
+           "dropped": [r["key"] for r in patch["drop"]], "kept": list(patch.get("kept") or ()),
+           "opens": patch.get("opens")}
+    if patch.get("adopted"):        # hung on the cage (U21); its other latches by hand
+        out.update(adopted=list(patch["adopted"]), also=list(patch.get("also") or ()))
+    return out
 
 
 class VerbMixin:
@@ -281,9 +270,13 @@ class VerbMixin:
         found = self.verb_offers(state, instances)
         captive = getattr(self, "captive_offers", None)
         screws = captive(state, instances) if callable(captive) else {}
+        # 「其实是硬盘架」 / 「其实是卡扣」 on the same button (task U21)
+        bay = getattr(self, "reclass_offers", None)
+        reclass = bay(instances) if callable(bay) else {}
         for row in rows:
             key = str(row.get("key", ""))
             row["verb_fix"] = found.get(key) or screws.get(key)
+            row["reclass"] = reclass.get(key)
         return rows
 
     def verb_gate(self, instance: str) -> str:

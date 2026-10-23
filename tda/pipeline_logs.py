@@ -14,6 +14,8 @@ steps is skipped unless ``force`` is given, and even a forced run
   ``Shift+T`` (:mod:`tda.core.verb_replay`), and the ``captive`` flag of every
   screw flipped with it (:mod:`tda.core.captive_replay`),
 * keeps the instances merged in S1 merged (:mod:`tda.core.merge_replay`),
+* keeps a part reclassed with 「其实是硬盘架」 / 「其实是卡扣」 under its new
+  class and key (:mod:`tda.core.reclass_replay`, task U21),
 * keeps a drive cage's implied latch that an annotator deleted in Steps
   deleted (:func:`tda.core.implied.cage_latches`, task U20), and
 * leaves the hand-written (``auto=False``) state events alone.
@@ -65,6 +67,7 @@ from tda.core.merge_replay import (
 )
 from tda.core.verb_replay import OP_REPLAY, Replay, replay_for_import
 from tda.core.captive_replay import OP_REPLAY_CAPTIVE, CaptiveReplay, replay_captive_for_import
+from tda.core.reclass_replay import OP_REPLAY_RECLASS, ReclassReplay, replay_reclass_for_import
 from tda.pipeline import Log, merge_desktop_meta, settle_gallery, split_pose_segments, wanted
 
 #: Mirrors :data:`tda.core.ls_import.NOTES_PREFIX`; repeated so importing the
@@ -496,12 +499,15 @@ def _cage_keys(db: Db, li: LogImport, tax: Taxonomy) -> set[str]:
     exactly what decides it: D5's "HDD shield locker" opened by the sheet is the
     cage's latch, taken out at step 10 by ``Shift+T`` it is not.
     """
-    if not any(rec.cls == CAGE_CLASS for rec in li.instances.values()):
-        return set()
     instances, actions, merges = replay_merges_for_import(db, li.desktop, li.instances,
                                                           li.actions)
+    # a latch reclassed as the cage (task U21) is a cage here too
+    instances, actions, reclass = replay_reclass_for_import(db, li.desktop, instances,
+                                                            actions, tax)
+    if not any(rec.cls == CAGE_CLASS for rec in instances.values()):
+        return set()
     actions, _replay = replay_for_import(db, li.desktop, actions, instances, tax,
-                                         rename=merges.rename)
+                                         rename=merges.rename, reclassed=reclass.renames)
     got = _cage_inputs(db, li.desktop, instances)
     plan = cage_latches(instances, actions, tax, got.extras, got.stored, got.deleted,
                         merges.rename, got.merged)
@@ -581,7 +587,12 @@ def _would_exist(db: Db, li: LogImport, tax: Taxonomy) -> set[str]:
     """
     implied = implied_instances(li.instances, li.actions, tax,
                                db.declined_implied(li.desktop))
-    return set(li.instances) | {rec.key for rec in implied} | _cage_keys(db, li, tax)
+    # the keys a reclass replay gives the parsed parts (task U21): the sheet's
+    # "HDD Locker Shield" parses to drive_latch.02, the import writes drive_cage.01
+    reclassed, _actions, _report = replay_reclass_for_import(db, li.desktop, li.instances,
+                                                             li.actions, tax)
+    return (set(li.instances) | set(reclassed) | {rec.key for rec in implied}
+            | _cage_keys(db, li, tax))
 
 
 def _hold_reasons(db: Db, desktop: int, vanished: set[str]) -> tuple[dict[str, str], int]:
@@ -855,13 +866,19 @@ def _write_import(
     db: Db, li: LogImport, tax: Taxonomy, previous: list[StepRec], plan: DropPlan,
     adopt: Optional[dict[str, str]] = None,
 ) -> tuple[int, int, int, list[str], list[str], list[str], list[str], list[str], list[str],
-           Replay, MergeReplay, CaptiveReplay, CageLatches]:
+           Replay, MergeReplay, CaptiveReplay, CageLatches, ReclassReplay]:
     """Write one desktop's import atomically.
 
     Returns ``(events, steps with LS notes, notes dropped, fills, unresolved,
     implied, dropped instances, drop issues, adopted, replay, merges, captive,
-    cage latches)``. ``adopt`` is :func:`extra_clash` when ``--adopt-extras``
-    was given (see :func:`_adopt_extras`).
+    cage latches, reclasses)``. ``adopt`` is :func:`extra_clash` when
+    ``--adopt-extras`` was given (see :func:`_adopt_extras`).
+
+    Right after the merges, every part reclassed in the app (「其实是硬盘架」 /
+    「其实是卡扣」, task U21) is made under its new class and key
+    (:mod:`tda.core.reclass_replay`), so the verb replay, the cage rule and
+    the inference below all see the cage; one ``replay_reclass`` row says
+    which were kept and which no longer fit the sheet.
 
     Right after the implied instances, every drive cage of the sheet gets its
     own latch (:func:`add_cage_latches`, task U20) -- adopted from the sheet,
@@ -909,11 +926,15 @@ def _write_import(
     # replaces, before anything else looks at the parsed records
     li.instances, li.actions, merges = replay_merges_for_import(
         db, li.desktop, li.instances, li.actions)
+    # the parts reclassed in the app (task U21): made under their new class and
+    # key here, before the verb replay, which follows the old keys to them
+    li.instances, li.actions, reclass = replay_reclass_for_import(
+        db, li.desktop, li.instances, li.actions, tax)
     # the verbs of the actions corrected with Shift+T, read off the step table
     # this replaces and put back onto the parsed actions (task U9), so the
     # events and the relational inference below see the corrected verbs
     li.actions, replay = replay_for_import(db, li.desktop, li.actions, li.instances, tax,
-                                           rename=merges.rename)
+                                           rename=merges.rename, reclassed=reclass.renames)
     # the captive flag of the screws flipped with Shift+T (task U14), read off
     # the instance table this replaces, before the inference fills parents
     li.instances, captive = replay_captive_for_import(db, li.desktop, li.instances,
@@ -939,6 +960,9 @@ def _write_import(
         if merges:
             db.log_op(li.desktop, OP_VIEW, OP_REPLAY_MERGES, merges.payload(),
                       merges.inverse, IMPLIED_ANNOTATOR)
+        if reclass:
+            db.log_op(li.desktop, OP_VIEW, OP_REPLAY_RECLASS, reclass.payload(),
+                      reclass.inverse, IMPLIED_ANNOTATOR)
         adopted = _adopt_extras(db, li.desktop, adopt)
         implied = add_implied_instances(db, li, tax)
         cage = add_cage_latches(db, li, tax, cage_inputs, merges.rename)
@@ -958,7 +982,7 @@ def _write_import(
         split_pose_segments(db, li.desktop)
     return (len(events), kept, dropped, fills,
             unresolved_relations(li.instances, tax, li.actions, declined), implied,
-            gone, drop_issues, adopted, replay, merges, captive, cage)
+            gone, drop_issues, adopted, replay, merges, captive, cage, reclass)
 
 
 def dropped_notes_line(desktop: int, dropped: int) -> str:
@@ -991,7 +1015,8 @@ def _force_warning(db: Db, desktop: int, previous: list[StepRec]) -> str:
         f"{len(db.actions(desktop))} actions; {notes}the open/remove corrections made "
         f"with Shift+T are replayed where the sheet still has that action, the captive "
         f"flags flipped with Shift+T where it still has that screw, and so are "
-        f"the instances merged in S1 (合并到…); every other "
+        f"the instances merged in S1 (合并到…) and the parts reclassed (其实是硬盘架 / "
+        f"其实是卡扣) where the sheet still names them; every other "
         f"manual edit to the step table is lost, and so is every relational field a "
         f"human set on an instance "
         f"(fastens, parent, mounted_on, socket_host): the instances are re-created from "
@@ -1112,14 +1137,14 @@ def _import_one(
             f"kept the file's number"
         )
     (events, kept, dropped, fills, unresolved, implied,
-     gone, drop_issues, adopted, replay, merges, captive, cage) = _write_import(
+     gone, drop_issues, adopted, replay, merges, captive, cage, reclass) = _write_import(
         db, li, tax, previous, plan, clash)
     extras_kept = extra_keys(db.instances(desktop))
     if dropped:
         issues.append(dropped_notes_line(desktop, dropped))
     corrections = ([replay.kept_line()] if replay.kept_line() else []) + \
         replay.unmatched_lines() + \
-        merges.lines(skip={e["latch"] for e in cage.merged}) + \
+        merges.lines(skip={e["latch"] for e in cage.merged}) + reclass.lines() + \
         ([captive.kept_line()] if captive.kept_line() else []) + captive.unmatched_lines()
     issues.extend(drop_issues)
     if log:

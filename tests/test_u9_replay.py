@@ -35,8 +35,12 @@ from tda.ui.steps_model import StepTableData
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "logs"
 D2 = 2
 KEY = FrameKey(D2, 48, "scan")
-SIX = {"cooler_latch.01": 2, "drive_latch.01": 12, "drive_latch.02": 17, "cover.01": 38,
-       "cover.02": 46, "psu_latch.01": 47}
+#: The parts said with Shift+T to be taken out. Task U21: D2's "remove SSD
+#: locker shield" (step 17) is the cage now -- the sheet's own ``remove``, no
+#: correction -- and its "SSD Locker" (step 12) is the cage's latch, which the
+#: old drafts had taken out and the annotator says was only opened.
+SIX = {"cooler_latch.01": 2, "cover.01": 38, "cover.02": 46, "psu_latch.01": 47}
+LOCKER, LOCKER_STEP = "drive_latch.01", 12
 
 
 @pytest.fixture(scope="module")
@@ -64,23 +68,25 @@ def verbs(db: Db) -> dict[str, tuple[int, str]]:
 
 
 def old_import(tmp_path: Path, tax) -> Db:
-    """D2 as the importer drafted it before C: step 17 ``open`` too."""
+    """D2 imported, the SSD locker at 12 ``remove`` as the live D2 had it before U21."""
     db = Db(str(tmp_path / "tda.sqlite"))
     import_logs_into_db(db, sheets(tmp_path), tax, desktops={D2})
     data = StepTableData.load(db, D2, tax)
-    data.apply_edit(17, "verb", "open")
+    data.apply_edit(LOCKER_STEP, "verb", "remove")
     data.save(db)
     return db
 
 
 @pytest.fixture
 def corrected(tmp_path, tax):
-    """The six corrections made with Shift+T."""
+    """The four corrections made with Shift+T, and the locker said only opened."""
     db = old_import(tmp_path, tax)
     truth = TruthService(db, tax)
     for target in SIX:
         commit_verb_fix(db, truth, KEY, target, "remove", "tester")
+    commit_verb_fix(db, truth, FrameKey(D2, LOCKER_STEP, "scan"), LOCKER, "open", "tester")
     assert all(verbs(db)[t] == (s, "remove") for t, s in SIX.items())
+    assert verbs(db)[LOCKER] == (LOCKER_STEP, "open")
     yield db, truth
     db.close()
 
@@ -92,20 +98,21 @@ def test_the_six_corrections_survive_a_forced_re_import(corrected, tmp_path, tax
                               log=printed.append)
     assert [r.status for r in run.runs] == ["imported"]
     assert {t: verbs(db)[t] for t in SIX} == {t: (s, "remove") for t, s in SIX.items()}
+    assert verbs(db)[LOCKER] == (LOCKER_STEP, "open")
     assert not validate_events(db.instances(D2), events_of(db, tax, D2), tax)
     op = db.ops_of_kind(D2, OP_REPLAY)[-1]
     kept = {(e["step"], e["target"], e["verb"], e["sheet"]) for e in op["payload"]["kept"]}
-    assert kept == {(s, t, "remove", "open") for t, s in SIX.items() if t != "drive_latch.02"}
-    # the sheet itself says "remove SSD locker shield" now (C): it already agrees
+    assert kept == {(s, t, "remove", "open") for t, s in SIX.items()}
+    # the sheet itself says the locker was opened: it already agrees
     assert [(e["step"], e["target"], e["verb"]) for e in op["payload"]["agrees"]] == \
-        [(17, "drive_latch.02", "remove")]
+        [(LOCKER_STEP, LOCKER, "open")]
     assert op["payload"]["unmatched"] == []
-    assert sorted(a["verb"] for a in op["inverse"]["actions"]) == ["open"] * 5
+    assert sorted(a["verb"] for a in op["inverse"]["actions"]) == ["open"] * 4
     text = "\n".join(printed)
     assert "Shift+T are replayed" in text                       # the --force warning
-    assert "kept the annotator's verb on 5 action(s): step 2 cooler_latch.01 remove " \
+    assert "kept the annotator's verb on 4 action(s): step 2 cooler_latch.01 remove " \
            "(sheet: open)" in text
-    assert "the sheet already agrees on 1: step 17 drive_latch.02 remove" in text
+    assert "the sheet already agrees on 1: step 12 drive_latch.01 open" in text
     assert run.runs[0].corrections[0].startswith("Shift+T corrections: kept")
 
 
@@ -136,7 +143,7 @@ def test_an_action_the_new_sheet_no_longer_has_is_reported_not_applied(
     assert "card_latch.01" in missed["why"]
     assert any("Shift+T correction not matched: step 47 psu_latch.01" in line
                for line in printed)
-    assert len(op["payload"]["kept"]) == 4                      # the other five stay
+    assert len(op["payload"]["kept"]) == 3                      # the other four stay
     assert len(op["payload"]["agrees"]) == 1
 
 

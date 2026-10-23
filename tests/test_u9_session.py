@@ -229,13 +229,21 @@ def test_only_opened_puts_a_removed_part_back(session):
     fix = result["fix"]
     assert (fix.step, fix.old, fix.new) == (7, "remove", "open")
     assert verbs(session, LATCH) == [(7, "open")]
-    assert result["lost"] == [] and result["todo"] == list(range(7, LAST + 1))
-    assert held(session, LAST, LATCH) == "open"
+    # task U21: the SSD shield locker only opened is the cage's latch -- hung on
+    # drive_cage.01 in the same op, it leaves with the cage at 11
+    assert result["cage"]["adopted"] == [LATCH]
+    assert result["lost"] == [] and result["todo"] == list(range(7, 11))
+    assert held(session, 10, LATCH) == "open" and held(session, LAST, LATCH) == "removed"
+    rec = session.db.instances(DESKTOP)[LATCH]
+    assert (rec.parent, rec.attached) == ("drive_cage.01", True)
+    session.goto(10)
     assert LATCH in {i for i, _k, _f in card(session)}
     op = session.db.ops(DESKTOP, VIEW, limit=1)[0]
     assert (op["payload"]["verb"], op["inverse"]["verb"]) == ("open", "remove")
     assert session.undo()
     assert verbs(session, LATCH) == [(7, "remove")]
+    rec = session.db.instances(DESKTOP)[LATCH]
+    assert (rec.parent, rec.attached) == (None, False)
 
 
 def test_a_part_that_left_with_its_parent_is_not_its_own_removal(session):
