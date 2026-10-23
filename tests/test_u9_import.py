@@ -51,7 +51,9 @@ RAW_NAMES = [
     ("Power Module Blocker", "psu_latch", "open"),
     ("SSD Locker", "drive_latch", "open"),
     ("release cpu fan", "cooler_latch", "open"),
-    ("remove SSD locker shield", "drive_latch", "remove"),
+    # task U21: "... locker shield" is the shield, the cage, which only comes out
+    ("remove SSD locker shield", "drive_cage", "remove"),
+    ("remove SSD shield locker", "drive_latch", "remove"),
     ("Remove GPU locker", "card_latch", "remove"),
     ("take out power module locker", "psu_latch", "remove"),
     ("CPU fan locker - TAKE", "cooler_latch", "remove"),
@@ -86,12 +88,12 @@ def test_the_import_drafts_remove_and_keeps_the_parts_apart(tax):
 
     Which part a row names is still decided on the drafted verb: with
     ``remove`` the unnumbered displace-then-remove rule would have merged the
-    shield into the locker opened before it.
+    shield into the locker opened before it. Task U21: the shield is the cage.
     """
     li = synth(["SSD Locker", "remove SSD locker shield", "Screw Cover"], tax)
     assert [(a.step, a.target, a.verb) for a in li.actions] == [
         (2, "drive_latch.01", "open"),
-        (3, "drive_latch.02", "remove"),
+        (3, "drive_cage.01", "remove"),
         (4, "cover.01", "open"),
     ]
     assert not [i for i in li.issues if "does not apply" in i or "reuses" in i]

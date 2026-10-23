@@ -259,8 +259,36 @@ def test_capture_marker_carries_no_instance():
 def test_prefix_verb_is_remapped_per_class():
     assert parse_raw_name("Remove RAM cover", "").verb == "remove"          # cover
     assert parse_raw_name("Remove GPU", "").verb == "remove"                # part
-    assert parse_raw_name("remove SSD locker shield", "").verb == "open"    # latch
+    assert parse_raw_name("remove SSD locker", "").verb == "open"           # latch
     assert parse_raw_name("Remove heatsink broken screw 1", "").verb == "unscrew"
+
+
+#: Task U21: the head noun -- the last word -- decides between the drive
+#: shield (the cage) and the locker that locks it. Every spelling of the 66
+#: sheets, and the verb each one drafts.
+SHIELD_OR_LOCKER = [
+    ("remove SSD locker shield", "drive_cage", "ssd", "remove"),    # D2 step 17
+    ("HDD Locker Shield", "drive_cage", "hdd", "remove"),           # D3 step 11
+    ("HDD Shield Locker", "drive_latch", "hdd", "open"),            # D4 step 13
+    ("HDD shield locker", "drive_latch", "hdd", "open"),            # D5-D7 step 10
+    ("SSD shield locker", "drive_latch", "ssd", "open"),            # D9-D21
+    ("SSD Locker", "drive_latch", "ssd", "open"),                   # D2 step 12
+    ("HDD Locker", "drive_latch", "hdd", "open"),                   # D3 step 10
+    ("HDD shield", "drive_cage", "hdd", "remove"),                  # D5-D7 step 14
+    ("SSD shield", "drive_cage", "ssd", "remove"),
+]
+
+
+@pytest.mark.parametrize("raw,cls,of,verb", SHIELD_OR_LOCKER,
+                         ids=[row[0] for row in SHIELD_OR_LOCKER])
+def test_the_head_noun_decides_shield_or_locker(raw, cls, of, verb):
+    from tda.core.logs import sheet_verb
+
+    p = parse_raw_name(raw, "")
+    assert (p.cls, p.attrs.get("of")) == (cls, of)
+    assert p.canon_group == ("drive shield/cage/cover" if cls == "drive_cage"
+                             else "drive shield/cage locker")
+    assert sheet_verb(p.cls, raw, p.verb, load_taxonomy()) == verb
 
 
 def test_unknown_name_falls_back():

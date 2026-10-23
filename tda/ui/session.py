@@ -48,6 +48,7 @@ from tda.ui.session_truth import TruthCacheMixin
 from tda.ui.session_sweep import TruthSweeper
 from tda.ui.session_verb import VerbMixin, apply_correct_verb
 from tda.ui.session_captive import CaptiveMixin, apply_captive_fix
+from tda.ui.session_reclass import ReclassMixin, apply_reclass
 from tda.ui.session_context import OP_KIND as CONTEXT_OP
 from tda.ui.session_context import ContextMixin, apply_context
 
@@ -56,7 +57,7 @@ __all__ = ["AnnotationSession"]
 log = logging.getLogger("tda.session")
 
 class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, CaptiveMixin,
-                        CableMixin, ContextMixin, TruthCacheMixin, QObject):
+                        ReclassMixin, CableMixin, ContextMixin, TruthCacheMixin, QObject):
     """One annotator's working set: a desktop, a view, and the frame in hand."""
 
     #: The current frame changed; payload is a :class:`~tda.core.model.FrameKey`.
@@ -143,6 +144,7 @@ class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, Captive
             ("assert_state", apply_assert_state),   # task U8
             ("correct_verb", apply_correct_verb),   # task U9
             ("captive_fix", apply_captive_fix),     # task U14
+            ("reclass_instance", apply_reclass),    # task U21
         ):
             handler = self._make_handler(apply)
             self.undo_stack.register(kind, handler, handler)

@@ -57,6 +57,9 @@ def test_the_spec_has_the_paragraph_in_3_2_and_v1_20_on_top():
                    "COCO `implied: true`", "规则只在导入时生效"):
         assert needed in section, needed
     changes = body.split("## 14. 修订记录", 1)[1]
-    first = next(line for line in changes.splitlines() if line.startswith("- "))
-    assert first.startswith("- **v1.20（2026-10-22）**：**机架自带卡扣**（U20，§3.2）")
+    entries = [line for line in changes.splitlines() if line.startswith("- ")]
+    # on top when it landed; U21's v1.21 has gone above it since
+    assert entries[0].startswith(("- **v1.20", "- **v1.21"))
+    assert any(e.startswith("- **v1.20（2026-10-22）**：**机架自带卡扣**（U20，§3.2）")
+               for e in entries[:2])
     assert changes.index("- **v1.20") < changes.index("- **v1.19")

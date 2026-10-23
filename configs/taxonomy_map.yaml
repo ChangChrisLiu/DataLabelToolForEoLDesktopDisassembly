@@ -375,14 +375,30 @@ rules:
     cls: optical_drive
     canon_group: "optical drive"
 
+  # The head noun decides (task U21): "... locker shield" is the shield, i.e.
+  # the cage (D2 "remove SSD locker shield", D3 "HDD Locker Shield"), and
+  # "... shield locker" the small blue locker that locks it (D5-D21). These two
+  # come first: the locker rules below would read "ssd locker" out of them.
+  - name: drive_cage_ssd_locker_shield
+    pattern: 'ssd locker shield'
+    cls: drive_cage
+    attrs: {of: ssd}
+    canon_group: "drive shield/cage/cover"
+
+  - name: drive_cage_hdd_locker_shield
+    pattern: 'hdd locker shield'
+    cls: drive_cage
+    attrs: {of: hdd}
+    canon_group: "drive shield/cage/cover"
+
   - name: drive_latch_ssd
-    pattern: 'ssd (shield )?locker|ssd locker shield'
+    pattern: 'ssd (shield )?locker'
     cls: drive_latch
     attrs: {of: ssd}
     canon_group: "drive shield/cage locker"
 
   - name: drive_latch_hdd
-    pattern: 'hdd (shield )?locker|hdd locker shield'
+    pattern: 'hdd (shield )?locker'
     cls: drive_latch
     attrs: {of: hdd}
     canon_group: "drive shield/cage locker"
