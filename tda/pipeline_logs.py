@@ -589,8 +589,10 @@ def _would_exist(db: Db, li: LogImport, tax: Taxonomy) -> set[str]:
                                db.declined_implied(li.desktop))
     # the keys a reclass replay gives the parsed parts (task U21): the sheet's
     # "HDD Locker Shield" parses to drive_latch.02, the import writes drive_cage.01
-    reclassed, _actions, _report = replay_reclass_for_import(db, li.desktop, li.instances,
-                                                             li.actions, tax)
+    merged, actions, _merges = replay_merges_for_import(db, li.desktop, li.instances,
+                                                        li.actions)
+    reclassed, _actions, _report = replay_reclass_for_import(db, li.desktop, merged, actions,
+                                                             tax)
     return (set(li.instances) | set(reclassed) | {rec.key for rec in implied}
             | _cage_keys(db, li, tax))
 

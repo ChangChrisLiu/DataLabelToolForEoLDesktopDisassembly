@@ -116,8 +116,10 @@ def _history_keys(db: Db, desktop: int, cls: str) -> set[str]:
     """Every ``<cls>.NN`` key the op log of ``desktop`` names, payload or inverse."""
     pattern = re.compile(rf"\b{re.escape(cls)}\.\d+\b")
     found: set[str] = set()
-    for row in db.conn.execute("SELECT payload_json, inverse_json FROM op_log WHERE desktop=?",
-                               (int(desktop),)):
+    like = f"%{cls}.%"
+    for row in db.conn.execute(
+            "SELECT payload_json, inverse_json FROM op_log WHERE desktop=? "
+            "AND (payload_json LIKE ? OR inverse_json LIKE ?)", (int(desktop), like, like)):
         for text in row:
             found.update(pattern.findall(str(text or "")))
     return found
