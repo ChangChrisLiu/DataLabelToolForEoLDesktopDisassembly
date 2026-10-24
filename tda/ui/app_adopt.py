@@ -58,12 +58,13 @@ ADOPT_REVIVED = "（其中 {px:,} px 是你擦掉过的 / {px:,} of them had bee
 #: Shown when ``Shift+A`` is pressed with nothing being edited.
 ADOPT_NEEDS_INSTANCE = ("先双击任务卡或实例表里的一条再按 Shift+A  "
                         "(adopt needs an instance being edited)")
-#: Shown when another non-modal bar already owns ``Enter`` / ``Esc``.
-ADOPT_BUSY = ("先处理屏幕下方那条提示（Enter / Esc）再采纳草稿  "
-              "(answer the bar that owns Enter/Esc first)")
-#: Shown when a commit key that is not ``Enter`` is pressed under a ghost.
-ADOPT_FIRST = ("先处理草稿预览：Enter 采纳 / Esc 取消  "
-               "(finish the draft preview first: Enter adopt / Esc cancel)")
+#: Shown when another non-modal bar already owns the commit key / ``Esc``
+#: (``Q``, or its alias ``Enter``, since task U22).
+ADOPT_BUSY = ("先处理屏幕下方那条提示（Q / Esc）再采纳草稿  "
+              "(answer the bar that owns Q/Esc first)")
+#: Shown when a commit key that is not plain ``Q`` / ``Enter`` is pressed under a ghost.
+ADOPT_FIRST = ("先处理草稿预览：Q 采纳 / Esc 取消  "
+               "(finish the draft preview first: Q adopt / Esc cancel)")
 #: Shown in Steps or Review mode, where there is no editing layer to adopt into.
 ADOPT_WRONG_MODE = "切到标注模式再采纳草稿 / switch to Annotate mode to adopt a draft"
 #: Shown on a frame this view never photographed.
@@ -293,7 +294,7 @@ class AdoptMixin:
         self.report(
             f"草稿 {self._draft_index + 1}/{len(self._draft_candidates)}："
             f"{other_class}{candidate.key} @ step {candidate.step} "
-            f"({candidate.area} px){seen} —— Enter 采纳 / Esc 取消  "
+            f"({candidate.area} px){seen} —— Q 采纳 / Esc 取消  "
             f"(Shift+A for the next one)"
         )
 
@@ -355,7 +356,7 @@ class AdoptMixin:
         self.report(f"采纳 {candidate.key}（{'替换' if empty else '并入'}编辑层）/ "
                     f"{'replaced' if empty else 'unioned'} from {candidate.key}"
                     f"{ADOPT_REVIVED.format(px=back) if back else ''} "
-                    f"— Enter 提交 / Esc 放弃")
+                    f"— Q 提交 / Esc 放弃")
         return True
 
     def refuse_under_ghost(self) -> bool:

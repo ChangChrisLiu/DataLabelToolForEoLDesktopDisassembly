@@ -117,7 +117,7 @@ NOT_DRAWN = "—"
 NOT_DRAWN_TIP = "还没画：这一帧还没有它的形状 / not drawn yet"
 #: The Vis cell's tooltip of a part 被线挡住 here (task U15).
 CABLE_TIP = ("这一帧被线挡住（{how}）：零件在原位，形状保留；导出时写明被线缆挡住。"
-             "选中后再按 I 换（完全 → 部分 → 撤回），Ctrl+Z 撤销 / hidden by a cable")
+             "选中后再按 ` 键换（完全 → 部分 → 撤回），Ctrl+Z 撤销 / hidden by a cable")
 
 
 def _short(value: str) -> str:
@@ -128,17 +128,6 @@ def _not_drawn(data: dict, gone: bool) -> bool:
     """No shape on this frame and no label set by hand: nothing to call visible."""
     return (not gone and not data.get("vis_override")
             and not data.get("has_shape", True))
-
-#: Number keys ``1``-``7`` (spec 6.2 order, see :data:`api.VISIBILITY_VALUES`).
-_NUMBER_KEYS = (
-    Qt.Key.Key_1,
-    Qt.Key.Key_2,
-    Qt.Key.Key_3,
-    Qt.Key.Key_4,
-    Qt.Key.Key_5,
-    Qt.Key.Key_6,
-    Qt.Key.Key_7,
-)
 
 
 class InstanceListPanel(QWidget):
@@ -343,7 +332,7 @@ class InstanceListPanel(QWidget):
             self._table.setUpdatesEnabled(True)
         # A removed part has no compiled row any more, so the table shrinks as
         # the teardown proceeds: a selection that is gone must clear rather than
-        # leave H / V / 1-7 acting on a key this frame no longer has.
+        # leave H / Ctrl+V / Ctrl+1-7 acting on a key this frame no longer has.
         if keep is None or not self.select_instance(keep):
             self._table.setCurrentCell(-1, -1)
         self._sync_state_combo()
@@ -389,12 +378,12 @@ class InstanceListPanel(QWidget):
             return item
         item.setBackground(QBrush(OVERRIDE_COLOR))
         note = (f"这一帧手动设的可见性：{visibility_zh(value)}"
-                f"（选中后按 1–7 改，Ctrl+Z 撤销）")
+                f"（选中后按 Ctrl+1–7 改，Ctrl+Z 撤销）")
         if data.get("has_shape") and value in HIDING_VISIBILITY:
             item.setText(f"⚠ {_short(value)}")
             item.setForeground(QBrush(WARN_COLOR))
             note = (f"已设为不可见（{visibility_zh(value)}）：它画好了，但这一帧不显示"
-                    f"它的形状；选中后按 1 改回可见，或 Ctrl+Z 撤销")
+                    f"它的形状；选中后按 Ctrl+1 改回可见，或 Ctrl+Z 撤销")
         item.setToolTip(note)
         return item
 

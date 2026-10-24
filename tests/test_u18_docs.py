@@ -23,7 +23,10 @@ def test_the_key_table_has_the_right_click_row_and_the_window_its_slot():
 
     [entry] = A.MENU_ENTRIES
     assert entry.where == "右键画布 → 框外零件…" and T.MENU_TEXT in entry.where
-    row = f"| `{entry.where}` | {entry.label_zh} |"
+    # the label names the grave key (U22): escaped in the Markdown cell, so its
+    # two backticks do not open a code span
+    assert "选中按 ` 键（Ctrl+` 一段）" in entry.label_zh
+    row = f"| `{entry.where}` | {entry.label_zh.replace('`', chr(92) + '`')} |"
     assert row in A.shortcut_markdown()
     assert row in GUIDE.read_text(encoding="utf-8")         # regenerated, not copied
     assert entry.where in A.cheat_sheet_html()
@@ -47,7 +50,8 @@ def test_the_quickstart_has_one_short_section_with_the_example():
     assert body.count(head) == 1
     section = body.split(head, 1)[1].split("\n#", 1)[0]
     for needed in ("假设的例子", "假如 D5 第 20 帧", "右键", "「框外零件…」", "cooler_bracket",
-                   "`Enter`", "第 10 帧", "`I`", "「不在」", "`Ctrl+I`",
+                   # the keys since U22 (`Enter`, `I`, `Ctrl+I` before)
+                   "`Q`", "第 10 帧", "`` ` ``", "「不在」", "`` Ctrl+` ``",
                    # review M4: what it does to frames already confirmed
                    "已经确认过的帧复检时会回到待复核", "再按一次 `Space`"):
         assert needed in section, needed

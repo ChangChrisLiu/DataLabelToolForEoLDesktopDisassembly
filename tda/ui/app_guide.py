@@ -48,20 +48,21 @@ __all__ = ["BANNER_CIRCLE", "BANNER_CUT_COPY", "BANNER_EMPTY", "BANNER_PIXELS",
 
 #: The banner's two endings (ruling U2b-4).
 BANNER_EMPTY = "用 S 在零件上点一下，或 X 拖框"
-BANNER_EMPTY_NO_SAM = "用 B 画笔涂出它（SAM 还没准备好）"
-BANNER_PIXELS = "Enter 提交 / Esc 放弃"
-#: A ✂ row: a new version from this frame on -- what Enter writes there (U16;
-#: Ctrl+K before it, U2b round 2, I1).
-BANNER_SPLIT = "Enter 从这帧起新版本 / Esc 放弃"
-#: A stored shape, loaded and untouched: Enter has nothing to write (item 2).
-BANNER_LOADED = "这是已存的形状：要改就画，改完 Enter；不改按 Esc"
-BANNER_LOADED_SPLIT = "这是前一版的形状：画出这一帧的样子，Enter 提交；不改按 Esc"
+BANNER_EMPTY_NO_SAM = "用 W 画笔涂出它（SAM 还没准备好）"
+#: The commit key is ``Q`` since task U22 (Enter its alias).
+BANNER_PIXELS = "Q 提交 / Esc 放弃"
+#: A ✂ row: a new version from this frame on -- what the commit writes there
+#: (U16; Ctrl+K before it, U2b round 2, I1).
+BANNER_SPLIT = "Q 从这帧起新版本 / Esc 放弃"
+#: A stored shape, loaded and untouched: the commit has nothing to write (item 2).
+BANNER_LOADED = "这是已存的形状：要改就画，改完 Q；不改按 Esc"
+BANNER_LOADED_SPLIT = "这是前一版的形状：画出这一帧的样子，Q 提交；不改按 Esc"
 #: A ✂ row whose frame shows a cut copy (U11 round 2): the row's own sentence.
-BANNER_CUT_COPY = ("待画：这帧上是另一状态的形状副本，画好后 Enter"
+BANNER_CUT_COPY = ("待画：这帧上是另一状态的形状副本，画好后 Q"
                    "（形状确实没变：Ctrl+Shift+K）/ Esc 放弃")
-#: A ``P`` polygon or a ``Y`` circle half drawn (task U5a): Enter and Esc are
+#: A polygon or a circle half drawn (task U5a): the commit key and Esc are
 #: the shape's until it is filled or dropped.
-BANNER_POLYGON = "多边形 {n} 个点：Enter / 双击 / 点回起点 填上，Backspace 删点，Esc 取消"
+BANNER_POLYGON = "多边形 {n} 个点：Q / 双击 / 点回起点 填上，Backspace 删点，Esc 取消"
 BANNER_CIRCLE = "圆形：拖到零件边缘松手填上，Esc 取消"
 #: How long the pointer rests on a card row before its outline is looked up.
 #: Passing over rows on the way to another one should not cost a query each.
@@ -299,12 +300,12 @@ class GuideMixin:
             if tool in _SAM_TOOLS and not self.sam_available:
                 enabled = False
                 why = (self.sam_refusal() if self.sam_failure_reason() else
-                       f"SAM 还没准备好（{self.sam_reason}）：先用画笔 B；"
+                       f"SAM 还没准备好（{self.sam_reason}）：先用画笔 W；"
                        f"右下角出现 SAM ready 后就能用")
             elif tool == "roi" and facts.layer_dirty:
-                enabled, why = False, "编辑层有未提交的像素：先 Enter 提交或 Esc 放弃"
+                enabled, why = False, "编辑层有未提交的像素：先 Q 提交或 Esc 放弃"
             elif tool == "bench_box" and not self._bench_box_usable():
-                # U2a's own sentence for a bare R, on the button too (round 3).
+                # U2a's own sentence for a bare V (R before U22), on the button too.
                 enabled, why = False, BENCH_NEEDS_ITEM
             states[name] = (enabled, armed == tool, why)
 
@@ -323,9 +324,9 @@ class GuideMixin:
         if facts.shape:
             why_scope = SHAPE_BUSY
         elif facts.ghost:
-            why_scope = "先处理草稿预览：Enter 采纳 / Esc 取消"
+            why_scope = "先处理草稿预览：Q 采纳 / Esc 取消"
         elif facts.roi_editing:
-            why_scope = "ROI 框开着：先 Enter 保存或 Esc 跳过"
+            why_scope = "ROI 框开着：先 Q 保存或 Esc 跳过"
         else:
             why_scope = nothing
         scoped = bool(not closed and dirty and not facts.ghost and not facts.roi_editing
@@ -345,9 +346,9 @@ class GuideMixin:
         if facts.shape:
             why_confirm = SHAPE_BUSY
         elif dirty:
-            why_confirm = "有未提交的修改：先 Enter 提交或 Esc 放弃"
+            why_confirm = "有未提交的修改：先 Q 提交或 Esc 放弃"
         elif facts.ghost:
-            why_confirm = "先处理草稿预览：Enter 采纳 / Esc 取消"
+            why_confirm = "先处理草稿预览：Q 采纳 / Esc 取消"
         else:
             why_confirm = ""
         states["confirm"] = (bool(not closed and not why_confirm), False,

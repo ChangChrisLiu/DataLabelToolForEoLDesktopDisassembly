@@ -420,7 +420,7 @@ def test_b_enter_on_the_top_boundary_is_refused(frozen):
     s.set_editing_mask(rect(2, 2, 30, 12, HW256))
     assert s.enter_scope() == api.SCOPE_SPLIT          # what Enter writes here (U16)
     with pytest.raises(SessionRefusal,
-                       match="这一帧是状态边界（✂）：改全部会把第 38–42 步.*用 Enter"):
+                       match="这一帧是状态边界（✂）：改全部会把第 38–42 步.*用 Q"):
         s.commit_edit(api.SCOPE_KEYFRAME)
     s.clear_edit()
     assert _anchors(s) == [42]

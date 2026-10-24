@@ -283,7 +283,7 @@ def test_the_detector_chip_follows_sam(qapp, tmp_path):
         assert win._prompt_box == fbox(A_BOX)        # the box is still shown
         assert win.canvas.prompt_band() == (fbox(A_BOX), DET_CHIP_NO_SAM.format(name="螺丝"))
         assert DET_CHIP_NO_SAM.format(name="螺丝") == \
-            "检测器找到的螺丝（SAM 未加载：Y 拖一下就画好）"
+            "检测器找到的螺丝（SAM 未加载：R 拖一下就画好）"      # Y until U22
 
         win.set_sam_queue(StubSamQueue(), owns=False)      # SAM arrives
         assert win.canvas.prompt_band() == (fbox(A_BOX), DET_CHIP.format(name="螺丝"))

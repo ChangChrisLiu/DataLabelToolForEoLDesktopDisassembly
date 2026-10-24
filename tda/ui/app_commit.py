@@ -38,33 +38,34 @@ SPLIT_PREFIX = "split+"
 NOTHING_TO_COMMIT = "没有可提交的修改 / nothing to commit on this layer"
 #: ``Ctrl+Enter`` (改全部) on the frame where the version in force starts: it is
 #: what ``Enter`` writes there, and it says so (task U16).
-ALL_IS_ENTER = "这一帧就是这版形状的起点：改全部和 Enter 一样，重画的就是这一版"
+ALL_IS_ENTER = "这一帧就是这版形状的起点：改全部和 Q 一样，重画的就是这一版"
 #: A shape committed on a components-gallery part marked 「看不见」 (task U10).
 ABSENT_CLEARED = ("画好了；它在这张里，「看不见」已取消（Ctrl+Z 一起撤回）/ drawn: it is in "
                   "this shot, so 'not in this shot' was taken back")
 #: ``Enter`` on an open ✂ row with the layer untouched (U8 round 2b): the
 #: version boundary is cut here and the shape on this side stays as it is.
-SPLIT_UNCHANGED = ("已在这帧切出新版本（形状不变）：另一侧的帧现在单独一版，到那边用 Enter "
+SPLIT_UNCHANGED = ("已在这帧切出新版本（形状不变）：另一侧的帧现在单独一版，到那边用 Q "
                    "改它，只影响那一段")
-#: ``Enter`` (or ``L``) while 改全部 asks: neither is the answer (task U16).
-ALL_ASKED = ("还没改：再按 Ctrl+Enter（或点「Ctrl+Enter 确定改全部」）确定，Esc 取消 / "
-             "press Ctrl+Enter again to write it everywhere, Esc to cancel")
+#: The commit (``Q``) or ``L`` while 改全部 asks: neither is the answer (task U16).
+ALL_ASKED = ("还没改：再按 Ctrl+Q（或点「Ctrl+Q 确定改全部」）确定，Esc 取消 / "
+             "press Ctrl+Q again to write it everywhere, Esc to cancel")
 ALL_CANCELLED = "没有改全部 / nothing was written"
 #: The scope bar's 改全部 button, before and while the question is asked.
-ALL_BUTTON = "Ctrl+Enter 改全部"
-ALL_BUTTON_CONFIRM = "Ctrl+Enter 确定改全部"
-#: After ``Enter`` wrote a split because the version was carried (task U16):
+ALL_BUTTON = "Ctrl+Q 改全部"
+ALL_BUTTON_CONFIRM = "Ctrl+Q 确定改全部"
+#: After the commit wrote a split because the version was carried (task U16):
 #: the frames behind that keep the old shape, and the key that reaches them.
-BEHIND_KEPT = "已从这帧起新版本；第 {steps} 帧{confirmed}仍是旧样子，要一起改用 Ctrl+Enter"
-#: ``Ctrl+Enter`` on a version that starts here, the frames behind on the
+BEHIND_KEPT = "已从这帧起新版本；第 {steps} 帧{confirmed}仍是旧样子，要一起改用 Ctrl+Q"
+#: 改全部 on a version that starts here, the frames behind on the
 #: previous one (U16 review): asked first when confirmed frames are among them,
 #: and said once written.
-INTO_QUESTION = ("把这版形状也写到第 {steps} 帧{confirmed}？再按 Ctrl+Enter（或点「"
+INTO_QUESTION = ("把这版形状也写到第 {steps} 帧{confirmed}？再按 Ctrl+Q（或点「"
                  + ALL_BUTTON_CONFIRM + "」）确定，Esc 取消")
 INTO_DONE = "已把这版形状也写到第 {steps} 帧{confirmed}"
-#: The key of each commit action, as the area warning names it (task U16).
-WARNING_KEYS = {"commit": "Enter", "commit_all": "Ctrl+Enter",
-                "commit_override": "Alt+Enter"}
+#: The key of each commit action, as the area warning names it (task U16):
+#: read off the key map, so it is the left-hand key since task U22.
+WARNING_KEYS = {name: A.action_named(name).keys[0]
+                for name in ("commit", "commit_all", "commit_override")}
 #: ``L`` with no layering suggestion on the bar.
 NO_LAYERING = ("L 只用来回答画布下方的层级建议；现在没有层级建议 / L answers a "
                "layering suggestion, and none is open")
@@ -270,8 +271,8 @@ class CommitMixin:
         self._all_scope, self._all_note = scope, note
         self._show_scope_buttons(question=True)
         self.scope_bar.show_text(question)
-        self.report("改全部先看范围：画布下方提示条写着影响哪些帧，再按 Ctrl+Enter 确定，"
-                    "Esc 取消 / check the reach on the bar, then Ctrl+Enter again")
+        self.report("改全部先看范围：画布下方提示条写着影响哪些帧，再按 Ctrl+Q 确定，"
+                    "Esc 取消 / check the reach on the bar, then Ctrl+Q again")
         self.refresh_guidance()
 
     def _commit_into_previous(self, behind: dict) -> None:
@@ -325,7 +326,7 @@ class CommitMixin:
                  else "（算不出影响哪些帧）")
         return (f"改全部会改这一版形状用到的每一帧：{where}，其中已确认的第 "
                 f"{steps_text(verified)} 帧会被重新检查（可能产生冲突）。确定？再按 "
-                f"Ctrl+Enter（或点「{ALL_BUTTON_CONFIRM}」）确定，Esc 取消")
+                f"Ctrl+Q（或点「{ALL_BUTTON_CONFIRM}」）确定，Esc 取消")
 
     def cancel_all_question(self) -> bool:
         """``Esc`` on the 改全部 question: nothing written, the layer stays (U16)."""
@@ -427,7 +428,7 @@ class CommitMixin:
         self._show_scope_buttons(question=False)
         self.scope_bar.show_text(self._suggestion_text(scope))
         self.logger.info("suggested scope: %s", scope)
-        self.report("看画布下方提示条：Enter 只改形状，L 改层级 / read the bar: Enter "
+        self.report("看画布下方提示条：Q 只改形状，L 改层级 / read the bar: Q "
                     "writes the shape, L changes the layering"
                     if is_layering(scope) else f"suggested scope: {scope}")
 
@@ -453,13 +454,13 @@ class CommitMixin:
         if not is_layering(scope):
             return f"建议范围 {scope}"
         me, other, above = self._pair_labels(scope)
-        tail = "。Alt+Enter 只改这一帧；Ctrl+Enter 改全部（只改形状）；Esc 回去改"
+        tail = "。Alt+Q 只改这一帧；Ctrl+Q 改全部（只改形状）；Esc 回去改"
         if above:
             return (f"你画到了「{other}」占着的像素（它盖在「{me}」上面，画进去的这块现在"
-                    f"看不见）。Enter = 只改形状，「{other}」照样盖着；L = 改层级：把「{me}」"
+                    f"看不见）。Q = 只改形状，「{other}」照样盖着；L = 改层级：把「{me}」"
                     f"放到「{other}」上面（两者重叠处「{other}」会被「{me}」盖住，整个位姿段"
                     f"都这样）{tail}")
-        return (f"你擦掉的是「{me}」和「{other}」重叠的地方。Enter = 只改形状（擦掉的不再"
+        return (f"你擦掉的是「{me}」和「{other}」重叠的地方。Q = 只改形状（擦掉的不再"
                 f"算「{me}」的）；L = 不改形状、改层级：把「{other}」放到「{me}」上面（重叠处"
                 f"「{me}」会被「{other}」盖住，整个位姿段都这样）{tail}")
 
@@ -781,7 +782,7 @@ class CommitMixin:
             return True
         self._pending_warning = (scope, warning,
                                  self._warning_facts(mask, cls, warning), action)
-        again = WARNING_KEYS.get(action, "Enter")
+        again = WARNING_KEYS.get(action, WARNING_KEYS["commit"])
         self.warn_commit_button.setText(f"{again} 仍然提交")
         self.warn_bar.show_text(f"{warning}  —— {again} 仍然提交 / Esc 回去改")
         self.report(warning)
@@ -906,7 +907,7 @@ class CommitMixin:
         self._after_visibility()
 
     def _visibility_target(self) -> bool:
-        """Is an instance selected for ``1``-``7`` / ``V``?  Says so when not.
+        """Is an instance selected for ``Ctrl+1``-``7`` / ``Ctrl+V``?  Says so when not.
 
         The keys acted on the instance table's selection and on nothing else,
         silently (round 3): with no row selected a digit did nothing and said
@@ -914,7 +915,7 @@ class CommitMixin:
         """
         if self.instances.selected_instance():
             return True
-        self.report("可见性键 1–7 / V 作用于实例表里选中的零件：先在右下实例表点一行 / "
+        self.report("可见性键 Ctrl+1–7 / Ctrl+V 作用于实例表里选中的零件：先在右下实例表点一行 / "
                     "select a part in the instance table first")
         return False
 

@@ -21,18 +21,19 @@ def _flat(name: str) -> str:
 
 def test_the_quickstart_no_longer_sends_anybody_to_enter_for_a_layering_change():
     quick = _flat("trial_quickstart.md")
-    assert "一般 `Enter` 接受" not in quick
-    assert "`Enter`（**只改形状**）" in quick
+    assert "一般 `Enter` 接受" not in quick and "一般 `Q` 接受" not in quick
+    # the commit key is Q since task U22 (Enter its alias)
+    assert "`Q`（**只改形状**）" in quick
     assert "层级改动作用于整个位姿段：第 1–40 帧，其中已确认的第 39、40 帧会被重新检查" in quick
     assert "**层级不是形状版本**：它不能按帧拆分" in quick
-    # U16: the frame where the version starts is Enter's re-trace now; it was
-    # Ctrl+K's "没有拆分" (the key that splits is Enter, Ctrl+K its alias)
-    assert "`Enter` 就是重画这一版" in quick
+    # U16: the frame where the version starts is the commit's re-trace now; it
+    # was Ctrl+K's "没有拆分" (the key that splits is the commit, Ctrl+K its alias)
+    assert "`Q` 就是重画这一版" in quick
     assert "Ctrl+K 等于重画这一版" not in quick.replace(" ", "")
     assert "SAM 加载失败：原因（F5 重试）" in quick
-    assert "SAM 没加载：用 Y 圆形 / B 画笔 / P 多边形" in quick
-    assert "检测器找到的螺丝（SAM 未加载： Y 拖一下就画好）" in quick or \
-        "检测器找到的螺丝（SAM 未加载：Y 拖一下就画好）" in quick
+    assert "SAM 没加载：用 R 圆形 / W 画笔 / D 多边形" in quick      # Y / B / P until U22
+    assert "检测器找到的螺丝（SAM 未加载： R 拖一下就画好）" in quick or \
+        "检测器找到的螺丝（SAM 未加载：R 拖一下就画好）" in quick
 
 
 def test_the_guide_says_it_in_section_4_and_the_key_table():

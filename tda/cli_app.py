@@ -409,12 +409,12 @@ def _check_one(db, tax, args: argparse.Namespace, desktop: int, view: str) -> in
               f"a re-check: {sorted(stats['pending'])[:10]}")
     if stale:
         print(f"[check] {len(stale)} confirmed frame(s) still carry the shape from "
-              f"before their state changed ({SHAPE_PREDATES_STATE}, Enter there): "
+              f"before their state changed ({SHAPE_PREDATES_STATE}, Q there): "
               + ", ".join(f"{instance}@{step}" for step, instance in stale[:10]))
     if copies:
         print(f"[check] {len(copies)} confirmed frame(s) show a cut copy -- the other "
               f"state's shape kept off the run -- nobody has drawn or confirmed "
-              f"({CUT_COPY_IN_FORCE}; Enter or Ctrl+Shift+K at the ✂ frame): "
+              f"({CUT_COPY_IN_FORCE}; Q or Ctrl+Shift+K at the ✂ frame): "
               + ", ".join(f"{instance}@{step}" for step, instance in copies[:10]))
     if floor:
         print(f"[check] {len(floor)} layer order(s) put the chassis, or the motherboard "
@@ -424,7 +424,7 @@ def _check_one(db, tax, args: argparse.Namespace, desktop: int, view: str) -> in
     if lost:
         print(f"[check] {len(lost)} frame(s) say a part is hidden by a cable where it is "
               f"not in its place with a shape -- no shape, taken out, or on the bench "
-              f"({OCCLUDER_WITHOUT_SHAPE}): 按 I 撤回（或从零件还在的帧按 Ctrl+I 撤回）: "
+              f"({OCCLUDER_WITHOUT_SHAPE}): 按 ` 键撤回（或从零件还在的帧按 Ctrl+` 撤回）: "
               + ", ".join(f"{instance}@{step}" for step, instance in lost[:10]))
     for text in problems[: int(args.limit)]:
         print(f"  - {text}")

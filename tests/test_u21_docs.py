@@ -57,7 +57,8 @@ def test_the_spec_has_the_paragraph_in_3_2_and_v1_21_on_top():
                    "locker 被解开", "locker 的 `parent` 丢了", "S1 机架的拆下动作全丢"):
         assert needed in section, needed
     changes = body.split("## 14. 修订记录", 1)[1]
-    first = next(line for line in changes.splitlines() if line.startswith("- "))
+    # v1.22 (U22, the left-hand keys) went on top since
+    first = next(line for line in changes.splitlines() if line.startswith("- **v1.21"))
     assert first.startswith("- **v1.21（2026-10-23）**：**其实是硬盘架**（U21，§3.2）")
     assert "「合并，重叠处保留 <keep>」" in first
     assert changes.index("- **v1.21") < changes.index("- **v1.20")

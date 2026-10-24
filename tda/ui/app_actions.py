@@ -7,17 +7,32 @@ binding here adds it everywhere; there is nowhere else to add one.
 
 **The 1-4 vs 1-7 collision.**  The plan gave the four views the number keys and
 the seven visibility values the same ones.  The ruling implemented here (and in
-the brief) is: the views are ``F1``-``F4``, and ``1``-``7`` set the visibility
-of the selected instance.  Visibility is a per-instance judgement made dozens of
-times per frame, so it gets the home row; switching view is rare.
+the brief) is: the views are ``F1``-``F4``, and the visibility values are
+``Ctrl+1``-``Ctrl+7`` (task U22, below).
+
+**The left hand (task U22).**  The annotator's right hand is on the mouse or
+the pen all day, so the keys pressed hundreds of times a day sit under the left
+one: ``Q`` commits (``Alt+Q`` this frame only, ``Ctrl+Q`` 改全部), the grave key
+(the backtick left of ``1``, Qt's ``Key_QuoteLeft``) is 看不见 / 被线挡住 (Ctrl
+plus it over a span), ``W`` the brush, ``D`` the polygon, ``R`` the circle, ``V`` the bench box, ``G`` the
+difference map and ``1`` / ``2`` the brush size.  ``Space``, ``E`` and ``Tab``
+were already there.  The old keys that were not taken by something else stay
+as aliases -- ``Enter``, ``Ctrl+K``, ``B``, ``[`` and ``]`` -- and ``keys[0]``
+is always the left-hand one: it is what the palette, the status line and the
+guide tell the annotator to press.  What the new keys displaced moved under a
+modifier: visibility ``Ctrl+1``-``7``, its cycle ``Ctrl+V``, the outline
+``Shift+Q``, the pixel grid ``Shift+G``.  Review mode keeps ``R`` for rework:
+the modes are separate, as they were when ``R`` was the bench box.
 
 **Modes.**  Every action declares the modes it is live in, so the step table
-keeps ``Enter`` for its cell editors and the review panel keeps ``R`` for
-"rework" while annotate mode uses it for the bench box.  A key with no action in
-the current mode is never swallowed -- it goes on to the focused widget.
+keeps ``Enter`` (and every letter) for its cell editors and the review panel
+keeps ``R`` for "rework" while annotate mode uses it for the circle.  A key
+with no action in the current mode is never swallowed -- it goes on to the
+focused widget.
 
 **Text fields.**  :func:`blocks_shortcuts` is consulted before any lookup, so a
-``B`` typed into a note or a combo box is a letter, not a brush.
+``W`` typed into a note or a combo box is a letter, not a brush, and a ``1`` in
+the brush-size box is a digit.
 """
 from __future__ import annotations
 
@@ -136,14 +151,16 @@ def _view(view: str, key: str, zh: str) -> Action:
 
 
 def _visibility(index: int) -> Action:
+    # Ctrl+digit since task U22: the bare 1 and 2 are the brush size now.
     value = api.VISIBILITY_VALUES[index]
-    return Action(f"visibility_{index + 1}", (str(index + 1),),
+    return Action(f"visibility_{index + 1}", (f"Ctrl+{index + 1}",),
                   "act_set_visibility", f"Visibility: {value}",
                   f"可见性设为 {value}", "view", (value,), _ANN)
 
 
-def _tool(name: str, key: str, label: str, zh: str, short: str) -> Action:
-    return Action(f"tool_{name}", (key,), "act_tool", label, zh, "tool", (name,), _ANN,
+def _tool(name: str, keys, label: str, zh: str, short: str) -> Action:
+    keys = (keys,) if isinstance(keys, str) else tuple(keys)
+    return Action(f"tool_{name}", keys, "act_tool", label, zh, "tool", (name,), _ANN,
                   short=short)
 
 
@@ -175,14 +192,16 @@ ACTIONS: tuple[Action, ...] = (
            "Hold: flash the frame on the other side",
            "按住：闪回另一侧的那一帧", "nav", (True,), _ANN, hold=True),
     # -- tools --------------------------------------------------------------
-    _tool("brush", "B", "Brush", "画笔（加像素）", "画笔"),
+    # Task U22: W under the left hand; B, its key before, stays an alias.
+    _tool("brush", ("W", "B"), "Brush", "画笔（加像素）", "画笔"),
     _tool("eraser", "E", "Eraser", "橡皮擦（减像素）", "橡皮擦"),
-    # Task U5a: two ways to add a whole region at once.  ``Y`` for the circle:
-    # 圆 is *yuán*, and C (candidates), O (occluder) and R (bench box) were
-    # taken; plain ``Y`` is free (``Ctrl+Y`` is redo, a different key).
-    _tool("polygon", "P", "Polygon fill",
-          "多边形（连点围一块：Enter / 双击 / 点回起点填上）", "多边形"),
-    _tool("circle", "Y", "Circle fill",
+    # Task U5a: two ways to add a whole region at once.  Task U22 moved them
+    # from P and Y under the left hand: D for the polygon (the difference map
+    # went to G) and R for the round one (the bench box went to V; Review
+    # mode's R, rework, is another mode).
+    _tool("polygon", "D", "Polygon fill",
+          "多边形（连点围一块：Q / 双击 / 点回起点填上）", "多边形"),
+    _tool("circle", "R", "Circle fill",
           "圆形（圆心按下拖到边缘，松手填上；单击 = 笔刷大小的圆）", "圆形"),
     Action("polygon_backspace", ("Backspace",), "act_polygon_backspace",
            "Polygon: remove the last vertex", "多边形：删掉最后一个点", "tool", (), _ANN),
@@ -190,12 +209,14 @@ ACTIONS: tuple[Action, ...] = (
     _tool("sam_box", "X", "SAM box prompt", "SAM 框选（拖一个框）", "SAM 框选"),
     _tool("occluder", "O", "Occluder brush", "遮挡层画笔（手/工具）", "遮挡（手/工具）"),
     # Not the ROI: the trial annotator pressed ``R`` expecting the chassis
-    # rectangle (task U2b).  The label says what the box is *for*.
-    _tool("bench_box", "R", "Bench box", "台面框（已拆下、放在台面上的零件）",
+    # rectangle (task U2b).  The label says what the box is *for*.  ``V``
+    # since task U22 (R is the circle now).
+    _tool("bench_box", "V", "Bench box", "台面框（已拆下、放在台面上的零件）",
           "台面框（已拆下、放在台面上的零件）"),
-    Action("radius_down", ("[",), "act_radius", "Smaller brush",
+    # Task U22: 1 / 2 under the left hand; the brackets stay aliases.
+    Action("radius_down", ("1", "["), "act_radius", "Smaller brush",
            "笔刷变小", "tool", (-1,), _ANN, repeat=True),
-    Action("radius_up", ("]",), "act_radius", "Bigger brush",
+    Action("radius_up", ("2", "]"), "act_radius", "Bigger brush",
            "笔刷变大", "tool", (+1,), _ANN, repeat=True),
     Action("cycle_candidate", ("C",), "act_cycle_candidate", "Next SAM candidate",
            "切换 SAM 候选掩码", "tool", (), _ANN, short="换候选"),
@@ -210,18 +231,20 @@ ACTIONS: tuple[Action, ...] = (
     Action("despeckle", ("Shift+D",), "act_despeckle", "Remove specks",
            "删除小碎块（默认 <16 像素）", "tool", (), _ANN),
     # -- editing ------------------------------------------------------------
-    # Enter and Esc answer a half-drawn P / Y shape first (task U5a).  Task
-    # U16: Enter is "from this frame on" -- the frames the walk has passed keep
-    # their shape -- and Ctrl+K, which used to be that key, is now its alias.
-    Action("commit", ("Return", "Enter", "Ctrl+K"), "act_commit",
+    # The commit keys answer a half-drawn polygon / circle first (task U5a).
+    # Task U16: the commit is "from this frame on" -- the frames the walk has
+    # passed keep their shape -- and Ctrl+K, which used to be that key, is now
+    # its alias.  Task U22: Q under the left hand; Enter (and Ctrl+K) stay
+    # aliases, and Alt / Ctrl say the other two scopes on either key.
+    Action("commit", ("Q", "Return", "Enter", "Ctrl+K"), "act_commit",
            "Commit edit: from this frame on (the frames already walked keep theirs)",
            "提交编辑：从这帧起生效，走过的帧不变（这帧就是这版的起点时重画这一版；"
            "有层级建议时只改形状，层级用 L；多边形没画完时先填上它）", "edit", (),
            _ANN, short="提交"),
-    Action("commit_override", ("Alt+Return", "Alt+Enter"), "act_commit_override",
+    Action("commit_override", ("Alt+Q", "Alt+Return", "Alt+Enter"), "act_commit_override",
            "Commit for this frame only", "只对当前帧生效（帧覆盖）", "edit", (), _ANN,
            short="只改这一帧"),
-    Action("commit_all", ("Ctrl+Return", "Ctrl+Enter"), "act_commit_all",
+    Action("commit_all", ("Ctrl+Q", "Ctrl+Return", "Ctrl+Enter"), "act_commit_all",
            "Commit everywhere the version applies, walked frames included "
            "(asks first when it reaches confirmed ones)",
            "改全部：这一版形状用到的每一帧都改，走过的、已确认的也改（会碰到已确认帧时先说"
@@ -236,7 +259,7 @@ ACTIONS: tuple[Action, ...] = (
            "edit", (), _ANN, short="形状没变"),
     Action("commit_layering", ("L",), "act_commit_layering",
            "Change the layering the scope bar suggests (asks, then a second L)",
-           "改层级：回答画布下方的层级建议（先显示影响哪些帧，再按一次 L 确定；Enter 只改形状）",
+           "改层级：回答画布下方的层级建议（先显示影响哪些帧，再按一次 L 确定；Q 只改形状）",
            "edit", (), _ANN),
     Action("clear_edit", ("Esc",), "act_clear_edit", "Discard the edit",
            "放弃当前编辑（多边形 / 圆形没画完时只取消它）", "edit", (), _ANN, short="放弃编辑"),
@@ -270,7 +293,9 @@ ACTIONS: tuple[Action, ...] = (
     # Task U10: ``I`` for invisible / 看不见 -- free in every mode. Task U15:
     # on a sequence frame the part is there but under a cable (not labelled).
     # Task U18: on a 框外零件 (an object outside the machine) it is 「不在这张里」.
-    Action("mark_absent", ("I",), "act_mark_absent",
+    # Task U22: the grave key ` (Qt's Key_QuoteLeft, left of 1) -- I was a
+    # right-hand key; free in every mode, Ctrl+` too.
+    Action("mark_absent", ("`",), "act_mark_absent",
            "Hidden: on the sequence, the selected part is under a cable (full -> partial "
            "-> off); in the components gallery, the card's part is not in this shot; "
            "an object outside the machine is not in this frame",
@@ -278,21 +303,21 @@ ACTIONS: tuple[Action, ...] = (
            "零件合照里 = 卡上这个零件不在这张里（再按撤回）；"
            "框外零件 = 不在这张里（再按撤回）", "edit", (), _ANN,
            short="看不见"),
-    # Task U15: the same over a span, as Ctrl+T is T's. Ctrl+I is free.
-    Action("cable_range", ("Ctrl+I",), "act_cable_range",
+    # Task U15: the same over a span, as Ctrl+T is T's (Ctrl+` since U22).
+    Action("cable_range", ("Ctrl+`",), "act_cable_range",
            "Selected part under a cable from this frame to a given step (one op); "
            "an object outside the machine: not in those frames",
            "选中零件从这一帧到第 N 步都标被线挡住（完全 / 部分 / 撤回；一次撤销）；"
            "框外零件 = 这一段都标不在 / 撤回",
            "edit", (), _ANN),
-    Action("cycle_visibility", ("V",), "act_cycle_visibility", "Cycle visibility",
+    Action("cycle_visibility", ("Ctrl+V",), "act_cycle_visibility", "Cycle visibility",
            "循环切换可见性取值", "edit", (), _ANN),
     # Task U8: the state the picture shows when the log's is different (a clip
     # shut again).  ``T`` for 状态 / sTate: free in every mode.
     Action("cycle_state", ("T",), "act_cycle_state",
            "Selected part's state at this frame: the next one (log correction)",
            "选中零件这一帧的状态换成下一个（如 打开→关上；下一帧起自动恢复；"
-           "之后按任务卡 ✂ 条画形状、Enter 提交）", "edit", (), _ANN, short="换状态"),
+           "之后按任务卡 ✂ 条画形状、Q 提交）", "edit", (), _ANN, short="换状态"),
     # Task U9: the open cover / latch the card asks for is on the pile.  Next to
     # T because it is the other half of "the log is wrong about this part";
     # ``Shift+T`` is free in every mode.
@@ -325,19 +350,19 @@ ACTIONS: tuple[Action, ...] = (
     # -- display ------------------------------------------------------------
     Action("toggle_overlays", ("A",), "act_toggle_overlays", "All overlays on/off",
            "开关全部标注图层", "display", (), _ANN_REV),
-    Action("toggle_outline", ("Q",), "act_toggle_outline", "Outline / filled",
+    Action("toggle_outline", ("Shift+Q",), "act_toggle_outline", "Outline / filled",
            "轮廓线与半透明填充切换", "display", (), _ANN_REV),
     Action("opacity_down", (",",), "act_opacity", "Less opaque",
            "图层更透明", "display", (-1,), _ANN_REV, repeat=True),
     Action("opacity_up", (".",), "act_opacity", "More opaque",
            "图层更不透明", "display", (+1,), _ANN_REV, repeat=True),
-    Action("toggle_heat", ("D",), "act_toggle_heat", "Difference heat map",
+    Action("toggle_heat", ("G",), "act_toggle_heat", "Difference heat map",
            "开关帧间差异热力图", "display", (), _ANN_REV, short="差异图"),
     Action("fit_roi", ("F",), "act_fit_roi", "Fit the ROI",
            "缩放到 ROI", "display", (), _ANN_REV),
     Action("fit_image", ("Shift+0",), "act_fit_image", "Fit the whole frame",
            "缩放到整幅图像", "display", (), _ANN_REV),
-    Action("toggle_grid", ("G",), "act_toggle_grid", "Pixel grid",
+    Action("toggle_grid", ("Shift+G",), "act_toggle_grid", "Pixel grid",
            "开关像素网格", "display", (), _ANN_REV),
     # -- session ------------------------------------------------------------
     Action("save", ("Ctrl+S",), "act_save", "Save", "保存（清除未保存标记）",
@@ -375,7 +400,7 @@ MENU_ENTRIES: tuple[MenuEntry, ...] = (
     MenuEntry("context_object", "右键画布 → 框外零件…", "act_context_object",
               "Name and draw something outside the machine, apart from the annotation",
               "框外零件：机器外、画面里的东西（旁边的零件、无关物件），选类别或「其他」写名字，"
-              "单独画；不进步骤表和任务卡、不挡 Space；某帧里没有它就选中按 I（Ctrl+I 一段）"),
+              "单独画；不进步骤表和任务卡、不挡 Space；某帧里没有它就选中按 ` 键（Ctrl+` 一段）"),
 )
 
 
@@ -495,12 +520,16 @@ def short_parts(action: Action) -> tuple[str, str]:
 
 
 def key_caption(action: Action) -> str:
-    """The key a button shows: one spelling, and ``按住`` for a held key.
+    """The key a button shows: the primary one, and ``按住`` for a held key.
 
-    ``Return / Enter`` are one key, and the annotator's keyboard says Enter.
+    The primary key is ``keys[0]`` -- the left-hand one since task U22 (``Q``
+    on 提交, not the Enter alias).  Where that is spelled ``Return`` (Review's
+    accept) the button says Enter, which is what the keyboard says.
     """
     keys = action.keys
-    pick = next((k for k in keys if "Enter" in k), keys[0]) if keys else ""
+    pick = keys[0] if keys else ""
+    if "Return" in pick:
+        pick = next((k for k in keys if "Enter" in k), pick)
     return f"按住 {pick}" if action.hold else pick
 
 
@@ -523,7 +552,7 @@ def mode_cheat_rows(mode: str) -> list[tuple[str, str]]:
                 continue
             if action.name.startswith("visibility_"):
                 if not seen_visibility:
-                    rows.append(("1–7", "选中实例的可见性"))
+                    rows.append(("Ctrl+1–7", "选中实例的可见性"))
                     seen_visibility = True
                 continue
             rows.append((_compact_keys(action), action.label_zh + _how_text(action)))
@@ -607,6 +636,25 @@ def _keys_text(action: Action) -> str:
     return " / ".join(action.keys)
 
 
+def _code_span(text: str) -> str:
+    """``text`` as one Markdown code span, even when it holds a backtick.
+
+    The 看不见 key is the grave key itself (task U22): a span that contains a
+    backtick is fenced with two and padded, as CommonMark asks.
+    """
+    if "`" not in text:
+        return f"`{text}`"
+    return f"`` {text} ``"
+
+
+def _md_text(text: str) -> str:
+    """Prose in a Markdown table cell: a backtick (the 看不见 key) stays a backtick.
+
+    Two of them in one cell would otherwise open and close a code span.
+    """
+    return text.replace("`", "\\`")
+
+
 #: What the generated tables add after a binding that answers auto-repeat.
 REPEAT_NOTE = "（可长按）"
 HOLD_NOTE = "（按住）"
@@ -639,10 +687,11 @@ def shortcut_markdown() -> str:
     lines = ["| 快捷键 | 作用 | 分组 |", "|---|---|---|"]
     for key, title, actions in _by_group():
         for action in actions:
-            lines.append(f"| `{_keys_text(action)}` | {action.label_zh}"
+            lines.append(f"| {_code_span(_keys_text(action))} | {_md_text(action.label_zh)}"
                          f"{_how_text(action)} | {title} |")
         for entry in _menu_of(key):
-            lines.append(f"| `{entry.where}` | {entry.label_zh} | {title} |")
+            lines.append(f"| {_code_span(entry.where)} | {_md_text(entry.label_zh)} "
+                         f"| {title} |")
     return "\n".join(lines)
 
 

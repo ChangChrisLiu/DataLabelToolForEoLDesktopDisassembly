@@ -169,7 +169,7 @@ def test_the_action_is_refused_by_the_one_gate_while_the_layer_is_dirty(window: 
 
     assert asked == []
     assert segments(window) == [(1, 1, LAST_STEP)]
-    assert "Enter" in window.status_message()
+    assert "Q 提交" in window.status_message()            # the commit key (U22)
     assert window.session.editing_instance == instance
 
 

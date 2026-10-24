@@ -266,10 +266,10 @@ def test_bare_r_explains_itself_and_arms_nothing(qapp, tmp_path):
     win = open_window(tmp_path, stored={1: STORED})
     try:
         win.act_tool("brush")
-        win.act_tool("bench_box")                        # R, nothing on the bench armed
-        assert win.armed_tool_name() == "brush", "R armed a tool that eats drags"
+        win.act_tool("bench_box")                        # V, nothing on the bench armed
+        assert win.armed_tool_name() == "brush", "V armed a tool that eats drags"
         text = win.status_message()
-        assert "R 是台面框" in text and "Shift+R" in text and "ROI" in text
+        assert "V 是台面框" in text and "Shift+R" in text and "ROI" in text   # R until U22
     finally:
         close_window(win)
 

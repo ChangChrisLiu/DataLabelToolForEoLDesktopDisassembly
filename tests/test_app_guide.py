@@ -164,11 +164,12 @@ def test_the_palette_names_the_tools_the_way_the_badge_does(window):
         assert TOOL_LABELS[tool][0] == A.short_parts(action)[0]
 
 
-def test_r_is_the_bench_box_and_shift_r_is_the_chassis_range(window):
-    """The trial annotator pressed R expecting the ROI (ruling U2b-5)."""
+def test_the_bench_box_and_shift_r_the_chassis_range_have_their_own_names(window):
+    """The trial annotator pressed R expecting the ROI (ruling U2b-5); the bench
+    box is V since task U22 (R is the circle)."""
     bench = window.palette.button("tool_bench_box")
     roi = window.palette.button("edit_roi")
-    assert (bench.name, bench.key) == ("台面框", "R")
+    assert (bench.name, bench.key) == ("台面框", "V")
     assert "已拆下、放在台面上的零件" in bench.note
     assert (roi.name, roi.key) == ("机箱范围 ROI", "Shift+R")
     assert "台面框（已拆下、放在台面上的零件）" in A.cheat_sheet_html()
@@ -332,7 +333,7 @@ def test_commit_is_enabled_only_when_there_is_something_to_commit(window):
     assert not override.isEnabled() and override.reason() == api.OVERRIDE_NEEDS_SHAPE
     assert window.palette.button("commit_all").isEnabled()     # U16: commit_split's slot
     confirm = window.palette.button("confirm")
-    assert not confirm.isEnabled() and "Enter" in confirm.reason()
+    assert not confirm.isEnabled() and "Q 提交" in confirm.reason()
     assert window.palette.button("clear_edit").isEnabled()
     assert window.palette.button("undo").isEnabled()
 
@@ -588,9 +589,9 @@ def test_the_guide_repaints_only_when_the_plan_changes(window):
 def test_the_cheat_sheet_lists_only_this_modes_keys(window):
     annotate = dict(A.mode_cheat_rows(A.MODE_ANNOTATE))
     review = dict(A.mode_cheat_rows(A.MODE_REVIEW))
-    assert "B" in annotate and "K" not in annotate
-    assert "K" in review and "B" not in review
-    assert "1–7" in annotate
+    assert "W / B" in annotate and "K" not in annotate
+    assert "K" in review and "W / B" not in review
+    assert "Ctrl+1–7" in annotate
     window.guide.cheat_button.setChecked(True)
     assert not window.guide.cheat.isHidden()
 
@@ -651,9 +652,9 @@ def test_the_start_frame_says_what_a_complete_shape_is_once(window):
 
 
 @pytest.mark.parametrize("kind,sentence", [
-    (api.KIND_SPLIT_KEYFRAME, "用 Enter 提交"),        # Ctrl+K until U16
+    (api.KIND_SPLIT_KEYFRAME, "用 Q 提交"),      # Ctrl+K until U16, Enter until U22
     (api.KIND_STATE_ONLY, "不用画"),
-    (api.KIND_ADD_BENCH_BOX, "台面框 R"),
+    (api.KIND_ADD_BENCH_BOX, "台面框 V"),        # R until U22
     (api.KIND_CONFIRM, "Space"),
 ])
 def test_each_kind_has_its_plain_sentence(kind, sentence):
@@ -894,7 +895,7 @@ def test_without_sam_the_tool_stays(qapp, tmp_path):
         answer_roi(win)
         win.on_request_edit("cover.01")
         assert win._tool_name == "brush"
-        assert "B 画笔" in win.canvas.banner_text()
+        assert "W 画笔" in win.canvas.banner_text()
     finally:
         close_window(win)
 

@@ -168,19 +168,19 @@ def test_sam_gets_no_prompt_box_for_it_and_shift_c_says_why(window):
 
 
 # --------------------------------------------------------------------------- #
-# I / Ctrl+I
+# I / Ctrl+I (the grave key and Ctrl+` since task U22)
 # --------------------------------------------------------------------------- #
 def test_i_on_it_is_not_in_this_frame_and_the_table_says_so(window):
     key = make_one(window)
     commit_layer(window, square())
     assert window.instances.select_instance(key)
-    window.handle_key(key_event("I"))
+    window.handle_key(key_event("`"))
     frame = FrameKey(DESKTOP, STEP, VIEW)
     assert marked_absent(window.db.frame_overrides(frame)[key])
     assert vis_text(window, key) == T.TAG_ABSENT
     assert "不在这张里" in window.status_message()
     assert window.instances.select_instance(key)
-    window.handle_key(key_event("I"))
+    window.handle_key(key_event("`"))
     assert key not in window.db.frame_overrides(frame)
     assert vis_text(window, key) != T.TAG_ABSENT
 
@@ -191,7 +191,7 @@ def test_i_where_it_has_no_shape_says_so_and_the_button_greys(window):
     assert window.instances.select_instance(key)
     why = window.absent_refusal()
     assert "没有形状" in why
-    window.handle_key(key_event("I"))
+    window.handle_key(key_event("`"))
     assert not window.db.frame_overrides(FrameKey(DESKTOP, STEP, VIEW))
 
 
@@ -200,7 +200,7 @@ def test_ctrl_i_marks_a_span_in_one_op(window):
     commit_layer(window, square())
     window.instances.select_instance(key)
     window.ask_context_range = lambda instance, absent, low, high: (True, 9)
-    window.handle_key(key_event("Ctrl+I"))
+    window.handle_key(key_event("Ctrl+`"))
     for step in range(9, STEP + 1):
         assert marked_absent(window.db.frame_overrides(FrameKey(DESKTOP, step, VIEW))[key])
     assert "不在" in window.status_message()

@@ -39,15 +39,16 @@ __all__ = ["CABLE_DONE", "CABLE_NO_TARGET", "HAND_NOT_BACK", "HAND_REPLACED",
            "MEASURED_NOTE", "STALE_OFF", "WITHHELD_NOTE", "CableMixin", "CableRangeDialog",
            "cable_note", "range_note"]
 
-#: ``I`` / ``Ctrl+I`` on a sequence frame with nothing to act on. It names the
-#: gallery's meaning too: on a gallery shot the same key is 「看不见」 (U10).
-PICK_FIRST = ("I 在拆解序列里标「被线挡住」：先在实例表选中零件"
+#: `````` / ``Ctrl+``` on a sequence frame with nothing to act on (``I`` /
+#: ``Ctrl+I`` before task U22). It names the gallery's meaning too: on a gallery
+#: shot the same key is 「看不见」 (U10).
+PICK_FIRST = ("` 键在拆解序列里标「被线挡住」：先在实例表选中零件"
               "（「不在这张里」只用在零件合照里）")
 CABLE_NO_TARGET = f"{PICK_FIRST} / select a part first"
 #: What each step of the cycle says afterwards, ``{label}`` the part.
 CABLE_DONE = {
-    FULL: "{label} 被线挡住（完全）：形状保留，这一帧看不见它（再按 I 改成部分，Ctrl+Z 撤销）",
-    PARTIAL: "{label} 被线挡住（部分）：看得见的像素照旧（再按 I 撤回，Ctrl+Z 撤销）",
+    FULL: "{label} 被线挡住（完全）：形状保留，这一帧看不见它（再按 ` 键改成部分，Ctrl+Z 撤销）",
+    PARTIAL: "{label} 被线挡住（部分）：看得见的像素照旧（再按 ` 键撤回，Ctrl+Z 撤销）",
     None: "{label}：撤回被线挡住（Ctrl+Z 撤销）",
 }
 #: 完全 took the place of a single-frame mask drawn by hand (U15 review M3).
@@ -236,7 +237,7 @@ class CableMixin:
             return
         target = self._cable_target(None)
         if target is None:
-            self.report(CABLE_NO_TARGET.replace("I 在", "Ctrl+I 在", 1))
+            self.report(CABLE_NO_TARGET.replace("` 键在", "Ctrl+` 在", 1))
             return
         label = self._label_of(target)[0] or target
         low, high = self.session.cable_bounds()
@@ -247,7 +248,7 @@ class CableMixin:
         value, to_step = answer
         if value is not None and getattr(self.session, "editing_instance", None) == target \
                 and self.has_uncommitted_edit():         # 撤回 is never refused
-            self.report(f"{label}：{CABLE_EDITING.replace('再按 I', '再按 Ctrl+I')}")
+            self.report(f"{label}：{CABLE_EDITING.replace('再按 ` 键', '再按 Ctrl+`')}")
             return
         self._drop_clean_layer(target)
         started = time.perf_counter()

@@ -130,7 +130,7 @@ def test_a_run_of_frames_is_said_as_one(window):
             "第 13 步起恢复 关上") in message
     # round 3: which key draws the run; U16: Enter is "from this frame on", so
     # the frame is the run's top (12, the ✂ row) -- from there it covers 11-12
-    assert ("这几帧的形状要重画：在第 12 步画「打开」后 Enter，第 11–12 步都用它；"
+    assert ("这几帧的形状要重画：在第 12 步画「打开」后 Q，第 11–12 步都用它；"
             "工具会自动在状态边界切开版本") in message
 
 
@@ -221,7 +221,7 @@ def test_a_manual_boundary_gets_the_split_banner_a_log_boundary_gets(window, ins
     plan = window.guide.plan()
     assert plan.phase == G.PHASE_DRAW_PIXELS
     assert plan.action == "commit"
-    assert "按 Enter" in plan.now and "从这帧起新版本" in plan.now
+    assert "按 Q" in plan.now and "从这帧起新版本" in plan.now        # Enter until U22
     assert any(G.COMMIT_SPLIT in str(line) for line in plan.steps)
     assert window.canvas.banner_text().endswith(BANNER_SPLIT)
     assert window.palette.button("commit").suggested()
@@ -237,10 +237,10 @@ def test_the_documents_say_it():
     repo = Path(__file__).resolve().parents[1]
     quick = _squash((repo / "docs" / "trial_quickstart.md").read_text(encoding="utf-8"))
     guide = _squash((repo / "docs" / "annotation_guide.md").read_text(encoding="utf-8"))
-    assert _squash(          # U16: the ✂ row is drawn with Enter, 改全部 is not for this
+    assert _squash(          # U16: the ✂ row is drawn with the commit (Q since U22)
         "画面里的状态和日志不一样（比如卡扣中途又关上了）：选中它，按 `T` 把这帧的状态改过来；"
-        "工具会自动在下一帧恢复原状态，并在任务卡上给出 ✂ 行，在那一帧画这几帧的形状、按 `Enter`。"
-        "不要用 `Ctrl+Enter` 改全部去表达状态变化。") in quick
+        "工具会自动在下一帧恢复原状态，并在任务卡上给出 ✂ 行，在那一帧画这几帧的形状、按 `Q`。"
+        "不要用 `Ctrl+Q` 改全部去表达状态变化。") in quick
     assert _squash("在第 21 步：关上（之前为 打开）；第 22 步起恢复 打开") in quick
     assert _squash("按 `T`（或实例表的状态框）改这一帧") in guide
     assert _squash("**形状不会越过状态边界**") in guide
@@ -302,7 +302,7 @@ def test_the_frames_before_a_removal_are_said_as_one_run(whole_window):
     # round 3: Enter, and the commit cuts at the run's edge; U16: on the run's
     # top frame, since Enter is from that frame on; the only ✂ row is 38, on
     # the open side, so it is not offered (round 3b)
-    assert ("这几帧的形状要重画：在第 41 步画「关上」后 Enter，第 39–41 步都用它；"
+    assert ("这几帧的形状要重画：在第 41 步画「关上」后 Q，第 39–41 步都用它；"
             "工具会自动在状态边界切开版本") in win.status_message()
     assert "✂ 行" not in win.status_message()
 
@@ -318,15 +318,15 @@ def test_the_redraw_text_names_the_runs_top_frame_and_enter():
     from tda.ui.app_state import redraw_text
 
     below_only = redraw_text("closed", (39, 41), {"top": False, "below": True})
-    assert below_only == ("这几帧的形状要重画：在第 41 步画「关上」后 Enter，第 39–41 步"
+    assert below_only == ("这几帧的形状要重画：在第 41 步画「关上」后 Q，第 39–41 步"
                           "都用它；工具会自动在状态边界切开版本")
     top = redraw_text("closed", (20, 21), {"top": True, "below": True})
-    assert top == ("这几帧的形状要重画：在第 21 步画「关上」后 Enter，第 20–21 步都用它；"
+    assert top == ("这几帧的形状要重画：在第 21 步画「关上」后 Q，第 20–21 步都用它；"
                    "工具会自动在状态边界切开版本")
     assert redraw_text("closed", (41, 41), {"top": False, "below": True}) == (
-        "这帧的形状要重画：画「关上」后 Enter；工具会自动在状态边界切开版本")
+        "这帧的形状要重画：画「关上」后 Q；工具会自动在状态边界切开版本")
     assert redraw_text("closed", (21, 21), {"top": True, "below": False}) == (
-        "这帧的形状要重画：画「关上」后 Enter；工具会自动在状态边界切开版本")
+        "这帧的形状要重画：画「关上」后 Q；工具会自动在状态边界切开版本")
     assert redraw_text("closed", (21, 21), {"top": False, "below": False}) == ""
 
 

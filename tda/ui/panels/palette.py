@@ -455,9 +455,11 @@ class ToolPalette(QWidget):
             self._tool_widgets.append(button)
 
         self.radius_label = self._header("笔刷大小 r")
+        smaller = A.action_named("radius_down").keys[0]
+        bigger = A.action_named("radius_up").keys[0]
         self.radius_label.setToolTip("画笔、橡皮擦、遮挡和圆形的单击共用一个大小，单位是图像像素；"
                                      "拖滑块、点数字框直接输入（Enter 确定，Esc 取消），"
-                                     "或键盘 [ 变小、] 变大（可长按）")
+                                     f"或键盘 {smaller} 变小、{bigger} 变大（可长按；[ ] 也行）")
         self.radius_slider = QSlider(Qt.Orientation.Horizontal)
         self.radius_slider.setRange(0, SLIDER_STEPS)
         self.radius_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)

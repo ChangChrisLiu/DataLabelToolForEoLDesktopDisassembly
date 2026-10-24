@@ -24,7 +24,7 @@ from typing import Optional
 from tda.ui import session_api as api
 
 __all__ = [
-    "CardItem", "DONE", "GuideFacts", "GuidePlan", "NOW", "TODO", "WARN",
+    "COMMIT_KEY", "CardItem", "DONE", "GuideFacts", "GuidePlan", "NOW", "TODO", "WARN",
     "PHASES", "plan_for", "steps_text",
 ]
 
@@ -64,16 +64,19 @@ PHASES: tuple[str, ...] = (
 )
 
 #: The key of each commit action, for the area warning's "press it again":
-#: since task U16 one scope can be either key's (``keyframe`` is ``Enter``'s
-#: where the version starts and ``Ctrl+Enter``'s everywhere), so the warning
-#: remembers the action that raised it.  ``Enter`` (``commit``) otherwise.
+#: since task U16 one scope can be either key's (``keyframe`` is the commit's
+#: where the version starts and 改全部's everywhere), so the warning remembers
+#: the action that raised it.  The commit's own key otherwise.  The left-hand
+#: keys of task U22 (``tests/test_u22_keys.py`` pins them to the key map;
+#: this module stays Qt-free, so it cannot read the map itself).
+COMMIT_KEY = "Q"
 _WARNING_KEYS: dict[str, tuple[str, str]] = {
-    "commit_all": ("Ctrl+Enter", "commit_all"),
-    "commit_override": ("Alt+Enter", "commit_override"),
+    "commit_all": ("Ctrl+Q", "commit_all"),
+    "commit_override": ("Alt+Q", "commit_override"),
 }
 #: ... and for a warning that does not say: the scope's key, as before U16.
 _SCOPE_KEYS: dict[str, tuple[str, str]] = {
-    api.SCOPE_FRAME_OVERRIDE: ("Alt+Enter", "commit_override"),
+    api.SCOPE_FRAME_OVERRIDE: ("Alt+Q", "commit_override"),
 }
 
 #: Card kinds that are work to *do* on the canvas.  ``state_only`` and
@@ -185,9 +188,9 @@ class GuidePlan:
 # --------------------------------------------------------------------------- #
 # the five steps of a frame
 # --------------------------------------------------------------------------- #
-ROI_NOW = "回答机箱范围（ROI）：拖紫红框的白色小方块调整，Enter 保存 / Esc 先跳过"
+ROI_NOW = "回答机箱范围（ROI）：拖紫红框的白色小方块调整，Q 保存 / Esc 先跳过"
 #: A stored ROI opened to check it: Esc keeps it, it skips nothing (round 2).
-ROI_EDIT_NOW = "机箱范围（ROI）：拖白色小方块调整，Enter 保存 / Esc 不改"
+ROI_EDIT_NOW = "机箱范围（ROI）：拖白色小方块调整，Q 保存 / Esc 不改"
 ROI_DONE = "机箱范围（ROI）✓"
 #: A components-gallery shot's first line (task U10): no ROI question at all.
 ROI_GALLERY = "零件合照：整张图都是工作范围 ✓"
@@ -195,28 +198,30 @@ ROI_NONE = "机箱范围（ROI）：这一段不用 ✓"
 ROI_WARN = ("机箱范围（ROI）还没确认：画布下方点「确认建议框」，或 Shift+R 重画"
             "（不挡你继续）")
 PICK = "在右边任务卡上单击一个零件"
-DRAW = ("画：S 在零件上点一下 / X 拖框；B 画笔补、E 橡皮修边；P 连点填一块；"
-        "Y 圆形：拖一下画一颗螺丝")
+DRAW = ("画：S 在零件上点一下 / X 拖框；W 画笔补、E 橡皮修边；D 连点填一块；"
+        "R 圆形：拖一下画一颗螺丝")
 #: Step ③ when SAM's load failed (task U6): S and X do nothing, so say what does.
-DRAW_NO_SAM = "SAM 没加载：用 Y 圆形 / B 画笔 / P 多边形"
+DRAW_NO_SAM = "SAM 没加载：用 R 圆形 / W 画笔 / D 多边形"
 #: The filled shapes half drawn (task U5a): the "now" line and step ③.
-POLYGON_NOW = ("现在：多边形已点 {n} 个点 — 沿边接着点；Enter / 双击 / 点回第一个点 填上，"
+POLYGON_NOW = ("现在：多边形已点 {n} 个点 — 沿边接着点；Q / 双击 / 点回第一个点 填上，"
                "Backspace 删一个点，Esc 取消")
-POLYGON_DRAW = "多边形 {n} 个点：Enter / 双击 / 点回起点 填上"
+POLYGON_DRAW = "多边形 {n} 个点：Q / 双击 / 点回起点 填上"
 CIRCLE_NOW = "现在：拖到零件边缘松手，圆就填进去；Esc 取消"
 CIRCLE_DRAW = "圆形：拖到边缘松手"
-DRAW_BENCH = "在台面上拖一个框框住它（台面框 R），松手就存好"
-#: Step ④ (task U16): Enter is from this frame on; the frames walked keep theirs.
-COMMIT = "Enter 提交（从这帧起，走过的帧不变；只这一帧用 Alt+Enter）"
-COMMIT_SPLIT = "Enter 提交（从这帧起新版本）"
+DRAW_BENCH = "在台面上拖一个框框住它（台面框 V），松手就存好"
+#: Step ④ (task U16): the commit is from this frame on; the frames walked keep
+#: theirs.  ``Q`` since task U22 -- and the one line that still names Enter,
+#: so an annotator whose fingers know it is not told it stopped working.
+COMMIT = "Q（Enter）提交（从这帧起，走过的帧不变；只这一帧用 Alt+Q）"
+COMMIT_SPLIT = "Q 提交（从这帧起新版本）"
 #: Step ④ while a layering suggestion is on the bar (task U6).
-LAYERING_COMMIT = "层级建议：Enter 只改形状 / L 改层级（先看影响哪些帧，再按 L）"
+LAYERING_COMMIT = "层级建议：Q 只改形状 / L 改层级（先看影响哪些帧，再按 L）"
 #: Step ④ while 改全部 asks (task U16).
-ALL_COMMIT = "改全部：再按 Ctrl+Enter 确定 / Esc 取消"
+ALL_COMMIT = "改全部：再按 Ctrl+Q 确定 / Esc 取消"
 CONFIRM = "全部画完：Space 确认整帧，自动退到上一帧"
 #: Steps ④ and ⑤ on a components-gallery shot (task U10): no ✂, and Space
 #: walks forwards.
-COMMIT_GALLERY = "Enter 提交；不在这张里的零件：任务卡上右键「看不见」或按 I"
+COMMIT_GALLERY = "Q 提交；不在这张里的零件：任务卡上右键「看不见」或按 ` 键"
 CONFIRM_GALLERY = "每个零件都画了或「看不见」：Space 确认这张，自动到下一张"
 #: The same line while the card's pane lists what stops Space (U2d).
 CONFIRM_BLOCKED = "先处理任务卡下面的 {n} 个问题（它们挡住 Space）"
@@ -374,14 +379,15 @@ def _annotate_plan(facts: GuideFacts) -> GuidePlan:
                          _steps(facts, 2, pick_text=picked, draw_text=CIRCLE_DRAW), "")
     if facts.ghost:
         return GuidePlan(PHASE_GHOST, title,
-                         "现在：淡蓝色是旧草稿的预览 — Enter 采纳进编辑层再修，"
+                         f"现在：淡蓝色是旧草稿的预览 — {COMMIT_KEY} 采纳进编辑层再修，"
                          "Esc 取消，Shift+A 换下一个",
                          _steps(facts, 2, pick_text=f"已选中：{editing}" if editing else "",
-                                draw_text="旧草稿预览：Enter 采纳 / Esc 取消"),
+                                draw_text=f"旧草稿预览：{COMMIT_KEY} 采纳 / Esc 取消"),
                          "commit")
     if facts.warning:
         key, action = _WARNING_KEYS.get(
-            facts.warning_action, _SCOPE_KEYS.get(facts.warning_scope, ("Enter", "commit")))
+            facts.warning_action,
+            _SCOPE_KEYS.get(facts.warning_scope, (COMMIT_KEY, "commit")))
         return GuidePlan(PHASE_WARNING, title,
                          f"现在：面积和这类零件差得多 — 确认没画错就再按一次 {key}，"
                          f"否则 Esc 回去改",
@@ -392,7 +398,7 @@ def _annotate_plan(facts: GuideFacts) -> GuidePlan:
         # Task U16: 改全部 asks before it reaches the confirmed frames behind.
         return GuidePlan(PHASE_SCOPE, title,
                          "现在：提示条写着改全部会影响哪些帧（已确认的会重新检查）— "
-                         "确定就再按 Ctrl+Enter，不改按 Esc",
+                         "确定就再按 Ctrl+Q，不改按 Esc",
                          _steps(facts, 3, pick_text=f"已选中：{editing}" if editing else "",
                                 commit_text=ALL_COMMIT),
                          "commit_all")
@@ -405,11 +411,11 @@ def _annotate_plan(facts: GuideFacts) -> GuidePlan:
                          "")
     if facts.scope:
         said = facts.scope_text or facts.scope
-        # Task U6: Enter writes the shape; the layering is L's and asks first.
+        # Task U6: the commit writes the shape; the layering is L's and asks first.
         tail = ("" if facts.gallery else
-                "；Alt+Enter 只改这一帧，Ctrl+Enter 改全部")
+                "；Alt+Q 只改这一帧，Ctrl+Q 改全部")
         return GuidePlan(PHASE_SCOPE, title,
-                         f"现在：看画布下方的提示条 — Enter 只改形状；要改层级（{said}）按 L"
+                         f"现在：看画布下方的提示条 — {COMMIT_KEY} 只改形状；要改层级（{said}）按 L"
                          f"{tail}",
                          _steps(facts, 3, pick_text=f"已选中：{editing}" if editing else "",
                                 commit_text=LAYERING_COMMIT),
@@ -417,9 +423,9 @@ def _annotate_plan(facts: GuideFacts) -> GuidePlan:
     if facts.roi_editing:
         # Opening a stored ROI to check it is not a proposal to put off: Esc
         # keeps what is stored (U2b round 2 -- D13/scan already has one).
-        now = ("现在：拖边 / 角调整已存的机箱范围（框里按住整体挪），按 Enter 保存；"
+        now = (f"现在：拖边 / 角调整已存的机箱范围（框里按住整体挪），按 {COMMIT_KEY} 保存；"
                "不改按 Esc（保持原来的）" if facts.roi_stored else
-               "现在：调好紫红框（拖白色小方块），按 Enter 保存；暂时不想管就按 Esc")
+               f"现在：调好紫红框（拖白色小方块），按 {COMMIT_KEY} 保存；暂时不想管就按 Esc")
         return GuidePlan(PHASE_ROI, title, now, _steps(facts, 0), "commit")
     if facts.bench:
         return GuidePlan(PHASE_BENCH, title,
@@ -434,7 +440,7 @@ def _annotate_plan(facts: GuideFacts) -> GuidePlan:
             # a ✂ row is a new version from this frame on -- what Enter writes
             # there since task U16 (Ctrl+K before it: U2b round 2, I1)
             return GuidePlan(PHASE_DRAW_PIXELS, title,
-                             f"现在：「{editing}」的形状从这一帧起变了 — 画好了按 Enter"
+                             f"现在：「{editing}」的形状从这一帧起变了 — 画好了按 {COMMIT_KEY}"
                              f"（从这帧起新版本）提交，走过的帧不变",
                              _steps(facts, 3, pick_text=picked, commit_text=COMMIT_SPLIT),
                              "commit")
@@ -445,13 +451,14 @@ def _annotate_plan(facts: GuideFacts) -> GuidePlan:
                    "；" + RETRACE_NOTE.format(n=len(facts.retrace_frozen)))
         if facts.layer_dirty:
             return GuidePlan(PHASE_DRAW_PIXELS, title,
-                             f"现在：「{editing}」的形状对了就按 Enter 提交；边缘不对用 "
-                             f"B 补 / E 擦，漏掉的大块用 P 连点补，不想要就 Esc{retrace}",
+                             f"现在：「{editing}」的形状对了就按 {COMMIT_KEY} 提交；边缘不对用 "
+                             f"W 补 / E 擦，漏掉的大块用 D 连点补，不想要就 Esc{retrace}",
                              _steps(facts, 3, pick_text=picked), "commit")
         if facts.layer_pixels:
             # A stored shape, loaded and untouched: Enter has nothing to write
             # and says so; the next thing is to change it or leave it.
-            nxt = "画好了按 Enter（从这帧起新版本）" if split else "改完 Enter"
+            nxt = (f"画好了按 {COMMIT_KEY}（从这帧起新版本）" if split
+                   else f"改完 {COMMIT_KEY}")
             # An open ✂ row loads the *old* version: it needs drawing, so no
             # button is the next one to press -- not Esc (round 3, item 6).
             open_split = split and not any(
@@ -473,7 +480,7 @@ def _annotate_plan(facts: GuideFacts) -> GuidePlan:
             now = f"现在：{DRAW_NO_SAM} 画出「{editing}」（F5 重试加载 SAM）"
             action = "tool_circle"
         else:
-            now = f"现在：SAM 还没准备好 — 按 B 用画笔涂出「{editing}」"
+            now = f"现在：SAM 还没准备好 — 按 W 用画笔涂出「{editing}」"
             action = "tool_brush"
         return GuidePlan(PHASE_DRAW_EMPTY, title, now,
                          _steps(facts, 2, pick_text=picked), action)

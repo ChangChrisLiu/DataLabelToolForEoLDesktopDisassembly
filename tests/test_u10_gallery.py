@@ -523,7 +523,7 @@ def test_t_and_ctrl_k_are_refused_on_a_shot(tmp_path):
         session.assert_state(part, "removed")
     session.begin_edit(part)
     session.set_editing_mask(GS.rect(4, 4, 20, 20))
-    with pytest.raises(SessionRefusal, match="Enter"):
+    with pytest.raises(SessionRefusal, match="用 Q 提交"):       # Enter until U22
         session.commit_edit(api.SCOPE_SPLIT)
     assert all(r["state_choices"] == [] for r in session.instance_rows())
     assert session.scope_hosts() == {}

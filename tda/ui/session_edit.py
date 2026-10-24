@@ -479,7 +479,7 @@ def plan_cuts(db: Db, tax, key: FrameKey, instance: str, chain: list[ShapeKeyfra
             what = "" if held is None else f"（{state_zh(held.state)}）"
             out["refuse"] = (
                 f"这一帧是状态边界（✂）：改全部会把第 {there}–{chosen.anchor_step} 步{what}"
-                f"的形状一起改掉。用 Enter（从这帧起新版本）")
+                f"的形状一起改掉。用 Q（从这帧起新版本）")
         else:
             out["top"] = above[0]
     return out
@@ -636,9 +636,9 @@ INTO_PREVIOUS_ACROSS_BOUNDARY = (
     "这一帧和后面第 {there} 步之间是状态边界（✂）：后面的帧是{what}的样子，"
     "不能把这一版写过去")
 #: ... its tail when pixels wait in the layer: the key that keeps them (R2).
-REDRAW_WITH_ENTER = "；只重画这一版用 Enter"
+REDRAW_WITH_ENTER = "；只重画这一版用 Q"
 #: ... and where there is no previous version behind to write into.
-NOTHING_BEHIND = "后面的帧用的就是这一版（或没有要它形状的帧）：用 Enter"
+NOTHING_BEHIND = "后面的帧用的就是这一版（或没有要它形状的帧）：用 Q"
 
 
 def version_behind(db: Db, truth: TruthService, key: FrameKey, instance: str,

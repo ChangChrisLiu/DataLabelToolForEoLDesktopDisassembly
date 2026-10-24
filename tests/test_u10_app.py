@@ -71,10 +71,10 @@ def test_the_window_says_which_shot_it_is(window):
     assert window.roi() == (0, 0, GS.HW[1], GS.HW[0])
 
 
-def test_i_marks_the_cards_part_absent_and_again_takes_it_back(window):
+def test_the_grave_key_marks_the_cards_part_absent_and_again_takes_it_back(window):
     part = window.task_card.current_instance()
     assert part
-    window.handle_key(key_event("I"))
+    window.handle_key(key_event("`"))            # I until task U22
     QApplication.processEvents()
     row = next(r for r in window.task_card.rows() if r["instance"] == part)
     assert row["done"] and row["absent"]
@@ -93,11 +93,13 @@ def test_the_cards_right_click_reaches_the_same_slot(window):
     assert next(r for r in window.task_card.rows() if r["instance"] == part)["absent"]
 
 
-# U16: Ctrl+K is Enter now -- a plain commit on a shot -- and 改全部 (Ctrl+Enter)
-# is what a shot refuses in its place (tests/test_u16_enter_default.py)
-@pytest.mark.parametrize("key,name", [("T", "cycle_state"), ("Ctrl+Return", "commit_all"),
-                                      ("D", "toggle_heat"), ("Shift+C", "cycle_prompt_box"),
-                                      ("R", "tool_bench_box"), ("Shift+R", "edit_roi")])
+# U16: Ctrl+K is the commit now -- a plain commit on a shot -- and 改全部 is
+# what a shot refuses in its place (tests/test_u16_enter_default.py).  U22:
+# the left-hand keys (Ctrl+Q, G, V), with the Enter alias still refused alike.
+@pytest.mark.parametrize("key,name", [("T", "cycle_state"), ("Ctrl+Q", "commit_all"),
+                                      ("Ctrl+Return", "commit_all"),
+                                      ("G", "toggle_heat"), ("Shift+C", "cycle_prompt_box"),
+                                      ("V", "tool_bench_box"), ("Shift+R", "edit_roi")])
 def test_sequence_keys_refuse_with_their_reason(window, key, name):
     reported: list[str] = []
     window.report = reported.append
@@ -105,14 +107,14 @@ def test_sequence_keys_refuse_with_their_reason(window, key, name):
     assert reported and GALLERY_REFUSALS[name] in reported[-1]
 
 
-def test_i_outside_the_gallery_says_so(window):
+def test_the_grave_key_outside_the_gallery_says_so(window):
     window.act_set_view("scan")
     QApplication.processEvents()
     assert window.session.view == "scan"
     assert "零件合照" not in window.windowTitle()
     reported: list[str] = []
     window.report = reported.append
-    window.handle_key(key_event("I"))
+    window.handle_key(key_event("`"))
     assert reported and "只用在零件合照里" in reported[-1]
 
 
