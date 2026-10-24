@@ -25,8 +25,11 @@ made before there was a record (:mod:`tda.cli_relations`).
 **The replay.** Inside the import's transaction, after the merges, reclasses,
 ``Shift+T`` verbs and captive flags are replayed and after
 :func:`~tda.core.graph_infer.infer_relational_fields` has filled the blanks,
-the **latest** fix of every ``(key, field)`` is applied to the parsed records
-(:func:`replay_relations`):
+the **latest** fix of every ``(part, field)`` is applied to the parsed records
+(:func:`replay_relations`). Every op is resolved to the part it names in this
+import first, and only then grouped (round 3, B2): after a renumbering a part
+has fixes under its old key and its new one, and the op with the highest id
+wins -- the others are "superseded", counted in one line:
 
 * the instance is found **by key** -- followed through the reclasses made
   after the fix (:mod:`tda.core.reclass_replay`; a field the reclass rule
@@ -101,6 +104,8 @@ DEFAULT_ORDER = "unordered"
 SCREW = "screw"
 #: ``attrs`` entry of an implied instance's note (:data:`tda.core.implied.NOTE_ATTR`).
 NOTE = "note"
+#: The fix payload's copy of a drive cage's implied latch's note (round 3, R2-N2).
+CAGE_NOTE = "cage_latch_note"
 #: A screw's fields whose meaning hangs on its ``captive`` (round 2, B1): a
 #: captive screw rides out on its ``parent`` when ``attached``, a plain one is
 #: taken out at its unscrew. The fix records ``captive`` and is refused when the
@@ -193,6 +198,10 @@ def fix_rows(desktop: int, rec: InstanceRec, name: str, old: object, new: object
               "cls": rec.cls, "field": name, "by": str(by), "at": str(at)}
     if rec.cls == SCREW and name in CAPTIVE_BOUND:
         common["captive"] = bool((rec.attrs or {}).get("captive"))
+    if is_cage_latch(rec):
+        # a drive cage's implied latch has no raw name; its note names the
+        # cage, which is how a re-import made under a new key is recognised
+        common[CAGE_NOTE] = (rec.attrs or {}).get(NOTE)
     parts = parts or {}
     names = {}
     if _names_a_part(name, old) or _names_a_part(name, new):
@@ -233,19 +242,24 @@ class RelationReplay:
     key by its raw name, ``"named"`` (the key the value had) when the part the
     value names was, ``"kept_as_is"`` when the import does not rewrite the
     part, and ``"why"`` on a not-matched one. ``inverse`` holds the importer's
-    value of every field the replay changed.
+    value of every field the replay changed. ``superseded`` lists the fixes a
+    later fix of the same part and field overrode although they were made under
+    another key (round 3, B2: the sheet was renumbered in between) --
+    ``{"key", "field", "ops", "by"}``, ``by`` being the op that won.
     """
 
     kept: list[dict] = field(default_factory=list)
     agrees: list[dict] = field(default_factory=list)
     unmatched: list[dict] = field(default_factory=list)
     inverse: list[dict] = field(default_factory=list)
+    superseded: list[dict] = field(default_factory=list)
 
     def __bool__(self) -> bool:
-        return bool(self.kept or self.agrees or self.unmatched)
+        return bool(self.kept or self.agrees or self.unmatched or self.superseded)
 
     def payload(self) -> dict:
-        return {"kept": self.kept, "agrees": self.agrees, "unmatched": self.unmatched}
+        return {"kept": self.kept, "agrees": self.agrees, "unmatched": self.unmatched,
+                "superseded": self.superseded}
 
     def changed(self) -> set[tuple[str, str]]:
         """``(key, field)`` of every field the replay wrote over the importer's value."""
@@ -279,10 +293,18 @@ class RelationReplay:
         return [f"relation fix not matched: {e['key']}.{e['field']} = {_shown(e['value'])} "
                 f"({e['why']})" for e in self.unmatched]
 
+    def superseded_line(self) -> str:
+        """``relation fixes superseded: n …``; ``""`` when there are none."""
+        n = sum(len(e["ops"]) for e in self.superseded)
+        if not n:
+            return ""
+        return (f"relation fixes superseded: {n} (made under an earlier key of the same "
+                f"part, overridden by a later fix of that field)")
+
     def lines(self) -> list[str]:
-        """What the import log says: the kept line, then one line per miss."""
-        head = self.kept_line()
-        return ([head] if head else []) + self.unmatched_lines()
+        """What the import log says: the kept line, one line per miss, the superseded count."""
+        head, tail = self.kept_line(), self.superseded_line()
+        return ([head] if head else []) + self.unmatched_lines() + ([tail] if tail else [])
 
 
 def _where(entry: dict) -> str:
@@ -313,8 +335,8 @@ def _carries(rec: InstanceRec, name: str) -> bool:
 
 
 def locate_part(table: Mapping[str, InstanceRec], key: str, raw_name: object,
-                stored: Optional[Mapping[str, InstanceRec]] = None
-                ) -> tuple[Optional[str], str]:
+                stored: Optional[Mapping[str, InstanceRec]] = None,
+                cage_note: Optional[str] = None) -> tuple[Optional[str], str]:
     """The parsed part ``key`` (as the fix knew it) is now, or ``(None, why)``.
 
     1. **by key** when the parsed part carries the raw name the fix recorded
@@ -329,7 +351,9 @@ def locate_part(table: Mapping[str, InstanceRec], key: str, raw_name: object,
     Not matched: several parts of the class carry the name, it now names a part
     of another class, or there is neither the key nor the name -- said as
     "rebuilt as <key>" for a drive cage's implied latch the import made again
-    under another key (round 2, N4). The captive replay finds its screws the
+    under another key (round 2, N4), recognised by ``cage_note`` (the latch's
+    note, as the fix recorded it, round 3) or the stored record's, so it is
+    said on every import, not only the first. The captive replay finds its screws the
     same way (:func:`tda.core.captive_replay.replay_captive`, round 2, B1), so
     a screw's ``captive`` and its ``parent`` / ``attached`` follow a renumbered
     sheet together.
@@ -350,7 +374,7 @@ def locate_part(table: Mapping[str, InstanceRec], key: str, raw_name: object,
         return None, (f'the sheet now makes "{raw_name}" a {table[named[0]].cls} '
                       f"({named[0]}), not a {cls}")
     if rec is None:
-        rebuilt = _rebuilt_as(table, (stored or {}).get(key))
+        rebuilt = _rebuilt_as(table, key, cage_note, (stored or {}).get(key))
         if rebuilt:
             return None, (f"rebuilt as {rebuilt}: the import made the drive cage's implied "
                           f"latch again, under a new key")
@@ -365,19 +389,23 @@ def locate_part(table: Mapping[str, InstanceRec], key: str, raw_name: object,
     return key, ""
 
 
-def _rebuilt_as(table: Mapping[str, InstanceRec], held: Optional[InstanceRec]) -> str:
-    """The key a drive cage's implied latch (``held``, stored) was made again under, or ``""``.
+def _rebuilt_as(table: Mapping[str, InstanceRec], key: str, note: Optional[str],
+                held: Optional[InstanceRec]) -> str:
+    """The key a drive cage's implied latch ``key`` was made again under, or ``""``.
 
     :func:`tda.core.implied.cage_latches` gives an implied latch its old key
     back only while its ``parent`` is still the cage (task U20); one whose
     parent was changed in Steps comes back under the next free key, with the
-    same note naming its cage.
+    same note naming its cage. ``note`` is the one the fix recorded; a fix made
+    before round 3 has none and the stored record's (``held``) is used, which
+    only the first re-import still has.
     """
-    if held is None or not is_cage_latch(held):
+    if not note and held is not None and is_cage_latch(held):
+        note = (held.attrs or {}).get(NOTE)
+    if not note:
         return ""
-    note = (held.attrs or {}).get(NOTE)
-    found = [key for key, rec in sorted(table.items())
-             if key != held.key and is_cage_latch(rec) and (rec.attrs or {}).get(NOTE) == note]
+    found = [other for other, rec in sorted(table.items())
+             if other != key and is_cage_latch(rec) and (rec.attrs or {}).get(NOTE) == note]
     return found[0] if len(found) == 1 else ""
 
 
@@ -485,7 +513,7 @@ def replay_relations(ops: list[dict], fresh: Mapping[str, InstanceRec],
                      reclassed: Optional[list[tuple[int, str, str]]] = None,
                      stored: Optional[Mapping[str, InstanceRec]] = None,
                      ) -> tuple[dict[str, InstanceRec], RelationReplay]:
-    """The parsed instances with the latest fix of every ``(key, field)`` applied.
+    """The parsed instances with the latest fix of every ``(part, field)`` applied.
 
     ``ops`` are the desktop's :data:`OP_RELATION_FIX` rows (payload decoded);
     ``fresh`` what the import is about to write (merges, reclasses and the
@@ -503,26 +531,48 @@ def replay_relations(ops: list[dict], fresh: Mapping[str, InstanceRec],
     #: parts whose ``parent`` fix was refused: their ``attached = True`` fix
     #: would tick a box that carries them nowhere (round 2, N5)
     no_parent: set[str] = set()
-    groups: dict[tuple[str, str], list[dict]] = {}
+    # round 3, B2: every op is first resolved to what it names in THIS import
+    # -- the parsed part (by key and raw name), a part the import keeps as it
+    # is, a part merged away, or nothing -- and only then grouped, by (that,
+    # field): after a renumbering one part has fixes under its old key and its
+    # new one, and only the latest op of all of them counts
+    groups: dict[tuple, list[tuple[dict, str, str]]] = {}
+    resolved: dict[tuple, tuple] = {}
     for op in sorted(ops, key=lambda row: int(row["id"])):
         payload = op.get("payload") or {}
         name = str(payload.get("field") or "")
         if name not in FIELDS:
             continue
         key = str(payload.get("key") or "")
-        if key not in (rename or {}):      # a merged-away key stays itself: see below
+        if key in (rename or {}):           # a merged-away key stays itself: see below
+            where: tuple = ("merged", key, "")
+        else:
             key = follow(key, int(op["id"]), reclassed)
-        groups.setdefault((key, name), []).append(op)
-    for (key, name), rows in sorted(groups.items(),
-                                    key=lambda item: (item[0][0], FIELDS.index(item[0][1]))):
-        last = rows[-1]
+            ask = (key, payload.get("raw_name"), payload.get(CAGE_NOTE))
+            if ask not in resolved:
+                if key in kept and key not in table:
+                    resolved[ask] = ("kept", key, "")
+                else:
+                    target, why = locate_part(table, key, ask[1], stored, ask[2])
+                    resolved[ask] = ("part", target, "") if target else ("missing", key, why)
+            where = resolved[ask]
+        groups.setdefault((where[0], where[1], name), []).append((op, key, where[2]))
+    for (kind, target, name), rows in sorted(
+            groups.items(), key=lambda item: (item[0][1], FIELDS.index(item[0][2]), item[0][0])):
+        last, key, missing = rows[-1]
         payload = last.get("payload") or {}
         value = payload.get("new")
         if _names_a_part(name, value):
             value = _followed(value, int(last["id"]), rename, reclassed)
         entry = {"key": key, "field": name, "value": value,
-                 "ops": [int(row["id"]) for row in rows]}
-        if key in (rename or {}):
+                 "ops": [int(op["id"]) for op, k, _w in rows if k == key]}
+        older: dict[str, list[int]] = {}
+        for op, k, _w in rows:
+            if k != key:
+                older.setdefault(k, []).append(int(op["id"]))
+        report.superseded.extend({"key": k, "field": name, "ops": ids, "by": int(last["id"])}
+                                 for k, ids in sorted(older.items()))
+        if kind == "merged":
             # 合并到… keeps the record of the part merged into: a field set on
             # the merged-away one went with it (the value's pointers follow)
             report.unmatched.append(entry | {
@@ -533,14 +583,13 @@ def replay_relations(ops: list[dict], fresh: Mapping[str, InstanceRec],
             report.unmatched.append(entry | {
                 "why": f"the reclass of {before} to {key} cleared it"})
             continue
-        if key in kept and key not in table:
+        if kind == "kept":
             why = ("added in S1" if is_extra(kept[key])
                    else "no longer in the sheet, held for its work")
             report.agrees.append(entry | {"kept_as_is": why})
             continue
-        target, why = locate_part(table, key, payload.get("raw_name"), stored)
-        if target is None:
-            report.unmatched.append(entry | {"why": why})
+        if kind == "missing":
+            report.unmatched.append(entry | {"why": missing})
             continue
         if target != key:
             entry["parsed"] = target

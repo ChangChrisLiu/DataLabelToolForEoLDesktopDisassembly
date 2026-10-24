@@ -118,7 +118,8 @@ D23 第 2 步「remove the cable from the case fan clip」松开的线卡扣 `ca
 改成拆下）。Steps → `Instances` → `cable_clip.01` 那一行：`Parent` 填 `cover.01`、勾 `Attached` → `Apply`。
 → 卡扣第 1 帧关着、第 2 帧打开、第 3 帧起随导风罩拆下（任务卡不再要它）。重新导入也保留。HP 的同类机器
 （D22、D24–D26、D29、D32、D33，表格里写着「case fan clip」的就是这几台）一样改；D63 是 Dell Precision，它的卡扣在
-散热器罩上，`Parent` 填那个罩。
+散热器罩上：先像这里的导风罩一样用 `Shift+T` 把 `cover.02`（「Heatsink cover」，日志写的是 `open`）改成拆下，再给卡扣
+`Parent` 填 `cover.02`、勾 `Attached`。
 
 ## 2. 第 42 帧（起点：已经拆完的样子）
 

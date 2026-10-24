@@ -102,7 +102,7 @@ def test_a_flip_and_its_attached_follow_a_renumbered_sheet_onto_one_screw(d2, tm
     assert {k: v for k, v in after.items() if k[0] != "CPU fan screw 1"} == \
         {k: v for k, v in before.items() if k[0] != "CPU fan screw 1"}
     assert loosened_at_the_end(d2, tax) == []
-    assert ("captive fixes (Shift+T) kept 1: screw.cpu_cooler.01 (was screw.cpu_cooler.02, "
+    assert ("captive fixes (Shift+T / Steps) kept 1: screw.cpu_cooler.01 (was screw.cpu_cooler.02, "
             "found by its name) not captive (sheet: captive)") in run.corrections
     done = replayed(d2, D2)
     assert done["unmatched"] == []
@@ -136,7 +136,7 @@ def test_the_captive_cell_is_a_captive_fix_and_survives_with_its_attached(d2, tm
         rec = d2.instances(D2)[FLIPPED]
         assert (rec.attrs["captive"], rec.attrs["captive_source"], rec.attached) == \
             (False, "manual", False)
-        assert "captive fixes (Shift+T) kept 1: screw.cpu_cooler.02 not captive " \
+        assert "captive fixes (Shift+T / Steps) kept 1: screw.cpu_cooler.02 not captive " \
                "(sheet: captive)" in run.corrections
     assert loosened_at_the_end(d2, tax) == []
 
@@ -245,7 +245,7 @@ def env(tmp_path):
            "rs_root": str(tmp_path / "src"), "weights_dir": str(tmp_path / "weights")}
     paths = tmp_path / "paths.yaml"
     paths.write_text(yaml.safe_dump(cfg), encoding="utf-8")
-    return {"paths": str(paths), "backups": tmp_path / "backups"}
+    return {"paths": str(paths), "backups": tmp_path / "backups", "db": cfg["db_path"]}
 
 
 def cli(env, *argv) -> int:
@@ -261,9 +261,18 @@ def test_adopt_refuses_unknown_keys_and_backs_up_before_writing(env, capsys):
         capsys.readouterr().out
     assert cli(env, "adopt-relations", "--desktop", "23", "--dry-run") == EXIT_OK
     assert list(env["backups"].glob("tda_*.sqlite")) == []          # a dry run writes nothing
+    # nothing to record: no backup either (round 3, R2-N5)
+    assert cli(env, "adopt-relations", "--desktop", "23", "--keys", "cable_clip.01") == EXIT_OK
+    assert "nothing to adopt" in capsys.readouterr().out
+    assert list(env["backups"].glob("tda_*.sqlite")) == []
+    db = Db(env["db"])
+    rec = db.instances(23)["cable_clip.01"]
+    rec.parent, rec.attached = "cover.01", True                        # a pre-U27 hand edit
+    db.upsert_instance(rec)
+    db.close()
     assert cli(env, "adopt-relations", "--desktop", "23", "--keys", "cable_clip.01") == EXIT_OK
     out = capsys.readouterr().out
-    assert "backed the database up first" in out
+    assert "backed the database up first" in out and "recorded 2 relation_fix op(s)" in out
     assert len(list(env["backups"].glob("tda_*.sqlite"))) == 1
 
 

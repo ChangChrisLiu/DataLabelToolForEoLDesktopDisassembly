@@ -9,9 +9,9 @@
 fields set by hand before there was a record of them durable: it rehearses
 ``import-logs --force`` of one desktop, compares, and logs a ``relation_fix``
 row (:mod:`tda.core.relation_replay`) for every field the re-import would
-change -- under the lock, after a safety backup unless ``--dry-run``; a
-``--keys`` naming no instance of the desktop is refused. The rest of this
-docstring is about ``infer-relations``.
+change -- under the lock, after a safety backup when there is something to
+record; a ``--keys`` naming no instance of the desktop is refused. The rest
+of this docstring is about ``infer-relations``.
 
 ``import-logs`` runs :func:`~tda.core.graph_rules.infer_relational_fields` as
 part of each desktop's transaction, so every freshly imported machine already
@@ -45,7 +45,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from tda.cli_common import (
     EXIT_ERROR,
@@ -513,6 +513,8 @@ class Adoption:
     #: After recording: ``"key.field = value (why)"`` of every difference a
     #: forced re-import would still make -- the replay refuses the fix.
     remaining: list[str] = field(default_factory=list)
+    #: The backup before writing failed: nothing was recorded.
+    aborted: bool = False
 
 
 def sheet_of(directory: str | Path, desktop: int) -> Optional[Path]:
@@ -562,7 +564,8 @@ def _wanted(key: str, rec: InstanceRec, keys: Optional[set[str]]) -> bool:
 
 
 def adopt_relations(db: Db, tax: Taxonomy, desktop: int, path: str | Path,
-                    dry_run: bool = False, keys: Optional[set[str]] = None) -> Adoption:
+                    dry_run: bool = False, keys: Optional[set[str]] = None,
+                    before_write: Optional[Callable[[], bool]] = None) -> Adoption:
     """Record a ``relation_fix`` for every relational field a forced re-import would change.
 
     The stored instance table is compared with :func:`rehearse_import`'s, field
@@ -574,7 +577,9 @@ def adopt_relations(db: Db, tax: Taxonomy, desktop: int, path: str | Path,
     left is reported with the replay's reason (a fix naming a part the sheet
     no longer has). Parts added in S1, 框外零件 and Label Studio drafts are
     never compared: a re-import does not rewrite them. ``keys`` narrows it to
-    those parts. ``dry_run`` compares and writes nothing.
+    those parts. ``dry_run`` compares and writes nothing. ``before_write`` is
+    called only when there is something to record (the command's backup,
+    round 3, R2-N5); ``False`` from it records nothing (``aborted``).
     """
     desktop = int(desktop)
     table = db.instances(desktop)
@@ -584,6 +589,9 @@ def adopt_relations(db: Db, tax: Taxonomy, desktop: int, path: str | Path,
                      differences=relation_changes(after, stored),
                      vanished=sorted(key for key in stored if key not in after))
     if dry_run or not found.differences:
+        return found
+    if before_write is not None and not before_write():
+        found.aborted = True
         return found
     at = now_iso()
     parts = {**after, **table}                     # the raw names of the parts named
@@ -657,11 +665,14 @@ def cmd_adopt_relations(args: argparse.Namespace) -> int:
             print(f"[adopt-relations] D{desktop:02d} has no instance {', '.join(unknown)}; "
                   f"nothing was compared (check --keys)")
             return EXIT_ERROR
-        if not args.dry_run and not _safety_backup(
+        # backed up only when there is something to record (round 3, R2-N5)
+        found = adopt_relations(
+            db, load_taxonomy(), desktop, path, args.dry_run, keys,
+            before_write=lambda: _safety_backup(
                 paths, db, "adopt-relations",
-                "it records relation fixes every later forced re-import replays"):
-            return EXIT_ERROR  # the line is printed and nothing was written
-        found = adopt_relations(db, load_taxonomy(), desktop, path, args.dry_run, keys)
+                "it records relation fixes every later forced re-import replays"))
+        if found.aborted:
+            return EXIT_ERROR  # the backup line is printed and nothing was written
         for line in adoption_lines(found, args.dry_run):
             print(line)
         return EXIT_OK
@@ -680,5 +691,5 @@ def _add_adopt_relations(sub) -> None:
     p.add_argument("--dry-run", action="store_true",
                    help="list the differences, record nothing (the import is still "
                         "rehearsed under the lock and rolled back); without it the "
-                        "database is backed up first")
+                        "database is backed up first when there is something to record")
     p.set_defaults(func=cmd_adopt_relations)

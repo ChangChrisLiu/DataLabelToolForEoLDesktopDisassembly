@@ -38,7 +38,13 @@ def test_the_spec_has_the_paragraph_in_3_2_and_v1_27_on_top():
                    "`Captive` 格也写 `captive_fix` op", "captive 回放也按 key + raw name 找螺丝",
                    "「captive differs」", "「not applied (no parent)」", "「rebuilt as <新键>」",
                    "每次导入都会再报一遍", "写入前先备份",
-                   "D22–D26、D29、D32、D33（都是 HP）", "D63 是 Dell Precision，它的卡扣在散热器罩上"):
+                   "D22–D26、D29、D32、D33（都是 HP）", "D63 是 Dell Precision",
+                   # round 3
+                   "只取 op id 最大的一条", "relation fixes superseded: n",
+                   "captive fixes superseded: n", "记进 `replay_captive` 行",
+                   "「rebuilt as」每次导入都说", "在表里勾 `Captive` 和 `Shift+T` 一样",
+                   "只在有东西要记时才备份", "captive fixes (Shift+T / Steps)",
+                   "用 `Shift+T` 把 `cover.02`（「Heatsink cover」，日志写的是 `open`）改成拆下"):
         assert needed in para, needed
     assert "D63…" not in body
     changes = body.split("## 14. 修订记录", 1)[1]
@@ -46,7 +52,8 @@ def test_the_spec_has_the_paragraph_in_3_2_and_v1_27_on_top():
     assert entries[0].startswith("- **v1.27（2026-10-24）**：**关系字段重导保留**（U27，§3.2）")
     for needed in ("`relation_fix`", "`replay_relations`", "`adopt-relations",
                    "`tda/core/relation_replay.py`", "手设的螺丝头", "无迁移",
-                   "评审轮（round 2）", "（D22、D24–D26、D29、D32、D33）", "captive differs"):
+                   "评审轮（round 2）", "（D22、D24–D26、D29、D32、D33）", "captive differs",
+                   "第三轮（round 3）", "superseded"):
         assert needed in entries[0], needed
     assert changes.index("- **v1.27") < changes.index("- **v1.26")
 
@@ -64,7 +71,8 @@ def test_the_quickstart_says_steps_edits_survive_and_has_the_d23_recipe():
                    "`Parent` 填 `cover.01`、勾 `Attached` → `Apply`",
                    "卡扣第 1 帧关着、第 2 帧打开、第 3 帧起随导风罩拆下", "重新导入也保留",
                    "（D22、D24–D26、D29、D32、D33，表格里写着「case fan clip」的就是这几台）",
-                   "D63 是 Dell Precision，它的卡扣在散热器罩上"):
+                   "D63 是 Dell Precision，它的卡扣在散热器罩上",
+                   "用 `Shift+T` 把 `cover.02`（「Heatsink cover」，日志写的是 `open`）改成拆下"):
         assert needed in flat, needed
     assert "D63…" not in recipe
     assert len(recipe) < 800

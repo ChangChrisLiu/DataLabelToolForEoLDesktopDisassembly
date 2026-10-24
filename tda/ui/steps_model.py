@@ -661,8 +661,31 @@ class StepTableData:
             else:
                 inst.attrs.pop("head", None)
         else:
-            inst.attrs["captive"] = as_bool(value)
-            inst.attrs["captive_source"] = "manual"
+            self._set_captive(inst, as_bool(value))
+
+    def _set_captive(self, inst: InstanceRec, new: bool) -> None:
+        """The ``Captive`` cell, as ``Shift+T`` flips it (task U27 round 3, R2-N4).
+
+        Ticked: the screw stays in its part -- ``parent`` is the one it has,
+        or else what it ``fastens`` (the importer's own rule), and ``attached``
+        is ticked, so it rides out with that part instead of standing
+        ``loosened`` in the chassis until the next re-import fills it. When
+        neither names a part of this desktop nothing is filled and the open
+        questions say so (``captive but has no parent``). Unticked:
+        ``attached`` is unticked, ``parent`` kept, as 「其实拧下来了」 does.
+        """
+        from tda.core.graph_infer import resolve_ref
+
+        was = bool(inst.attrs.get("captive"))
+        inst.attrs["captive"] = new
+        inst.attrs["captive_source"] = "manual"
+        if new and not was:
+            parent = inst.parent or resolve_ref(self.instances, inst.fastens)
+            if (parent and parent != inst.key and parent in self.instances
+                    and not self._would_cycle(inst.key, parent)):
+                inst.parent, inst.attached = parent, True
+        elif was and not new:
+            inst.attached = False
 
     def _would_cycle(self, key: str, parent: str) -> bool:
         """Would setting ``parent`` on ``key`` close a parent loop?"""

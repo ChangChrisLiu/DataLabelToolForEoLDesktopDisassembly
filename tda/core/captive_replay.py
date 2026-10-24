@@ -43,7 +43,7 @@ from tda.core.model import InstanceRec, is_context, is_extra, is_provisional
 from tda.core.relation_replay import locate_part
 
 __all__ = ["OP_CAPTIVE_FIX", "OP_REPLAY_CAPTIVE", "CaptiveReplay", "record_captive_fixes",
-           "replay_captive", "replay_captive_for_import"]
+           "remembered_names", "replay_captive", "replay_captive_for_import"]
 
 #: ``op_log.kind`` of one flip; :mod:`tda.core.captive_fix` takes it from here,
 #: so this module stays as light as the importer that imports it.
@@ -62,6 +62,28 @@ def _first_name(rec: Optional[InstanceRec]) -> Optional[str]:
     return (list(rec.raw_names or ()) or [None])[0] if rec is not None else None
 
 
+def _held(stored: dict[str, InstanceRec], target: str, name: Optional[str]) -> Optional[str]:
+    """The key of the stored screw a flip is about, or ``None``.
+
+    Without a name, the flip's own key. With one, the screw carrying that name
+    -- under the key when it still does, else the one screw that does; a name
+    nobody in the table carries is ``None`` (the key now holds another screw).
+    """
+    if not name:
+        return target
+    wanted = " ".join(str(name).lower().split())
+
+    def carries(rec: InstanceRec) -> bool:
+        return wanted in {" ".join(str(n).lower().split()) for n in rec.raw_names or ()}
+
+    rec = stored.get(target)
+    if rec is not None and carries(rec):
+        return target
+    named = [key for key, other in sorted(stored.items())
+             if other.cls == SCREW and carries(other)]
+    return named[0] if len(named) == 1 else None
+
+
 def _screw(entry: dict) -> str:
     """The screw's key, saying so when the sheet renumbered it (U27 round 2)."""
     parsed = entry.get("parsed")
@@ -75,21 +97,28 @@ class CaptiveReplay:
     """What a re-import did with the screws ``Shift+T`` flipped.
 
     Each entry is ``{"target", "ops"}`` plus ``"captive"`` (the stored value)
-    and ``"sheet"`` (the importer's guess) where there is one; a ``not
-    matched`` entry also has ``"why"``. ``inverse`` holds the guess of every
-    record the replay changed -- what undoing it would write back.
+    and ``"sheet"`` (the importer's guess) where there is one, ``"name"`` (the
+    raw name the screw was found by, which later imports reuse for the ops that
+    recorded none, U27 round 3) and ``"parsed"`` when the screw is under
+    another key now; a ``not matched`` entry also has ``"why"``. ``inverse``
+    holds the guess of every record the replay changed -- what undoing it would
+    write back. ``superseded`` are the flips of the same screw recorded under
+    an earlier key (``{"target", "ops", "by"}``): one stored value answers them
+    all, so they are reported once, under the latest.
     """
 
     kept: list[dict] = field(default_factory=list)
     agrees: list[dict] = field(default_factory=list)
     unmatched: list[dict] = field(default_factory=list)
     inverse: list[dict] = field(default_factory=list)
+    superseded: list[dict] = field(default_factory=list)
 
     def __bool__(self) -> bool:
-        return bool(self.kept or self.agrees or self.unmatched)
+        return bool(self.kept or self.agrees or self.unmatched or self.superseded)
 
     def payload(self) -> dict:
-        return {"kept": self.kept, "agrees": self.agrees, "unmatched": self.unmatched}
+        return {"kept": self.kept, "agrees": self.agrees, "unmatched": self.unmatched,
+                "superseded": self.superseded}
 
     def kept_line(self) -> str:
         """The flips that survive, in one line; ``""`` when there are none."""
@@ -103,64 +132,99 @@ class CaptiveReplay:
         if self.agrees:
             parts.append(f"the sheet already agrees on {len(self.agrees)}: " + ", ".join(
                 f"{_screw(e)} {_word(e['captive'])}" for e in self.agrees))
-        return "captive fixes (Shift+T) " + "; ".join(parts)
+        return "captive fixes (Shift+T / Steps) " + "; ".join(parts)
 
     def unmatched_lines(self) -> list[str]:
-        """One line per flipped screw the new sheet (or the table) does not fit."""
-        return [f"captive fix not matched: {e['target']} ({e['why']})" for e in self.unmatched]
+        """One line per flipped screw the new sheet (or the table) does not fit.
+
+        The flips of a screw recorded under an earlier key end the list as one
+        count (``captive fixes superseded: n``).
+        """
+        n = sum(len(e["ops"]) for e in self.superseded)
+        tail = ([f"captive fixes superseded: {n} (the same screw under an earlier key)"]
+                if n else [])
+        return [f"captive fix not matched: {e['target']} ({e['why']})"
+                for e in self.unmatched] + tail
 
 
 def replay_captive(ops: list[dict], stored: dict[str, InstanceRec],
                    fresh: dict[str, InstanceRec],
-                   rename: Optional[dict[str, str]] = None
+                   rename: Optional[dict[str, str]] = None,
+                   remembered: Optional[dict[int, str]] = None,
                    ) -> tuple[dict[str, InstanceRec], CaptiveReplay]:
     """The parsed instances with the stored ``captive`` of every flipped screw.
 
     ``ops`` are the desktop's ``captive_fix`` rows (payload decoded) and only
     say which screws were flipped; ``stored`` is the instance table the import
     is about to replace, ``fresh`` what the sheet parses to now. ``rename`` is
-    ``gone -> keep`` of the merges in effect. Pure: returns a new mapping
+    ``gone -> keep`` of the merges in effect. ``remembered`` is ``op id ->
+    raw name`` of the screw each op's flip landed on at the last re-import
+    (U27 round 3, R2-N1; :func:`replay_captive_for_import` reads it off the
+    ``replay_captive`` rows): the name that screw has in ``stored``, which the
+    op's own ``raw_name`` (recorded since round 2) need not be any more --
+    and a flip made before round 2 recorded none. Pure: returns a new mapping
     (records changed are copies) and the :class:`CaptiveReplay`.
     """
     out = dict(fresh)
     report = CaptiveReplay()
+    remembered = remembered or {}
     touched: dict[str, list[int]] = {}
     names: dict[str, str] = {}
     for op in sorted(ops, key=lambda row: int(row["id"])):
         payload = op.get("payload") or {}
         target = renamed(str(payload["target"]), rename)
         touched.setdefault(target, []).append(int(op["id"]))
-        if payload.get("raw_name"):
-            names[target] = str(payload["raw_name"])
+        name = remembered.get(int(op["id"])) or payload.get("raw_name")
+        if name:
+            names[target] = str(name)
+    # every group is first resolved to the parsed screw it flips (round 3):
+    # after a renumbering one screw has flips under its old key and its new
+    # one, and they are one screw with one stored value
+    found_at: dict[str, tuple[int, dict, InstanceRec]] = {}
     for target, ids in sorted(touched.items()):
         entry: dict = {"target": target, "ops": sorted(ids)}
-        # task U27 round 2, B1: a flip recorded with the screw's raw name is
-        # found by it -- in the table being replaced (an earlier re-import may
-        # have renumbered the screw) and in the parse, the way the relation
-        # replay finds the screw's parent / attached fixes; one recorded
-        # without (before round 2) by key, and then by the stored screw's name
+        # task U27 round 2, B1: a flip with a name is found by it -- in the
+        # table being replaced (an earlier re-import may have renumbered the
+        # screw) and in the parse, the way the relation replay finds the
+        # screw's parent / attached fixes; one without (made before round 2,
+        # never replayed since) by its key
         name = names.get(target)
-        held_key = (locate_part(stored, target, name)[0] if name else None) or target
-        held = stored.get(held_key)
+        held_key = _held(stored, target, name)
+        held = stored.get(held_key) if held_key else None
         if held is None or held.cls != SCREW:
-            report.unmatched.append(entry | {
-                "why": f"the instance table being replaced has no screw {target}"})
+            why = (f'the instance table being replaced has no screw named "{name}"'
+                   if name and held_key is None
+                   else f"the instance table being replaced has no screw {target}")
+            report.unmatched.append(entry | ({"name": name} if name else {}) | {"why": why})
             continue
-        attrs = held.attrs or {}
-        entry["captive"] = bool(attrs.get("captive"))
+        name = name or _first_name(held)
+        entry["captive"] = bool((held.attrs or {}).get("captive"))
         if held_key not in out and is_extra(held):
-            report.agrees.append(entry | {"sheet": None})     # the import keeps it as is
+            report.agrees.append(entry | {"name": _first_name(held), "sheet": None})
             continue
-        found, why = locate_part(out, held_key, name or _first_name(held), stored)
+        found, why = locate_part(out, held_key, name, stored)
         rec = out.get(found) if found is not None else None
         if rec is None or rec.cls != SCREW:
             gone = found is None and not why.startswith("the sheet no longer has")
-            report.unmatched.append(entry | {
+            report.unmatched.append(entry | ({"name": name} if name else {}) | {
                 "why": why if gone else f"the sheet no longer has the screw {target}"})
             continue
+        # what the next import finds this screw by: its name in the table written now
+        entry["name"] = _first_name(rec) or name
         if found != target:
             entry["parsed"] = found
-        target = found
+        latest = found_at.get(found)
+        if latest is not None and latest[0] > max(ids):
+            report.superseded.append({"target": target, "ops": sorted(ids), "by": latest[0],
+                                      "name": entry["name"]})
+            continue
+        if latest is not None:
+            report.superseded.append({"target": latest[1]["target"], "ops": latest[1]["ops"],
+                                      "by": max(ids), "name": latest[1].get("name")})
+        found_at[found] = (max(ids), entry, held)
+    for found, (_last, entry, held) in sorted(found_at.items()):
+        attrs = held.attrs or {}
+        target, rec = found, out[found]
         entry["sheet"] = bool((rec.attrs or {}).get("captive"))
         manual = attrs.get("captive_source") == MANUAL
         if entry["sheet"] != entry["captive"] and not manual:
@@ -176,6 +240,8 @@ def replay_captive(ops: list[dict], stored: dict[str, InstanceRec],
             out[target] = replace(rec, attrs={**(rec.attrs or {}), "captive": entry["captive"],
                                               "captive_source": MANUAL})
         (report.agrees if entry["sheet"] == entry["captive"] else report.kept).append(entry)
+    for listed in (report.kept, report.agrees, report.unmatched):
+        listed.sort(key=lambda e: e["target"])          # by the flip's own key, as before
     return out, report
 
 
@@ -185,12 +251,32 @@ def replay_captive_for_import(db: Db, desktop: int, fresh: dict[str, InstanceRec
     """:func:`replay_captive` for one desktop, read before the import writes.
 
     Must be called **before** the instance table is replaced: the stored
-    records are the annotator's last word on every flipped screw.
+    records are the annotator's last word on every flipped screw. The name
+    each op's screw had after the last re-import is read off the
+    ``replay_captive`` rows, the latest row winning (:func:`remembered_names`).
     """
     ops = db.ops_of_kind(int(desktop), OP_CAPTIVE_FIX)
     if not ops:
         return dict(fresh), CaptiveReplay()
-    return replay_captive(ops, db.instances(int(desktop)), fresh, rename)
+    return replay_captive(ops, db.instances(int(desktop)), fresh, rename,
+                          remembered_names(db, desktop))
+
+
+def remembered_names(db: Db, desktop: int) -> dict[int, str]:
+    """``op id -> raw name`` of the screw each flip landed on, by the latest ``replay_captive`` row.
+
+    Each import writes the name the screw has in the table it writes; the next
+    one finds it by that name in the table it replaces (round 3, R2-N1).
+    """
+    out: dict[int, str] = {}
+    for row in db.ops_of_kind(int(desktop), OP_REPLAY_CAPTIVE):
+        payload = row.get("payload") or {}
+        for entry in [*payload.get("kept", ()), *payload.get("agrees", ()),
+                      *payload.get("unmatched", ()), *payload.get("superseded", ())]:
+            if entry.get("name"):
+                for op_id in entry.get("ops") or ():
+                    out[int(op_id)] = str(entry["name"])
+    return out
 
 
 # --------------------------------------------------------------------------- #
