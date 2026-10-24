@@ -609,9 +609,11 @@ def cmd_export_coco(args: argparse.Namespace) -> int:
                 allow_conflicts=bool(args.allow_conflicts),
                 only_verified=bool(args.only_verified),
                 roi_crop=bool(args.roi_crop), truth=truth,
-                # passed only to switch the amodal shapes off (U26): the default
-                # is the exporter's own, and one that predates the keyword runs
+                # passed only to switch the amodal shapes or the hidden parts
+                # off (U26): the defaults are the exporter's own, and one that
+                # predates the keywords runs
                 **({} if getattr(args, "amodal", True) else {"amodal": False}),
+                **({} if getattr(args, "hidden", True) else {"hidden": False}),
             )
             if not _count(stats, "annotations"):
                 worst = max(worst, _nothing_exported("export-coco", view, out,
@@ -622,9 +624,28 @@ def cmd_export_coco(args: argparse.Namespace) -> int:
             outside = _context_count(stats)
             note = (f" ({outside} of them context objects outside the machine)"
                     if outside else "")
+            _report_amodal(stats)
             print(f"[export-coco] {_count(stats, 'images')} images, "
                   f"{_count(stats, 'annotations')} annotations{note} -> {out}")
         return worst
+
+
+def _report_amodal(stats: dict) -> None:
+    """The parts hidden completely, and the shapes a visible mask had to widen (U26).
+
+    Before the total, which stays the last line: it is the one a script reads.
+    """
+    found = stats.get("annotations")
+    info = stats.get("info") if isinstance(stats.get("info"), dict) else {}
+    if isinstance(found, list):
+        crowd = sum(1 for ann in found if isinstance(ann, dict) and ann.get("iscrowd"))
+        if crowd:
+            print(f"[export-coco] {crowd} annotation(s) are parts hidden completely: "
+                  f"empty segmentation, iscrowd 1, bbox = the amodal box")
+    union = int(info.get("amodal_union_rows") or 0)
+    if union:
+        print(f"[export-coco] {union} annotation(s) had visible pixels outside the compiled "
+              f"shape: exported with amodal = amodal | visible (their union)")
 
 
 def _add_export_coco(sub) -> None:
@@ -641,6 +662,11 @@ def _add_export_coco(sub) -> None:
                         "amodal_bbox, amodal_area (the default)")
     p.add_argument("--no-amodal", dest="amodal", action="store_false",
                    help="leave the amodal fields out, for a smaller file")
+    p.add_argument("--hidden", dest="hidden", action="store_true", default=True,
+                   help="export a part the labelled parts cover completely as a crowd "
+                        "region with its amodal shape (the default)")
+    p.add_argument("--no-hidden", dest="hidden", action="store_false",
+                   help="leave the completely covered parts out")
     p.add_argument("--only-verified", dest="only_verified", action="store_true",
                    default=True, help="export confirmed rows only (the default)")
     p.add_argument("--no-only-verified", dest="only_verified", action="store_false",

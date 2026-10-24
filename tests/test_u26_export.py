@@ -7,9 +7,13 @@ coordinates as ``segmentation``), ``amodal_bbox`` and ``amodal_area``;
 ``--no-amodal`` leaves them out for size, ``--roi-crop`` crops them too, and a
 part 被线挡住（完全） is still a crowd region with its amodal box.
 
-Scene: :mod:`vis_review_scene` -- a part wholly under another (not exported:
-nothing of it is seen), one half under another, a 4 px one, a cable on
-``cpu.01`` at 13, ``psu.01`` 「看不见」 at 12.
+Rulings on the first round: a part the labelled parts cover completely is
+exported the same way, as a crowd region with its amodal shape (``--no-hidden``
+drops it), and ``visible ⊆ amodal`` holds in the file -- a visible mask drawn
+outside the shape widens it (``info.amodal_union_rows``).
+
+Scene: :mod:`vis_review_scene` -- a part wholly under another, one half under
+another, a 4 px one, a cable on ``cpu.01`` at 13, ``psu.01`` 「看不见」 at 12.
 """
 from __future__ import annotations
 
@@ -29,7 +33,7 @@ from tda.cli import main
 from tda.cli_common import EXIT_OK
 from tda.core import masks
 from tda.core.export import export_coco
-from tda.core.model import FrameKey
+from tda.core.model import FrameKey, FrameOverride
 
 AMODAL = ("amodal_segmentation", "amodal_bbox", "amodal_area")
 #: x0, y0, x1, y1: the left half of the 256x256 canvas, cutting cells in two
@@ -80,6 +84,7 @@ def test_every_mask_annotation_carries_its_amodal_shape(scene, tmp_path):
     assert half["amodal_area"] > half["area"]
     assert half["attributes"]["occlusion_ratio"] == pytest.approx(
         1 - half["area"] / half["amodal_area"])
+    assert doc["info"]["amodal_union_rows"] == 0          # nothing was drawn outside
 
 
 def test_a_part_hidden_by_a_cable_keeps_the_crowd_rule(scene, tmp_path):
@@ -89,8 +94,52 @@ def test_a_part_hidden_by_a_cable_keeps_the_crowd_rule(scene, tmp_path):
     assert hidden["iscrowd"] == 1 and hidden["area"] == 0
     assert hidden["bbox"] == hidden["amodal_bbox"]
     assert hidden["amodal_area"] > 0
-    # the part wholly under a labelled screw, with no reason, is still not exported
-    assert not [a for a in doc["annotations"] if a["attributes"]["instance_key"] == V.HIDDEN]
+
+
+def test_a_part_covered_by_labelled_parts_is_a_crowd_region(scene, tmp_path):
+    """``ram_latch.03`` lies wholly under a screw on all 14 frames: exported like a 完全."""
+    doc, _out = export(scene, tmp_path)
+    assert doc["info"]["hidden"] is True
+    covered = [a for a in doc["annotations"] if a["attributes"]["instance_key"] == V.HIDDEN]
+    steps = {i["id"]: i["extra"]["step"] for i in doc["images"]}
+    assert sorted(steps[a["image_id"]] for a in covered) == list(range(1, 15))
+    for a in covered:
+        attrs = a["attributes"]
+        assert (attrs["visibility"], attrs["occluder"]) == ("occluded_full", None)
+        assert a["iscrowd"] == 1 and a["area"] == 0
+        assert masks.rle_area(a["segmentation"]) == 0
+        assert a["bbox"] == a["amodal_bbox"] and a["amodal_area"] > 0
+        compiled = scene.truth.compile(V.key(steps[a["image_id"]])).instances[V.HIDDEN]
+        assert np.array_equal(decode(a["amodal_segmentation"]), compiled.amodal)
+
+    # --no-hidden: as before U26 -- the covered part goes, the cable's 完全 stays
+    slim, _ = export(scene, tmp_path, "slim.json", hidden=False)
+    assert slim["info"]["hidden"] is False
+    assert not [a for a in slim["annotations"] if a["attributes"]["instance_key"] == V.HIDDEN]
+    assert ann(slim, V.CABLE_STEP, V.CABLED)["iscrowd"] == 1
+    assert len(slim["annotations"]) == len(doc["annotations"]) - len(covered)
+
+
+def test_a_visible_mask_drawn_outside_the_shape_widens_it(tmp_path):
+    """A 「只改这一帧」 mask away from the shape (D2 S15 ``ssd.02``): amodal ∪ visible."""
+    scene = V.build(tmp_path / "scene", confirm=())    # its own: this one gets an override
+    try:
+        key = V.key(5)
+        shape = scene.truth.compile(key).instances[V.HALF].amodal
+        elsewhere = np.zeros(V.HW, dtype=bool)
+        elsewhere[240:250, 240:250] = True             # a corner no shape reaches
+        assert not (elsewhere & shape).any()
+        scene.db.set_frame_override(FrameOverride(key, V.HALF, masks.encode_rle(elsewhere)))
+        doc, _ = export(scene, tmp_path, "c.json")
+    finally:
+        scene.close(force=True)
+    widened = ann(doc, 5, V.HALF)
+    assert np.array_equal(decode(widened["segmentation"]), elsewhere)
+    assert np.array_equal(decode(widened["amodal_segmentation"]), shape | elsewhere)
+    assert widened["amodal_area"] == int(shape.sum()) + 100
+    assert doc["info"]["amodal_union_rows"] == 1
+    for a in doc["annotations"]:                       # and it holds everywhere
+        assert not (decode(a["segmentation"]) & ~decode(a["amodal_segmentation"])).any()
 
 
 def test_no_amodal_leaves_the_fields_out_and_nothing_else(scene, tmp_path):
@@ -165,27 +214,38 @@ def test_the_amodal_shapes_cost_one_compilation_per_exported_frame(scene, tmp_pa
     doc, _ = export(scene, tmp_path, "again.json")
     assert sorted(steps) == sorted(i["extra"]["step"] for i in doc["images"])
     steps.clear()
-    export(scene, tmp_path, "slim.json", amodal=False)
-    # the one 被线挡住（完全） part still needs its box: its frame only
+    slim, _ = export(scene, tmp_path, "slim.json", amodal=False)
+    # the parts hidden completely still need their boxes: ram_latch.03 is
+    # under a screw on every frame
+    assert sorted(steps) == sorted(i["extra"]["step"] for i in slim["images"])
+    steps.clear()
+    export(scene, tmp_path, "slimmer.json", amodal=False, hidden=False)
+    # ... and without it only the 被线挡住（完全） part does: its frame only
     assert steps == [V.CABLE_STEP]
 
 
-def test_the_cli_flag(scene, tmp_path, capsys):
+def test_the_cli_flags(scene, tmp_path, capsys):
     paths = tmp_path / "paths.yaml"
     root = tmp_path / "backups"
     root.mkdir()
     paths.write_text(yaml.safe_dump({"db_path": scene.db.path, "cache_dir": str(tmp_path),
                                      "backup_dir": str(root)}), encoding="utf-8")
-    sizes = {}
-    for name, flag in (("with", []), ("without", ["--no-amodal"])):
+    sizes, counts = {}, {}
+    for name, flag in (("with", []), ("without", ["--no-amodal"]),
+                       ("unhidden", ["--no-hidden"])):
         out = tmp_path / f"{name}.json"
         code = main(["--paths", str(paths), "export-coco", "--desktops", str(V.DESKTOP),
                      "--view", V.VIEW, "--out", str(out), *flag])
-        capsys.readouterr()
+        printed = capsys.readouterr().out
         assert code == EXIT_OK
         doc = json.loads(out.read_text(encoding="utf-8"))
-        assert doc["info"]["amodal"] is (name == "with")
-        assert all(("amodal_segmentation" in a) is (name == "with")
+        assert doc["info"]["amodal"] is (name != "without")
+        assert doc["info"]["hidden"] is (name != "unhidden")
+        assert all(("amodal_segmentation" in a) is (name != "without")
                    for a in doc["annotations"])
-        sizes[name] = out.stat().st_size
+        crowd = sum(a["iscrowd"] for a in doc["annotations"])
+        assert f"[export-coco] {crowd} annotation(s) are parts hidden completely" in printed
+        sizes[name], counts[name] = out.stat().st_size, len(doc["annotations"])
     assert sizes["without"] < sizes["with"]
+    # ram_latch.03 on each confirmed frame (the CLI exports confirmed rows only)
+    assert counts["unhidden"] == counts["with"] - len(V.CONFIRMED)

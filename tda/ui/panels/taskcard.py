@@ -32,7 +32,7 @@ outline where the part probably is.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Collection, Optional
 
 from PySide6.QtCore import QEvent, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QPainter, QPen
@@ -54,6 +54,7 @@ from tda.core.truth_refusals import (
     conflict_of,
     is_blocking,
 )
+from tda.core.empty_visible import EMPTY_VISIBLE, NO_SHAPE, classify
 from tda.core.model import CAGE_LATCH_RULE, EXTRA_ATTR, IMPLIED_RULE_ATTR
 from tda.ui import app_actions as A
 from tda.ui import session_api as api
@@ -631,8 +632,23 @@ PROBLEM_SENTENCES: tuple[tuple[str, str], ...] = (
 )
 
 
-def explain_code(code: str) -> str:
-    """The human sentence for a problem code, or the code itself when unknown."""
+#: ``empty_visible:`` of a part whose shape is empty on this frame (task U26):
+#: nothing covers it, there is nothing of it to cover.
+NO_SHAPE_SENTENCE = "{what}：这一帧没有它的形状（没画，或整个在画面外）"
+_EMPTY_PREFIX = EMPTY_VISIBLE + ":"
+
+
+def explain_code(code: str, shapeless: Collection[str] = ()) -> str:
+    """The human sentence for a problem code, or the code itself when unknown.
+
+    ``shapeless`` names the parts whose shape is empty on this frame
+    (:func:`tda.core.empty_visible.classify` answers ``no_shape``): their
+    ``empty_visible`` is not 「被完全挡住了」 but :data:`NO_SHAPE_SENTENCE`
+    (task U26). The compiler's code is the same for both; only the frame
+    tells them apart, and :meth:`TaskCardPanel._shapeless` asks it.
+    """
+    if code.startswith(_EMPTY_PREFIX) and code[len(_EMPTY_PREFIX):] in shapeless:
+        return NO_SHAPE_SENTENCE.format(what=code[len(_EMPTY_PREFIX):])
     found = conflict_of(code)
     for prefix, template in PROBLEM_SENTENCES:
         if code.startswith(prefix):
@@ -657,8 +673,10 @@ def _clickable(row: dict) -> bool:
     return bool(row["instance"]) or conflict_of(row["code"]) is not None
 
 
-def pair_problems(problems: list[str]) -> list[dict]:
+def pair_problems(problems: list[str], shapeless: Collection[str] = ()) -> list[dict]:
     """``{"text", "code", "instance"}`` per problem, each one listed once.
+
+    ``shapeless`` is :func:`explain_code`'s.
 
     ``confirm_frame`` emits the compiler's codes **and** one sentence per code
     it knows how to explain (:data:`EXPLAINED_CODES`), in the same order.  Only
@@ -685,7 +703,7 @@ def pair_problems(problems: list[str]) -> list[dict]:
         if code.startswith(EXPLAINED_CODES) and sentences:
             text = sentences.pop(0)
         else:
-            text = explain_code(code)
+            text = explain_code(code, shapeless)
         rows.append({"text": text, "code": code, "instance": instance_of(code)})
     rows.extend({"text": text, "code": "", "instance": ""} for text in sentences)
     return rows
@@ -1262,7 +1280,7 @@ class TaskCardPanel(QWidget):
         # What stops Space first, then -- under their own heading, greyed --
         # the notes the confirmation accepts (U2d).  An arrival that listed
         # ``empty_visible`` above a missing shape read as two equal chores.
-        rows = pair_problems(problems)
+        rows = pair_problems(problems, self._shapeless(problems))
         firsts = [row for row in rows if not _is_note(row)]
         notes = [row for row in rows if _is_note(row)]
         self._rows = firsts + notes
@@ -1286,6 +1304,28 @@ class TaskCardPanel(QWidget):
         self._problems_label.setVisible(visible)
         self._problems_list.setVisible(visible)
         self._sync_blockers()
+
+    def _shapeless(self, problems: list[str]) -> set[str]:
+        """The parts named by ``empty_visible`` whose shape is empty on this frame.
+
+        The compiler gives the same code to a part covered completely and to
+        one with nothing drawn here (task U26); only the frame tells them
+        apart. The problems shown are always the frame on screen's -- an
+        arrival's, or a refused Space's -- and its compilation is the one the
+        session already holds, so this costs a look, not a compile. Nothing to
+        ask (no such code, no session) or no answer is an empty set: the old
+        sentence, never an error in the pane.
+        """
+        named = {p[len(_EMPTY_PREFIX):] for p in problems if p.startswith(_EMPTY_PREFIX)}
+        finder = getattr(self._session, "compiled", None)
+        if not named or not session_is_open(self._session) or not callable(finder):
+            return set()
+        try:
+            frame = finder()
+            return {name for name in named if name in frame.instances
+                    and classify(frame.instances[name]) == NO_SHAPE}
+        except Exception:  # noqa: BLE001 - a sentence is not worth a crash
+            return set()
 
     def problem_rows(self) -> list[dict]:
         """``{"text", "code", "instance", "note"}`` per problem shown, in order.

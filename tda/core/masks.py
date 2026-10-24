@@ -57,6 +57,7 @@ __all__ = [
     "rle_counts",
     "rle_iou",
     "rle_overlap",
+    "rle_union",
     "bbox",
     "bbox_in",
     "min_side",
@@ -525,6 +526,20 @@ def rle_overlap(a: Optional[dict], b: Optional[dict]) -> int:
         return 0
     return int(coco_mask.area(coco_mask.merge([_coco_rle(a), _coco_rle(b)],
                                               intersect=1)))
+
+
+def rle_union(a: dict, b: dict) -> dict:
+    """The union of two RLEs of one size, off the run lengths, as ``str`` counts.
+
+    The COCO export's "the visible mask lies inside the amodal one" (task U26):
+    sixteen thousand annotations, two 2.5 MB decodes each, is what this avoids.
+    Raises ``ValueError`` for two sizes -- two frames have no union.
+    """
+    if [int(v) for v in a["size"]] != [int(v) for v in b["size"]]:
+        raise ValueError(f"cannot unite a {a['size']} RLE with a {b['size']} one")
+    merged = coco_mask.merge([_coco_rle(a), _coco_rle(b)], intersect=0)
+    return {"size": [int(a["size"][0]), int(a["size"][1])],
+            "counts": rle_counts(merged)}
 
 
 def rle_iou(a: Optional[dict], b: Optional[dict]) -> float:

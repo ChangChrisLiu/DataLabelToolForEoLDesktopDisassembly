@@ -490,8 +490,10 @@ D:\Anaconda\envs\tda\python.exe -m tda.cli check --desktop 13 --view scan
 ```
 
 `check` 里「n 个零件完全被挡住（正常）」只是一句说明：被上面的零件整个盖住的零件本来就看不见，不算问题，也不让
-`check` 失败；列在 `- ` 后面的才要处理（`empty_visible: … 形状在这一帧是空的` = 那一帧它的形状是空的，去补画）。
-导出的 COCO 每条标注都带完整形状（`amodal_segmentation`）；嫌文件大加 `--no-amodal`。
+`check` 失败；列在 `- ` 后面的才要处理（`empty_visible: … 形状在这一帧是空的` = 那一帧它的形状是空的，去补画；
+任务卡上同一件事写「这一帧没有它的形状（没画，或整个在画面外）」）。
+导出的 COCO 每条标注都带完整形状（`amodal_segmentation`），整个被盖住的零件也导出（`iscrowd: 1`）；
+嫌文件大加 `--no-amodal`，不要被盖住的加 `--no-hidden`。
 
 ## 6. 这次改掉的几件事（和第二次试用时不一样）
 

@@ -126,7 +126,9 @@ def test_a_bare_label_carries_no_reason(scene, tmp_path):
     assert bare["iscrowd"] == 0 and bare["amodal_area"] >= bare["area"]
 
 
-def test_nothing_visible_and_no_reason_is_still_dropped():
+def test_nothing_visible_and_no_reason_is_a_crowd_region_unless_asked_not_to():
+    """U26: a part covered completely is exported like one 被线挡住（完全）;
+    ``with_hidden=False`` (``--no-hidden``) drops it, as U15 did."""
     from tda.core.export.coco import _annotation
 
     empty = masks.encode_rle(np.zeros((16, 16), dtype=bool))
@@ -134,11 +136,16 @@ def test_nothing_visible_and_no_reason_is_still_dropped():
     whole[2:8, 3:12] = True
     row = {"visible_rle": empty, "geom_type": "mask"}
     bare = {"visibility": FULL, "occluder": None}
-    assert _annotation(1, 1, 1, row, bare, None, False) is None
-    assert _annotation(1, 1, 1, row, bare, None, False, masks.encode_rle(whole)) is None
-    hidden = _annotation(1, 1, 1, row, {"visibility": FULL, "occluder": "cable"}, None,
-                         False, masks.encode_rle(whole))
-    assert hidden["bbox"] == hidden["amodal_bbox"] == [3, 2, 9, 6] and hidden["area"] == 0
+    assert _annotation(1, 1, 1, row, bare, None, False) is None          # no shape at all
+    assert _annotation(1, 1, 1, row, bare, None, False, masks.encode_rle(whole),
+                       with_hidden=False) is None
+    covered = _annotation(1, 1, 1, row, bare, None, False, masks.encode_rle(whole))
+    assert covered["iscrowd"] == 1 and covered["area"] == 0
+    assert covered["bbox"] == covered["amodal_bbox"] == [3, 2, 9, 6]
+    for with_hidden in (True, False):                 # a reason is exported either way
+        hidden = _annotation(1, 1, 1, row, {"visibility": FULL, "occluder": "cable"}, None,
+                             False, masks.encode_rle(whole), with_hidden=with_hidden)
+        assert hidden["bbox"] == hidden["amodal_bbox"] == [3, 2, 9, 6] and hidden["area"] == 0
 
 
 # --------------------------------------------------------------------------- #
