@@ -34,6 +34,7 @@ from tda.core.model import (
     is_context,
     machine_only,
 )
+from tda.core.relation_replay import record_relation_fixes
 from tda.core.states import (
     CABLE_CLASS,
     CABLE_PREFIX,
@@ -797,6 +798,16 @@ class StepTableData:
         derived log starts from those initial states. A frozen frame now asks
         for a part it was not confirmed with, so every verified frame of the
         desktop is queued for a re-check, as ``infer-relations`` does.
+
+        Every relational field (``parent``, ``attached``, ``mounted_on``,
+        ``fastens``, ``socket_host``, ``cable``, ``slot_id``, ``group_id``,
+        ``group_order``, ``removal_direction``, a latch's ``of``) the save
+        changes on a part the database already holds is logged as one
+        ``relation_fix`` row with its inverse -- set back to the importer's
+        value included -- so ``import-logs --force`` replays it
+        (:mod:`tda.core.relation_replay`, task U27). The parts staged in this
+        session (added, split off a compound row) have no stored value to
+        differ from and are not.
         """
         from tda.pipeline import split_pose_segments    # late: tda.pipeline is heavy
 
@@ -804,6 +815,10 @@ class StepTableData:
         self.recut = {}
         with db.transaction():
             moved = _reorients_moved(db.steps(self.desktop), self.steps)
+            # every relational field this Apply changes on a stored part is
+            # one op, so a forced re-import replays it (task U27)
+            record_relation_fixes(db, self.desktop, db.instances(self.desktop),
+                                  self.instances, self.annotator)
             db.replace_steps(self.desktop, self.steps, actions)
             for inst in self.instances.values():
                 db.upsert_instance(inst)

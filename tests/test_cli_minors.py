@@ -49,16 +49,46 @@ def test_force_verified_with_force_is_fine(env):
 # --------------------------------------------------------------------------- #
 # what --force really destroys
 # --------------------------------------------------------------------------- #
-def test_the_force_warning_names_the_relational_fields_it_overwrites(env, capsys):
-    """An annotator's `fastens`/`parent`/`socket_host` go the same way."""
+def test_the_force_warning_says_which_relational_fields_are_replayed_and_what_is_lost(
+        env, capsys):
+    """Task U27: the fields set in Steps are replayed; a head, or a field never recorded, not."""
     _imported(env)
     capsys.readouterr()
     assert run(env, "import-logs", "--desktops", "13", "--force") == EXIT_OK
     out = capsys.readouterr().out
     assert "fastens" in out and "parent" in out and "socket_host" in out
+    assert ("and the relational fields set in Steps' instance table (parent, attached, "
+            "mounted_on, fastens, socket_host, cable, slot/group, removal direction) where "
+            "the sheet still has the part and the part they name") in out
+    assert ("and so is a screw head set by hand and any relational field written before it "
+            "was recorded (run `python -m tda.cli adopt-relations --desktop 13` first to "
+            "keep those)") in out
+    assert "so is every relational field a human set" not in out
+
+
+def test_a_relation_set_in_steps_survives_a_forced_reimport(env):
+    """The same correction as below, made the Steps way (task U27): it is replayed."""
+    from tda.core.taxonomy import load_taxonomy
+    from tda.ui.steps_model import StepTableData
+
+    _imported(env)
+    db = open_db(env)
+    try:
+        data = StepTableData.load(db, 13, load_taxonomy())
+        data.apply_instance_edit("screw.cpu_cooler.01", "fastens", "chassis")
+        data.save(db)
+    finally:
+        db.close()
+    assert run(env, "import-logs", "--desktops", "13", "--force") == EXIT_OK
+    db = open_db(env)
+    try:
+        assert db.instances(13)["screw.cpu_cooler.01"].fastens == "chassis"
+    finally:
+        db.close()
 
 
 def test_a_hand_set_relation_really_is_lost_on_a_forced_reimport(env):
+    """Written straight into the database: no ``relation_fix`` row, nothing to replay."""
     _imported(env)
     db = open_db(env)
     try:

@@ -17,7 +17,10 @@ steps is skipped unless ``force`` is given, and even a forced run
 * keeps a part reclassed with 「其实是硬盘架」 / 「其实是卡扣」 under its new
   class and key (:mod:`tda.core.reclass_replay`, task U21),
 * keeps a drive cage's implied latch that an annotator deleted in Steps
-  deleted (:func:`tda.core.implied.cage_latches`, task U20), and
+  deleted (:func:`tda.core.implied.cage_latches`, task U20),
+* keeps the relational fields set in Steps' instance table -- D23's cable clip
+  riding out on the fan shroud -- over the heuristic's guess
+  (:mod:`tda.core.relation_replay`, task U27), and
 * leaves the hand-written (``auto=False``) state events alone.
 
 Every drive cage of the sheet gets its own latch (task U20): adopted from the
@@ -69,6 +72,12 @@ from tda.core.merge_replay import (
 from tda.core.verb_replay import OP_REPLAY, Replay, replay_for_import
 from tda.core.captive_replay import OP_REPLAY_CAPTIVE, CaptiveReplay, replay_captive_for_import
 from tda.core.reclass_replay import OP_REPLAY_RECLASS, ReclassReplay, replay_reclass_for_import
+from tda.core.relation_replay import (
+    OP_REPLAY_RELATIONS,
+    RelationReplay,
+    relation_inputs,
+    replay_relations,
+)
 from tda.pipeline import Log, merge_desktop_meta, settle_gallery, split_pose_segments, wanted
 
 #: Mirrors :data:`tda.core.ls_import.NOTES_PREFIX`; repeated so importing the
@@ -225,7 +234,8 @@ class DesktopRun:
     adopted: list[str] = field(default_factory=list)
     #: The ``Shift+T`` verb corrections a forced re-import kept (one line) and
     #: the ones the new sheet no longer fits (one line each), task U9 round 2;
-    #: then the same for the merges made in S1 (task U12).
+    #: then the same for the merges made in S1 (task U12), the reclasses (U21),
+    #: the captive flips (U14) and the relational fields set in Steps (U27).
     corrections: list[str] = field(default_factory=list)
     #: What the drive-cage latch rule did besides creating (task U20): a latch
     #: of the sheet adopted as a cage's own, one kept, one kept deleted, a
@@ -902,13 +912,21 @@ def _write_import(
     db: Db, li: LogImport, tax: Taxonomy, previous: list[StepRec], plan: DropPlan,
     adopt: Optional[dict[str, str]] = None,
 ) -> tuple[int, int, int, list[str], list[str], list[str], list[str], list[str], list[str],
-           Replay, MergeReplay, CaptiveReplay, CageLatches, ReclassReplay]:
+           Replay, MergeReplay, CaptiveReplay, CageLatches, ReclassReplay, RelationReplay]:
     """Write one desktop's import atomically.
 
     Returns ``(events, steps with LS notes, notes dropped, fills, unresolved,
     implied, dropped instances, drop issues, adopted, replay, merges, captive,
-    cage latches, reclasses)``. ``adopt`` is :func:`extra_clash` when
-    ``--adopt-extras`` was given (see :func:`_adopt_extras`).
+    cage latches, reclasses, relation fixes)``. ``adopt`` is :func:`extra_clash`
+    when ``--adopt-extras`` was given (see :func:`_adopt_extras`).
+
+    Right after the relational heuristic below, every relational field set in
+    Steps' instance table (a ``relation_fix`` row of the op log, task U27) is
+    put back over the heuristic's value where the sheet still has the part and
+    the part it names (:mod:`tda.core.relation_replay`), so the events already
+    cascade D23's cable clip out with the fan shroud; one ``replay_relations``
+    row says which were kept and which no longer fit, and the fills a fix
+    overrode leave the report's list of guesses.
 
     Right after the merges, every part reclassed in the app (「其实是硬盘架」 /
     「其实是卡扣」, task U21) is made under its new class and key
@@ -983,6 +1001,9 @@ def _write_import(
     # the drive cages' own latches (task U20): the table being replaced (the
     # key an implied latch had), the latches deleted and merged in Steps
     cage_inputs = _cage_inputs(db, li.desktop, li.instances, extras)
+    # the relational fields set in Steps (task U27) and the vanished parts the
+    # drops keep, which a fix may name
+    fixes = relation_inputs(db, li.desktop, plan.holding)
     with db.transaction():
         kept, dropped = carry_ls_notes(li.steps, previous)
         merge_desktop_meta(db, li.desktop, desktop_fields(li.meta))
@@ -1004,6 +1025,13 @@ def _write_import(
         cage = add_cage_latches(db, li, tax, cage_inputs, merges.rename)
         implied += cage.implied_lines()
         fills = infer_relational_fields(li.instances, tax, li.actions)
+        li.instances, relations = replay_relations(
+            fixes.ops, li.instances, {**extras, **fixes.held}, merges.rename, reclass.renames,
+            fixes.stored)
+        fills = relations.unfilled(fills)
+        if relations:
+            db.log_op(li.desktop, OP_VIEW, OP_REPLAY_RELATIONS, relations.payload(),
+                      {"instances": relations.inverse}, IMPLIED_ANNOTATOR)
         for inst in li.instances.values():
             db.upsert_instance(inst)
         # the plan was decided before this transaction opened; carrying it out
@@ -1018,7 +1046,7 @@ def _write_import(
         split_pose_segments(db, li.desktop)
     return (len(events), kept, dropped, fills,
             unresolved_relations(li.instances, tax, li.actions, declined), implied,
-            gone, drop_issues, adopted, replay, merges, captive, cage, reclass)
+            gone, drop_issues, adopted, replay, merges, captive, cage, reclass, relations)
 
 
 def dropped_notes_line(desktop: int, dropped: int) -> str:
@@ -1039,6 +1067,12 @@ def _force_warning(db: Db, desktop: int, previous: list[StepRec]) -> str:
     "carried over" is a promise about the notes whose step number *and* raw name
     survive the re-import; how many did not is only known afterwards and is said
     then (:func:`dropped_notes_line`).
+
+    The relational fields set in Steps are replayed since task U27; what is
+    still lost is said: a field written before there was a record of it (until
+    ``adopt-relations`` records it) and a screw head set by hand. A fix on a
+    part the sheet no longer has, or naming one, is reported after the import
+    (``relation fix not matched``).
     """
     ls_steps = db.steps_with_note_prefix(desktop, LS_NOTES_PREFIX)
     notes = (
@@ -1052,11 +1086,14 @@ def _force_warning(db: Db, desktop: int, previous: list[StepRec]) -> str:
         f"with Shift+T are replayed where the sheet still has that action, the captive "
         f"flags flipped with Shift+T where it still has that screw, and so are "
         f"the instances merged in S1 (合并到…) and the parts reclassed (其实是硬盘架 / "
-        f"其实是卡扣) where the sheet still names them; every other "
-        f"manual edit to the step table is lost, and so is every relational field a "
-        f"human set on an instance "
-        f"(fastens, parent, mounted_on, socket_host): the instances are re-created from "
-        f"the sheet and the heuristic fills them again"
+        f"其实是卡扣) where the sheet still names them, and the relational fields set "
+        f"in Steps' instance table (parent, attached, mounted_on, fastens, socket_host, "
+        f"cable, slot/group, removal direction) where the sheet still has the part and "
+        f"the part they name; every other manual edit to the step table is lost, and so "
+        f"is a screw head set by hand and any relational field written before it was "
+        f"recorded (run `python -m tda.cli adopt-relations --desktop {desktop}` first "
+        f"to keep those): the instances are re-created from the sheet and the heuristic "
+        f"fills the rest again"
     )
 
 
@@ -1200,15 +1237,16 @@ def _import_one(
             f"kept the file's number"
         )
     (events, kept, dropped, fills, unresolved, implied,
-     gone, drop_issues, adopted, replay, merges, captive, cage, reclass) = _write_import(
-        db, li, tax, previous, plan, clash)
+     gone, drop_issues, adopted, replay, merges, captive, cage, reclass,
+     relations) = _write_import(db, li, tax, previous, plan, clash)
     extras_kept = extra_keys(db.instances(desktop))
     if dropped:
         issues.append(dropped_notes_line(desktop, dropped))
     corrections = ([replay.kept_line()] if replay.kept_line() else []) + \
         replay.unmatched_lines() + \
         merges.lines(skip={e["latch"] for e in cage.merged}) + reclass.lines() + \
-        ([captive.kept_line()] if captive.kept_line() else []) + captive.unmatched_lines()
+        ([captive.kept_line()] if captive.kept_line() else []) + captive.unmatched_lines() + \
+        relations.lines()
     issues.extend(drop_issues)
     if log:
         for text in adopted:
