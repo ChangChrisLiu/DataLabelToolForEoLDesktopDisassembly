@@ -337,10 +337,11 @@ def test_a_split_row_does_not_get_the_retrace_clause(window):
 
     window.on_request_edit("ram_latch.01")
 
-    # the row is committed with Enter (Ctrl+K until U16), and nothing says Shift+N
+    # the row is committed with the commit key (Ctrl+K until U16, Enter until
+    # U22, Q since), and nothing says Shift+N
     assert "重画会影响" not in window.status_message(), window.status_message()
     plan = window.guide_plan()
-    assert "Enter" in plan.now and "重画会影响" not in plan.now
+    assert "按 Q" in plan.now and "重画会影响" not in plan.now
 
 
 def test_shift_n_with_no_conflict_says_so(window):

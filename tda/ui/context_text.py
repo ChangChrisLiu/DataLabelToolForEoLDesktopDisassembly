@@ -21,22 +21,22 @@ BUTTON_TIP = ("画面里、机器外的东西（旁边放着的另一个零件�
 #: The dialog.
 DIALOG_TITLE = "框外零件 / Object outside the machine"
 INTRO = ("机器外面、画面里看得到的东西：选类别（都不是就选「其他」并写名字），确定后直接画它，"
-         "Enter 提交（往后的帧带着它）。它不进步骤表、任务卡、状态和关系，缺了也不挡 Space；"
-         "哪一帧里没有它就选中按 I（不在这张里）。")
+         "Q 提交（往后的帧带着它）。它不进步骤表、任务卡、状态和关系，缺了也不挡 Space；"
+         "哪一帧里没有它就选中按 ` 键（不在这张里）。")
 OTHER_ZH = "其他（写名字）"
 LABEL_TIP = "名字：「其他」必填，别的类别可以不写 / name (required for other)"
 #: After it was made.
-CREATED = "{label}：已新建（框外，单独画）——现在画它，Enter 提交；Ctrl+Z 撤销新建"
+CREATED = "{label}：已新建（框外，单独画）——现在画它，Q 提交；Ctrl+Z 撤销新建"
 #: The instance tables' block, and their 「不在」 tag.
 BLOCK_TITLE = "── 框外零件 / outside the machine ──"
 TAG_ABSENT = "不在"
-TAG_ABSENT_TIP = ("这一帧里没有它（框外零件，I 标的）；在的话选中再按 I 撤回，Ctrl+Z 撤销 / "
+TAG_ABSENT_TIP = ("这一帧里没有它（框外零件，` 键标的）；在的话选中再按 ` 键撤回，Ctrl+Z 撤销 / "
                   "not in this frame")
 NOT_IN_TABLE = "{instance} 是框外零件：这里没有它（右键画布「框外零件…」新建）"
-#: ``I`` / ``Ctrl+I`` on one.
-ABSENT_DONE = "{label}：不在这张里（再按 I 撤回，Ctrl+Z 撤销）"
+#: `````` / ``Ctrl+``` on one (``I`` / ``Ctrl+I`` before task U22).
+ABSENT_DONE = "{label}：不在这张里（再按 ` 键撤回，Ctrl+Z 撤销）"
 ABSENT_BACK = "{label}：撤回「不在」，这张里有它（Ctrl+Z 撤销）"
-NO_SHAPE_HERE = ("{label} 在这一帧没有形状，本来就不在；在的话直接画它、Enter 提交")
+NO_SHAPE_HERE = ("{label} 在这一帧没有形状，本来就不在；在的话直接画它、Q 提交")
 RANGE_TITLE = "一段帧里没有它 / not in these frames"
 ABSENT_RANGE_DONE = "{label} {where}都标为不在（Ctrl+Z 一次撤销）"
 ABSENT_RANGE_OFF = "{label} {where}撤回「不在」（Ctrl+Z 一次撤销）"

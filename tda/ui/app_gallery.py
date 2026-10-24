@@ -33,11 +33,11 @@ from tda.ui.gallery import (
 
 __all__ = ["GalleryMixin", "NOT_A_GALLERY", "PICK_A_PART"]
 
-#: ``I`` outside the gallery.
-NOT_A_GALLERY = ("「看不见」只用在零件合照里（F6–F8）；拆解序列里用可见性键 1–7 / "
+#: 看不见 (`````` since task U22) outside the gallery.
+NOT_A_GALLERY = ("「看不见」只用在零件合照里（F6–F8）；拆解序列里用可见性键 Ctrl+1–7 / "
                  "\"not in this shot\" is for the components gallery")
-#: ``I`` with nothing to act on.
-PICK_A_PART = "先在任务卡上点一条零件，再按 I（看不见）/ pick a part on the card first"
+#: 看不见 with nothing to act on.
+PICK_A_PART = "先在任务卡上点一条零件，再按 ` 键（看不见）/ pick a part on the card first"
 
 
 class GalleryMixin:
@@ -125,7 +125,7 @@ class GalleryMixin:
                                  f"it has a shape on this shot")
         if getattr(self.session, "editing_instance", None) == target and (
                 self.has_uncommitted_edit() if dirty is None else dirty):
-            return target, row, f"{label} 正在画：先 Esc 放弃，再按 I / drop the edit first"
+            return target, row, f"{label} 正在画：先 Esc 放弃，再按 ` 键 / drop the edit first"
         return target, row, ""
 
     def absent_refusal(self, instance: Optional[str] = None,
@@ -180,4 +180,4 @@ class GalleryMixin:
         self.timeline.refresh_statuses()
         self.update_status()
         self.report(f"{label}：" + ("回到待画（Ctrl+Z 撤销）" if back else
-                                   "看不见，不在这张里（再按 I 或 Ctrl+Z 撤销）"))
+                                   "看不见，不在这张里（再按 ` 键或 Ctrl+Z 撤销）"))

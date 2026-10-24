@@ -32,14 +32,14 @@ __all__ = ["CUT_COPY_UNCHANGED", "CommitMixin", "NOT_A_CUT_COPY"]
 
 #: ``Enter`` with nothing drawn on a frame that shows a cut copy (U11 round 2):
 #: it would confirm a placeholder, so it is refused and the explicit key named.
-CUT_COPY_UNCHANGED = ("这帧上是另一状态的形状副本：画好这一帧的样子再 Enter；"
+CUT_COPY_UNCHANGED = ("这帧上是另一状态的形状副本：画好这一帧的样子再 Q；"
                       "形状确实没变就按 Ctrl+Shift+K（这帧就是这个形状）")
 #: ``Ctrl+Shift+K`` where the shape in force is not a cut copy.
 NOT_A_CUT_COPY = "{instance} 在这一帧的形状不是切开时留下的副本，不用确认"
 #: ``Ctrl+Shift+K`` with no part named and none being drawn.
 NO_CUT_TARGET = "先在实例表选中零件（或点任务卡上那一条）"
 #: ``Ctrl+Shift+K`` with pixels painted and not committed.
-CONFIRM_NEEDS_CLEAN_LAYER = ("正在画的像素还没提交：画的就是这一帧的样子按 Enter；"
+CONFIRM_NEEDS_CLEAN_LAYER = ("正在画的像素还没提交：画的就是这一帧的样子按 Q；"
                              "要确认副本先 Esc 放弃")
 
 

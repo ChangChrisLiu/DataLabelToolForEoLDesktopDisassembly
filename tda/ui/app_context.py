@@ -209,7 +209,7 @@ class ContextMixin:
             return why
         if not marked and getattr(self.session, "editing_instance", None) == instance and (
                 self.has_uncommitted_edit() if dirty is None else dirty):
-            return f"{self._label_of(instance)[0] or instance} 正在画：先 Esc 放弃，再按 I"
+            return f"{self._label_of(instance)[0] or instance} 正在画：先 Esc 放弃，再按 ` 键"
         return ""
 
     @S.guard

@@ -315,7 +315,7 @@ def test_enter_names_the_frames_behind_that_keep_the_old_shape(window):
     goto(window, 10)
     paint(window, CHASSIS, NEW)
     press(window, "act_commit")
-    said = "已从这帧起新版本；第 11–14 帧（其中已确认 2 帧）仍是旧样子，要一起改用 Ctrl+Enter"
+    said = "已从这帧起新版本；第 11–14 帧（其中已确认 2 帧）仍是旧样子，要一起改用 Ctrl+Q"
     assert window.status_message() == said
     assert window.canvas.banner_text() == said
     # on 10 the new version starts now: Enter re-traces it, nothing is left behind
@@ -360,7 +360,7 @@ def test_ctrl_enter_after_enters_split_writes_the_shape_behind_too(window):
 
     window.handle_key(key_event("Ctrl+Return"))                # asks
     assert window.all_asked() and session.editing_instance == CHASSIS
-    assert ("把这版形状也写到第 11–14 帧（其中已确认 2 帧，会重新检查）？再按 Ctrl+Enter"
+    assert ("把这版形状也写到第 11–14 帧（其中已确认 2 帧，会重新检查）？再按 Ctrl+Q"
             in window.scope_bar_text()), window.scope_bar_text()
     assert anchors(session, CHASSIS) == [10, 14]               # nothing written yet
     press(window, "act_commit_all")                            # the second press
@@ -403,7 +403,7 @@ def test_a_first_draw_then_a_fix_at_the_same_frame_reaches_the_draft_behind(wind
     press(window, "act_commit")                                # the fix: a split at 10
     assert anchors(session, CHASSIS) == [10, 14]
     assert window.status_message() == ("已从这帧起新版本；第 11–14 帧仍是旧样子，"
-                                       "要一起改用 Ctrl+Enter")
+                                       "要一起改用 Ctrl+Q")
     window.handle_key(key_event("Ctrl+Return"))                # nothing confirmed: at once
     assert not window.all_asked() and session.editing_instance is None
     assert window.status_message() == "已把这版形状也写到第 11–14 帧"
@@ -428,12 +428,12 @@ def test_ctrl_enter_does_not_fold_a_version_across_a_state_boundary(window):
     window.on_request_edit(latch)                              # the stored shape, untouched
     ctrl_enter(window)
     assert "这一帧和后面第 13 步之间是状态边界（✂）" in window.last_error_message()
-    assert "只重画这一版用 Enter" not in window.last_error_message()
+    assert "只重画这一版用 Q" not in window.last_error_message()
     assert kf_rows(session, latch) == before
     # R2: with pixels in the layer the refusal names the key that keeps them
     window.set_editing_mask(rect(42, 42, 60, 60), undoable=True)
     ctrl_enter(window)
-    assert window.last_error_message().endswith("只重画这一版用 Enter"), \
+    assert window.last_error_message().endswith("只重画这一版用 Q"), \
         window.last_error_message()
     assert kf_rows(session, latch) == before and session.editing_instance == latch
 
@@ -486,7 +486,7 @@ def test_ctrl_enter_inside_a_ctrl_t_span_reaches_the_spans_top(window):
     paint(window, latch, opened)
     press(window, "act_commit")
     assert window.status_message().endswith("已从这帧起新版本；第 12 帧仍是旧样子，"
-                                            "要一起改用 Ctrl+Enter"), window.status_message()
+                                            "要一起改用 Ctrl+Q"), window.status_message()
     ctrl_enter(window)
     assert session.editing_instance is None, window.last_error_message()
     for step in (10, 11, 12):
@@ -507,7 +507,7 @@ def test_ctrl_enter_asks_then_writes_everywhere_and_queues_the_re_check(window):
     assert window.all_asked() and window.scope_bar.isVisibleTo(window)
     assert "第 1–14 帧（共 14 帧）" in asked, asked
     assert "其中已确认的第 12、13 帧会被重新检查（可能产生冲突）" in asked
-    assert "再按 Ctrl+Enter" in asked and "Esc 取消" in asked
+    assert "再按 Ctrl+Q" in asked and "Esc 取消" in asked
     assert window.scope_all_button.text() == ALL_BUTTON_CONFIRM
     assert not window.scope_layer_button.isVisibleTo(window)   # no layering question here
     plan = window.guide_plan()
@@ -570,10 +570,10 @@ def test_a_size_warning_raised_by_ctrl_enter_names_it_and_its_button_presses_it(
     paint(window, CHASSIS, rect(30, 30, 33, 33))           # 9 px: implausibly small
     window.act_commit_all()
     assert window._pending_warning is not None
-    assert "Ctrl+Enter 仍然提交" in window.warn_bar_text()
-    assert window.warn_commit_button.text() == "Ctrl+Enter 仍然提交"
+    assert "Ctrl+Q 仍然提交" in window.warn_bar_text()
+    assert window.warn_commit_button.text() == "Ctrl+Q 仍然提交"
     plan = window.guide_plan()
-    assert "再按一次 Ctrl+Enter" in plan.now and plan.action == "commit_all"
+    assert "再按一次 Ctrl+Q" in plan.now and plan.action == "commit_all"
     window._answer_warning()                                # the bar's button
     assert session.editing_instance is None, window.status_message()
     assert anchors(session, CHASSIS) == [14]               # 改全部: the re-trace
@@ -581,7 +581,7 @@ def test_a_size_warning_raised_by_ctrl_enter_names_it_and_its_button_presses_it(
     paint(window, CHASSIS, rect(31, 31, 33, 33))           # 4 px
     window.act_commit()
     assert window._pending_warning is not None, window.status_message()
-    assert window.warn_commit_button.text() == "Enter 仍然提交"
+    assert window.warn_commit_button.text() == "Q 仍然提交"            # Enter until U22
     window._answer_warning()
     assert anchors(session, CHASSIS) == [10, 14]           # Enter: from 10 on
 
@@ -618,7 +618,7 @@ def test_enter_on_a_layering_suggestion_writes_the_shape_from_here_on(window, mo
     monkeypatch.setattr(session, "commit_edit",
                         lambda scope, *a, **k: committed.append(scope) or {})
     window.act_commit()                                     # the bar
-    assert "Ctrl+Enter 改全部" in window.scope_bar_text()
+    assert "Ctrl+Q 改全部" in window.scope_bar_text()
     window.act_commit()                                     # Enter: the shape, from 10 on
     assert committed == [api.SCOPE_SPLIT]
 
@@ -655,10 +655,12 @@ def test_ctrl_k_is_enter(window):
 
 def test_ctrl_enter_is_bound_in_annotate_mode_only():
     action = A.action_named("commit_all")
-    assert action.keys == ("Ctrl+Return", "Ctrl+Enter") and action.slot == "act_commit_all"
+    # Ctrl+Q first since task U22 (the left hand); Ctrl+Enter stays an alias
+    assert action.keys == ("Ctrl+Q", "Ctrl+Return", "Ctrl+Enter")
+    assert action.slot == "act_commit_all"
     assert action.modes == (A.MODE_ANNOTATE,)
-    assert A.key_caption(action) == "Ctrl+Enter"
-    for key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+    assert A.key_caption(action) == "Ctrl+Q"
+    for key in (Qt.Key.Key_Q, Qt.Key.Key_Return, Qt.Key.Key_Enter):
         assert A.action_for(key, Qt.KeyboardModifier.ControlModifier).name == "commit_all"
         assert A.action_for(key, Qt.KeyboardModifier.ControlModifier, A.MODE_REVIEW) is None
 
@@ -751,21 +753,22 @@ FRESH = G.GuideFacts(step=42, neighbour=None)
 def test_the_guide_names_enter_for_a_split_row_and_ctrl_enter_for_its_question():
     split = G.plan_for(replace(FRESH, editing="x", layer_pixels=True, layer_dirty=True,
                                editing_kind=api.KIND_SPLIT_KEYFRAME))
-    assert "按 Enter（从这帧起新版本）" in split.now and "Ctrl+K" not in split.now
+    # the commit key is Q since task U22 (Enter its alias)
+    assert "按 Q（从这帧起新版本）" in split.now and "Ctrl+K" not in split.now
     assert split.action == "commit"
-    assert G.COMMIT_SPLIT == "Enter 提交（从这帧起新版本）"
+    assert G.COMMIT_SPLIT == "Q 提交（从这帧起新版本）"
     assert "走过的帧不变" in G.COMMIT and "Ctrl+K" not in G.COMMIT
     asked = G.plan_for(replace(FRESH, editing="x", layer_pixels=True, layer_dirty=True,
                                all_asked=True))
     assert asked.phase == G.PHASE_SCOPE and asked.action == "commit_all"
-    assert "再按 Ctrl+Enter" in asked.now and "Esc" in asked.now
+    assert "再按 Ctrl+Q" in asked.now and "Esc" in asked.now
     warned = G.plan_for(replace(FRESH, editing="x", layer_pixels=True, layer_dirty=True,
                                 warning=True, warning_scope=api.SCOPE_KEYFRAME,
                                 warning_action="commit_all"))
-    assert "再按一次 Ctrl+Enter" in warned.now and warned.action == "commit_all"
+    assert "再按一次 Ctrl+Q" in warned.now and warned.action == "commit_all"
     entered = G.plan_for(replace(FRESH, editing="x", layer_pixels=True, layer_dirty=True,
                                  warning=True, warning_scope=api.SCOPE_SPLIT))
-    assert "再按一次 Enter" in entered.now and entered.action == "commit"
+    assert "再按一次 Q" in entered.now and entered.action == "commit"
 
 
 # --------------------------------------------------------------------------- #
@@ -782,22 +785,25 @@ def test_the_task_card_and_the_banners_say_enter_for_a_split_row():
     for text in (KIND_SENTENCES[api.KIND_SPLIT_KEYFRAME], CUT_COPY_SENTENCE, ICON_LEGEND,
                  BANNER_SPLIT, BANNER_LOADED_SPLIT, BANNER_CUT_COPY):
         assert "Ctrl+K" not in text, text
-        assert "Enter" in text, text
+        # the commit key, Q since U22 (Enter before)
+        assert any(said in text for said in ("Q 提交", "画好后 Q", "Q 从这帧起新版本")), text
 
 
 def test_the_guide_says_enter_is_from_this_frame_on():
+    """The commit is from this frame on; its key is Q since task U22, and the
+    top of §4 says once that the Enter keys still work."""
     guide = _squash(GUIDE.read_text(encoding="utf-8"))
-    assert _squash("**`Enter` 提交**：从这帧起生效，走过的帧不变") in guide
-    assert _squash("| `split` | `Enter`") in guide
-    assert _squash("| `keyframe` | `Ctrl+Enter`「改全部」") in guide
-    assert _squash("（`Ctrl+K` 同 `Enter`；改全部用 `Ctrl+Enter`）") in guide
+    assert _squash("**`Q` 提交**：从这帧起生效，走过的帧不变") in guide
+    assert _squash("| `split` | `Q`") in guide
+    assert _squash("| `keyframe` | `Ctrl+Q`「改全部」") in guide
+    assert _squash("左手 `Q`/`Alt+Q`/`Ctrl+Q` 提交；`Enter` 系列也行。") in guide
 
 
 def test_the_quickstart_says_enter_is_from_this_frame_on():
     quick = _squash(QUICKSTART.read_text(encoding="utf-8"))
-    assert _squash("| 形状从这一帧起变了（绝大多数情况） | `Enter`「提交」 |") in quick
-    assert _squash("`Ctrl+Enter`「改全部」") in quick
-    assert "不要按`Enter`" not in quick
+    assert _squash("| 形状从这一帧起变了（绝大多数情况） | `Q`「提交」 |") in quick
+    assert _squash("`Ctrl+Q`「改全部」") in quick
+    assert "不要按`Enter`" not in quick and "不要按`Q`" not in quick
 
 
 def test_the_spec_has_the_ruling():

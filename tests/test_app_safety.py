@@ -209,7 +209,7 @@ def test_an_uncommitted_edit_blocks_every_way_out_of_the_frame(window, name):
     assert window.session.editing_instance == instance
     assert np.array_equal(window.session.editing_mask(), painted)
     assert np.array_equal(window.overlay.editing, overlay)
-    assert "Enter" in window.status_message()
+    assert "Q 提交" in window.status_message()          # the commit key (U22)
     # a block flushes the debounce: inside those 300 ms the layer was only in
     # memory, which is exactly the window a crash would have taken it in
     assert window.sidecar.pending_for(window.session.current(), instance) is not None
@@ -532,7 +532,7 @@ def test_activating_another_instance_mid_edit_is_refused(window):
     others = [i for i in card_instances(window) if i != first]
     window.task_card.sigRequestEdit.emit(others[0])
     assert window.session.editing_instance == first
-    assert "Enter" in window.status_message()
+    assert "Q 提交" in window.status_message()          # the commit key (U22)
 
 
 # --------------------------------------------------------------------------- #
@@ -841,7 +841,7 @@ def test_sequence_c_the_scope_bar_is_read_then_accepted(window, monkeypatch):
     window.act_commit()
     text = window.scope_bar_text()
     # plain words (task U6): what Enter writes and what L would hide
-    assert "「other」" in text and "Enter = 只改形状" in text and "L = 改层级" in text
+    assert "「other」" in text and "Q = 只改形状" in text and "L = 改层级" in text
     # the layering key asks first, with the reach and the confirmed frames
     window.act_commit_layering()
     assert committed == []

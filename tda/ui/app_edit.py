@@ -65,14 +65,14 @@ DESPECKLE_MIN_PX = 16
 SIDECAR_DEBOUNCE_MS = 300
 #: Shown instead of losing an uncommitted edit.  Not a dialog: at six hours a
 #: day a modal box on every mis-press is worse than the mistake it prevents.
-BLOCK_HINT = ("未提交的修改：Enter 提交 / Esc 放弃  "
-              "(uncommitted edit: Enter to commit, Esc to discard)")
+BLOCK_HINT = ("未提交的修改：Q 提交 / Esc 放弃  "
+              "(uncommitted edit: Q to commit, Esc to discard)")
 #: Shown when a stroke lands with no instance to put it on.
 NO_INSTANCE_HINT = ("先在任务卡或实例表里选一个实例  "
                     "(pick an instance in the task card or the instance list first)")
 #: Task kinds a stroke may adopt on its own: both of them mean "draw pixels".
 _DRAWABLE = (api.KIND_ADD_SHAPE, api.KIND_SPLIT_KEYFRAME)
-#: A part here is boxed with ``R``, not painted.
+#: A part here is boxed with the bench box (``V`` since task U22), not painted.
 _ON_BENCH = "on_bench"
 #: Shown when the canvas is clicked in Review mode, which is read-only.
 REVIEW_READ_ONLY = ("按 R 返工：切到标注模式处理这一帧  "
@@ -85,12 +85,13 @@ FLASH_HINT = ("松开 Tab 再操作：屏幕上是对照帧  "
 #: Shown, and kept on screen, when the crash sidecar cannot be written.
 SIDECAR_BROKEN = ("崩溃保护已失效：{why} —— 请尽快提交，崩溃会丢失当前图层 "
                   "(the crash sidecar cannot be written)")
-#: What the status line says about a ``P`` polygon or a ``Y`` circle (task
-#: U5a), keyed ``(tool, what happened)`` as the tool's ``sigShape`` says it.
+#: What the status line says about a polygon (``D``) or a circle (``R``) (task
+#: U5a; the keys since U22), keyed ``(tool, what happened)`` as the tool's
+#: ``sigShape`` says it.
 SHAPE_SAYS: dict[tuple[str, str], str] = {
-    ("polygon", "start"): ("多边形：第 1 个点 — 沿边接着点；Enter / 双击 / 点回第一个点 填上，"
+    ("polygon", "start"): ("多边形：第 1 个点 — 沿边接着点；Q / 双击 / 点回第一个点 填上，"
                            "Backspace 删点，Esc 取消"),
-    ("polygon", "vertex"): ("多边形：{n} 个点 — Enter / 双击 / 点回第一个点 填上；"
+    ("polygon", "vertex"): ("多边形：{n} 个点 — Q / 双击 / 点回第一个点 填上；"
                             "Backspace 删点，Esc 取消"),
     ("polygon", "remove"): "多边形：删掉一个点，还剩 {n} 个 / vertex removed",
     ("polygon", "too_few"): ("多边形至少要 3 个点（现在 {n} 个），没有填 / a polygon "
@@ -112,7 +113,7 @@ NO_POLYGON = ("Backspace 删的是多边形的最后一个点：现在没有正�
               "no polygon in progress")
 #: A commit or confirm key while a shape is half drawn; also the greyed
 #: buttons' reason.
-SHAPE_BUSY = "多边形 / 圆形还没画完：Enter 填上（圆形松开鼠标）或 Esc 取消"
+SHAPE_BUSY = "多边形 / 圆形还没画完：Q 填上（圆形松开鼠标）或 Esc 取消"
 
 
 def _px(mask) -> int:
@@ -261,14 +262,15 @@ class EditMixin:
         self.priors = app_priors.load_priors()
         self.warn_bar = Bar(self)
         # the key that raised the warning, named and pressed again (U16)
-        self.warn_commit_button = self.warn_bar.add_button("Enter 仍然提交",
+        self.warn_commit_button = self.warn_bar.add_button("Q 仍然提交",
                                                            self._answer_warning)
         self.warn_bar.add_button("Esc 回去改", self.act_clear_edit)
 
         self.scope_bar = Bar(self)
-        # Task U6: Enter writes the shape only; the layering is L's, and L asks
-        # before it writes (the button's text says which of the two it is).
-        self.scope_enter_button = self.scope_bar.add_button("Enter 只改形状",
+        # Task U6: the commit (Q since U22) writes the shape only; the layering
+        # is L's, and L asks before it writes (the button's text says which of
+        # the two it is).
+        self.scope_enter_button = self.scope_bar.add_button("Q 只改形状",
                                                             self.act_commit)
         self.scope_layer_button = self.scope_bar.add_button(
             "L 改层级", self.act_commit_layering)
@@ -276,11 +278,11 @@ class EditMixin:
         # reason: on a part with no shape here it used to reach the session's
         # refusal and say it as an error (U2e).
         self.scope_override_button = self.scope_bar.add_button(
-            "Alt+Enter 仅本帧", self._scope_bar_override)
-        # Task U16: Enter is from this frame on; 改全部 is Ctrl+Enter, and it
-        # asks on this bar before it reaches confirmed frames.
+            "Alt+Q 仅本帧", self._scope_bar_override)
+        # Task U16: the commit is from this frame on; 改全部 is Ctrl+Q (U22),
+        # and it asks on this bar before it reaches confirmed frames.
         self.scope_all_button = self.scope_bar.add_button(
-            "Ctrl+Enter 改全部", lambda: self.run_palette_action("commit_all"))
+            "Ctrl+Q 改全部", lambda: self.run_palette_action("commit_all"))
         self.restore_bar = Bar(self)
         self.restore_bar.add_button("恢复 Restore", self.restore_pending)
         self.restore_bar.add_button("丢弃 Discard", self.discard_pending)
@@ -292,7 +294,7 @@ class EditMixin:
         # ``act_commit``/``act_clear_edit``, never to a button's focus.
         self.roi_bar = Bar(self)
         self._roi_buttons = {
-            "save": self.roi_bar.add_button("保存 Enter", self.act_commit),
+            "save": self.roi_bar.add_button("保存 Q", self.act_commit),
             "skip": self.roi_bar.add_button("跳过 Esc", self.act_clear_edit),
             "accept": self.roi_bar.add_button("确认建议框 Use it",
                                               self.act_accept_roi_proposal),
@@ -615,7 +617,7 @@ class EditMixin:
         self._attach_tool()
         self.focus_canvas()
         self.update_status()
-        self.report(f"{instance}: 拖一个台面框（R）/ drag the staging-area box for it")
+        self.report(f"{instance}: 拖一个台面框（V）/ drag the staging-area box for it")
 
     def _adoptable_instance(self) -> Optional[str]:
         """The task-card item a stroke may adopt: an open ``add_shape``/split.

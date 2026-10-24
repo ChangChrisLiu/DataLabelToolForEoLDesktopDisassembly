@@ -34,13 +34,14 @@ _CAMERA_ZH = {"oak1": "OAK1", "oak2": "OAK2", "rs": "RealSense"}
 
 #: The visibility label that says "this part is not in this shot" (看不见).
 ABSENT = "out_of_view"
-#: The key that sets it on the card's part (:data:`tda.ui.app_actions.ACTIONS`).
-ABSENT_KEY = "I"
+#: The key that sets it on the card's part (:data:`tda.ui.app_actions.ACTIONS`):
+#: the grave key, left of ``1``, since task U22 (``I`` before).
+ABSENT_KEY = "`"
 #: The chip of a card row the annotator marked 看不见.
 ABSENT_CHIP = "看不见"
 #: What a gallery row asks for.
 GALLERY_SENTENCE = (f"这张里看得到就画出它（整个零件）；不在这张里：点「看不见」"
-                    f"（右键这一条，或按 {ABSENT_KEY}）")
+                    f"（右键这一条，或按 {ABSENT_KEY} 键）")
 #: Why a gallery shot has no state to set (``T``, the state combo).
 NO_STATE = "零件合照里没有状态：桌上的零件都是拆下来的，只画它本身"
 #: Why a gallery shot does not change the step table (``Shift+T``, the 「其实…」 button):
@@ -55,12 +56,12 @@ GALLERY_REFUSALS: dict[str, str] = {
     "cycle_state": NO_STATE,
     "state_range": NO_STATE,                       # Ctrl+T (U11)
     "confirm_cut_copy": ("零件合照没有切开的形状副本：每张是独立的一段，"
-                         "画好就 Enter"),            # Ctrl+Shift+K (U11 round 2)
+                         "画好就 Q"),                # Ctrl+Shift+K (U11 round 2)
     "correct_verb": NO_VERB,
-    # the session's refusal of an explicit split; Enter on a shot is a plain
-    # commit, so no key reaches it since task U16
-    "commit_split": "零件合照每张是独立的，没有「从这帧起新版本」：用 Enter 提交",
-    "commit_all": "零件合照每张是独立的，没有「改全部」：用 Enter 提交",   # Ctrl+Enter (U16)
+    # the session's refusal of an explicit split; the commit (Q since U22) on a
+    # shot is a plain commit, so no key reaches it since task U16
+    "commit_split": "零件合照每张是独立的，没有「从这帧起新版本」：用 Q 提交",
+    "commit_all": "零件合照每张是独立的，没有「改全部」：用 Q 提交",   # Ctrl+Q (U16, U22)
     "toggle_heat": "零件合照没有差异图：每张照片之间零件被重新摆过",
     "cycle_prompt_box": "零件合照没有差异图给的提示框：用 S 点选或 X 框选",
     "flash_compare": "零件合照没有可对照的上一帧：每张照片之间零件被重新摆过",
@@ -68,8 +69,8 @@ GALLERY_REFUSALS: dict[str, str] = {
     "tool_bench_box": "零件合照没有台面框：零件都画掩码",
     "edit_roi": "零件合照的工作范围就是整张图，没有机箱 ROI",
     "split_pose": "零件合照每张自成一段，不用断开位姿段",
-    # Ctrl+I (U15): 「被线挡住」 is the sequence's; here I means 看不见
-    "cable_range": "零件合照里没有「被线挡住」：不在这张里的零件按 I（看不见）",
+    # Ctrl+` (U15, U22): 「被线挡住」 is the sequence's; here ` means 看不见
+    "cable_range": f"零件合照里没有「被线挡住」：不在这张里的零件按 {ABSENT_KEY} 键（看不见）",
 }
 
 

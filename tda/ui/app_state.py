@@ -65,7 +65,7 @@ REFUSED = "改不了状态："
 CUT_CONFIRMED = ("{label}：切开时留下的形状就是这几帧的样子（到第 {step} 步），✂ 完成"
                  "（Ctrl+Z 撤销）")
 #: ``Ctrl+Shift+K`` over painted, uncommitted pixels.
-CONFIRM_DIRTY = ("正在画的像素还没提交：画的就是这一帧的样子按 Enter；要确认副本先 Esc 放弃")
+CONFIRM_DIRTY = ("正在画的像素还没提交：画的就是这一帧的样子按 Q；要确认副本先 Esc 放弃")
 #: ``T`` on the walk's next frame, same part, same state (U11): there is a key for a run.
 HINT_RANGE = "同一状态持续多帧？Ctrl+T 一次设到某一步"
 #: ... from the third frame on: perhaps it is the log that misses the action.
@@ -92,8 +92,8 @@ def redraw_text(state: str, run: tuple[int, int], redraw) -> str:
     first, last = run
     look = f"「{state_zh(state)}」"
     if first == last:
-        return f"这帧的形状要重画：画{look}后 Enter；{SPLIT_NOW}"
-    return (f"这几帧的形状要重画：在第 {last} 步画{look}后 Enter，第 {first}–{last} 步"
+        return f"这帧的形状要重画：画{look}后 Q；{SPLIT_NOW}"
+    return (f"这几帧的形状要重画：在第 {last} 步画{look}后 Q，第 {first}–{last} 步"
             f"都用它；{SPLIT_NOW}")
 
 

@@ -91,8 +91,8 @@ def test_the_row_over_a_cut_copy_is_open_and_says_so(scene):
     assert found["kind"] == api.KIND_SPLIT_KEYFRAME
     assert found["done"] is False and found["cut_copy"] is True
     view = row_view(found)
-    # Enter since U16 (Ctrl+K, its alias now, before)
-    assert view["sentence"].startswith("待画：这帧上是另一状态的形状副本，画好后 Enter")
+    # Enter since U16 (Ctrl+K, its alias now, before); Q since U22
+    assert view["sentence"].startswith("待画：这帧上是另一状态的形状副本，画好后 Q")
     assert view["sentence"].startswith(CUT_COPY_SENTENCE) and view["chip"] == "待画"
     assert s.cut_copy_here(CLIP) is True
     s.goto(41, force=True)
@@ -275,8 +275,9 @@ def test_the_window_banner_and_key(qapp, tmp_path: Path):
         QApplication.processEvents()
         win.expire_visibility_note()
         assert win.canvas.banner_text().endswith(BANNER_CUT_COPY)
-        # the key that draws it is Enter since U16 (Ctrl+K before, its alias now)
-        assert BANNER_CUT_COPY.startswith("待画：这帧上是另一状态的形状副本，画好后 Enter")
+        # the key that draws it is the commit since U16 (Ctrl+K before, its alias
+        # now) -- Q since U22
+        assert BANNER_CUT_COPY.startswith("待画：这帧上是另一状态的形状副本，画好后 Q")
         win.act_commit()                                 # Enter, nothing drawn: refused
         if win._pending_warning is not None:             # "too big" for a clip
             win.act_commit()

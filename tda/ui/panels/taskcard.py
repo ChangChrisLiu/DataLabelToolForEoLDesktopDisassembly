@@ -70,7 +70,7 @@ from tda.ui.session_cable import LABEL_ZH as CABLE_ZH
 
 #: A row's tail when the part is 被线挡住 on this frame (task U15).
 CABLE_SENTENCE = (" ⚠ 被线挡住（{how}）：形状照画，这一帧导出时写明被线缆挡住"
-                  "（再按 I 换，Ctrl+Z 撤销）")
+                  "（再按 ` 键换，Ctrl+Z 撤销）")
 
 #: A components-gallery row marked 「看不见」 (task U10).
 GALLERY_ABSENT_SENTENCE = (f"不在这张里（看不见）；其实在的话：右键这一条「撤回看不见」"
@@ -109,15 +109,15 @@ DONE_COLOR = QColor(128, 128, 132)
 KIND_SENTENCES: dict[str, str] = {
     api.KIND_ADD_SHAPE: "在这一帧画出它的完整形状",
     api.KIND_SPLIT_KEYFRAME: ("它的形状从这一帧起变了（例如盖子关上了），画出这一帧的样子，"
-                              "用 Enter 提交"),
+                              "用 Q 提交"),
     api.KIND_STATE_ONLY: "只是状态变了，不用画",
-    api.KIND_ADD_BENCH_BOX: "它放在台面上，用台面框 R 框一下",
+    api.KIND_ADD_BENCH_BOX: "它放在台面上，用台面框 V 框一下",
     api.KIND_REMOVE_BENCH_BOX: "它回到机箱里了：台面框到这一帧为止，不用画",
     api.KIND_CONFIRM: "这一帧不用画，直接 Space",
 }
 #: A ✂ row whose frame shows a cut copy -- the other state's shape left there
 #: by a commit that stopped at the boundary (U11 round 2): a placeholder.
-CUT_COPY_SENTENCE = ("待画：这帧上是另一状态的形状副本，画好后 Enter"
+CUT_COPY_SENTENCE = ("待画：这帧上是另一状态的形状副本，画好后 Q"
                      "（形状确实没变：Ctrl+Shift+K）")
 #: Kinds a click starts work on; the others only explain themselves.  A ⌫
 #: row (the bench box ends here) is not a mask to draw (U2b round 2).
@@ -133,13 +133,13 @@ CHIP_CONFIRM = "待确认"
 #: What the icons mean, for the header's tooltip.
 ICON_LEGEND = (
     "✚ 要画：这一帧多出来的零件，画出它的完整形状\n"
-    "✂ 形状变了：画这一帧的新样子，Enter 提交（从这帧起新版本）\n"
+    "✂ 形状变了：画这一帧的新样子，Q 提交（从这帧起新版本）\n"
     "≡ 只是状态变了（例如螺丝拧紧），不用画\n"
-    "▭ 零件放在台面上：用台面框 R 拖一个框\n"
+    "▭ 零件放在台面上：用台面框 V 拖一个框\n"
     "⌫ 零件回到机箱：台面框到这里结束\n"
     "✔ 这一帧没有要画的：Space 确认（任务卡下面列着挡住 Space 的问题时，先处理它们）\n"
     "单击一条就开始画它；鼠标停在一条上，画面上会用虚线框标出它大概在哪。\n"
-    "零件合照：不在这张里的零件右键选「看不见」（或按 I）。"
+    "零件合照：不在这张里的零件右键选「看不见」（或按 ` 键）。"
 )
 
 
@@ -268,9 +268,9 @@ def card_header(step: Optional[int], neighbour: Optional[int],
                 f"{space_or_blocked(blockers)}")
     if present == {api.KIND_SPLIT_KEYFRAME}:
         return (f"第 {step} 帧：下面这些零件的形状从这一帧起变了"
-                f"（画这一帧的新样子，Enter 提交）")
+                f"（画这一帧的新样子，Q 提交）")
     if present == {api.KIND_ADD_BENCH_BOX}:
-        return f"第 {step} 帧：下面这些零件放在台面上，用台面框 R 框出来"
+        return f"第 {step} 帧：下面这些零件放在台面上，用台面框 V 框出来"
     if present == {api.KIND_REMOVE_BENCH_BOX}:
         return f"第 {step} 帧：下面这些零件回到机箱里了，台面框到这里结束，不用画"
     counts = [template.format(n=work.count(kind)) for kind, template in _KIND_COUNTS
@@ -382,7 +382,7 @@ def row_view(row: dict, editing: Optional[str] = None, bench: bool = False,
         # A shape exists and a label hides it on this frame (round 3): the trial
         # DB's chassis vanished from step 42 that way, after a stray "4".
         sentence += (f" ⚠ 已设为不可见（{visibility_zh(invisible)}）：这一帧不显示它的"
-                     f"形状；选中后按 1 改回可见，或 Ctrl+Z 撤销")
+                     f"形状；选中后按 Ctrl+1 改回可见，或 Ctrl+Z 撤销")
     cable = row.get("cable")
     if cable:
         # in its place under a cable (task U15): the shape is the row's answer
@@ -606,11 +606,11 @@ RACE_SENTENCE = "输入刚变了：再按一次 Space"
 #: sentence ends with what to do about it (U2d); a click on the line selects
 #: the part, which is where the keys named here act.
 PROBLEM_SENTENCES: tuple[tuple[str, str], ...] = (
-    ("bench_missing:", "{what}：已拆到台面上但还没有台面框（按 R 拖一个框）"),
+    ("bench_missing:", "{what}：已拆到台面上但还没有台面框（按 V 拖一个框）"),
     ("shape_size_mismatch:", "{what}：形状和这一帧的画面尺寸对不上，重画一次"),
     ("zorder_cycle:", "{what}：上下层级前后说反了（互相矛盾）→ Ctrl+Z 撤销刚才改的层级"),
     ("zorder_missing:", "{what}：不在层级顺序里，会被画在最上面 → 选中它用 Ctrl+↑/↓ 放到对的层"),
-    ("empty_visible:", "{what}：这一帧里它被完全挡住了 → 选中它按 3（完全遮挡）"),
+    ("empty_visible:", "{what}：这一帧里它被完全挡住了 → 选中它按 Ctrl+3（完全遮挡）"),
     ("pose_segment_ambiguous:", "{what}：跨了不止一个位姿段 → 先定好位姿分段"
                                 "（接受/拒绝断点提示，或 Ctrl+Shift+B）"),
     ("missing_shape:", "{what}：这一帧还缺形状，把它画出来"),

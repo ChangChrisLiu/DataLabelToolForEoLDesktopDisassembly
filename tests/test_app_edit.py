@@ -347,7 +347,7 @@ def test_the_proposal_bar_says_what_the_rectangle_is_for_and_what_to_do(qapp, tm
         text = _roi_bar_text(win)
         assert "机箱范围" in text and "ROI" in text
         assert "差异图" in text and "SAM" in text, "what it is for"
-        assert "Enter" in text and "Esc" in text
+        assert "Q 保存" in text and "Esc" in text
         # Shift+R is the way back *after* Esc, never said over an open editor (U2d)
         assert "Shift+R" not in text
         assert _shown(win, "save") and _shown(win, "skip")
@@ -991,7 +991,7 @@ def test_the_scope_bar_says_what_enter_and_l_do_in_plain_words(window, monkeypat
     window.act_commit()
     text = window.scope_bar_text()
     assert "你画到了「other」占着的像素" in text
-    assert "Enter = 只改形状" in text and "L = 改层级" in text
+    assert "Q = 只改形状" in text and "L = 改层级" in text
     assert "会被" in text and "盖住" in text              # the consequence, said
     assert "zorder:" not in text                         # no vocabulary on the bar
 
@@ -1013,12 +1013,14 @@ def test_the_scope_bar_names_every_key_it_has(window, monkeypatch):
     window.act_commit()
 
     text = window.scope_bar_text()
-    # U16: the fourth is Ctrl+Enter 改全部, where it was Ctrl+K 从这帧起新版本
-    assert "Enter" in text and "L =" in text and "Alt+Enter" in text and "Ctrl+Enter" in text
+    # U16: the fourth is 改全部, where it was Ctrl+K 从这帧起新版本; the keys are
+    # the left-hand ones since U22 (Q / Alt+Q / Ctrl+Q)
+    assert "Q =" in text and "L =" in text and "Alt+Q" in text and "Ctrl+Q" in text
     assert "只改这一帧" in text and "改全部" in text and "Ctrl+K" not in text
+    assert "Enter" not in text
     buttons = [b.text() for b in window.scope_bar.findChildren(QPushButton)]
-    assert "Enter 只改形状" in buttons and "L 改层级" in buttons
-    assert "Ctrl+Enter 改全部" in buttons
+    assert "Q 只改形状" in buttons and "L 改层级" in buttons
+    assert "Ctrl+Q 改全部" in buttons and "Alt+Q 仅本帧" in buttons
 
 
 @pytest.mark.parametrize("key,expected", [

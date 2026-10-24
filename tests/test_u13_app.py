@@ -177,7 +177,7 @@ def click(button) -> None:
 def test_the_group_is_the_five_state_keys_in_order():
     assert A.PALETTE_STATE == GROUP
     assert [A.action_named(n).keys for n in GROUP] == [
-        ("T",), ("Ctrl+T",), ("Shift+T",), ("Ctrl+Shift+K",), ("I",)]
+        ("T",), ("Ctrl+T",), ("Shift+T",), ("Ctrl+Shift+K",), ("`",)]   # I until U22
     others = (set(A.PALETTE_TOOLS) | set(A.PALETTE_ACTIONS) | set(A.PALETTE_REVIEW)
               | set(A.PALETTE_OTHER))
     assert not others & set(GROUP)

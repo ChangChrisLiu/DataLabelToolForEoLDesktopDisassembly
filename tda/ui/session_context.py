@@ -166,7 +166,7 @@ class ContextMixin:
         if not self.is_open:
             raise SessionRefusal("没有打开的帧")
         if self.layer.active and self.layer.changed():
-            raise SessionRefusal(f"{self.layer.instance} 正在画、还没提交：先 Enter 或 Esc")
+            raise SessionRefusal(f"{self.layer.instance} 正在画、还没提交：先 Q 或 Esc")
         try:
             # never a key anything still names, or any object ever had (U18 review)
             rec = plan_context(self.db.instances(self.desktop), self.tax, self.desktop,
@@ -241,7 +241,7 @@ class ContextMixin:
             self.clear_visibility(str(instance))
             return {"absent": False}
         if self.layer.instance == str(instance) and self.layer.changed():
-            raise SessionRefusal(f"{instance} 正在画：先 Esc 放弃，再按 I")
+            raise SessionRefusal(f"{instance} 正在画：先 Esc 放弃，再按 ` 键")
         if self.layer.instance == str(instance):
             self.clear_edit()
         self._mark_absent(str(instance))
@@ -276,7 +276,7 @@ class ContextMixin:
         if not is_context_key(instance):
             raise SessionRefusal(T.NOT_IN_TABLE.format(instance=instance))
         if absent and self.layer.instance == str(instance) and self.layer.changed():
-            raise SessionRefusal(f"{instance} 正在画：先 Esc 放弃，再按 Ctrl+I")
+            raise SessionRefusal(f"{instance} 正在画：先 Esc 放弃，再按 Ctrl+`")
         key = self.current()
         cache = InputCache()
         low, high = range_bounds(self.db, key, cache)

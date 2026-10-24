@@ -178,7 +178,7 @@ def test_a_too_small_drag_left_behind_by_esc_is_called_too_small(qapp, tmp_path)
 # --------------------------------------------------------------------------- #
 def says_the_keys_once(bar: str, keys: str = ROI_BAR_KEYS) -> None:
     assert bar.endswith(keys), bar
-    assert bar.count("Enter") == keys.count("Enter"), bar
+    assert bar.count("Q 保存") == keys.count("Q 保存") == 1, bar    # Enter until U22
     assert bar.count("Esc") == keys.count("Esc"), bar
     assert "Shift+R" not in bar, bar
     for how in ("拖边或角调整", "框里按住整体移动", "空白处拖动重画", "差异图"):
@@ -392,9 +392,11 @@ def test_notes_follow_the_blockers_under_their_own_heading(qapp):
 
 def test_every_sentence_says_what_to_do():
     wants = {
-        "bench_missing:": "按 R", "shape_size_mismatch:": "重画",
+        # the bench box and the visibility keys moved in U22 (R, 3 before)
+        "bench_missing:": "按 V", "shape_size_mismatch:": "重画",
         "zorder_cycle:": "Ctrl+Z", "zorder_missing:": "Ctrl+↑/↓",
-        "empty_visible:": "选中它按 3（完全遮挡）", "pose_segment_ambiguous:": "Ctrl+Shift+B",
+        "empty_visible:": "选中它按 Ctrl+3（完全遮挡）",
+        "pose_segment_ambiguous:": "Ctrl+Shift+B",
         "missing_shape:": "画出来",
         # U2e: the refusals that are not compiler problems
         "open_conflict:": "K 保留旧的 / N 采用新的", "frozen_disagreement:": "按 F5",

@@ -31,14 +31,14 @@ ON_BENCH = "on_bench"
 NO_CHASSIS_DRAG = ("自动没找到机箱：直接在画面上拖一个框框住机箱（或拖白色小方块）/ "
                    "no chassis found: drag a box around it")
 NO_CHASSIS_FOUND = ("自动没找到机箱：直接在画面上拖一个框框住机箱（或拖白色小方块），"
-                    "Enter 保存；Esc 先跳过 / no chassis found: drag a box around it, "
-                    "Enter to save, Esc to skip")
-#: Said when a drag leaves a rectangle ``Enter`` would store: the refusal a
-#: previous drag earned is out of date the moment this one lands (U2d).
+                    "Q 保存；Esc 先跳过 / no chassis found: drag a box around it, "
+                    "Q to save, Esc to skip")
+#: Said when a drag leaves a rectangle the commit key would store: the refusal
+#: a previous drag earned is out of date the moment this one lands (U2d).
 #: The same keys, in the same words, as the bar's ending (U2e): over a stored
-#: rectangle Esc keeps what is stored.
-ROI_BOX_READY = "框好了：Enter 保存 / Esc 先跳过 / box ready: Enter saves, Esc skips"
-ROI_BOX_READY_STORED = ("框好了：Enter 保存 / Esc 不改 / box ready: Enter saves, "
+#: rectangle Esc keeps what is stored.  ``Q`` since task U22 (Enter its alias).
+ROI_BOX_READY = "框好了：Q 保存 / Esc 先跳过 / box ready: Q saves, Esc skips"
+ROI_BOX_READY_STORED = ("框好了：Q 保存 / Esc 不改 / box ready: Q saves, "
                         "Esc keeps it as it was")
 #: Shown when Enter arrives before the segment has been measured.
 ROI_STILL_MEASURING = ("还在找机箱，稍等或直接拖框 / still looking for the chassis "
@@ -63,9 +63,9 @@ ROI_BAR_ADJUST = (
     "拖边或角调整，框里按住整体移动，空白处拖动重画 / drag an edge or a corner, "
     "drag inside to move it, drag on empty canvas to redraw it。"
 )
-ROI_BAR_KEYS = "Enter 保存 / Esc 先跳过（Enter saves, Esc skips）"
+ROI_BAR_KEYS = "Q 保存 / Esc 先跳过（Q saves, Esc skips）"
 #: Over a stored rectangle ``Esc`` skips nothing: it keeps what is stored.
-ROI_BAR_KEYS_STORED = "Enter 保存 / Esc 不改（Enter saves, Esc keeps it as it was）"
+ROI_BAR_KEYS_STORED = "Q 保存 / Esc 不改（Q saves, Esc keeps it as it was）"
 
 
 def roi_bar_editing(stored: bool, reason: str = "") -> str:
@@ -82,9 +82,10 @@ def roi_bar_editing(stored: bool, reason: str = "") -> str:
 ROI_BAR_EDITING = roi_bar_editing(False)
 #: The same bar over a rectangle that is already stored: ``Esc`` keeps it.
 ROI_BAR_EDITING_STORED = roi_bar_editing(True)
-#: Bare ``R`` with no part on the bench armed: it is not the ROI (trial #2).
+#: Bare bench-box key with no part on the bench armed: it is not the ROI (trial
+#: #2, when the key was ``R``; ``V`` since task U22).
 BENCH_NEEDS_ITEM = (
-    "R 是台面框（放在台面上的零件）；改机箱范围用 Shift+R 或工具栏的 ROI / R is "
+    "V 是台面框（放在台面上的零件）；改机箱范围用 Shift+R 或工具栏的 ROI / V is "
     "the bench box for a part lying on the bench; to change the chassis range "
     "(ROI) press Shift+R or use the toolbar's ROI button"
 )
@@ -253,8 +254,8 @@ class RoiMixin:
                          self._roi_wanted, stored)
         self.update_status()
         if stored is not None:
-            self.report("拖动边或角调整机箱范围，Enter 保存 / "
-                        "drag an edge or a corner, Enter to save")
+            self.report("拖动边或角调整机箱范围，Q 保存 / "
+                        "drag an edge or a corner, Q to save")
             return
         self.report("正在寻找机箱…可直接拖框 / looking for the chassis -- "
                     "drag a box any time")
@@ -354,8 +355,8 @@ class RoiMixin:
         if self._is_whole_frame(self.roi_draft):
             self.report(NO_CHASSIS_FOUND)
         else:
-            self.report("拖动边或角调整机箱范围，Enter 保存 / "
-                        "drag an edge or a corner, Enter to save")
+            self.report("拖动边或角调整机箱范围，Q 保存 / "
+                        "drag an edge or a corner, Q to save")
 
     def _remember_proposal(self, box) -> None:
         """Keep one rectangle against the segment it was offered for."""

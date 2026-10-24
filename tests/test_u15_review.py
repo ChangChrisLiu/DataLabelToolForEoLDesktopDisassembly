@@ -191,7 +191,8 @@ def test_cli_check_names_the_way_back(drawn, tmp_path, capsys):
     _check_one(session.db, session.tax, Args(), DESKTOP, VIEW)
     out = capsys.readouterr().out
     assert f"occluder_without_shape:{CHASSIS} (step {STEP})" in out
-    assert "按 I 撤回（或从零件还在的帧按 Ctrl+I 撤回）" in out and f"{CHASSIS}@{STEP}" in out
+    # the keys moved to ` / Ctrl+` in task U22 (I / Ctrl+I before)
+    assert "按 ` 键撤回（或从零件还在的帧按 Ctrl+` 撤回）" in out and f"{CHASSIS}@{STEP}" in out
 
 
 # --------------------------------------------------------------------------- #

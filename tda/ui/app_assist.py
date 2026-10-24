@@ -74,9 +74,9 @@ NO_ALTERNATE = ("差异图没有别的候选框 / no other box prompt from the "
                 "difference map")
 ALT_WRONG_MODE = "只有标注模式有提示框 / only Annotate mode has a prompt box"
 ALT_FLASHING = "松开 Tab 再换提示框 / release Tab first: another frame is on screen"
-ALT_ROI_EDITING = ("ROI 框正开着，先 Enter 或 Esc / the ROI rectangle owns the "
+ALT_ROI_EDITING = ("ROI 框正开着，先 Q 或 Esc / the ROI rectangle owns the "
                    "keys right now")
-ALT_GHOST = ("草稿幽灵正开着，先 Enter 或 Esc / the draft ghost owns the keys "
+ALT_GHOST = ("草稿幽灵正开着，先 Q 或 Esc / the draft ghost owns the keys "
              "right now")
 #: Appended when ``Shift+C`` drops a prompt that had already put pixels on
 #: screen.  Since round 1 a result is *composed* into the layer rather than
@@ -106,7 +106,7 @@ PROMPT_TOO_BIG = ("这一帧差不多整块机箱范围都变了，这次没有�
 #: U2h, :mod:`tda.ui.prompt_gate`).  ``{name}`` is the part's Chinese name;
 #: several are joined by :data:`WITHHELD_JOIN`.
 PROMPT_WITHHELD = ("这一步要补的是「{name}」，程序找到的变化大小不像它，这次不给提示框："
-                   "直接在零件上点 S，或用 B 涂 / no guess this time: click the part")
+                   "直接在零件上点 S，或用 W 涂 / no guess this time: click the part")
 WITHHELD_JOIN = "」或「"
 #: Appended to "正在画 X" when an edit starts on a frame whose box was
 #: withheld, which would otherwise overwrite the one line saying so (U2i);
@@ -117,25 +117,26 @@ EDITING_NO_BOX = (" — 这一帧没有提示框：直接在零件上点 S / no 
 #: who found it.  ``{name}`` is the class's Chinese name (螺丝).
 DET_CHIP = "SAM 提示框（检测器：{name}）"
 #: ... while SAM is not loaded (task U6): the box is still worth showing -- it
-#: is where ``Y`` goes -- but "SAM 提示框" on a box SAM will never see is what
-#: confused the D13 annotator the day SAM's import deadlocked.
-DET_CHIP_NO_SAM = "检测器找到的{name}（SAM 未加载：Y 拖一下就画好）"
+#: is where the circle (``R`` since task U22) goes -- but "SAM 提示框" on a box
+#: SAM will never see is what confused the D13 annotator the day SAM's import
+#: deadlocked.
+DET_CHIP_NO_SAM = "检测器找到的{name}（SAM 未加载：R 拖一下就画好）"
 #: The arrival line in the same case.
-PROMPT_ARMED_DET_NO_SAM = ("虚线框是检测器找到的{name}：SAM 没加载，按 Y 在{name}中心按下、拖到"
-                           "边缘松手就画好（或 B 画笔 / P 多边形） / the dashed box is a {cls} "
-                           "the detector found; SAM is not loaded: Y and drag")
+PROMPT_ARMED_DET_NO_SAM = ("虚线框是检测器找到的{name}：SAM 没加载，按 R 在{name}中心按下、拖到"
+                           "边缘松手就画好（或 W 画笔 / D 多边形） / the dashed box is a {cls} "
+                           "the detector found; SAM is not loaded: R and drag")
 #: ... and after ``Shift+C``: which of how many.
 DET_CHIP_RANK = "SAM 提示框 {rank}/{total}（检测器：{name}）"
 #: The other boxes while SAM is not loaded (U6 round 2): the same rule as
-#: :data:`DET_CHIP_NO_SAM` -- the box stays, it is where ``Y`` or ``B`` goes, and
-#: it is not called a SAM prompt.  All four go back the moment SAM loads.
-PROMPT_CHIP_NO_SAM = "程序猜的位置（SAM 未加载：Y 拖一下 / B 涂）"
-PROMPT_CHIP_RANK_NO_SAM = "提示框 {rank}/{total}（SAM 未加载：Y 拖一下 / B 涂）"
-DET_CHIP_RANK_NO_SAM = "检测器找到的{name} {rank}/{total}（SAM 未加载：Y 拖一下 / B 涂）"
+#: :data:`DET_CHIP_NO_SAM` -- the box stays, it is where the circle or the brush
+#: goes, and it is not called a SAM prompt.  All four go back the moment SAM loads.
+PROMPT_CHIP_NO_SAM = "程序猜的位置（SAM 未加载：R 拖一下 / W 涂）"
+PROMPT_CHIP_RANK_NO_SAM = "提示框 {rank}/{total}（SAM 未加载：R 拖一下 / W 涂）"
+DET_CHIP_RANK_NO_SAM = "检测器找到的{name} {rank}/{total}（SAM 未加载：R 拖一下 / W 涂）"
 #: :data:`PROMPT_ARMED` with no SAM to click for.
 PROMPT_ARMED_NO_SAM = ("虚线框是程序猜的位置（这一帧和下一帧差别最大的地方）：SAM 没加载，零件在框里就"
-                       "按 Y 拖一下，或用 B 涂 / P 围出它 / the dashed box is a guess; SAM is "
-                       "not loaded: Y, B or P")
+                       "按 R 拖一下，或用 W 涂 / D 围出它 / the dashed box is a guess; SAM is "
+                       "not loaded: R, W or D")
 #: chip kind -> (with SAM, without SAM); a chip on screen is kept as
 #: ``(kind, fields)`` so it can be said again either way (:meth:`chip_text`).
 CHIPS = {

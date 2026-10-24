@@ -164,9 +164,9 @@ def test_following_the_guide_on_a_split_row_starts_a_new_version(window):
     plan = window.guide.plan()
     assert plan.phase == G.PHASE_DRAW_PIXELS
     assert plan.action == "commit"
-    assert "按 Enter" in plan.now and "从这帧起新版本" in plan.now
+    assert "按 Q" in plan.now and "从这帧起新版本" in plan.now      # Enter until U22
     assert "Ctrl+K" not in plan.now
-    assert window.canvas.banner_text().endswith("Enter 从这帧起新版本 / Esc 放弃")
+    assert window.canvas.banner_text().endswith("Q 从这帧起新版本 / Esc 放弃")
     assert window.palette.button("commit").suggested()
     assert not window.palette.button("commit_all").suggested()
 
@@ -174,8 +174,8 @@ def test_following_the_guide_on_a_split_row_starts_a_new_version(window):
     if window._pending_warning is not None:     # the synthetic latch is "too big"
         plan = window.guide.plan()
         assert plan.phase == G.PHASE_WARNING
-        assert plan.action == "commit" and "再按一次 Enter" in plan.now, plan
-        window.run_palette_action(plan.action)  # ... and the guide still says Enter
+        assert plan.action == "commit" and "再按一次 Q" in plan.now, plan
+        window.run_palette_action(plan.action)  # ... and the guide still says Q
 
     after = keyframe_rles(window, LATCH)
     assert after[LAST_STEP] == before[LAST_STEP], "the other version was rewritten"
@@ -190,7 +190,8 @@ def test_on_a_split_row_the_step_line_names_enter_too():
                          items=(G.CardItem("x", api.KIND_SPLIT_KEYFRAME, False, "x"),))
     plan = G.plan_for(facts)
     line = [text for state, text in plan.steps if state == G.NOW][0]
-    assert line == G.COMMIT_SPLIT and line.startswith("Enter")      # Ctrl+K until U16
+    # Ctrl+K until U16, Enter until U22
+    assert line == G.COMMIT_SPLIT and line.startswith(A.action_named("commit").keys[0])
 
 
 # --------------------------------------------------------------------------- #

@@ -182,20 +182,20 @@ def test_the_disk_is_the_pixels_whose_centres_are_inside_it():
 
 
 # --------------------------------------------------------------------------- #
-# arming P and Y
+# arming the polygon and the circle (P and Y until task U22: D and R)
 # --------------------------------------------------------------------------- #
-def test_p_and_y_arm_their_tools_with_their_own_badge_cursor_and_button(window):
+def test_d_and_r_arm_their_tools_with_their_own_badge_cursor_and_button(window):
     start_edit(window)
-    key(window, "P")
+    key(window, "D")
     assert window._tool_name == "polygon" and window.active_tool is window.polygon
-    assert window.tool_label.text().startswith("工具：多边形 P")
+    assert window.tool_label.text().startswith("工具：多边形 D")
     assert window.canvas.tool_cursor().kind == "polygon"
     assert window.palette.button("tool_polygon").isChecked()
 
-    key(window, "Y")
+    key(window, "R")
     assert window._tool_name == "circle" and window.active_tool is window.circle
     radius = window.brush.radius
-    assert window.tool_label.text().startswith(f"工具：圆形 Y r={radius}")
+    assert window.tool_label.text().startswith(f"工具：圆形 R r={radius}")
     cursor = window.canvas.tool_cursor()
     assert (cursor.kind, cursor.glyph, cursor.radius) == ("circle", "cross", radius)
     brush_ring = type(cursor)("circle", cursor.rgb, radius)
@@ -207,13 +207,14 @@ def test_p_and_y_arm_their_tools_with_their_own_badge_cursor_and_button(window):
 def test_the_new_keys_are_in_the_one_key_map_and_the_palette():
     polygon = A.action_named("tool_polygon")
     circle = A.action_named("tool_circle")
-    assert (polygon.keys, polygon.short) == (("P",), "多边形")
-    assert (circle.keys, circle.short) == (("Y",), "圆形")
+    assert (polygon.keys, polygon.short) == (("D",), "多边形")       # P until U22
+    assert (circle.keys, circle.short) == (("R",), "圆形")          # Y until U22
     assert A.action_named("polygon_backspace").keys == ("Backspace",)
     assert {"tool_polygon", "tool_circle"} <= set(A.PALETTE_TOOLS)
-    for spec in ("P", "Y"):       # C, O and R stay what they were
-        others = [a.name for a in A.ACTIONS if spec in a.keys]
-        assert len(others) == 1, others
+    # D is the polygon alone; R is the circle in Annotate and rework in Review
+    assert [a.name for a in A.ACTIONS if "D" in a.keys] == ["tool_polygon"]
+    assert {a.name: a.modes for a in A.ACTIONS if "R" in a.keys} == {
+        "tool_circle": (A.MODE_ANNOTATE,), "review_rework": (A.MODE_REVIEW,)}
 
 
 # --------------------------------------------------------------------------- #
@@ -249,7 +250,7 @@ def test_enter_fills_the_polygon_as_one_undo_step_over_what_is_there(window):
     window.act_tool("polygon")
     for x, y in SQUARE:
         click(window, x, y)
-    key(window, "Return")
+    key(window, "Q")
 
     expected = before | fill_of(SQUARE)
     assert np.array_equal(window.overlay.editing, expected), "not the union"
@@ -261,7 +262,7 @@ def test_enter_fills_the_polygon_as_one_undo_step_over_what_is_there(window):
     assert window.has_uncommitted_edit()
     assert window._sidecar_pending is not None, "the crash sidecar was not queued"
     assert "已填进编辑层" in window.status_message()
-    assert window.session.editing_instance, "Enter committed instead of filling"
+    assert window.session.editing_instance, "Q committed instead of filling"
 
     window.act_undo()
     QApplication.processEvents()
@@ -347,7 +348,7 @@ def test_fewer_than_three_vertices_fill_nothing_and_say_so(window):
     window.act_tool("polygon")
     click(window, *SQUARE[0])
     click(window, *SQUARE[1])
-    key(window, "Return")
+    key(window, "Q")
     assert not window.overlay.editing.any() and ops(window) == 0
     said = window.status_message()
     assert "至少要 3 个点" in said and said.endswith("或 Esc 取消"), said
@@ -355,7 +356,7 @@ def test_fewer_than_three_vertices_fill_nothing_and_say_so(window):
     window.polygon.on_double_click(*SQUARE[1], None)
     assert not window.overlay.editing.any() and ops(window) == 0
     click(window, *SQUARE[2])                     # a third makes it one
-    key(window, "Return")
+    key(window, "Q")
     assert window.overlay.editing.any() and ops(window) == 1
 
 
@@ -371,7 +372,7 @@ def test_the_polygon_lifts_the_erased_pixels_it_covers(window):
     window.act_tool("polygon")
     for x, y in [(36.5, 36.5), (46.5, 36.5), (46.5, 46.5), (36.5, 46.5)]:
         click(window, x, y)
-    key(window, "Return")
+    key(window, "Q")
 
     assert window.overlay.editing[40, 40], "the hole was not filled"
     left = window.erased_mask()
@@ -467,7 +468,7 @@ def test_an_undo_or_a_look_at_the_other_frame_keeps_the_polygon(window):
         window.act_flash_compare(False)
         QApplication.processEvents()
         assert window.polygon.vertices == SQUARE[:3], "Tab threw the polygon away"
-    key(window, "Return")
+    key(window, "Q")
     assert np.array_equal(window.overlay.editing, fill_of(SQUARE[:3]))
 
 
@@ -531,7 +532,7 @@ def test_zoom_and_pan_mid_polygon_keep_its_image_coordinates(window):
     assert len(window.polygon.vertices) == 4
     for (px, py), (x, y) in zip(window.polygon.vertices[2:], SQUARE[2:]):
         assert abs(px - x) <= 1.0 / zoom and abs(py - y) <= 1.0 / zoom
-    key(window, "Return")
+    key(window, "Q")
     assert np.array_equal(window.overlay.editing, fill_of(SQUARE))
 
 
@@ -664,7 +665,7 @@ def test_esc_mid_drag_drops_the_circle(window):
     QTest.mousePress(viewport, Qt.MouseButton.LeftButton,
                      Qt.KeyboardModifier.NoModifier, at(window, 40.5, 40.5))
     QTest.mouseMove(viewport, at(window, 48.5, 40.5))
-    key(window, "Return")                           # the release fills, not Enter
+    key(window, "Q")                           # the release fills, not the commit key
     assert window.circle.busy and ops(window) == count
     key(window, "Esc")
     assert not window.circle.busy and window.canvas.shape_preview() is None
@@ -749,16 +750,16 @@ def test_like_the_brush_the_first_click_adopts_the_cards_part(window):
 # --------------------------------------------------------------------------- #
 # the guide, the cheat sheet, the documents
 # --------------------------------------------------------------------------- #
-def test_the_guide_and_the_cheat_sheet_name_p_and_y(window):
-    assert "P 连点填一块" in G.DRAW and "圆形：拖一下画一颗螺丝" in G.DRAW
+def test_the_guide_and_the_cheat_sheet_name_d_and_r(window):
+    assert "D 连点填一块" in G.DRAW and "R 圆形：拖一下画一颗螺丝" in G.DRAW
     start_edit(window)
     plan = window.guide.plan()
-    assert any("P 连点填一块" in text for _state, text in plan.steps)
+    assert any("D 连点填一块" in text for _state, text in plan.steps)
     html = A.cheat_sheet_html()
-    for words in ("多边形", "圆形", "<b>P</b>", "<b>Y</b>", "<b>Backspace</b>"):
+    for words in ("多边形", "圆形", "<b>D</b>", "<b>R</b>", "<b>Backspace</b>"):
         assert words in html, words
     rows = dict(A.mode_cheat_rows(A.MODE_ANNOTATE))
-    assert rows["P"].startswith("多边形") and rows["Y"].startswith("圆形")
+    assert rows["D"].startswith("多边形") and rows["R"].startswith("圆形")
     assert "Backspace" in rows
 
 
@@ -766,9 +767,9 @@ def test_the_documents_say_it():
     guide = (REPO / "docs" / "annotation_guide.md").read_text(encoding="utf-8")
     quick = (REPO / "docs" / "trial_quickstart.md").read_text(encoding="utf-8")
     flat = " ".join(guide.split())
-    assert "`P`" in flat and "`Y`" in flat
+    assert "大块用 `D` 连点围住填，螺丝用 `R` 拖圆" in flat
     assert "`Shift+F`" in flat and "封闭" in flat
-    assert "SAM 漏掉的大块用 P 点几下补上，封闭的小洞 Shift+F" in " ".join(quick.split())
+    assert "SAM 漏掉的大块用 D 点几下补上，封闭的小洞 Shift+F" in " ".join(quick.split())
     assert "img/u5a_polygon.jpg" in quick
     assert (REPO / "docs" / "img" / "u5a_polygon.jpg").is_file()
 
@@ -883,7 +884,7 @@ def _fill_then_s(window: MainWindow, instance: str, pixel, click_xy):
     for x, y in _diamond(px, py):
         click(window, x, y)
     count = ops(window)
-    key(window, "Return")
+    key(window, "Q")
     assert np.array_equal(window.overlay.editing, _plus(px, py))
     assert ops(window) == count + 1
     assert window.session.undo_stack.ops[-1].kind == "edit_editing_mask"

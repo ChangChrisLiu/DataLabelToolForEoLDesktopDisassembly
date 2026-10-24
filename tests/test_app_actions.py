@@ -75,29 +75,32 @@ def test_action_names_and_bindings_are_unique():
                 seen[(combo, mode)] = action.name
 
 
-def test_views_are_f1_to_f4_and_digits_set_visibility():
-    """The ruling of the brief: ``F1..F4`` are views, ``1..7`` visibility."""
+def test_views_are_f1_to_f4_and_ctrl_digits_set_visibility():
+    """The ruling of the brief: ``F1..F4`` are views; visibility was ``1..7``
+    until task U22 gave ``1`` / ``2`` to the brush, and is ``Ctrl+1..7`` now."""
     views = {a.args[0]: a.keys[0] for a in A.ACTIONS if a.slot == "act_set_view"}
     assert views == {"scan": "F1", "oak1": "F2", "oak2": "F3", "rs": "F4",
                      # the components gallery (task U10); F5 stays "recompile"
                      "cmp_oak1": "F6", "cmp_oak2": "F7", "cmp_rs": "F8"}
     digits = sorted(a.keys[0] for a in A.ACTIONS if a.slot == "act_set_visibility")
-    assert digits == [str(i) for i in range(1, 8)]
+    assert digits == [f"Ctrl+{i}" for i in range(1, 8)]
 
 
 def test_lookup_matches_a_declared_key():
-    action = A.action_for(Qt.Key.Key_B, Qt.KeyboardModifier.NoModifier,
+    action = A.action_for(Qt.Key.Key_W, Qt.KeyboardModifier.NoModifier,
                           A.MODE_ANNOTATE)
     assert action is not None and action.slot == "act_tool"
-    assert A.action_for(Qt.Key.Key_B, Qt.KeyboardModifier.ControlModifier,
+    assert A.action_for(Qt.Key.Key_W, Qt.KeyboardModifier.ControlModifier,
                         A.MODE_ANNOTATE) is None
 
 
 def test_visibility_keys_are_annotate_only():
+    ctrl = Qt.KeyboardModifier.ControlModifier
+    assert A.action_for(Qt.Key.Key_3, ctrl, A.MODE_ANNOTATE) is not None
+    assert A.action_for(Qt.Key.Key_3, ctrl, A.MODE_STEPS) is None
+    # a bare 3 is nothing since task U22 (1 and 2 are the brush size)
     assert A.action_for(Qt.Key.Key_3, Qt.KeyboardModifier.NoModifier,
-                        A.MODE_ANNOTATE) is not None
-    assert A.action_for(Qt.Key.Key_3, Qt.KeyboardModifier.NoModifier,
-                        A.MODE_STEPS) is None
+                        A.MODE_ANNOTATE) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -124,7 +127,7 @@ def test_shortcuts_do_not_fire_while_a_line_edit_has_focus(window):
     editor.setFocus()
     QApplication.processEvents()
     assert A.blocks_shortcuts(editor) is True
-    assert window.handle_key(key_event("B")) is False
+    assert window.handle_key(key_event("W")) is False
     assert calls == []
 
 
@@ -135,7 +138,7 @@ def test_shortcuts_do_not_fire_while_a_combo_has_focus(window):
     combo.setFocus()
     QApplication.processEvents()
     assert A.blocks_shortcuts(combo) is True
-    assert window.handle_key(key_event("B")) is False
+    assert window.handle_key(key_event("W")) is False
 
 
 def test_tab_and_shift_tab_are_the_hold_actions(window):
@@ -204,7 +207,7 @@ def repeat_event(spec: str) -> QKeyEvent:
                      combination.keyboardModifiers(), 0, 0, 0, "", True)
 
 
-REPEATABLE = {"radius_down": "[", "radius_up": "]", "opacity_down": ",",
+REPEATABLE = {"radius_down": "1", "radius_up": "2", "opacity_down": ",",
               "opacity_up": ".", "step_back": "PgDown", "step_forward": "PgUp",
               "zorder_up": "Ctrl+Up", "zorder_down": "Ctrl+Down"}
 
@@ -234,10 +237,11 @@ def test_holding_a_repeatable_key_keeps_firing(window, name):
     assert calls == [tuple(action.args)] * 4
 
 
-@pytest.mark.parametrize("spec,name", [("Return", "commit"), ("Space", "confirm"),
-                                       ("B", "tool_brush"), ("A", "toggle_overlays")])
+@pytest.mark.parametrize("spec,name", [("Q", "commit"), ("Return", "commit"),
+                                       ("Space", "confirm"), ("W", "tool_brush"),
+                                       ("A", "toggle_overlays")])
 def test_holding_a_one_shot_key_fires_once(window, spec, name):
-    """A held Enter must not commit forty times."""
+    """A held Q (or Enter) must not commit forty times."""
     action = next(a for a in A.ACTIONS if a.name == name)
     calls: list[tuple] = []
     setattr(window, action.slot, lambda *args: calls.append(args))

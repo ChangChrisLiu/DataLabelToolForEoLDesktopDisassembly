@@ -94,7 +94,7 @@ def test_status_bar_reports_zoom_frame_tool_and_sam(window):
     window.act_clear_edit()            # Esc: skip the rectangle for now
     assert window.tool_label.text().startswith("工具：")
     assert "画笔" in window.tool_label.text()
-    assert " B" in window.tool_label.text(), window.tool_label.text()
+    assert " W" in window.tool_label.text(), window.tool_label.text()   # B until U22
     assert "Brush" in window.tool_label.toolTip()
     assert window.sam_label.text()
     assert window.roi_label.text(), "the ROI state has to be on the status bar"

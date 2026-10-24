@@ -60,6 +60,33 @@ def _detector(work: Path):
                           backend="rfdetr", merge_floor=0.10)
 
 
+#: Dock widths the walk pins, logical pixels: what a 900 px window gave them
+#: when the bar under the canvas said 「保存 Enter」.
+LEFT_DOCKS_PX = 139
+RIGHT_DOCKS_PX = 283
+
+
+def _pin_docks(win) -> None:
+    """Give both trees' windows the same canvas width.
+
+    The SAM request a click sends is a crop of what the canvas shows, so the
+    comparison depends on how the window shares its 900 px -- and that moved
+    with a caption: task U22's 「保存 Q」 (for 「保存 Enter」) on the ROI bar
+    under the canvas lowered the column's minimum width by 30 px and the docks
+    took them.  The test is about the prompt, not the layout: pin the docks,
+    for the whole walk (a bar shown or hidden later re-shares the width).
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QDockWidget
+
+    widths = {Qt.DockWidgetArea.LeftDockWidgetArea: LEFT_DOCKS_PX,
+              Qt.DockWidgetArea.RightDockWidgetArea: RIGHT_DOCKS_PX}
+    for dock in win.findChildren(QDockWidget):
+        width = widths.get(win.dockWidgetArea(dock))
+        if width is not None:
+            dock.setFixedWidth(width)
+
+
 def walk(view: str, work: Path, use_detector: bool) -> dict:
     import numpy as np
     from PySide6.QtWidgets import QApplication
@@ -86,6 +113,8 @@ def walk(view: str, work: Path, use_detector: bool) -> dict:
     win = MainWindow(session, make_paths(work), "tester", sam_queue=queue)
     win.resize(900, 700)
     win.show()
+    app.processEvents()
+    _pin_docks(win)
     app.processEvents()
     win.set_mode(A.MODE_ANNOTATE)
     win.sam_queue = queue

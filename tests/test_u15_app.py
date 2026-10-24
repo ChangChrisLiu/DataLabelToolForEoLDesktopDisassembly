@@ -1,5 +1,9 @@
 """Task U15: 「被线挡住」 in the main window -- ``I``, its button, ``Ctrl+I``, the docs.
 
+(Task U22 moved the two keys to the grave key and Ctrl plus it -- under the
+left hand; the tests press those.  ``I`` and ``Ctrl+I`` below are the names
+the task was written with.)
+
 The 14-step D13 scene of the window tests, every part of step 14 drawn, the
 window on step 12 (where the cooler, lifted out at 13, has no shape). ``I`` on a
 sequence frame cycles the selected part 完全 -> 部分 -> 撤回; the instance table
@@ -136,7 +140,7 @@ def card_row(win: MainWindow, instance: str = CHASSIS):
 # --------------------------------------------------------------------------- #
 def test_i_cycles_the_selected_part_and_every_panel_says_it(window):
     assert window.instances.select_instance(CHASSIS)
-    window.handle_key(key_event("I"))
+    window.handle_key(key_event("`"))
     assert label_at(window) == FULL
     assert "被线挡住（完全）" in window.status_message()
     assert window.instances.row_of(CHASSIS)["cable"] == FULL
@@ -150,14 +154,14 @@ def test_i_cycles_the_selected_part_and_every_panel_says_it(window):
     assert rgb == palette_color(CHASSIS) and polygons and len(polygons[0]) >= 3
 
     window.instances.select_instance(CHASSIS)
-    window.handle_key(key_event("I"))
+    window.handle_key(key_event("`"))
     assert label_at(window) == PARTIAL
     assert "被线挡住（部分）" in window.status_message()
     assert vis_cell(window) == "线半挡"
     assert window.canvas.cable_outlines() == []      # its pixels are painted again
 
     window.instances.select_instance(CHASSIS)
-    window.handle_key(key_event("I"))
+    window.handle_key(key_event("`"))
     assert label_at(window) is None
     assert "撤回被线挡住" in window.status_message()
     assert window.instances.row_of(CHASSIS)["cable"] is None
@@ -186,11 +190,11 @@ def test_full_over_a_hand_drawn_mask_says_so_on_the_line_and_the_banner(window):
     session.commit_edit("frame_override")
     window._sync_editing_layer()
     assert window.instances.select_instance(CHASSIS)
-    window.handle_key(key_event("I"))
+    window.handle_key(key_event("`"))
     assert HAND_REPLACED in window.status_message()
     assert HAND_REPLACED in window._vis_note[0]
     window.instances.select_instance(CHASSIS)
-    window.handle_key(key_event("I"))                   # 部分: the mask is not back
+    window.handle_key(key_event("`"))                   # 部分: the mask is not back
     assert HAND_NOT_BACK in window.status_message()
 
 
@@ -228,7 +232,7 @@ def test_the_button_is_live_and_its_tooltip_says_both_meanings(window):
     assert "被线挡住" in action.label_zh and "零件合照" in action.label_zh
     assert A.short_parts(action) == ("看不见", "")             # the caption is unchanged
     tip = window.palette.button("mark_absent").toolTip()
-    assert tip.startswith(f"{action.label_zh}（I）") and "cable" in tip
+    assert tip.startswith(f"{action.label_zh}（`）") and "cable" in tip       # I until U22
     assert window.instances.select_instance(CHASSIS)
     assert state(window) == (True, "")
     window.show()
@@ -240,7 +244,7 @@ def test_the_button_is_live_and_its_tooltip_says_both_meanings(window):
 def test_ctrl_i_is_a_key_not_a_button(window):
     """The palette must not grow (U13's height tests): Ctrl+I has no button."""
     action = A.action_named("cable_range")
-    assert action.keys == ("Ctrl+I",) and action.modes == (A.MODE_ANNOTATE,)
+    assert action.keys == ("Ctrl+`",) and action.modes == (A.MODE_ANNOTATE,)
     assert not action.short
     for group in (A.PALETTE_TOOLS, A.PALETTE_ACTIONS, A.PALETTE_STATE, A.PALETTE_OTHER,
                   A.PALETTE_REVIEW):
@@ -258,7 +262,7 @@ def test_the_refusals_grey_the_button_and_the_key_says_them(window):
     assert window.instances.select_instance(COOLER)
     enabled, why = state(window)
     assert not enabled and why.endswith(CABLE_NEEDS_SHAPE)
-    window.handle_key(key_event("I"))
+    window.handle_key(key_event("`"))
     assert CABLE_NEEDS_SHAPE in window.status_message()
     assert label_at(window, instance=COOLER) is None
 
@@ -278,7 +282,7 @@ def test_pixels_being_drawn_grey_it(window):
     assert window.has_uncommitted_edit()
     enabled, why = state(window)
     assert not enabled and why.endswith(CABLE_EDITING)
-    window.handle_key(key_event("I"))
+    window.handle_key(key_event("`"))
     assert CABLE_EDITING in window.status_message() and label_at(window) is None
     window.act_clear_edit()
     assert state(window) == (True, "")
@@ -308,7 +312,7 @@ def test_ctrl_i_writes_the_run_in_one_op(window, monkeypatch):
 
     monkeypatch.setattr(window, "ask_cable_range", answer)
     assert window.instances.select_instance(CHASSIS)
-    window.handle_key(key_event("Ctrl+I"))
+    window.handle_key(key_event("Ctrl+`"))
     assert asked == {"instance": CHASSIS, "value": FULL, "low": 1, "high": LAST_STEP}
     assert [label_at(window, s) for s in (9, 10, 11, 12, 13)] == [None, FULL, FULL, FULL, None]
     assert "第 10–12 步都标为被线挡住（完全）" in window.status_message()
@@ -328,7 +332,7 @@ def test_a_slow_ctrl_i_says_it_was_reading_image_sizes(window, monkeypatch):
                         lambda *a: real(*a) | {"measured": 3})
     monkeypatch.setattr(window, "ask_cable_range", lambda *a: (FULL, 10))
     assert window.instances.select_instance(CHASSIS)
-    window.handle_key(key_event("Ctrl+I"))
+    window.handle_key(key_event("Ctrl+`"))
     assert "其中 3 帧第一次读图量尺寸" in window.status_message()
 
 
@@ -339,7 +343,7 @@ def test_ctrl_i_says_which_confirmed_frames_it_left_for_review(window, monkeypat
                         lambda *a: real(*a) | {"withheld": [11, 10]})
     monkeypatch.setattr(window, "ask_cable_range", lambda *a: (FULL, 10))
     assert window.instances.select_instance(CHASSIS)
-    window.handle_key(key_event("Ctrl+I"))
+    window.handle_key(key_event("Ctrl+`"))
     assert "其余 2 帧（第 10、11 步）恢复出的像素没人确认过，留在 Review 里" in (
         window.status_message())
 
@@ -348,7 +352,7 @@ def test_ctrl_i_names_the_frames_the_part_has_no_shape_on(window, monkeypatch):
     monkeypatch.setattr(window, "ask_cable_range", lambda *a: (PARTIAL, 10))
     # the cooler has no shape on 10-12: the frames are refused by name, nothing written
     assert window.instances.select_instance(COOLER)
-    window.handle_key(key_event("Ctrl+I"))
+    window.handle_key(key_event("Ctrl+`"))
     assert "第 10–12 步" in window.status_message()
     assert CABLE_NEEDS_SHAPE in window.status_message()
     assert all(label_at(window, s, COOLER) is None for s in (10, 11, 12))
@@ -358,10 +362,10 @@ def test_ctrl_i_on_a_gallery_shot_is_refused_with_the_gallerys_words(gallery_win
     win = gallery_window
     part = win.task_card.current_instance()
     assert part
-    win.handle_key(key_event("Ctrl+I"))
+    win.handle_key(key_event("Ctrl+`"))
     assert GALLERY_REFUSALS["cable_range"] in win.status_message()
     # ... and I there is still 看不见 (task U10)
-    win.handle_key(key_event("I"))
+    win.handle_key(key_event("`"))
     row = next(r for r in win.task_card.rows() if r["instance"] == part)
     assert row["done"] and row["absent"]
 
@@ -376,14 +380,14 @@ def _squash(text: str) -> str:
 def test_the_documents_say_it():
     repo = Path(__file__).resolve().parents[1]
     guide = _squash((repo / "docs" / "annotation_guide.md").read_text(encoding="utf-8"))
-    assert _squash("在原位被线挡住：选中按 `I`（完全→部分→撤回；`Ctrl+I` 一段帧），"
-                   "形状照画、导出写明。") in guide
+    assert _squash("在原位被线挡住：选中按 `` ` ``（`1` 左边；完全→部分→撤回；`` Ctrl+` `` "
+                   "一段帧），形状照画、导出写明。") in guide
     for name in ("mark_absent", "cable_range"):                     # the key table
         assert _squash(A.action_named(name).label_zh) in guide
     quick = _squash((repo / "docs" / "trial_quickstart.md").read_text(encoding="utf-8"))
     assert _squash("**零件在原位，只是被线挡住了**") in quick
     assert _squash("`connector.front_panel.01` 插在原位，被风扇线盖住") in quick
-    assert _squash("整个看不见按一次 `I`，露出一半按两次") in quick
+    assert _squash("整个看不见按一次 `` ` ``，露出一半按两次") in quick
     spec = _squash((repo / "docs" / "superpowers" / "specs"
                     / "2026-09-17-teardown-annotator-design.md").read_text(encoding="utf-8"))
     assert _squash("**v1.15（2026-10-16）**：**被线挡住**（U15，§6.2）") in spec

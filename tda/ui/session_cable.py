@@ -74,18 +74,18 @@ LABEL_ZH: dict[Optional[str], str] = {FULL: "完全", PARTIAL: "部分", None: "
 TAG_ZH = {FULL: "线挡", PARTIAL: "线半挡"}
 
 #: No shape applies here (the ``OVERRIDE_NEEDS_SHAPE`` idea, U2d).
-CABLE_NEEDS_SHAPE = "先画出它的形状（可以从别的帧带过来），再按 I 标被线挡住"
+CABLE_NEEDS_SHAPE = "先画出它的形状（可以从别的帧带过来），再按 ` 键标被线挡住"
 #: The frame does not need the part at all.
 CABLE_REMOVED = "这一帧不要它的形状（已拆下，或这个状态不画）：没有可标的"
 #: On the staging area: a rectangle, and not in its place.
 CABLE_ON_BENCH = "它放在台面上（台面框），不在原位：被线挡住只标原位的零件"
 #: Its pixels are being drawn.
-CABLE_EDITING = "它正在画、还没提交：先 Enter 提交或 Esc 放弃，再按 I"
-#: ``Ctrl+I`` on a gallery shot: ``I`` means 看不见 there.
+CABLE_EDITING = "它正在画、还没提交：先 Q 提交或 Esc 放弃，再按 ` 键"
+#: ``Ctrl+``` on a gallery shot: `````` means 看不见 there.
 CABLE_GALLERY = GALLERY_REFUSALS["cable_range"]
-#: ``Ctrl+I`` to a step of another pose segment.
+#: ``Ctrl+``` to a step of another pose segment.
 CABLE_OTHER_SEGMENT = ("第 {step} 步在另一个位姿段（这一段是第 {low}–{high} 步）："
-                       "Ctrl+I 只在一个位姿段里")
+                       "Ctrl+` 只在一个位姿段里")
 
 _REASONS = {"removed": CABLE_REMOVED, "bench": CABLE_ON_BENCH,
             "no_shape": CABLE_NEEDS_SHAPE}

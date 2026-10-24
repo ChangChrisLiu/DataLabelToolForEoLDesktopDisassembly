@@ -52,7 +52,7 @@ def test_an_unanswered_roi_rectangle_is_the_first_thing_to_do():
                               roi_unanswered=True))
     assert plan.phase == G.PHASE_ROI
     assert now_step(plan) == 0
-    assert "Enter" in plan.now and "Esc" in plan.now
+    assert "Q 保存" in plan.now and "Esc" in plan.now           # Enter until U22
     assert plan.action == "commit"
 
 
@@ -74,7 +74,7 @@ def test_editing_an_empty_shape_names_the_sam_click():
 def test_without_sam_the_empty_shape_is_painted_with_the_brush():
     plan = G.plan_for(replace(FRESH, editing="导风罩 cover.01", sam_ready=False))
     assert plan.phase == G.PHASE_DRAW_EMPTY
-    assert "B" in plan.now
+    assert "按 W" in plan.now                                    # B until U22
     assert plan.action == "tool_brush"
 
 
@@ -83,7 +83,7 @@ def test_editing_with_pixels_asks_for_enter():
                               layer_dirty=True))
     assert plan.phase == G.PHASE_DRAW_PIXELS
     assert now_step(plan) == 3
-    assert "Enter" in plan.now
+    assert "按 Q 提交" in plan.now                               # Enter until U22
     assert plan.action == "commit"
 
 
@@ -91,22 +91,23 @@ def test_the_area_warning_owns_the_next_enter():
     plan = G.plan_for(replace(FRESH, editing="x", layer_pixels=True,
                               layer_dirty=True, warning=True))
     assert plan.phase == G.PHASE_WARNING
-    assert "再按一次 Enter" in plan.now and "Esc" in plan.now
+    assert "再按一次 Q" in plan.now and "Esc" in plan.now
 
 
 def test_a_scope_suggestion_names_the_three_answers():
     plan = G.plan_for(replace(FRESH, editing="x", layer_pixels=True,
                               layer_dirty=True, scope="zorder:above:chassis"))
     assert plan.phase == G.PHASE_SCOPE
-    for key in ("Enter", "Alt+Enter", "Ctrl+Enter"):     # Ctrl+K until U16
+    # Ctrl+K until U16; Enter / Alt+Enter / Ctrl+Enter until U22
+    for key in ("Q 只改形状", "Alt+Q", "Ctrl+Q"):
         assert key in plan.now
-    assert "Ctrl+K" not in plan.now
+    assert "Ctrl+K" not in plan.now and "Enter" not in plan.now
 
 
 def test_a_draft_ghost_owns_enter_and_esc():
     plan = G.plan_for(replace(FRESH, editing="x", ghost=True))
     assert plan.phase == G.PHASE_GHOST
-    assert "Enter" in plan.now and "Esc" in plan.now and "Shift+A" in plan.now
+    assert "Q 采纳" in plan.now and "Esc" in plan.now and "Shift+A" in plan.now
 
 
 def test_an_armed_bench_box_asks_for_a_drag():
