@@ -9,7 +9,9 @@
 fields set by hand before there was a record of them durable: it rehearses
 ``import-logs --force`` of one desktop, compares, and logs a ``relation_fix``
 row (:mod:`tda.core.relation_replay`) for every field the re-import would
-change. The rest of this docstring is about ``infer-relations``.
+change -- under the lock, after a safety backup unless ``--dry-run``; a
+``--keys`` naming no instance of the desktop is refused. The rest of this
+docstring is about ``infer-relations``.
 
 ``import-logs`` runs :func:`~tda.core.graph_rules.infer_relational_fields` as
 part of each desktop's transaction, so every freshly imported machine already
@@ -650,6 +652,15 @@ def cmd_adopt_relations(args: argparse.Namespace) -> int:
             return EXIT_ERROR
         keys = ({k.strip() for k in str(args.keys).split(",") if k.strip()}
                 if args.keys else None)
+        unknown = sorted((keys or set()) - set(db.instances(desktop)))
+        if unknown:
+            print(f"[adopt-relations] D{desktop:02d} has no instance {', '.join(unknown)}; "
+                  f"nothing was compared (check --keys)")
+            return EXIT_ERROR
+        if not args.dry_run and not _safety_backup(
+                paths, db, "adopt-relations",
+                "it records relation fixes every later forced re-import replays"):
+            return EXIT_ERROR  # the line is printed and nothing was written
         found = adopt_relations(db, load_taxonomy(), desktop, path, args.dry_run, keys)
         for line in adoption_lines(found, args.dry_run):
             print(line)
@@ -668,5 +679,6 @@ def _add_adopt_relations(sub) -> None:
                    help="only these parts, comma-separated (e.g. cable_clip.01)")
     p.add_argument("--dry-run", action="store_true",
                    help="list the differences, record nothing (the import is still "
-                        "rehearsed under the lock and rolled back)")
+                        "rehearsed under the lock and rolled back); without it the "
+                        "database is backed up first")
     p.set_defaults(func=cmd_adopt_relations)

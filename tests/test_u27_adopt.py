@@ -91,12 +91,15 @@ def test_keys_narrow_it_and_a_fix_the_replay_refuses_is_said_to_be_still_lost(
     assert found.vanished == []
     assert found.remaining == [
         'cable_clip.01.parent = cover.07 (it names cover.07: the sheet no longer has '
-        'cover.07 nor a part named "Old shroud")']
+        'cover.07 nor a part named "Old shroud")',
+        'cable_clip.01.attached = True (not applied (no parent): the parent fix of this '
+        'part was not matched)']
     # the stray cover itself is no part of the sheet: listed, nothing to adopt on it
     rest = adopt_relations(d23, tax, D23, path, dry_run=True)
     assert rest.vanished == ["cover.07"]
+    # the clip's two fixes are recorded but refused, so they still differ (round 2, N5)
     assert [(k, f) for k, f, _old, _new in rest.differences] == [
-        (CLIP, "parent"), ("cpu_cooler.heatsink.01", "removal_direction")]
+        (CLIP, "parent"), (CLIP, "attached"), ("cpu_cooler.heatsink.01", "removal_direction")]
 
 
 # --------------------------------------------------------------------------- #

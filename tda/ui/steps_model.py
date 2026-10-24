@@ -34,6 +34,7 @@ from tda.core.model import (
     is_context,
     machine_only,
 )
+from tda.core.captive_replay import record_captive_fixes
 from tda.core.relation_replay import record_relation_fixes
 from tda.core.states import (
     CABLE_CLASS,
@@ -764,7 +765,7 @@ class StepTableData:
         self.relabelled.pop(key, None)
         return record
 
-    def save(self, db: Db, *, graph: bool = True) -> list[str]:
+    def save(self, db: Db, *, graph: bool = True, captive_ops: bool = True) -> list[str]:
         """Write the session back and recompile the automatic state events.
 
         ``graph=False`` leaves the constraint graph alone (no re-derivation,
@@ -807,7 +808,11 @@ class StepTableData:
         value included -- so ``import-logs --force`` replays it
         (:mod:`tda.core.relation_replay`, task U27). The parts staged in this
         session (added, split off a compound row) have no stored value to
-        differ from and are not.
+        differ from and are not. A screw whose ``Captive`` cell the save flips
+        is logged as a ``captive_fix`` row, the op ``Shift+T`` writes, so the
+        re-import keeps it too (U27 round 2, B1); ``captive_ops=False`` is for
+        the caller that logs that row itself -- ``Shift+T``'s own write
+        (:func:`tda.ui.session_captive.write_captive`).
         """
         from tda.pipeline import split_pose_segments    # late: tda.pipeline is heavy
 
@@ -816,9 +821,13 @@ class StepTableData:
         with db.transaction():
             moved = _reorients_moved(db.steps(self.desktop), self.steps)
             # every relational field this Apply changes on a stored part is
-            # one op, so a forced re-import replays it (task U27)
-            record_relation_fixes(db, self.desktop, db.instances(self.desktop),
-                                  self.instances, self.annotator)
+            # one op, so a forced re-import replays it (task U27); a flipped
+            # Captive cell is the op Shift+T writes (round 2)
+            stored = db.instances(self.desktop)
+            record_relation_fixes(db, self.desktop, stored, self.instances, self.annotator)
+            if captive_ops:
+                record_captive_fixes(db, self.desktop, stored, self.instances, actions,
+                                     self.annotator)
             db.replace_steps(self.desktop, self.steps, actions)
             for inst in self.instances.values():
                 db.upsert_instance(inst)

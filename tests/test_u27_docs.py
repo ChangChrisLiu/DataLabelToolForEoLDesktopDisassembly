@@ -33,15 +33,22 @@ def test_the_spec_has_the_paragraph_in_3_2_and_v1_27_on_top():
                    "改回导入时的值也记", "`replay_relations`", "relation fixes kept",
                    "relation fix not matched", "按 raw name 找", "`parent` 不成环",
                    "被合并掉的零件上的 fix 不套用", "`python -m tda.cli adopt-relations --desktop N`",
-                   "`--dry-run`", "U9/U12/U14/U21 的重放不受影响", "D22、D24–D26"):
+                   "`--dry-run`", "U9/U12/U14/U21 的重放不受影响",
+                   # round 2
+                   "`Captive` 格也写 `captive_fix` op", "captive 回放也按 key + raw name 找螺丝",
+                   "「captive differs」", "「not applied (no parent)」", "「rebuilt as <新键>」",
+                   "每次导入都会再报一遍", "写入前先备份",
+                   "D22–D26、D29、D32、D33（都是 HP）", "D63 是 Dell Precision，它的卡扣在散热器罩上"):
         assert needed in para, needed
+    assert "D63…" not in body
     changes = body.split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
     assert entries[0].startswith("- **v1.27（2026-10-24）**：**关系字段重导保留**（U27，§3.2）")
     for needed in ("`relation_fix`", "`replay_relations`", "`adopt-relations",
-                   "`tda/core/relation_replay.py`", "手设的螺丝头", "无迁移"):
+                   "`tda/core/relation_replay.py`", "手设的螺丝头", "无迁移",
+                   "评审轮（round 2）", "（D22、D24–D26、D29、D32、D33）", "captive differs"):
         assert needed in entries[0], needed
-    assert changes.index("- **v1.27") < changes.index("- **v1.24")
+    assert changes.index("- **v1.27") < changes.index("- **v1.26")
 
 
 def test_the_quickstart_says_steps_edits_survive_and_has_the_d23_recipe():
@@ -49,11 +56,15 @@ def test_the_quickstart_says_steps_edits_survive_and_has_the_d23_recipe():
     steps = body.split("## 1. 先到 Steps 模式核对这台机器", 1)[1].split("\n## 2. ", 1)[0]
     flat = steps.replace("\n   ", "")
     assert ("实例表里改的关系字段（`Parent`、`Attached`、`Mounted on`、`Fastens`、`Socket host`、"
-            "`Cable` 等）每次 `Apply` 都记下来，`import-logs --force` 重新导入时保留。") in flat
+            "`Cable` 等）每次 `Apply` 都记下来，`import-logs --force` 重新导入时保留。"
+            "`Captive` 格和 `Shift+T` 一样保留；`Head` 格不保留。") in flat
     recipe = steps.split("### 零件其实长在另一个零件上（实例表 `Parent`）", 1)[1]
     flat = recipe.replace("\n", "")
     for needed in ("`cable_clip.01`", "`cover.01`", "Steps → `Instances` → `cable_clip.01` 那一行",
                    "`Parent` 填 `cover.01`、勾 `Attached` → `Apply`",
-                   "卡扣第 1 帧关着、第 2 帧打开、第 3 帧起随导风罩拆下", "重新导入也保留"):
+                   "卡扣第 1 帧关着、第 2 帧打开、第 3 帧起随导风罩拆下", "重新导入也保留",
+                   "（D22、D24–D26、D29、D32、D33，表格里写着「case fan clip」的就是这几台）",
+                   "D63 是 Dell Precision，它的卡扣在散热器罩上"):
         assert needed in flat, needed
-    assert len(recipe) < 700
+    assert "D63…" not in recipe
+    assert len(recipe) < 800

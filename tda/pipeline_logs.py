@@ -1068,8 +1068,9 @@ def _force_warning(db: Db, desktop: int, previous: list[StepRec]) -> str:
     survive the re-import; how many did not is only known afterwards and is said
     then (:func:`dropped_notes_line`).
 
-    The relational fields set in Steps are replayed since task U27; what is
-    still lost is said: a field written before there was a record of it (until
+    The relational fields set in Steps are replayed since task U27, and so is
+    the ``Captive`` column (a ``captive_fix`` row, round 2); what is still lost
+    is said: a field written before there was a record of it (until
     ``adopt-relations`` records it) and a screw head set by hand. A fix on a
     part the sheet no longer has, or naming one, is reported after the import
     (``relation fix not matched``).
@@ -1084,7 +1085,8 @@ def _force_warning(db: Db, desktop: int, previous: list[StepRec]) -> str:
         f"[import-logs] D{desktop:02d}: --force, replacing {len(previous)} steps / "
         f"{len(db.actions(desktop))} actions; {notes}the open/remove corrections made "
         f"with Shift+T are replayed where the sheet still has that action, the captive "
-        f"flags flipped with Shift+T where it still has that screw, and so are "
+        f"flags flipped with Shift+T or in Steps' Captive column where it still has that "
+        f"screw, and so are "
         f"the instances merged in S1 (合并到…) and the parts reclassed (其实是硬盘架 / "
         f"其实是卡扣) where the sheet still names them, and the relational fields set "
         f"in Steps' instance table (parent, attached, mounted_on, fastens, socket_host, "

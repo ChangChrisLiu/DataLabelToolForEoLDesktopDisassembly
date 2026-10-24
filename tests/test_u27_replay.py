@@ -257,12 +257,15 @@ def test_a_shroud_the_sheet_no_longer_has_is_not_matched(d23, tmp_path, tax):
     run = reimport(d23, tmp_path, tax, D23, edits=[("3,CPU fan cover", "3,CPU fan locker")])
     clip = d23.instances(D23)[CLIP]
     assert clip.parent is None                            # not the screw cover
-    assert clip.attached is True                          # attached alone still applies
-    [miss] = replayed(d23, D23)["unmatched"]
-    assert (miss["key"], miss["field"]) == (CLIP, "parent")
+    assert clip.attached is False                         # round 2, N5: nothing to ride on
+    assert [(m["key"], m["field"]) for m in replayed(d23, D23)["unmatched"]] == [
+        (CLIP, "parent"), (CLIP, "attached")]
+    assert replayed(d23, D23)["kept"] == []
     assert ("relation fix not matched: cable_clip.01.parent = cover.01 (it names cover.01: "
             "the sheet's cover.01 is \"Screw cover\" now, which was cover.02 before; nothing "
             "is named \"CPU fan cover\" any more)") in run.corrections
+    assert ("relation fix not matched: cable_clip.01.attached = True (not applied (no "
+            "parent): the parent fix of this part was not matched)") in run.corrections
 
 
 def test_renamed_rows_keep_their_fixes(d23, tmp_path, tax):

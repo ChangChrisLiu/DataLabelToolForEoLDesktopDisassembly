@@ -33,7 +33,7 @@ the **latest** fix of every ``(key, field)`` is applied to the parsed records
   cleared stays cleared) -- when the parsed part carries the raw name the fix
   was made on; else **by raw name** (one parsed part of the class carries it:
   the sheet was renumbered); else by key alone (the sheet renamed the row),
-  unless the rows shifted under the key (:func:`_locate`). A fix on a part
+  unless the rows shifted under the key (:func:`locate_part`). A fix on a part
   merged away (合并到…, :mod:`tda.core.merge_replay`) is not replayed: the
   part it went into kept its own record;
 * a value that names a part is followed through the merges in effect and the
@@ -43,13 +43,24 @@ the **latest** fix of every ``(key, field)`` is applied to the parsed records
   ``fastens`` sits on a screw and ``socket_host`` on a connector, and a
   ``parent`` closes no loop; otherwise it is **not matched** (why) and the
   importer's value stays;
+* a screw's ``parent`` / ``attached`` fix is not matched when the screw's
+  ``captive`` after the captive replay is not the one it had when the fix was
+  made ("captive differs", round 2, B1), and an ``attached = True`` whose
+  part's ``parent`` fix was refused is "not applied (no parent)" (N5);
 * **kept** -- applied over the importer's value; **agrees** -- the importer
   already says the same, or the part is one the import keeps as it is (added
   in S1, or a vanished part held for its work).
 
 Pure on the parsed records, order-independent (the op ids order the fixes) and
 idempotent: a second forced import reads the same rows and the same sheet. One
-:data:`OP_REPLAY_RELATIONS` row per import says what happened.
+:data:`OP_REPLAY_RELATIONS` row per import says what happened. A fix that can
+never match again (its part merged away, gone from the sheet) is reported on
+every import; it stays in the op log (round 2, N3).
+
+Round 2, B1: the captive replay (:mod:`tda.core.captive_replay`) finds its
+screws with :func:`locate_part` too, and a ``Captive`` cell edited in Steps is
+a ``captive_fix`` row like ``Shift+T``'s, so a screw's ``captive`` and its
+``parent`` / ``attached`` come back together.
 """
 from __future__ import annotations
 
@@ -60,12 +71,12 @@ from typing import Iterable, Mapping, Optional
 from tda.core.db import Db
 from tda.core.dbrows import now_iso
 from tda.core.merge_replay import OF_ATTR, POINTERS, renamed
-from tda.core.model import InstanceRec, is_context, is_extra, is_provisional
+from tda.core.model import InstanceRec, is_cage_latch, is_context, is_extra, is_provisional
 from tda.core.reclass_replay import CLEARED_COLUMNS, POINTER_COLUMNS, RECLASS_TO, follow
 
 __all__ = [
     "FIELDS", "OP_RELATION_FIX", "OP_REPLAY_RELATIONS", "OP_VIEW", "RelationInputs",
-    "RelationReplay", "fix_rows", "record_relation_fixes", "relation_changes",
+    "RelationReplay", "fix_rows", "locate_part", "record_relation_fixes", "relation_changes",
     "relation_inputs", "replay_relations", "value_of", "with_value",
 ]
 
@@ -87,6 +98,14 @@ REFERENCES = POINTERS
 ONLY_ON = {"fastens": "screw", "socket_host": "connector"}
 #: ``InstanceRec.group_order``'s default, which a blank cell means.
 DEFAULT_ORDER = "unordered"
+SCREW = "screw"
+#: ``attrs`` entry of an implied instance's note (:data:`tda.core.implied.NOTE_ATTR`).
+NOTE = "note"
+#: A screw's fields whose meaning hangs on its ``captive`` (round 2, B1): a
+#: captive screw rides out on its ``parent`` when ``attached``, a plain one is
+#: taken out at its unscrew. The fix records ``captive`` and is refused when the
+#: screw's ``captive`` after the captive replay is another one.
+CAPTIVE_BOUND = ("parent", "attached")
 
 
 # --------------------------------------------------------------------------- #
@@ -164,11 +183,16 @@ def fix_rows(desktop: int, rec: InstanceRec, name: str, old: object, new: object
     ``raw_name`` is the first of the part's raw names -- what the replay finds
     it by when the sheet is renumbered -- and ``cls`` its class. A value that
     names a part carries that part's first raw name too (``new_raw_name``,
-    ``old_raw_name``, looked up in ``parts``), for the same reason. The
-    inverse is the same record with ``old`` and ``new`` swapped.
+    ``old_raw_name``, looked up in ``parts``), for the same reason. A screw's
+    ``parent`` / ``attached`` also carries the screw's ``captive`` as it was
+    when the fix was made (round 2, B1): the two only mean what they meant on
+    a screw that is (not) captive the same way. The inverse is the same record
+    with ``old`` and ``new`` swapped.
     """
     common = {"desktop": int(desktop), "key": rec.key, "raw_name": _first_name(rec),
               "cls": rec.cls, "field": name, "by": str(by), "at": str(at)}
+    if rec.cls == SCREW and name in CAPTIVE_BOUND:
+        common["captive"] = bool((rec.attrs or {}).get("captive"))
     parts = parts or {}
     names = {}
     if _names_a_part(name, old) or _names_a_part(name, new):
@@ -288,8 +312,9 @@ def _carries(rec: InstanceRec, name: str) -> bool:
     return bool(name) and name in {_norm(n) for n in rec.raw_names or ()}
 
 
-def _locate(table: Mapping[str, InstanceRec], key: str, raw_name: object,
-            stored: Optional[Mapping[str, InstanceRec]] = None) -> tuple[Optional[str], str]:
+def locate_part(table: Mapping[str, InstanceRec], key: str, raw_name: object,
+                stored: Optional[Mapping[str, InstanceRec]] = None
+                ) -> tuple[Optional[str], str]:
     """The parsed part ``key`` (as the fix knew it) is now, or ``(None, why)``.
 
     1. **by key** when the parsed part carries the raw name the fix recorded
@@ -302,7 +327,12 @@ def _locate(table: Mapping[str, InstanceRec], key: str, raw_name: object,
        rows shifted under the key and it is another part.
 
     Not matched: several parts of the class carry the name, it now names a part
-    of another class, or there is neither the key nor the name.
+    of another class, or there is neither the key nor the name -- said as
+    "rebuilt as <key>" for a drive cage's implied latch the import made again
+    under another key (round 2, N4). The captive replay finds its screws the
+    same way (:func:`tda.core.captive_replay.replay_captive`, round 2, B1), so
+    a screw's ``captive`` and its ``parent`` / ``attached`` follow a renumbered
+    sheet together.
     """
     name = _norm(raw_name)
     rec = table.get(key)
@@ -320,6 +350,10 @@ def _locate(table: Mapping[str, InstanceRec], key: str, raw_name: object,
         return None, (f'the sheet now makes "{raw_name}" a {table[named[0]].cls} '
                       f"({named[0]}), not a {cls}")
     if rec is None:
+        rebuilt = _rebuilt_as(table, (stored or {}).get(key))
+        if rebuilt:
+            return None, (f"rebuilt as {rebuilt}: the import made the drive cage's implied "
+                          f"latch again, under a new key")
         tail = f' nor a part named "{raw_name}"' if name else ""
         return None, f"the sheet no longer has {key}{tail}"
     for now in rec.raw_names or ():
@@ -329,6 +363,22 @@ def _locate(table: Mapping[str, InstanceRec], key: str, raw_name: object,
             return None, (f'the sheet\'s {key} is "{now}" now, which was {before[0]} '
                           f'before; nothing is named "{raw_name}" any more')
     return key, ""
+
+
+def _rebuilt_as(table: Mapping[str, InstanceRec], held: Optional[InstanceRec]) -> str:
+    """The key a drive cage's implied latch (``held``, stored) was made again under, or ``""``.
+
+    :func:`tda.core.implied.cage_latches` gives an implied latch its old key
+    back only while its ``parent`` is still the cage (task U20); one whose
+    parent was changed in Steps comes back under the next free key, with the
+    same note naming its cage.
+    """
+    if held is None or not is_cage_latch(held):
+        return ""
+    note = (held.attrs or {}).get(NOTE)
+    found = [key for key, rec in sorted(table.items())
+             if key != held.key and is_cage_latch(rec) and (rec.attrs or {}).get(NOTE) == note]
+    return found[0] if len(found) == 1 else ""
 
 
 def _names_a_part(name: str, value: object) -> bool:
@@ -382,15 +432,33 @@ def _named(table: Mapping[str, InstanceRec], kept: Mapping[str, InstanceRec],
     """The part a fix's value names, after this import, or ``(None, why)``.
 
     A part the import keeps as it is (``kept``) is itself; any other is
-    looked for as :func:`_locate` looks for the fixed part -- by key and raw
+    looked for as :func:`locate_part` looks for the fixed part -- by key and raw
     name -- so a renumbered sheet moves the value with its row.
     """
     if value in kept and value not in table:
         return value, ""
-    found, why = _locate(table, value, raw_name, stored)
+    found, why = locate_part(table, value, raw_name, stored)
     if found is None:
         return None, f"it names {value}: {why}"
     return found, ""
+
+
+def _captive_differs(rec: InstanceRec, name: str, payload: dict) -> str:
+    """Why a screw's ``parent`` / ``attached`` fix no longer fits its ``captive``, or ``""``.
+
+    The fix recorded the screw's ``captive`` (:func:`fix_rows`); after the
+    captive replay (``Shift+T`` or the Steps ``Captive`` column) the parsed
+    screw may be the other kind -- the two replays found different screws, or
+    the flag was never recorded -- and then ticking ``attached`` on a screw
+    whose part leaves would keep it loosened in the chassis for ever (B1).
+    """
+    if rec.cls != SCREW or name not in CAPTIVE_BOUND or "captive" not in payload:
+        return ""
+    now = bool((rec.attrs or {}).get("captive"))
+    if now == bool(payload["captive"]):
+        return ""
+    return (f"captive differs: {rec.key} is {'captive' if now else 'not captive'} now, the "
+            f"fix was set while it was {'captive' if payload['captive'] else 'not captive'}")
 
 
 def _cleared_by_reclass(name: str, value: object) -> bool:
@@ -426,12 +494,15 @@ def replay_relations(ops: list[dict], fresh: Mapping[str, InstanceRec],
     fix may name and which are not rewritten. ``rename`` is ``gone -> keep``
     of the merges in effect, ``reclassed`` :func:`tda.core.reclass_replay.reclass_renames`,
     ``stored`` the instance table being replaced (it tells a renamed row from
-    rows that shifted under a key, :func:`_locate`). Pure: returns a new
+    rows that shifted under a key, :func:`locate_part`). Pure: returns a new
     mapping (changed records are copies) and the report.
     """
     table = dict(fresh)
     kept = dict(kept or {})
     report = RelationReplay()
+    #: parts whose ``parent`` fix was refused: their ``attached = True`` fix
+    #: would tick a box that carries them nowhere (round 2, N5)
+    no_parent: set[str] = set()
     groups: dict[tuple[str, str], list[dict]] = {}
     for op in sorted(ops, key=lambda row: int(row["id"])):
         payload = op.get("payload") or {}
@@ -467,24 +538,26 @@ def replay_relations(ops: list[dict], fresh: Mapping[str, InstanceRec],
                    else "no longer in the sheet, held for its work")
             report.agrees.append(entry | {"kept_as_is": why})
             continue
-        target, why = _locate(table, key, payload.get("raw_name"), stored)
+        target, why = locate_part(table, key, payload.get("raw_name"), stored)
         if target is None:
             report.unmatched.append(entry | {"why": why})
             continue
         if target != key:
             entry["parsed"] = target
         entry["sheet"] = value_of(table[target], name)
-        if _names_a_part(name, value):
+        why = _captive_differs(table[target], name, payload)
+        if not why and _names_a_part(name, value):
             found, why = _named(table, kept, stored, str(value), payload.get("new_raw_name"))
-            if found is None:
-                report.unmatched.append(entry | {"why": why})
-                continue
-            if found != value:
+            if found is not None and found != value:
                 entry["named"], value = value, found     # the sheet renumbered it too
                 entry["value"] = value
-        why = _refusal(table, target, name, value)
+        if not why and name == "attached" and value and target in no_parent:
+            why = "not applied (no parent): the parent fix of this part was not matched"
+        why = why or _refusal(table, target, name, value)
         if why:
             report.unmatched.append(entry | {"why": why})
+            if name == "parent":
+                no_parent.add(target)
             continue
         if entry["sheet"] == value:
             report.agrees.append(entry)
