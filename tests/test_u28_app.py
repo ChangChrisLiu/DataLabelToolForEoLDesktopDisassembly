@@ -301,11 +301,19 @@ def test_one_refresh_per_settled_change_and_nothing_new_for_the_same_pair(window
     window.follow_locator(force=True)           # a refresh of the same pair
     assert window.locator_refreshes == count + 1
     assert window.locator_source.stats == stats  # from the caches: nothing read
-    # the fan stays selected on 11: one refresh, the same pair, no reads
+    # the fan stays selected on 11: the pair does not depend on the step, so
+    # walking frames with it leaves the pair as it is -- no refresh, no query
     select(window, COOLER)
-    count = window.locator_refreshes
+    count, checks = window.locator_refreshes, window.locator_checks
     goto(window, STEP - 1)
+    goto(window, STEP - 2)
     assert window.locator_target() == COOLER
-    assert window.locator_refreshes == count + 1
+    assert window.locator_refreshes == count and window.locator_checks == checks
     assert window.locator.pair().instance == COOLER
     assert window.locator_source.stats == stats
+    # another view is a refresh again
+    window.act_set_view("oak2")
+    QApplication.processEvents()
+    select(window, COOLER)
+    assert window.locator_refreshes > count
+    assert window.locator.pair().instance == COOLER

@@ -56,6 +56,8 @@ NO_PICTURE = "（没有图）"
 CAPTION_PEN = QColor(230, 230, 230)
 #: A window guessed from the difference: grey, never the part's colour.
 GUESS_COLOUR = QColor(200, 200, 200)
+#: Pictures kept converted (two pairs' worth).
+PIXMAP_CACHE = 4
 
 
 def _fit(src, cell: QRectF) -> QRectF:
@@ -81,6 +83,8 @@ class PairView(QWidget):
         super().__init__(parent)
         self._pair: Optional[PairScene] = None
         self._pixmaps: list[QPixmap] = [QPixmap(), QPixmap()]
+        #: ``(QImage, its QPixmap)``, most recent first (:data:`PIXMAP_CACHE`).
+        self._converted: list[tuple] = []
         self._mode = CROP
         self._zoom = 1.0
         #: Which of the pair's candidate windows is on screen.
@@ -103,7 +107,7 @@ class PairView(QWidget):
             new = None if pair is None else pair.images[i]
             old = None if before is None else before.images[i]
             if new is not old:
-                self._pixmaps[i] = QPixmap.fromImage(new) if new is not None else QPixmap()
+                self._pixmaps[i] = self._pixmap_of(new)
         same_windows = (before is not None and pair is not None
                         and before.candidates == pair.candidates)
         self._pair = pair
@@ -116,6 +120,17 @@ class PairView(QWidget):
 
     def pair(self) -> Optional[PairScene]:
         return self._pair
+
+    def _pixmap_of(self, image) -> QPixmap:
+        """The picture as a pixmap; the last few are kept (a part switch is no conversion)."""
+        if image is None:
+            return QPixmap()
+        for held, pixmap in self._converted:
+            if held is image:
+                return pixmap
+        pixmap = QPixmap.fromImage(image)
+        self._converted = ([(image, pixmap)] + self._converted)[:PIXMAP_CACHE]
+        return pixmap
 
     def pixmap(self, i: int) -> QPixmap:
         return self._pixmaps[int(i)]

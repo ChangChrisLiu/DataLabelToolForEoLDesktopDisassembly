@@ -141,6 +141,8 @@ class LocatorMixin:
         self._locator_own: Optional[tuple] = None
         #: The toggle's choice: ``(desktop, part, pair wanted)``, for that part only.
         self._pair_choice: Optional[tuple] = None
+        #: What the pair on screen was drawn for: ``(desktop, view, part, epoch, asked)``.
+        self._locator_pair_shown: Optional[tuple] = None
         self._locator_timer = QTimer(self)
         self._locator_timer.setSingleShot(True)
         self._locator_timer.setInterval(0)
@@ -281,7 +283,15 @@ class LocatorMixin:
         if self.locator_dock.isHidden():
             self.locator_dock.setVisible(True)
         if kind == KIND_PAIR:
+            # the pair does not depend on the step: walking frames with the
+            # same part, view and edit epoch leaves it as it is (no query)
+            shown = (stamp[0], stamp[1], stamp[3], stamp[4], self._pair_forced(stamp[3]))
+            if not (fresh or shown != self._locator_pair_shown
+                    or not self.locator.showing_pair()):
+                self._sync_pair_button(kind, target)
+                return
             self.refresh_pair(stamp[0], stamp[3])
+            self._locator_pair_shown = shown
         else:
             self.refresh_locator(stamp[0], stamp[2], stamp[3])
         self._sync_pair_button(kind, target)
@@ -306,9 +316,12 @@ class LocatorMixin:
             self.logger.warning("locator pair: D%s %s: %s", desktop, target, exc)
             pair = PairScene(desktop=desktop, instance=target,
                              note=f"拆前 / 拆后读不出来：{exc}")
-        forced = (self._pair_choice is not None and bool(self._pair_choice[2])
-                  and not self.locator_first_time(target))
-        self.locator.show_pair(pair, PAIR_HEAD if forced else PAIR_HEAD_FIRST)
+        self.locator.show_pair(pair, PAIR_HEAD if self._pair_forced(target) else PAIR_HEAD_FIRST)
+
+    def _pair_forced(self, target: Optional[str]) -> bool:
+        """Is the pair up because the annotator asked, not because it is a first time?"""
+        return (self._pair_choice is not None and bool(self._pair_choice[2])
+                and not self.locator_first_time(target))
 
     def _sync_pair_button(self, kind: Optional[str], target: Optional[str]) -> None:
         """The panel's 「拆前/拆后」 is checked while the pair is up, live with a part."""
