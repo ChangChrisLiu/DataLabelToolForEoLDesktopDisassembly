@@ -229,9 +229,11 @@ def test_annotation_geometry_and_attributes(db, tax, tmp_path: Path):
     assert screw["area"] == 64
     assert screw["attributes"]["state"] == "fastened"
     assert screw["attributes"]["amodal_complete"] is None  # no keyframe for the screw
-    # ... so no shape either: its pixels are a 「只改这一帧」 mask's
-    assert (screw["amodal_segmentation"], screw["amodal_bbox"], screw["amodal_area"]) == (
-        None, None, None)
+    # ... so no shape either: its pixels are a 「只改这一帧」 mask's, and they are
+    # all that is known of it -- amodal = visible, counted as a union (U26 N3a)
+    assert screw["amodal_segmentation"] == screw["segmentation"]
+    assert (screw["amodal_bbox"], screw["amodal_area"]) == ([50, 40, 8, 8], 64)
+    assert doc["info"]["amodal_union_rows"] == 1
 
     # the segmentation really is the seeded mask
     coco = COCO(str(out))
@@ -281,6 +283,8 @@ def test_coco_file_matches_the_returned_document(db, tax, tmp_path: Path):
     doc = export_coco(db, tax, [DESKTOP], VIEW, str(out), only_verified=False)
     assert json.loads(out.read_text(encoding="utf-8")) == doc
     assert doc["info"]["view"] == VIEW and doc["info"]["desktops"] == [DESKTOP]
+    # "2" since U26: the amodal fields, and the covered parts as annotations
+    assert doc["info"]["version"] == "2"
 
 
 # --------------------------------------------------------------------------- #

@@ -15,7 +15,10 @@ def test_the_spec_lists_the_amodal_fields_and_the_check_rule():
     for needed in ("**每条掩码标注**", "`amodal_segmentation`", "`amodal_bbox`", "`amodal_area`",
                    "`--roi-crop`", "`--no-amodal`", "`info.amodal`", "`iscrowd: 1`",
                    "`null`", "**文件里可见 ⊆ 完整形状**", "`info.amodal_union_rows`",
-                   "**被上面标了的零件整个盖住的零件", "`--no-hidden`", "`info.hidden`"):
+                   "**被上面标了的零件整个盖住的零件", "`--no-hidden`", "`info.hidden`",
+                   # round 3: N1, N3a, N8
+                   "只去掉 U26 新加的", "除 `info` 外与 U26 之前的文件逐字节相同",
+                   "`amodal = 可见`", "`info.version` 升为 `\"2\"`"):
         assert needed in cv, needed
     checks = body.split("### 9.1 ", 1)[1].split("### 9.2", 1)[0]
     for needed in ("「n 个零件完全被挡住（正常）：m 个零件帧，不算问题」", "`occluded_full`",
@@ -35,7 +38,8 @@ def test_v1_26_is_in_the_changelog_above_v1_24():
                             "（U26，§8.1、§9.1）")
     for needed in ("`tda.core.empty_visible`", "D3 232 → 0", "`--no-amodal`", "`--no-hidden`",
                    "`info.amodal_union_rows`", "1.68 MB → 2.76 MB", "16 497 → 18 980",
-                   "`TruthService.refresh_range`", "「这一帧没有它的形状（没画，或整个在画面外）」"):
+                   "`TruthService.refresh_range`", "「这一帧没有它的形状（没画，或整个在画面外）」",
+                   "`info.version` 升为 `\"2\"`"):
         assert needed in entry, needed
     assert changes.index("- **v1.26") < changes.index("- **v1.24")
 

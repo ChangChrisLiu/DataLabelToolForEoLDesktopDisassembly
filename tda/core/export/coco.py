@@ -36,12 +36,17 @@ row's visible mask reaches outside the compiled shape -- a 「只改这一帧」
 drawn away from it, or a frozen row that kept the mask it was confirmed with
 after the shape moved (D2-D14 scan: 19 of 16 497) -- the annotation carries
 ``amodal ∪ visible`` instead, and ``info.amodal_union_rows`` counts them
-(their ``occlusion_ratio`` stays the compiler's). All three are ``null`` on an
-annotation with no shape on the frame at all (its pixels come from a
-「只改这一帧」 mask alone). A ``box`` row (``include_boxes``) is not a mask
+(their ``occlusion_ratio`` stays the compiler's). An annotation with no shape
+on the frame at all -- its pixels come from a 「只改这一帧」 mask alone -- is the
+same rule with nothing to unite: ``amodal = visible``, counted too. All three
+are ``null`` only for a row with neither a shape nor a visible pixel, which is
+never an annotation. A ``box`` row (``include_boxes``) is not a mask
 annotation and carries none of them. ``amodal=False`` (``export-coco
---no-amodal``) leaves all three out, for size; ``info.amodal`` says which it
-is.
+--no-amodal``) leaves out what U26 added, for size -- ``amodal_area``, and both
+other fields on a row with no ``occluder`` -- and keeps what U15 / U24 already
+wrote: a row 被线挡住 / 角度看不到 still carries ``amodal_segmentation`` and
+``amodal_bbox``, so ``--no-amodal --no-hidden`` writes the pre-U26 annotations
+byte for byte. ``info.amodal`` says which it is; ``info.version`` is "2".
 
 A part the labelled parts above it cover completely -- ``occluded_full``,
 nothing visible, no ``occluder`` -- is exported too, the way a part
@@ -161,7 +166,10 @@ ANSWERABLE = (
 VERIFIED = "verified"
 GEOM_BOX = "box"
 DEFAULT_EXT = ".png"
-EXPORT_VERSION = "1"
+#: ``info.version``. "2" (task U26): every mask annotation carries its amodal
+#: shape, and the parts the labelled parts cover completely are annotations
+#: of their own -- the annotation set changed, so the ids after them shift.
+EXPORT_VERSION = "2"
 #: ``info.split`` of an export: the teardown, or the components gallery (U10).
 SPLIT_SEQUENCE = "sequence"
 SPLIT_COMPONENTS = "components"
@@ -639,21 +647,30 @@ def _annotation(ann_id: int, img_id: int, category: int, row: dict, attributes: 
     already resolved.
 
     ``amodal`` is the part's whole shape on this frame, full-frame RLE, or
-    ``None`` when it has none. A mask annotation carries it as
+    ``None`` when it has none (the caller has already made it hold the visible
+    mask, :func:`_with_visible`). A mask annotation carries it as
     ``amodal_segmentation`` / ``amodal_bbox`` / ``amodal_area`` (task U26, spec
     8.1's extension field; all three ``null`` without one), cropped to ``roi``
-    like the visible mask; ``with_amodal=False`` (``--no-amodal``) writes none
-    of them. A part hidden completely -- ``occluded_full`` with an empty visible
-    mask, 被线挡住 / 角度看不到 (tasks U15, U24) or covered by the labelled
-    parts above it (task U26) -- is exported anyway: an empty
-    ``segmentation``, ``area`` 0, the amodal box as ``bbox`` and
-    **``iscrowd: 1``**, so that COCOeval neither expects a visible-mask
-    detector to find it nor penalises one that does (a perfect detector scored
-    segm AP 0.972 against ``iscrowd: 0``, 1.000 against this); its
+    like the visible mask. ``with_amodal=False`` (``--no-amodal``) writes only
+    what U15 / U24 wrote before U26: ``amodal_segmentation`` and
+    ``amodal_bbox`` on a row with an ``occluder``, nothing on any other.
+
+    A part hidden completely -- ``occluded_full`` with an empty visible mask,
+    被线挡住 / 角度看不到 (tasks U15, U24) or covered by the labelled parts
+    above it (task U26) -- is exported anyway: an empty ``segmentation``,
+    ``area`` 0, the amodal box as ``bbox`` and **``iscrowd: 1``**; its
     segmentation is the compressed RLE (``{"size", "counts"}``) that
-    pycocotools reads for a crowd region. ``with_hidden=False``
-    (``--no-hidden``) drops the covered ones -- those with no ``occluder`` --
-    as before U26. A part with nothing visible and no shape is always dropped.
+    pycocotools reads for a crowd region. What COCOeval makes of it depends on
+    the ``iouType``. **bbox** evaluation ignores a crowd region: a detection
+    on the hidden part matches its (amodal) box and is neither a hit nor a
+    false positive, and a visible-mask detector that finds nothing there loses
+    nothing (a perfect one scored 1.000 against this, 0.972 against
+    ``iscrowd: 0``). **segm** evaluation does not ignore it: the crowd
+    region's segmentation is empty, so its IoU with any detection is 0 and a
+    detection on the hidden part is a false positive there (U26 review, N2).
+    ``with_hidden=False`` (``--no-hidden``) drops the covered ones -- those
+    with no ``occluder`` -- as before U26. A part with nothing visible and no
+    shape is always dropped.
     """
     known = amodal is not None
     if amodal is not None and roi is not None:
@@ -675,8 +692,8 @@ def _annotation(ann_id: int, img_id: int, category: int, row: dict, attributes: 
         box = mask_bbox_xywh(rle)
         if box is None and hidden:
             box = mask_bbox_xywh(amodal)       # nothing seen: where the part is
-            # ... and a crowd region: COCOeval neither expects a visible-mask
-            # detection there nor counts one against it (ruled, U15 review M5)
+            # ... and a crowd region (ruled, U15 review M5): bbox evaluation
+            # ignores detections there, segm evaluation does not (U26 N2)
             crowd = 1
         if box is None:
             return None
@@ -699,8 +716,13 @@ def _annotation(ann_id: int, img_id: int, category: int, row: dict, attributes: 
         "segmentation": segmentation, "bbox": box, "area": _round_int(area),
         "iscrowd": crowd, "attributes": attributes,
     }
-    if with_amodal and rle:
+    if rle and with_amodal:
         ann.update(_amodal_fields(amodal, known, segmentation))
+    elif rle and attributes.get("occluder") and amodal is not None:
+        # --no-amodal governs only what U26 added: a row with a reason keeps
+        # the two fields U15 / U24 wrote, exactly as they wrote them (U26 N1)
+        ann["amodal_segmentation"] = amodal
+        ann["amodal_bbox"] = mask_bbox_xywh(amodal)
     return ann
 
 
@@ -711,7 +733,9 @@ def _amodal_fields(amodal: Optional[dict], known: bool, segmentation: dict) -> d
     ``roi_crop``); ``known`` says whether the part had a shape at all. A shape
     that had pixels and lost them all to the crop is an empty RLE of the
     segmentation's size -- known to be empty here -- and an unknown one is
-    three ``null``.
+    three ``null``. The export never hands in an unknown one with visible
+    pixels (:func:`_with_visible` makes it the visible mask), so the ``null``
+    triple is for a row with neither, which is not an annotation.
     """
     if not known:
         return {"amodal_segmentation": None, "amodal_bbox": None, "amodal_area": None}
@@ -749,20 +773,34 @@ def _amodal_rles(service: TruthService, key: FrameKey, wanted,
     return out
 
 
-def _with_visible(amodal: dict, visible: Optional[dict]) -> tuple[dict, bool]:
+def _with_visible(amodal: Optional[dict], visible: Optional[dict]
+                  ) -> tuple[Optional[dict], bool]:
     """``(amodal ∪ visible, whether it grew)``: what is seen is part of the part.
 
     The compiled shape holds the visible mask everywhere but where a frame
     override drew pixels away from it, or a frozen row kept the mask it was
     confirmed with after the shape moved (task U26: 19 of 16 497 on D2-D14
     scan). The file promises ``visible ⊆ amodal``, so those rows get the
-    union; the export counts them (``info.amodal_union_rows``). Off the run
-    lengths, no decoding; two sizes are two frames and are left alone.
+    union; the export counts them (``info.amodal_union_rows``). A row with
+    visible pixels and **no** shape on the frame (a 「只改这一帧」 mask alone) is
+    the same rule with nothing to unite: ``amodal = visible``, counted too
+    (U26 N3a). No visible pixel leaves the shape as it is, ``None`` included.
+
+    Off the run lengths, no decoding. Two sizes are two frames, which a row
+    and its own compilation never are: ``ValueError`` rather than a file
+    that silently breaks its promise (U26 N3b).
     """
-    if not visible or [int(v) for v in visible["size"]] != [int(v) for v in amodal["size"]]:
+    if not visible:
         return amodal, False
     seen = masks.rle_area(visible)
-    if seen == 0 or masks.rle_overlap(visible, amodal) == seen:
+    if seen == 0:
+        return amodal, False
+    if amodal is None:
+        return visible, True
+    if [int(v) for v in visible["size"]] != [int(v) for v in amodal["size"]]:
+        raise ValueError(f"a {list(visible['size'])} visible mask against a "
+                         f"{list(amodal['size'])} amodal shape: two frames, not one")
+    if masks.rle_overlap(visible, amodal) == seen:
         return amodal, False
     return masks.rle_union(amodal, visible), True
 
@@ -816,14 +854,15 @@ def export_coco(
     amodal:
         Give every mask annotation its whole shape -- ``amodal_segmentation``,
         ``amodal_bbox``, ``amodal_area`` (task U26, the module docstring). On
-        by default; ``False`` (``--no-amodal``) leaves all three out -- they
-        add 40-50 % to the file (D3 scan: 2.51 MB against 1.68 MB) -- and
-        spares the one compilation per exported frame they cost on every
-        export, the digests notwithstanding: the shapes are not stored (a
-        frame with a part hidden completely is still compiled for that part's
-        box -- a 被线挡住（完全） one always, a covered one unless ``hidden``
-        is off). ``info.amodal`` records it. Where a row's visible mask reaches
-        outside the compiled shape the file carries their union, and
+        by default; ``False`` (``--no-amodal``) leaves out what U26 added --
+        40-50 % of the file (D3 scan: 2.51 MB against 1.68 MB) -- keeping the
+        two fields U15 / U24 wrote on a row with an ``occluder``, and spares
+        the one compilation per exported frame they cost on every export, the
+        digests notwithstanding: the shapes are not stored (a frame with a
+        part hidden completely, or with a reason, is still compiled -- a
+        covered part's only unless ``hidden`` is off). ``info.amodal`` records
+        it. Where a row's visible mask reaches outside the compiled shape (or
+        there is no shape) the file carries their union, and
         ``info.amodal_union_rows`` counts those annotations.
     hidden:
         Export a part the labelled parts above it cover completely
@@ -963,8 +1002,10 @@ def export_coco(
                         stamp_covers(flags.get(instance), row.get("visibility"),
                                      occluders.get(instance)))
                 shape, grew = amodals.get(instance), False
-                if shape is not None and amodal:
-                    # what is seen is part of the part: visible ⊆ amodal (U26)
+                if amodal or instance in occluders:
+                    # wherever a shape is written, what is seen is part of the
+                    # part: visible ⊆ amodal, a shapeless row's being its
+                    # visible mask (U26, N3a)
                     shape, grew = _with_visible(shape, row.get("visible_rle"))
                 ann = _annotation(ann_id, img_id, cat_of[cls], row, attributes,
                                   roi, include_boxes, shape,

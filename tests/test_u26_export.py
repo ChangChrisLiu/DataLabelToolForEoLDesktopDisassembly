@@ -142,18 +142,91 @@ def test_a_visible_mask_drawn_outside_the_shape_widens_it(tmp_path):
         assert not (decode(a["segmentation"]) & ~decode(a["amodal_segmentation"])).any()
 
 
-def test_no_amodal_leaves_the_fields_out_and_nothing_else(scene, tmp_path):
+def test_no_amodal_leaves_out_what_u26_added_and_nothing_else(scene, tmp_path):
+    """Review N1: a row with a reason keeps the two fields U15 / U24 wrote."""
     full, _ = export(scene, tmp_path, "full.json")
     slim, _ = export(scene, tmp_path, "slim.json", amodal=False)
     assert slim["info"]["amodal"] is False
-    assert not any(field in a for a in slim["annotations"] for field in AMODAL)
+    assert not any("amodal_area" in a for a in slim["annotations"])
+    reasoned = [a for a in slim["annotations"] if a["attributes"]["occluder"]]
+    assert reasoned and all("amodal_segmentation" in a and "amodal_bbox" in a
+                            for a in reasoned)
+    assert not any(field in a for a in slim["annotations"] if not a["attributes"]["occluder"]
+                   for field in AMODAL)
+
     # the same annotations otherwise -- the cable's 完全 one included, its box
     # still the amodal one
-    stripped = [{k: v for k, v in a.items() if k not in AMODAL} for a in full["annotations"]]
-    assert slim["annotations"] == stripped
+    def u15(a: dict) -> dict:
+        kept = ("amodal_segmentation", "amodal_bbox") if a["attributes"]["occluder"] else ()
+        return {k: v for k, v in a.items() if k not in AMODAL or k in kept}
+
+    assert slim["annotations"] == [u15(a) for a in full["annotations"]]
     hidden = ann(slim, V.CABLE_STEP, V.CABLED)
     assert hidden["iscrowd"] == 1 and hidden["bbox"] == ann(full, V.CABLE_STEP,
                                                              V.CABLED)["amodal_bbox"]
+
+
+#: ``export_coco`` of this scene (confirmed frames 10-14) with main's code at
+#: a48f1ad, the commit U26 branched from -- written by
+#: ``.cache/u26/make_pre_fixture.py`` from a ``git archive`` of it: 5 images,
+#: 172 annotations, one (the cable's 完全 on ``cpu.01``) with the two U15 fields.
+PRE_U26_SHA256 = "41ea27a2be6396cc664be8b2c126944fc919178723af50b32b49a3d55d90f240"
+PRE_U26_BYTES = 117_748
+#: The ``info`` keys U26 added; the pre-U26 file has ``version`` "1".
+U26_INFO = ("amodal", "amodal_union_rows", "hidden")
+
+
+def test_no_amodal_no_hidden_writes_the_pre_u26_file(tmp_path):
+    """Review N1's invariant: byte for byte, but for what ``info`` says of the switches.
+
+    The info block records the two switches and the format's version ("2"),
+    so it differs by design; with it put back as it was, the file is the one
+    main wrote, to the byte (the real D11, with five rows 被线挡住, is checked
+    the same way in the U26 report).
+    """
+    import hashlib
+
+    scene = V.build(tmp_path / "scene")
+    try:
+        out = tmp_path / "slim.json"
+        doc = export_coco(scene.db, scene.tax, [V.DESKTOP], V.VIEW, str(out),
+                          truth=scene.truth, amodal=False, hidden=False)
+    finally:
+        scene.close(force=True)
+    assert doc["info"]["version"] == "2"
+    assert {k: doc["info"][k] for k in U26_INFO} == {
+        "amodal": False, "amodal_union_rows": 0, "hidden": False}
+    info = {k: v for k, v in doc["info"].items() if k not in U26_INFO}
+    info["version"] = "1"
+    # written the way the exporter writes (text mode: CRLF here, as main's was)
+    assert out.read_text(encoding="utf-8") == json.dumps(doc, ensure_ascii=True, indent=1)
+    redone = tmp_path / "pre.json"
+    redone.write_text(json.dumps(dict(doc, info=info), ensure_ascii=True, indent=1),
+                      encoding="utf-8")
+    pre = redone.read_bytes()
+    assert len(pre) == PRE_U26_BYTES
+    assert hashlib.sha256(pre).hexdigest() == PRE_U26_SHA256
+
+
+def test_with_visible_unites_fills_in_and_refuses_two_sizes():
+    """Review N3: no shape -> the visible mask; two sizes -> an error, not silence."""
+    from tda.core.export.coco import _with_visible
+
+    def rle(y0, y1, x0, x1, hw=(16, 16)):
+        m = np.zeros(hw, dtype=bool)
+        m[y0:y1, x0:x1] = True
+        return masks.encode_rle(m)
+
+    shape, inside, outside = rle(2, 8, 2, 8), rle(3, 5, 3, 5), rle(10, 12, 10, 12)
+    assert _with_visible(shape, inside) == (shape, False)
+    united, grew = _with_visible(shape, outside)
+    assert grew and masks.rle_area(united) == 36 + 4
+    assert _with_visible(None, inside) == (inside, True)            # N3a
+    empty = masks.encode_rle(np.zeros((16, 16), dtype=bool))
+    assert _with_visible(None, empty) == (None, False)              # neither: null triple
+    assert _with_visible(None, None) == (None, False)
+    with pytest.raises(ValueError, match="two frames"):            # N3b
+        _with_visible(shape, rle(3, 5, 3, 5, hw=(16, 20)))
 
 
 def test_roi_crop_crops_the_amodal_shape_too(tmp_path):
@@ -241,8 +314,11 @@ def test_the_cli_flags(scene, tmp_path, capsys):
         doc = json.loads(out.read_text(encoding="utf-8"))
         assert doc["info"]["amodal"] is (name != "without")
         assert doc["info"]["hidden"] is (name != "unhidden")
-        assert all(("amodal_segmentation" in a) is (name != "without")
+        # --no-amodal keeps the two U15 fields on a row with a reason (N1)
+        assert all(("amodal_segmentation" in a)
+                   is (name != "without" or bool(a["attributes"]["occluder"]))
                    for a in doc["annotations"])
+        assert all(("amodal_area" in a) is (name != "without") for a in doc["annotations"])
         crowd = sum(a["iscrowd"] for a in doc["annotations"])
         assert f"[export-coco] {crowd} annotation(s) are parts hidden completely" in printed
         sizes[name], counts[name] = out.stat().st_size, len(doc["annotations"])
