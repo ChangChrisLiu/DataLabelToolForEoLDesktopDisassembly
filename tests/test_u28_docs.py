@@ -48,7 +48,7 @@ def test_the_spec_has_the_paragraph_after_u23_and_v1_28_on_top():
                    "切分副本也算形状", "单帧像素", "**任何视角都一样，扫描仪视角也是**", "(b)",
                    "「拆前/拆后」按钮", "换了零件就忘", "不加快捷键", "(c)", "照旧是主视角画面",
                    "小窗照旧隐藏", "(d)", "`locator/open` 的意思不变", "什么都不读",
-                   "一次索引查询", "65–75 ms", "0.2 ms"):
+                   "一次索引查询", "60–75 ms", "0.2 ms", "位姿段及其 ROI"):
         assert needed in para, needed
     changes = body.split("## 14. 修订记录", 1)[1]
     first = next(line for line in changes.splitlines() if line.startswith("- "))
