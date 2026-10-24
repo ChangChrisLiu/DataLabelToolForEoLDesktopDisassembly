@@ -118,6 +118,59 @@ EYES: dict[int, str] = {
 #: is listed separately: a skip compensated by an extra shot has no count symptom.
 POOR_DECLARED = 0.35
 
+# --------------------------------------------------------------------------- #
+# picture evidence per step (scripts/step_changes.py)
+# --------------------------------------------------------------------------- #
+#: (a) a part that leaves or moves should show: these classes are big enough to
+#: see from above. RAM modules stand on edge and barely show at 256 px (69 of the
+#: 80 removals under 0.5 % were RAM), so they are not held to it; nor are CPUs
+#: (about 8 px square at 256 px: D44 step 28 is a visible removal at 0.4 %) and
+#: expansion cards (edge-on in a chassis lying on its side, like RAM: D39 step 44,
+#: D62 step 30).
+VISIBLE_PARTS = frozenset({"motherboard", "psu", "storage_drive", "optical_drive", "case_fan",
+                           "cpu_cooler", "drive_cage", "cover", "cooler_bracket"})
+NO_CHANGE = 0.005
+#: (b) the most a step may change when nothing leaves: per verb (opening a
+#: latch, not a cover -- a cover swinging open is a large change by design).
+QUIET_VERBS = {"unscrew": 0.15, "release": 0.15, "disconnect": 0.25, "open": 0.20}
+LATCHES = frozenset({"ram_latch", "cpu_socket_lever", "psu_latch", "drive_latch", "card_latch",
+                     "cooler_latch", "cable_clip"})
+#: (c) the first and the last scanner frame of a teardown must differ this much.
+FIRST_LAST = 0.15
+
+
+def picture_flags(rec: dict, changes: dict, li) -> list[dict]:
+    """The steps whose scanner change contradicts what the sheet says happened."""
+    out = []
+    acts: dict[int, list[tuple[str, str, str]]] = {}
+    for a in li.actions:
+        cls = li.instances[a.target].cls if a.target in li.instances else str(a.target)
+        acts.setdefault(a.step, []).append((a.verb, cls, a.target))
+    names = {s.step: s.raw_name for s in li.steps}
+    for key, m in sorted(changes.get("steps", {}).items(), key=lambda kv: int(kv[0])):
+        s = int(key)
+        here = acts.get(s, [])
+        verbs = {v for v, _c, _t in here}
+        leaving = [(v, c) for v, c, _t in here if v in ("remove", "displace") and c in VISIBLE_PARTS]
+        if leaving and m["frac"] < NO_CHANGE:
+            out.append({"step": s, "kind": "a", "name": names.get(s, ""), "m": m,
+                        "why": f"{'/'.join(sorted({v for v, _ in leaving}))} "
+                               f"{', '.join(sorted({c for _, c in leaving}))} but no visible change"})
+            continue
+        quiet = here and all(v in QUIET_VERBS and (v != "open" or c in LATCHES)
+                             for v, c, _t in here)
+        if quiet:
+            limit = max(QUIET_VERBS[v] for v in verbs)
+            if m["frac"] > limit:
+                out.append({"step": s, "kind": "b", "name": names.get(s, ""), "m": m,
+                            "why": f"only {'/'.join(sorted(verbs))} but {m['frac']:.0%} of the "
+                                   f"chassis changed (limit {limit:.0%})"})
+    fl = changes.get("first_last")
+    if fl is not None and fl["frac"] < FIRST_LAST:
+        out.append({"step": changes.get("last"), "kind": "c", "name": "first vs last", "m": fl,
+                    "why": f"the first and the last scanner frame differ by only {fl['frac']:.0%}"})
+    return out
+
 
 # --------------------------------------------------------------------------- #
 # facts about one desktop
@@ -219,6 +272,8 @@ def main(argv=None) -> int:
     ap.add_argument("--paths", default=str(REPO / "configs" / "paths.yaml"))
     ap.add_argument("--desktops", default="1-66")
     ap.add_argument("--boot", type=int, default=200)
+    ap.add_argument("--diffs", default=r"D:\DataSet\.cache\tmp\u25\diffs",
+                    help="where the per-step picture check keeps its frames and numbers")
     args = ap.parse_args(argv)
 
     paths = load_paths(args.paths)
@@ -234,13 +289,20 @@ def main(argv=None) -> int:
     anom = anomalies(raw_logs / "oak_survey" / "anomalies.txt")
     desktops = sorted(P.parse_desktops(args.desktops) or index)
 
+    from step_changes import load_or_compute
+
+    from tda.core.logs import import_log, iter_desktop_csvs, read_desktop_csv
+    from tda.core.taxonomy import load_taxonomy
+
+    tax = load_taxonomy()
+    sheet_files = dict(iter_desktop_csvs(P.drive_dir(paths)))
     records = []
     for d in desktops:
         di = index.get(d)
         sheet = sheets.get(d)
         rec = {"d": d, "di": di, "sheet": sheet, "counts": folder_counts(roots, d),
                "survey": surv.get(d, {}), "anom": anom.get(d, []), "fixes": fix_entries(fixes, d),
-               "oak": None, "rs": None, "errors": []}
+               "oak": None, "rs": None, "errors": [], "pics": None}
         for view in ("oak1", "rs"):
             if di is None or (view == "rs" and not rs_complete(di)):
                 continue
@@ -250,6 +312,17 @@ def main(argv=None) -> int:
                     view=view, cache_dir=args.cache, n_boot=args.boot)
             except (OSError, ValueError) as exc:
                 rec["errors"].append(f"{view}: {exc}")
+        if di is not None and d in sheet_files:
+            roi = rec["oak"].roi["scan"][0] if rec["oak"] is not None else A.db_roi(args.db, d, "scan")
+            try:
+                changes = load_or_compute(d, di, roi, args.diffs, paths.get("cache_dir"))
+                rows, meta = read_desktop_csv(sheet_files[d])
+                li = import_log(d, rows, meta, tax)
+                rec["pics"] = {"flags": picture_flags(rec, changes, li),
+                               "dark": changes.get("dark_p0") or {},
+                               "first_last": (changes.get("first_last") or {}).get("frac")}
+            except (OSError, ValueError) as exc:
+                rec["errors"].append(f"pictures: {exc}")
         records.append(rec)
         o = rec["oak"]
         print(f"[audit] D{d:02d}: {verdict_cell(o)} | rs {verdict_cell(rec['rs'])}", flush=True)
@@ -439,9 +512,9 @@ def report(records: list[dict], flagged: list[dict], args) -> str:
         "## 1. Per desktop",
         "",
         "| D | sheet rows / dupli / steps | cam1 / cam2 / RS / scan folders | gallery oak1/oak2/rs "
-        "| scanner vs OAK cam1 | scanner vs RealSense | known anomalies, fixes, index issues "
-        "| sheet notes (rescan / missing / skip / redo) |",
-        "|---:|---|---|---|---|---|---|---|",
+        "| scanner vs OAK cam1 | scanner vs RealSense | scanner pictures vs the sheet "
+        "| known anomalies, fixes, index issues | sheet notes (rescan / missing / skip / redo) |",
+        "|---:|---|---|---|---|---|---|---|---|",
     ]
     for rec in records:
         lines.append(row(rec))
@@ -464,8 +537,98 @@ def report(records: list[dict], flagged: list[dict], args) -> str:
     lines += [f"- D{rec['d']:02d}: declared {rec['oak'].judgement.declared.score:.2f}, OAK ROI "
               f"{rec['oak'].roi.get('oak1', (None, '?'))[1]}"
               + (f" -- {EYES[rec['d']]}" if rec["d"] in EYES else "") for rec in low] or ["- none"]
+    lines += [""] + picture_section(records, args)
     lines += ["", "## 3. Method", ""] + METHOD
     return "\n".join(lines) + "\n"
+
+
+#: Desktops whose scanner frames are known to sit on the wrong step after some
+#: point (no rule yet), or whose sheet and cameras disagree in count: their
+#: picture flags past that point say more about the mapping than the log.
+SHIFTED = {22: "scanner one step off from row 27/32 on (D22 undeclared)",
+           41: "scanner one step off from rows 26-33 on (a skipped real step)",
+           60: "scanner one step off from about folder 28 on (D60 undeclared)",
+           61: "scanner one step off from rows 12-27 on (a skipped real step)",
+           43: "sheet 47 rows, Camera_1 48 captures", 56: "sheet 45 rows, Camera_1 46 captures",
+           63: "sheet 37 rows, Camera_1 34 captures",
+           1: "sheet 39 rows, Camera_1 40 captures (the 40th is the parts layout)"}
+
+#: What the flagged step pairs show when looked at (frames s-1 | s at full size
+#: with the blob boxed, rendered to ``D:\DataSet\.cache\tmp\u25\pics\``). The
+#: lighting ones are the measure's known blind spot, not the data's.
+PICTURE_EYES = {
+    (2, 3): "lighting: the drive-bay half of RGB31 is lit brighter (all ten shots of the "
+            "burst); no part moved. Not a data problem",
+    (2, 4): "lighting: the same glare gone again in RGB41. Not a data problem",
+    (2, 33): "lighting: a blue cast on RGB331, plus the cables the disconnect moved. Not a "
+             "data problem",
+    (2, 47): "real: the black part standing above the chassis and the blue part at its top "
+             "right in RGB461 are gone in RGB471, but row 47 only opens the power-module "
+             "blocker -- check the sheet for a missing removal",
+    (35, 7): "a real removal: the black bracket left of the CPU is gone in RGB71 (its screw "
+             "post shows) -- black plastic on a dark board stays under 25 grey levels. Not a "
+             "data problem",
+    (37, 45): "a real displace, but the drive slides out of the top edge of the chassis, "
+              "outside the ROI. Not a data problem",
+    (43, 47): "the motherboard is still in RGB471: the scanner has no frame of the empty "
+              "chassis; its last frame is a step behind the sheet",
+    (45, 11): "real: the PSU is pushed sideways between RGB101 and RGB111, but row 11 only "
+              "disconnects -- a `displace psu` is missing from the sheet (or belongs here)",
+    (56, 45): "the motherboard is still in RGB451: as D43, the last scanner frame is a step "
+              "behind the sheet",
+    (59, 41): "lighting: a violet glare over the lower half of RGB411 (the whole burst); no "
+              "part moved. Not a data problem",
+    (59, 42): "lighting: the same glare gone again in RGB421. Not a data problem",
+    (60, 46): "the motherboard is still in RGB461: the known D60 one-step shift (undeclared)",
+    (63, 32): "real: the chassis is turned about 90 degrees between RGB311 and RGB321 (and "
+              "again for 33 and 34) to reach the motherboard screws; the sheet has no "
+              "reorient row",
+    (63, 33): "real: turned again (see step 32)",
+    (63, 34): "real: turned again (see step 32)",
+}
+
+
+def picture_section(records: list[dict], args) -> list[str]:
+    flagged = [(rec, f) for rec in records if rec.get("pics") for f in rec["pics"]["flags"]]
+    lines = [
+        "### 2c. Steps whose scanner pictures contradict the sheet", "",
+        "Per step, the change between the scanner frame of step s-1 and of step s (chassis ROI, "
+        "256 px, brightness-matched, > 25 grey levels after a 5x5 blur, specks removed): the "
+        "changed fraction and the largest changed blob (full-resolution scanner pixels). (a) a "
+        "large part is removed or displaced and nothing changes -- the sheet row may name the "
+        "wrong part or the capture repeats the one before; (b) only unscrew / release / "
+        "disconnect / a latch, yet a large change -- something else happened (the chassis moved, "
+        "a part came out unlogged, or the scanner frame sits on another step) -- or the light "
+        "changed on part of the chassis; (c) the first and the last frame barely differ. "
+        f"Numbers are cached under `{Path(args.diffs)}\\D<nn>.json`. Only the flagged steps are "
+        "listed; every one was looked at (frames s-1 | s with the blob boxed under "
+        "`D:\\DataSet\\.cache\\tmp\\u25\\pics\\`), and the **by eye** note says what it is:", "",
+        "| D | step | sheet row | flag | changed | largest blob (x0, y0, x1, y1) | note |",
+        "|---:|---:|---|---|---:|---|---|",
+    ]
+    for rec, f in flagged:
+        m = f["m"]
+        blob = f"{m['blob']} ({m['blob_frac']:.1%})" if m.get("blob") else "-"
+        eyes = PICTURE_EYES.get((rec["d"], f["step"]))
+        note = "; ".join(x for x in (SHIFTED.get(rec["d"], ""),
+                                     f"**by eye:** {eyes}" if eyes else "") if x)
+        name = str(f["name"]).replace("|", "/")
+        lines.append(f"| {rec['d']} | {f['step']} | {name} | ({f['kind']}) {f['why']} | "
+                     f"{m['frac']:.1%} | {blob} | {note} |")
+    if not flagged:
+        lines.append("| - | - | - | none | - | - | - |")
+    dark = [(rec["d"], rec["pics"]["dark"]) for rec in records
+            if rec.get("pics") and rec["pics"]["dark"]]
+    lines += ["", "### 2d. Scanner shots replaced within the burst", "",
+              f"The first shot (`P_0`) of these scanner folders is unexposed (`dark`), blown out "
+              f"(`saturated`) or unlike the rest of its burst (`outlier`: a hand, a flash of "
+              f"glare); the check above used the shot the local cache shows instead "
+              f"(`tda.core.cache.choose_scan_image`; {sum(len(v) for _d, v in dark)} folders on "
+              f"{len(dark)} desktops):", ""]
+    lines += [f"- D{d:02d}: " + ", ".join(f"step {s} -> {shot}" for s, shot in
+                                          sorted(v.items(), key=lambda kv: int(kv[0])))
+              for d, v in dark] or ["- none"]
+    return lines
 
 
 def row(rec: dict) -> str:
@@ -506,8 +669,23 @@ def row(rec: dict) -> str:
             sheet_notes.append(f"{r} (dupli): {sheet.names[r - 1]}")
     esc = lambda s: s.replace("|", "/").replace("\n", " ")  # noqa: E731
     return (f"| {d} | {sheet_cell} | {counts} | {gallery} | {esc(verdict_cell(rec['oak']))} | "
-            f"{esc(verdict_cell(rec['rs']))} | {esc('<br>'.join(notes)) or '-'} | "
-            f"{esc('; '.join(sheet_notes)) or '-'} |")
+            f"{esc(verdict_cell(rec['rs']))} | {pictures_cell(rec)} | "
+            f"{esc('<br>'.join(notes)) or '-'} | {esc('; '.join(sheet_notes)) or '-'} |")
+
+
+def pictures_cell(rec: dict) -> str:
+    pics = rec.get("pics")
+    if not pics:
+        return "-"
+    kinds = {}
+    for f in pics["flags"]:
+        kinds[f["kind"]] = kinds.get(f["kind"], 0) + 1
+    parts = [f"({k}) {n}" for k, n in sorted(kinds.items())] or ["no contradiction"]
+    if pics.get("first_last") is not None:
+        parts.append(f"first->last {pics['first_last']:.0%}")
+    if pics["dark"]:
+        parts.append(f"P_0 replaced: {len(pics['dark'])}")
+    return "; ".join(parts)
 
 
 def look(rec: dict) -> list[str]:
@@ -575,6 +753,22 @@ METHOD = [
     "the mapping that won (`skip rows a-b`: the positions as plausible as the best, i.e. not "
     "beaten in 90 % of the resamples); `unknown` = even the best correlates below 0.30. The "
     "cell's `(vs ...)` is the best rival and its score relative to the declared mapping.",
+    "- **Scanner pictures vs the sheet** (`scripts/step_changes.py`, section 2c). For every "
+    "step of the collapsed sheet, the scanner frame of step s-1 and of step s (on the steps the "
+    "U25 index gives them; each burst stands for the shot the local cache shows, so an "
+    "unexposed, blown-out or outlier `P_0` is replaced -- section 2d) are cut to the chassis "
+    "ROI, downscaled to 256 px, the later one matched to the earlier one's 10th and 90th "
+    "percentiles, and a pixel counts as changed when the 5x5-blurred difference exceeds 25 "
+    "grey levels (3x3 opening removes specks). No registration: the scanner is fixed. Over the "
+    "2,732 steps the changed fraction has medians of 0.4 % (unscrew), 1.3 % (open), 2.2 % "
+    "(disconnect), 3.8 % (remove), 20 % (displace) and 86 % (reorient), and 95th percentiles of "
+    "5-10 % for the quiet verbs, which sets the thresholds: (a) remove / displace of a part "
+    "visible from above with < 0.5 %; (b) only unscrew / release (> 15 %), disconnect "
+    "(> 25 %) or a latch opened (> 20 %); (c) first vs last < 15 %. RAM modules, CPUs and "
+    "expansion cards are not held to (a): edge-on or a few pixels square at 256 px, their "
+    "visible removals measure under 0.5 %. The measure compares grey levels, so a lamp or "
+    "glare that lights one part of the chassis and not the rest is a change too: the "
+    "**by eye** notes in 2c say which flags are that.",
     "- **RealSense column.** The same check against the RealSense frames where every row has "
     "one -- a second opinion only: its view of the chassis is smaller and the correlations are "
     "lower (a third of the desktops below 0.3), so a RealSense flag alone is not acted on.",
