@@ -303,34 +303,54 @@ class LogsRun:
 # --------------------------------------------------------------------------- #
 # the index's contribution
 # --------------------------------------------------------------------------- #
+def _when(ts: Optional[str]) -> Optional[datetime]:
+    """An index timestamp, or ``None`` when it is absent or unreadable."""
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+
+
 def _apply_index(
-    steps: list[StepRec], di: Optional[DesktopIndex]
+    steps: list[StepRec], di: Optional[DesktopIndex],
+    dupli_rows: Optional[list[int]] = None,
 ) -> tuple[int, list[str]]:
     """Fill ``duration_s`` from the index and cross-check it against the sheet.
 
-    The duration of step ``k`` is ``ts_k - ts_(k-1)`` of the OAK cam1 captures
-    (spec 2.2): the time between the two photographs that bracket the
-    operation. Step 1 has no predecessor, and a step whose cam1 frame is missing
+    The duration of step ``k`` is the time between the two OAK cam1 photographs
+    that bracket the operation (spec 2.2): from the **last** capture of step
+    ``k-1`` -- its ``dupli`` extra shot when it has one (task U25), the same
+    state photographed again just before the operation -- to step ``k``'s own
+    capture. Step 1 has no predecessor, and a step whose cam1 frame is missing
     (or whose timestamps run backwards) keeps ``None`` rather than a guess.
 
-    Three disagreements between the sheet and the cameras are reported for the
-    manual list of spec 2.2: a differing step count, a ``reorient`` row past the
-    last indexed step (no view photographed it, so it opens no pose segment),
-    and a gap longer than :data:`MAX_STEP_SECONDS`, which is recorded but is
-    more likely a break than an operation.
+    Four disagreements between the sheet and the cameras are reported for the
+    manual list of spec 2.2: a differing step count, ``dupli`` rows the index
+    was not collapsed by (it was built without this sheet), a ``reorient`` row
+    past the last indexed step (no view photographed it, so it opens no pose
+    segment), and a gap longer than :data:`MAX_STEP_SECONDS`, which is recorded
+    but is more likely a break than an operation.
     """
     if di is None:
         return 0, []
     times: dict[int, datetime] = {}
+    latest: dict[int, datetime] = {}
     for key, ff in di.frames.items():
-        if key.view == "oak1" and ff.ts:
-            try:
-                times[key.step] = datetime.fromisoformat(ff.ts)
-            except ValueError:
-                pass
+        if key.view != "oak1":
+            continue
+        main = _when(ff.ts)
+        if main is not None:
+            times[key.step] = main
+        shots = [_when(shot.get("ts")) for shot in (ff.aux or {}).get("extra_shots") or []
+                 if isinstance(shot, dict)]
+        known = [t for t in [main, *shots] if t is not None]
+        if known:
+            latest[key.step] = max(known)
     filled, issues = 0, []
     for step in steps:
-        before, after = times.get(step.step - 1), times.get(step.step)
+        before, after = latest.get(step.step - 1), times.get(step.step)
         if before is None or after is None:
             continue
         seconds = (after - before).total_seconds()
@@ -352,6 +372,13 @@ def _apply_index(
         issues.append(
             f"D{di.desktop:02d}: the sheet has {len(steps)} steps but the index has "
             f"{di.n_steps} - needs manual confirmation (spec 2.2)"
+        )
+    indexed = sorted(getattr(di, "dupli_rows", None) or [])
+    if dupli_rows is not None and sorted(dupli_rows) != indexed:
+        issues.append(
+            f"D{di.desktop:02d}: the sheet's dupli rows {sorted(dupli_rows)} are not the "
+            f"ones the index was collapsed by ({indexed or 'none'}) - the step numbers of "
+            f"the frames and of the step table differ; run build-index again (spec 2.2)"
         )
     beyond = [
         s.step for s in steps
@@ -1131,7 +1158,7 @@ def _import_one(
             log(f"[import-logs] refused: {plan.refusal}")
         return DesktopRun(desktop, str(path), "refused",
                           reason=REFUSED_IMPLAUSIBLE, issues=[plan.refusal])
-    filled, issues = _apply_index(li.steps, index.get(desktop))
+    filled, issues = _apply_index(li.steps, index.get(desktop), li.dupli_rows)
     sheet_id = meta.get("desktop_id")
     if sheet_id is not None and int(sheet_id) != desktop:
         issues.append(

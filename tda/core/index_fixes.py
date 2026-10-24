@@ -74,29 +74,35 @@ def verify_cam2_fixes(
     return issues
 
 
+def declared_missing(fixes: dict, view: str, desktop: int) -> set[int]:
+    """The steps ``missing_steps`` / ``missing_steps_range`` declare for one view."""
+    entry = (fixes.get(view) or {}).get(desktop)
+    if not isinstance(entry, dict):
+        return set()
+    steps = {int(s) for s in entry.get("missing_steps") or []}
+    rng = entry.get("missing_steps_range")
+    if rng:
+        steps |= set(range(int(rng[0]), int(rng[1]) + 1))
+    return steps
+
+
 def verify_declared_missing(
-    desktop: int, fixes: dict, step_of_dir: dict[str, int], missing: list[FrameKey]
+    desktop: int, fixes: dict, n_steps: int, missing: list[FrameKey]
 ) -> list[str]:
     """Check the ``scan``/``rs`` gaps declared in the yaml against the real gaps.
 
-    ``missing_steps`` / ``missing_steps_range`` are *nominal* step numbers, so
-    each is resolved through its Camera_1 folder first.  A declared-missing frame
-    that turns out to exist is a ``MISMATCH`` - the yaml is then stale.
+    ``missing_steps`` / ``missing_steps_range`` are **logical steps** -- since
+    v1.25 the collapsed ones (spec 2.2): the steps the sheet's rows make once its
+    ``dupli`` rows are dropped. A declared-missing frame that turns out to exist
+    is a ``MISMATCH`` - the yaml is then stale.
     """
     issues: list[str] = []
     for view in ("scan", "rs"):
-        entry = (fixes.get(view) or {}).get(desktop)
-        if not isinstance(entry, dict):
+        declared_all = declared_missing(fixes, view, desktop)
+        if not declared_all:
             continue
-        nominal = set(entry.get("missing_steps") or [])
-        rng = entry.get("missing_steps_range")
-        if rng:
-            nominal |= set(range(int(rng[0]), int(rng[1]) + 1))
-        if not nominal:
-            continue
-        resolved = {n: step_of_dir.get(f"{n:03d}") for n in sorted(nominal)}
-        declared = {s for s in resolved.values() if s is not None}
-        unresolved = [n for n, s in resolved.items() if s is None]
+        declared = {s for s in declared_all if 1 <= s <= n_steps}
+        beyond = sorted(declared_all - declared)
         actual = {k.step for k in missing if k.view == view}
         present = sorted(declared - actual)
         if present:
@@ -106,13 +112,55 @@ def verify_declared_missing(
             )
         else:
             note = (
-                f" ({len(unresolved)} declared step(s) have no cam1 folder: {unresolved})"
-                if unresolved
+                f" ({len(beyond)} declared step(s) are beyond the {n_steps} steps: {beyond})"
+                if beyond
                 else ""
             )
             issues.append(
-                f"fix:{view}[{desktop}] declared missing steps "
-                f"{[n for n, s in resolved.items() if s is not None]} confirmed absent"
-                + note
+                f"fix:{view}[{desktop}] declared missing steps {sorted(declared)} "
+                f"confirmed absent" + note
             )
     return issues
+
+
+def verify_scan_rule(desktop: int, scan_fix: dict, dupli_rows: list[int], n_steps: int,
+                     frames: dict, missing: list[FrameKey],
+                     leftover: Optional[list[str]] = None) -> list[str]:
+    """Assert the scanner rule of a desktop with ``dupli`` rows or a declaration (U25).
+
+    Every collapsed step must have a scanner frame except the declared missing
+    ones, and every folder must have found a step: a folder left over, or a
+    step without a frame that nothing declares, is a ``MISMATCH`` -- the
+    declaration (or its absence) does not fit the folders on the drive, which is
+    what ``scan-align`` is for. Silent for every other desktop.
+    """
+    declared = "duplicate_folders" in (scan_fix or {})
+    if not declared and not dupli_rows:
+        return []
+    dup = sorted(int(n) for n in (scan_fix.get("duplicate_folders") or []))
+    scan = {k.step: ff for k, ff in frames.items() if k.view == "scan"}
+    folders = len(scan) + sum(len((ff.aux or {}).get("extra_shots") or [])
+                              for ff in scan.values())
+    head = f"fix:scan[{desktop}] duplicate_folders {dup}"
+    replacing = sorted(int(n) for n in (scan_fix.get("replacing_folders") or []))
+    if replacing:
+        head += f" (replacing {replacing})"
+    if not declared:
+        head = (f"scan[{desktop}] (no scan.{desktop}.duplicate_folders declared -- run "
+                f"scan-align; dupli rows {dupli_rows} taken as all skipped by the scanner)")
+    absent = sorted(k.step for k in missing if k.view == "scan")
+    expected = sorted(declared_missing({"scan": {desktop: scan_fix}}, "scan", desktop))
+    undeclared = [s for s in absent if s not in expected]
+    extras = folders - len(scan)
+    shown = (f"{folders} folders -> {len(scan)} of {n_steps} steps"
+             + (f" + {extras} extra shot(s)" if extras else ""))
+    problems = []
+    if leftover:
+        problems.append(f"folders {leftover} have no step")
+    if undeclared:
+        problems.append(f"steps {undeclared} have no scanner frame and are not declared "
+                        f"missing")
+    if problems:
+        return [f"{head} MISMATCH: {shown}; " + "; ".join(problems)]
+    return [f"{head}: {shown}" + (f", declared missing {expected}" if expected else
+                                  ", every step photographed")]

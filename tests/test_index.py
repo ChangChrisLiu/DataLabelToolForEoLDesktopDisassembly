@@ -225,7 +225,9 @@ def test_fixes_file_matches_spec(fixes):
     assert fixes["oak"][24]["cam2_extra_from"] == "Components/C2/043"
     assert fixes["oak"][24]["as_step"] == 43
     assert fixes["oak"][10]["step1_keep"] == "latest"
-    assert fixes["scan"][1]["missing_steps"] == [2, 3, 4, 28, 29, 30, 31, 32, 34, 35]
+    # U25: logical steps are collapsed (D1's dupli rows 15 and 33 are not steps)
+    assert fixes["scan"][1]["missing_steps"] == [2, 3, 4, 27, 28, 29, 30, 32, 33, 38]
+    assert fixes["scan"][1]["duplicate_folders"] == [15, 33]
     assert fixes["rs"][42]["missing_steps_range"] == [1, 12]
     assert fixes["rs"]["folder_aliases"] == ["Disassemble", "Disassembly"]
     for view in ("oak", "scan", "rs"):
@@ -350,12 +352,14 @@ def test_declared_missing_scan_steps_confirmed(tmp_path, fixes):
     idx = scan_desktop(1, roots, fixes)
     for step in (2, 3, 4):
         assert FrameKey(1, step, "scan") in idx.missing
-    confirmed = [i for i in idx.issues if i.startswith("fix:scan[1]")]
+    confirmed = [i for i in idx.issues if i.startswith("fix:scan[1] declared missing")]
     assert len(confirmed) == 1, idx.issues
     assert "confirmed absent" in confirmed[0]
     assert "[2, 3, 4]" in confirmed[0]
-    # the declared steps 28..35 have no cam1 folder in this 6-step tree
-    assert "have no cam1 folder" in confirmed[0]
+    # the declared steps 27..38 are beyond this 6-step tree
+    assert "beyond the 6 steps" in confirmed[0]
+    # and the scanner rule of a desktop that declares one is asserted too (U25)
+    assert any(i.startswith("fix:scan[1] duplicate_folders [15, 33]:") for i in idx.issues)
 
 
 def test_declared_missing_scan_step_present_is_mismatch(tmp_path, fixes):

@@ -42,7 +42,7 @@ from typing import Any, Iterable, Optional
 import numpy as np
 
 from tda.core.db import Db
-from tda.core.index import DesktopIndex
+from tda.core.index import DesktopIndex, folder_steps
 from tda.core.ls_export import (
     ASPECT_TOL,
     GEOM_TYPES,
@@ -163,6 +163,12 @@ def _write_notes(db: Db, desktop: int, lines: dict[int, str]) -> int:
     """
     existing = {s.step: s for s in db.steps(desktop)}
     actions = db.actions(desktop)
+    # a step the export no longer gives a line keeps none: a re-import replaces
+    # every imported line of the desktop, so a renumbered step (task U25) does
+    # not keep the line of the photo it used to show
+    for step, row in existing.items():
+        if step not in lines and row.notes and NOTES_PREFIX in row.notes:
+            row.notes = _without_ls(row.notes)
     for step, line in lines.items():
         row = existing.get(step)
         if row is None:
@@ -172,6 +178,34 @@ def _write_notes(db: Db, desktop: int, lines: dict[int, str]) -> int:
         row.notes = f"{base}\n{line}" if base else line
     db.replace_steps(desktop, [existing[k] for k in sorted(existing)], actions)
     return len(lines)
+
+
+def _stale_ls_lines(db: Db, desktop: int) -> bool:
+    """Does any step of ``desktop`` still carry an imported ``LS:`` line?"""
+    return any(s.notes and NOTES_PREFIX in s.notes for s in db.steps(desktop))
+
+
+class FolderSteps:
+    """``(desktop, view, folder number) -> step`` through the index (task U25).
+
+    A Label Studio image is named by its **capture folder** -- ``18_30.png`` is
+    the scanner's ``RGB301``, ``Front_OAK_18_30.jpg`` Camera_1's ``030`` -- and
+    a folder is a step only until the sheet's ``dupli`` rows are collapsed or
+    the scanner's duplicate folders are declared. The index knows where every
+    folder went (:func:`tda.core.index.step_of_folder`); an index written before
+    that, or a folder it does not know, answers ``None`` and the number is kept.
+    """
+
+    def __init__(self, index: dict) -> None:
+        self.index = index or {}
+        self._cache: dict[tuple[int, str], dict[int, int]] = {}
+
+    def __call__(self, desktop: int, view: str, number: int) -> Optional[int]:
+        key = (int(desktop), str(view))
+        if key not in self._cache:
+            di = self.index.get(int(desktop))
+            self._cache[key] = folder_steps(di, view) if di is not None else {}
+        return self._cache[key].get(int(number))
 
 
 # --------------------------------------------------------------------------- #
@@ -287,6 +321,7 @@ def import_ls_export(
     label_map_path: str | Path = LS_LABEL_MAP_PATH,
     progress: bool = False,
     purge_all: bool = False,
+    desktops: Optional[Iterable[int]] = None,
 ) -> dict:
     """Import a Label Studio export as draft shapes; returns a count summary.
 
@@ -294,8 +329,15 @@ def import_ls_export(
     frame and per label from left to right, and are marked
     ``amodal_complete=False`` because the annotators traced visible pixels
     only. Re-running the importer replaces what an earlier run wrote **for the
-    desktops this export covers**; ``purge_all=True`` clears every desktop's
-    Label Studio rows first instead, for a deliberate full reset.
+    desktops this export covers** (only those of ``desktops`` when given);
+    ``purge_all=True`` clears every desktop's Label Studio rows first instead,
+    for a deliberate full reset.
+
+    An image name carries its **capture folder** number; the index says which
+    step that folder is (:class:`FolderSteps`, task U25), so a draft traced on
+    D18's scanner ``RGB491`` lands on step 48, and one traced on a ``dupli``
+    capture lands on the step that capture repeats. ``frames_renumbered``
+    counts those.
 
     In the summary, ``keyframes`` / ``instances`` / ``relations`` count the
     export items consumed, while ``instance_rows`` / ``relation_edges`` count
@@ -309,6 +351,8 @@ def import_ls_export(
     # the traversal is cheap (no rasterising), so the purge scope is known
     # before a single row is written
     covered = {frame.desktop for _p, _t, frame in iter_tasks(export)}
+    if desktops is not None:
+        covered &= {int(d) for d in desktops}
     purged_kf, purged_rel = _purge(db, None if purge_all else covered)
 
     s: dict[str, Any] = {
@@ -327,9 +371,11 @@ def import_ls_export(
         "degenerate_geometry": 0, "unlabeled_geometry": 0,
         "relations_unresolved": 0, "frames_not_in_index": 0,
         "steps_out_of_range": 0, "frames_seen_twice": 0,
+        "frames_renumbered": 0,
         "purged_keyframes": purged_kf, "purged_relations": purged_rel,
     }
     state = _ImportState()
+    resolve = FolderSteps(index)
 
     for project in export.get("projects") or []:
         if str(project.get("title") or "").strip() == "Metadata":
@@ -349,22 +395,28 @@ def import_ls_export(
                 s["skipped_unparseable"] += 1
                 continue
             frame = FrameKey(*parsed)
+            if desktops is not None and frame.desktop not in covered:
+                continue
             if not upload_is_native(image, frame.view, annotations):
                 s["skipped_framing"] += 1
                 s["skipped_framing_labels"] += sum(
                     len(labels_of(r)) for a in annotations for r in a.get("result") or []
                 )
                 continue
+            step = resolve(frame.desktop, frame.view, frame.step)
+            if step is not None and step != frame.step:
+                s["frames_renumbered"] += 1
+                frame = FrameKey(frame.desktop, step, frame.view)
             _import_task(db, index, mapping, frame, annotations, state, s)
 
-    for desktop in sorted(set(state.notes) | set(state.hints)):
+    for desktop in sorted(set(state.notes) | set(state.hints) | covered):
         lines = {}
         for step in sorted(set(state.notes.get(desktop, {})) | set(state.hints.get(desktop, {}))):
             line = _notes_line(state.notes.get(desktop, {}).get(step, {}),
                                state.hints.get(desktop, {}).get(step, []))
             if line:
                 lines[step] = line
-        if lines:
+        if lines or _stale_ls_lines(db, desktop):
             s["steps_with_notes"] += _write_notes(db, desktop, lines)
     s["frames"] = len(state.seen)
     s["instance_rows"], s["relation_edges"] = _count_rows(db)

@@ -9,6 +9,23 @@
 # Camera_2 is paired to Camera_1 by identical filename timestamp, and the `oak`
 # entries below are *asserted* against that pairing - a disagreement shows up in
 # DesktopIndex.issues instead of being applied silently.
+#
+# Since v1.25 (task U25) a step is a sheet row that is not a `dupli` row: the
+# Camera_1 captures are the rows, the sheet's dupli rows (read from the Drive
+# sheet at build-index time) are collapsed away, and a dupli capture is an extra
+# shot of the step it repeats (`aux.extra_shots`), in every OAK/RealSense view.
+#   oak.<d>.dupli_replaces: [row]   the dupli capture is a re-take of one that came
+#                                   out wrong, so it is the step's frame and the
+#                                   earlier capture the extra shot.
+#   scan.<d>.duplicate_folders: [n] scanner folders that photograph a state again
+#                                   (a dupli row the scanner also took, a re-scan):
+#                                   folder RGB<n>1 is step n - #(duplicate folders
+#                                   <= n), a duplicate folder an extra shot of it.
+#                                   [] = the scanner skipped every dupli row.
+#   scan.<d>.replacing_folders: [n] a duplicate folder that is the step's frame.
+#   scan/rs.<d>.missing_steps:      logical (collapsed) steps with no frame.
+# The scanner declarations come from `python -m tda.cli scan-align --desktop N`
+# plus a look at the frames; every one is asserted (a MISMATCH line otherwise).
 
 oak:
   60:
@@ -25,6 +42,19 @@ oak:
       `to_cam1_dir` is a Camera_1 *folder* name, not a logical step number: because
       cam1_reorder_by_ts makes folder 003 logical step 4, this shift resolves to
       logical step 4, and the resulting step is stated in DesktopIndex.issues.
+  31:
+    dupli_replaces: [13]
+    reason: >-
+      Row 13 "dupli (scanner also scans)" re-takes row 12 (SSD connector 2): the
+      row-12 captures show the SSD lifted out of its bay (OAK and scanner RGB121),
+      the row-13 ones show it back in place, as it is until row 14 removes it
+      (checked by eye, U25). The re-take is the step's frame.
+  62:
+    dupli_replaces: [28]
+    reason: >-
+      Row 28 "dupli (Scanner does not scan)" re-takes row 27 (SATA 2): the row-27
+      OAK capture was taken under the scanner's blue light, row 28 is clean
+      (checked by eye, U25). The re-take is the step's frame.
   42:
     cam2_swap: [["016", "017"]]
     reason: >-
@@ -44,11 +74,82 @@ oak:
       in folder 001 of both cameras; the later one is the real initial state.
 scan:
   1:
-    missing_steps: [2, 3, 4, 28, 29, 30, 31, 32, 34, 35]
+    duplicate_folders: [15, 33]
+    missing_steps: [2, 3, 4, 27, 28, 29, 30, 32, 33, 38]
     reason: >-
       Desktop 1 is the only machine whose scanner run skipped interior steps; the
       folders RGB21/RGB31/RGB41/RGB281..RGB321/RGB341/RGB351 were never captured.
-      Declared here so the index can confirm the gap is the known one.
+      Its folders are named by sheet row, and it photographed both dupli rows
+      (RGB151, RGB331). In collapsed steps (dupli rows 15 and 33) the gaps are
+      2-4, 27-30 and 32-33; RGB331 is the only photo of step 31 (row 32's state)
+      and stands in for it. Step 38 is Camera_1's 40th capture, which the
+      39-row sheet does not have and which shows the parts laid out on the bench,
+      not a teardown step (U25 audit) -- the scanner never photographed it.
+  18:
+    duplicate_folders: [42]
+    reason: >-
+      49 folders for 48 steps (50 rows, dupli 30 and 43). The scanner skipped
+      dupli row 30: RGB91 = row 9 (optical drive out) but RGB391 = row 40 (PSU
+      out while OAK row 39 still has it). It photographed dupli row 43 as RGB421:
+      RGB411 -> RGB421 changes nothing on the board, while every later folder
+      loses one motherboard screw, and RGB491 is the empty chassis of row 50
+      (scan-align: "skipped row 30" 0.78 vs "skipped row 43" 0.62, bootstrap 0.99;
+      checked by eye, U25).
+  24:
+    duplicate_folders: []
+    reason: >-
+      42 folders for 42 steps (43 rows, dupli 37 "replace the result of 36"): the
+      scanner skipped the dupli row -- RGB421 is the empty chassis of row 43
+      (scan-align puts the skip in rows 37-42, the motherboard-screw run; U25).
+  28:
+    duplicate_folders: []
+    reason: >-
+      47 folders for 47 steps (48 rows, dupli 6 "dupli (scanner rescan)"): one
+      row is skipped before folder 9 -- RGB91 already shows the heatsink gone,
+      which OAK shows from row 10 on -- and the dupli row is it (scan-align: the
+      skip at rows 6-8; U25). RGB41's P_0 is unexposed (the cache picks another).
+  31:
+    duplicate_folders: [13]
+    replacing_folders: [13]
+    reason: >-
+      44 folders for 43 steps: the sheet says "dupli (scanner also scans)" and the
+      folders follow OAK one to one (RGB101 = row 10, PSU opened; RGB121/RGB131/
+      RGB141 = rows 12/13/14, SSD lifted out / back / removed). RGB131 is the
+      re-take of RGB121 and the step's frame, like OAK row 13 (oak.31). The
+      magnitudes alone preferred a skip+re-shot pair that the frames refute (U25).
+  36:
+    duplicate_folders: []
+    reason: >-
+      42 folders for 42 steps (43 rows, dupli 14 "Dupli (scanner does not scan)");
+      RGB421 = row 43 (PSU gone, OAK row 42 still has it) (U25).
+  40:
+    duplicate_folders: []
+    reason: >-
+      37 folders for 37 steps (38 rows, dupli 4 "dupli (scanner does not scan)");
+      RGB371 = row 38 (motherboard gone); scan-align: "skipped row 4" first (U25).
+  48:
+    duplicate_folders: []
+    reason: >-
+      36 folders for 36 steps (37 rows, dupli 25 "Dupli (scanner does not scan)"):
+      RGB241 = row 24 (PSU out), RGB251 = row 26 (first RAM clip open) -- checked
+      by eye; the magnitudes alone put the skip at rows 18-23 (U25).
+  52:
+    duplicate_folders: [6]
+    reason: >-
+      42 folders for 41 steps: "dupli (scanner scans too)"; scan-align keeps the
+      declared mapping (folder n = row n) and RGB61 is its re-shot of RGB51 (U25).
+  55:
+    duplicate_folders: []
+    reason: >-
+      48 folders for 48 steps (49 rows, dupli 43 "dupli(Scanner does not scan)");
+      RGB481 = row 49 (motherboard gone); scan-align: "skipped row 43" first (U25).
+  62:
+    duplicate_folders: []
+    reason: >-
+      38 folders for 38 steps (39 rows, dupli 28 "dupli (Scanner does not scan)"):
+      RGB271 -> RGB281 removes SATA 3 (row 29), RGB281 -> RGB291 the card cover
+      (row 30), then one card per folder -- the shift starts at row 28 exactly
+      (checked by eye; the magnitudes alone put it near row 18; U25).
 rs:
   42:
     missing_steps_range: [1, 12]

@@ -595,14 +595,22 @@ def _metrics_stale(record: Optional[dict], view: str) -> bool:
 
 
 def _source_moved(record: Optional[dict], frame: FrameFile, view: str) -> bool:
-    """Is the cached copy of a single-image view from another file than the frame's?
+    """Is the cached copy from another file than the frame's?
 
     A components-gallery shot re-pointed by ``load-index`` (task U10) keeps its
     frame key, so its cached copy must be replaced even though it has the
-    right name. The scanner chooses among a burst, so its ``src`` is not the
-    frame's own path and is left to :func:`_redecide`.
+    right name. So does a step the collapse of the sheet's ``dupli`` rows
+    renumbered (task U25): D18's scanner step 42 was ``RGB421`` and is
+    ``RGB431``. The scanner chooses among a burst, so there the question is
+    whether the recorded shot is one of the frame's burst at all (which shot
+    of it wins is :func:`_redecide`'s).
     """
-    if not record or view == "scan" or not frame.path:
+    if not record:
+        return False
+    if view == "scan":
+        burst = {_norm(p) for p in (frame.aux.get("burst") or [frame.path]) if p}
+        return bool(burst) and _norm(record.get("src") or "") not in burst
+    if not frame.path:
         return False
     return record.get("src") != _norm(frame.path)
 
