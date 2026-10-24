@@ -29,11 +29,12 @@ from PySide6.QtWidgets import QApplication
 import app_scene as AS
 from app_scene import COOLER, DESKTOP, LAST_STEP, SCREWS, make_db, seed_shapes
 from tda.core import masks
-from tda.core.model import ActionRec, FrameKey, ShapeKeyframe, ShapePart
+from tda.core.model import ActionRec, FrameKey, ShapeKeyframe, ShapePart, StateEvent
 from tda.core.truth import TruthService
 from tda.core.truth_inputs import events_of
 from tda.ui.locator_pair import (
     MIN_SIDE_FRAC,
+    NO_BEFORE,
     NO_CHANGE,
     NO_DIFF,
     PAD,
@@ -142,6 +143,19 @@ def test_a_part_that_never_changes_has_no_pair(scene):
     assert pair.lines() == ["机箱 chassis"]
 
 
+def test_a_hand_written_change_at_step_1_has_no_frame_before_it(scene):
+    session, source = scene
+    session.db.add_events([StateEvent(DESKTOP, 1, "cover.02", "state", "closed", "open",
+                                      auto=False)])
+    found = leaving_of(session, "cover.02")
+    assert (found.step, found.kind) == (1, "changed")
+    pair = source.pair(DESKTOP, "cover.02")
+    assert pair.steps == (None, 1) and pair.images[0] is None and pair.images[1] is not None
+    assert pair.captions == ("拆前", "拆后 第 1 帧")
+    assert pair.note == NO_BEFORE.format(step=1) and pair.window is None
+    assert pair.log_line == "第 1 帧：Initial Conditions"      # no action: no verb
+
+
 def test_a_card_row_that_names_a_step_is_not_a_part(scene):
     _session, source = scene
     assert source.own_shapes(DESKTOP, "scan", "Remove the cover") == (False, False)
@@ -240,6 +254,17 @@ def test_a_new_scanner_shape_is_seen_on_the_next_pair(scene):
     pair = source.pair(DESKTOP, SSD)
     assert pair.window_source == "part"
     assert pair.window[0] <= 40 and pair.window[2] >= 56
+
+
+def test_a_scanner_roi_set_later_limits_the_difference(scene):
+    session, source = scene
+    assert source.pair(DESKTOP, SSD).window_source == "diff"
+    session.db.conn.execute("UPDATE pose_segment SET roi_json=? WHERE desktop=? AND "
+                            "view='scan'", ("[40, 40, 60, 60]", DESKTOP))
+    session.db.conn.commit()
+    pair = source.pair(DESKTOP, SSD)          # rebuilt: the ROI is one of its inputs
+    assert pair.roi == (40.0, 40.0, 60.0, 60.0)
+    assert pair.window is None and pair.note == NO_DIFF   # nothing moved in there
 
 
 def test_two_identical_frames_are_shown_whole_with_a_note(qapp, tmp_path):

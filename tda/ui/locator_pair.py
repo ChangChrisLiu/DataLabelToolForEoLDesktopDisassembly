@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import hashlib
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Iterable, Optional
 
 import cv2
@@ -51,10 +51,17 @@ from tda.core.states import REMOVED, state_at
 from tda.core.truth_inputs import events_of, pose_segment_of
 from tda.ui.canvas.overlay import palette_color
 from tda.ui.class_names import class_zh, instance_label, state_zh
-from tda.ui.locator_source import EARLIER_DUPLI, EARLIER_MISSING, SCAN, UNREADABLE, Geometry
+from tda.ui.locator_source import (
+    EARLIER_DUPLI,
+    EARLIER_MISSING,
+    NO_SCAN_FRAME,
+    SCAN,
+    UNREADABLE,
+    Geometry,
+)
 
 __all__ = [
-    "AFTER", "BEFORE", "DIFF_SIDE", "DISPLACED", "LEAVING_STATES", "LOG_LINE", "Leaving",
+    "AFTER", "BEFORE", "BEFORE_NONE", "DIFF_SIDE", "DISPLACED", "LEAVING_STATES", "LOG_LINE", "Leaving",
     "NO_BEFORE", "NO_CHANGE", "NO_DIFF", "PAD", "PAIR_HEAD", "PAIR_HEAD_FIRST", "POSE_BREAK",
     "PairMaker", "PairScene", "WITH_PARENT", "MIN_SIDE_FRAC", "change_window",
     "leaving_steps", "qimage_rgb",
@@ -73,6 +80,8 @@ PAIR_HEAD = "拆前 / 拆后"
 #: Above the two pictures (with U23's earlier-frame clause when it applies).
 BEFORE = "拆前 第 {step} 帧{earlier}"
 AFTER = "拆后 第 {step} 帧{earlier}"
+#: ... when the part changes on the first step: there is no frame before it.
+BEFORE_NONE = "拆前"
 #: What the log says at the step: its raw name, and the verb.
 LOG_LINE = "第 {step} 帧：{name}"
 #: A part that went out inside another one (the cascade).
@@ -285,13 +294,24 @@ class PairMaker:
 
     # -- what moves a scene ---------------------------------------------------
     def _digest(self, desktop: int, facts: dict) -> tuple:
-        """The scanner inputs' digest plus the action table's (the timeline's input)."""
+        """The scanner inputs' digest plus what else a pair is made of.
+
+        The action table (the timeline, the log's verbs) and the scanner's pose
+        segments (which two frames may be compared, and the ROI the difference
+        is looked for in).
+        """
         row = self.source.db.conn.execute(
-            "SELECT COUNT(*), IFNULL(GROUP_CONCAT(step || ':' || idx || ':' || target || ':' "
-            "|| verb || ':' || result, '|'), '') FROM action WHERE desktop=?",
-            (int(desktop),)).fetchone()
-        actions = hashlib.blake2b(str(row[1]).encode("utf-8"), digest_size=8).hexdigest()
-        return (facts.get("digest"), int(row[0]), actions)
+            "SELECT (SELECT COUNT(*) FROM action WHERE desktop=?), "
+            "(SELECT IFNULL(GROUP_CONCAT(step || ':' || idx || ':' || target || ':' || verb "
+            "  || ':' || result, '|'), '') FROM action WHERE desktop=?), "
+            "(SELECT IFNULL(GROUP_CONCAT(seg || ':' || start_step || ':' || end_step || ':' "
+            "  || IFNULL(roi_json, ''), '|'), '') FROM pose_segment WHERE desktop=? AND view=?), "
+            "(SELECT IFNULL(SUM(IFNULL(pose_segment, 0) * step), 0) FROM frame "
+            "  WHERE desktop=? AND view=?)",
+            (int(desktop), int(desktop), int(desktop), SCAN, int(desktop), SCAN)).fetchone()
+        text = f"{row[1]}#{row[2]}#{row[3]}"
+        inputs = hashlib.blake2b(text.encode("utf-8"), digest_size=8).hexdigest()
+        return (facts.get("digest"), int(row[0]), inputs)
 
     def timeline(self, desktop: int, digest: tuple) -> dict:
         """The machine's leaving steps, step names and verbs (re-read when ``digest`` moves)."""
@@ -344,9 +364,7 @@ class PairMaker:
             image, hw = self.source.thumbnail(scene.desktop, step)
             images.append(image)
             hws.append(hw if hw != (0, 0) else self._recorded_hw(scene.desktop, step))
-        out = PairScene(**{k: getattr(scene, k) for k in scene.__dataclass_fields__})
-        out.images, out.frame_hw = tuple(images), tuple(hws)
-        return out
+        return replace(scene, images=tuple(images), frame_hw=tuple(hws))
 
     def _recorded_hw(self, desktop: int, step: int) -> tuple[int, int]:
         row = self.source._desktop_facts(desktop)["frames"].get(int(step)) or {}
@@ -384,12 +402,15 @@ class PairMaker:
         scene.steps = (before, after)
         scene.captions = (
             BEFORE.format(step=before, earlier=_earlier(r - 1, before, why_before))
-            if before is not None else BEFORE.format(step=r - 1, earlier=""),
+            if before is not None else (BEFORE.format(step=r - 1, earlier="") if r > 1
+                                        else BEFORE_NONE),
             AFTER.format(step=after, earlier=_earlier(r, after, why_after))
             if after is not None else AFTER.format(step=r, earlier=""),
         )
         notes = []
-        if before is None:
+        if after is None:
+            notes.append(NO_SCAN_FRAME.format(asked=r))
+        elif before is None:
             notes.append(NO_BEFORE.format(step=r))
         if before is not None:
             scene.roi = source.roi(desktop, before)
