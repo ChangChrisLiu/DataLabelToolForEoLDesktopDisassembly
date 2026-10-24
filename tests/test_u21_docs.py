@@ -58,9 +58,10 @@ def test_the_spec_has_the_paragraph_in_3_2_and_v1_21_on_top():
         assert needed in section, needed
     changes = body.split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
-    # on top when it landed; U22's v1.22 and U23's v1.23 have gone above it since
-    assert entries[0].startswith(("- **v1.21", "- **v1.22", "- **v1.23"))
-    [first] = [e for e in entries[:3] if e.startswith("- **v1.21")]
+    # on top when it landed; U22's v1.22, U23's v1.23 and U24's v1.24 have gone
+    # above it since
+    assert entries[0].startswith(("- **v1.21", "- **v1.22", "- **v1.23", "- **v1.24"))
+    [first] = [e for e in entries[:4] if e.startswith("- **v1.21")]
     assert first.startswith("- **v1.21（2026-10-23）**：**其实是硬盘架**（U21，§3.2）")
     assert "「合并，重叠处保留 <keep>」" in first
     assert changes.index("- **v1.21") < changes.index("- **v1.20")

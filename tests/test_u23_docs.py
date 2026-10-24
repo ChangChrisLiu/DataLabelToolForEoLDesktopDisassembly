@@ -47,6 +47,9 @@ def test_the_spec_has_the_paragraph_in_4_5_and_v1_23_on_top():
                    "`locator/open`", "工具面板在画布左边，高度不变", "没有快捷键"):
         assert needed in section, needed
     changes = body.split("## 14. 修订记录", 1)[1]
-    first = next(line for line in changes.splitlines() if line.startswith("- "))
+    entries = [line for line in changes.splitlines() if line.startswith("- ")]
+    # on top when it landed; U24's v1.24 has gone above it since
+    assert entries[0].startswith(("- **v1.23", "- **v1.24"))
+    [first] = [e for e in entries[:2] if e.startswith("- **v1.23")]
     assert first.startswith("- **v1.23（2026-10-23）**：**主视角**（U23，§4.5）")
     assert changes.index("- **v1.23") < changes.index("- **v1.21")
