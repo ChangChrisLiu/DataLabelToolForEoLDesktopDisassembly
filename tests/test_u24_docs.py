@@ -45,10 +45,13 @@ def test_the_guide_moved_the_label_keys_to_review_without_growing():
 def test_the_quickstart_has_the_last_visibility_review():
     body = QUICK.read_text(encoding="utf-8")
     section = body.split("### 最后的可见性审查", 1)[1].split("\n## ", 1)[0]
-    assert len(section) < 900
+    assert len(section) < 1000
     for needed in ("每个视角各做一次", "「可见性审查」标签页", "「自动」", "「手动」", "原因: 线缆",
-                   "`Space`", "`Shift+Space`", "数字键 `1`–`7`", "`` ` `` 被线挡住", "**`Z` 角度看不到**",
-                   "`Shift+Z`", "`Ctrl+Z`", "**角度和线缆是两个原因，分开标**", "什么也没挡住它",
+                   "**按键作用于选中的这一整段**（一次撤销）", "`Space`（`Shift+Space` 一样）",
+                   "数字键 `1`–`7`", "`` ` `` 被线挡住", "**`Z` 角度看不到**", "`Shift+Z`",
+                   "40 帧的一段也只按一次 `Z`", "答完自动选下一条", "`Ctrl+Z`", "「按帧」",
+                   "「按段」", "「还要审 n 段 / m 帧」",
+                   "**角度和线缆是两个原因，分开标**", "什么也没挡住它",
                    "`viewpoint`", "`cable`", "可见性审查完成", "status"):
         assert needed in section, needed
     # the walk-through no longer tells the annotator to set labels while drawing
@@ -64,7 +67,10 @@ def test_the_spec_has_the_fifth_queue_viewpoint_and_v1_24_on_top():
     assert "**可见性审查队列**（v1.24）" in review
     for needed in ("**可见性审查**（v1.24，U24，第五个队列 `visibility`）", "已确认帧",
                    "减去已盖审查戳的", "「ram_latch.03 第 1–13 帧 · occluded_full（被硬盘支架挡住，自动）」",
-                   "同一绘制组（placement）", "不编译", "`Space` 确认（按计算）", "`Shift+Space` 整段确认",
+                   "同一绘制组（placement）", "不编译", "`Space` 确认（按计算，`Shift+Space` 同）",
+                   "**每个键都作用于选中的整段**", "40 帧的一段也只按一次 `Z`", "答完选中下一条",
+                   "「按帧」", "默认「按段」", "「还要审 n 段 / m 帧（已审 r / t 帧）」",
+                   "只代签屏幕上这一帧", "整段拒绝并写出是哪几帧",
                    "`Z` / `Shift+Z` **角度看不到**", "`review_visibility`", "U15 的路子",
                    "`instance_frame_flags.difficulty_flags_json`", "无迁移",
                    "\"vis_reviewed\": true", "回到队列", "「可见性审查完成」",

@@ -236,8 +236,9 @@ RETRACE_NOTE = "重画会影响 {n} 个已确认帧，提交后用 Shift+N 一�
 #: Review mode with several conflicts: when the bulk answer is the right one.
 REVIEW_BULK = "这些冲突是你刚重画的形状造成的 → Shift+N 一次接受（共 {n} 个）"
 #: Review's 「可见性审查」 tab (task U24): what the keys say about the selected row.
-VIS_REVIEW = ("可见性审查：选一条（跳到那一帧、选中零件）→ 对就 Space（整段 Shift+Space）；"
-              "不对：数字键手动设、` 键被线挡住、Z 角度看不到（加 Shift 是部分）；Ctrl+Z 撤销")
+VIS_REVIEW = ("可见性审查：选一条（一段帧；跳到那一帧、选中零件）→ 对就 Space；"
+              "不对：数字键手动设、` 键被线挡住、Z 角度看不到（加 Shift 是部分）——"
+              "都作用于这一整段，Ctrl+Z 撤销；只改一帧：面板切到「按帧」")
 #: ... and with nothing left to review in this view.
 VIS_REVIEW_DONE = "可见性审查完成：这个视角没有要审的了（换视角 F1–F4 继续）"
 

@@ -3,12 +3,13 @@
 The scene is :mod:`vis_review_scene` (frames 14-10 confirmed, five runs to
 audit, 17 rows). Pinned: Annotate mode ignores ``Ctrl+1..7`` / ``Ctrl+V`` (the
 grave key still says 被线挡住 there); Review binds the verdicts; the fifth
-tab counts rows, says how far the view is and 「可见性审查完成」 at the end;
-selecting a line opens its frame and selects the part; each key answers the
-line, walks on through the run, says what it did and is taken back by
-``Ctrl+Z`` in Review; ``Space`` on the other tabs still accepts the frame;
-the queue is not built while annotating; the palette's four buttons; and a
-part 角度看不到 reads 「角度」 in the instance table.
+tab counts runs and frames, says how far the view is and 「可见性审查完成」 at
+the end; selecting a line opens its frame and selects the part; each key
+answers the **whole line** (a run) as one op, moves to the next line, says
+what it did and is taken back by one ``Ctrl+Z`` in Review; the 按帧 listing
+answers one frame; ``Space`` on the other tabs still accepts the frame; the
+queue is not built while annotating; the palette's three buttons; and a part
+角度看不到 reads 「角度」 in the instance table.
 """
 from __future__ import annotations
 
@@ -132,7 +133,7 @@ def test_annotate_mode_keeps_the_grave_key_for_the_cable(window):
 
 
 @pytest.mark.parametrize("spec,name", [
-    ("Space", "vis_review_computed"), ("Shift+Space", "vis_review_run"),
+    ("Space", "vis_review_computed"), ("Shift+Space", "vis_review_computed"),
     ("3", "visibility_3"), ("Ctrl+3", "visibility_3"), ("Ctrl+V", "cycle_visibility"),
     ("`", "vis_review_cable"), ("Z", "vis_review_viewpoint"),
     ("Shift+Z", "vis_review_viewpoint_partial"), ("Ctrl+Z", "undo"), ("Ctrl+Y", "redo"),
@@ -158,8 +159,9 @@ def test_the_fifth_tab_counts_rows_and_says_how_far_the_view_is(window):
     tabs = window.review.tabs()
     assert tabs.tabText(tabs.currentIndex()) == "可见性审查 (17)"
     assert lines(window) == LINES
-    assert window.review.visibility_status() == "还要审 17 条（已审 0 / 17）"
+    assert window.review.visibility_status() == "还要审 5 段 / 17 帧（已审 0 / 17 帧）"
     assert window.guide.plan().now == G.VIS_REVIEW
+    assert not window.review.per_frame()                        # 按段 by default
 
 
 def test_selecting_a_line_opens_its_frame_and_selects_the_part(window):
@@ -178,71 +180,109 @@ def test_selecting_a_line_opens_its_frame_and_selects_the_part(window):
     assert window.review.selected_visibility()["instance"] == V.HIDDEN
 
 
-def test_space_stamps_the_frame_on_screen_and_walks_on_through_the_run(window):
+def ops(win: MainWindow) -> int:
+    return [op["kind"] for op in win.db.ops(V.DESKTOP, V.VIEW, limit=500)].count(
+        "review_visibility")
+
+
+def test_space_confirms_the_whole_line_and_moves_to_the_next(window):
     review(window)
-    window.session.goto(9, force=True)              # not in the run: it starts at 10
-    QApplication.processEvents()
     pick(window, V.HIDDEN)
     assert here(window) == 10
-    for step in (10, 11, 12, 13, 14):
-        assert here(window) == step
-        assert press(window, "Space")
-        assert f"内存卡扣 {V.HIDDEN} 第 {step} 帧 → 确认（按计算） 完全遮挡" in \
-            window.status_message()
-        assert window.db.instance_flags(V.key(step), V.HIDDEN)["verdict"] == "computed"
+    assert press(window, "Space")
+    assert f"内存卡扣 {V.HIDDEN} 第 10–14 帧 → 确认（按计算） 完全遮挡" in window.status_message()
+    assert all(window.db.instance_flags(V.key(s), V.HIDDEN)["verdict"] == "computed"
+               for s in range(10, 15))
+    assert ops(window) == 1
     assert not any(line.startswith(V.HIDDEN) for line in lines(window))
-    # the run is done: on to the next line and its part -- on the frame on
-    # screen, which that line's run has too (no jump)
+    # the next line -- the one now where the answered one was -- and its part,
+    # on the frame on screen (10 is in its run: no jump)
     assert window.review.selected_visibility()["instance"] == V.HALF
-    assert here(window) == 14 and window.instances.selected_instance() == V.HALF
-    assert press(window, "Space")                   # 14 stamped; on to 13, backwards
-    assert here(window) == 13
-    assert window.review.visibility_status() == "还要审 11 条（已审 6 / 17）"
-
-
-def test_z_says_angle_and_ctrl_z_takes_it_back_in_review(window):
-    review(window)
-    pick(window, V.HALF)
-    assert press(window, "Z")
-    fo = window.db.frame_overrides(V.key(10))[V.HALF]
-    assert (fo.visibility, fo.occluder) == (FULL, "viewpoint")
-    assert "角度看不到（完全）" in window.status_message()
-    assert window.session.frame_status(10) == "verified"
-    assert here(window) == 11                                   # walked on
-    tabs = window.review.tabs()
-    assert tabs.tabText(tabs.currentIndex()) == "可见性审查 (16)"
+    assert here(window) == 10 and window.instances.selected_instance() == V.HALF
+    assert window.review.visibility_status() == "还要审 4 段 / 12 帧（已审 5 / 17 帧）"
     assert press(window, "Ctrl+Z")
-    assert window.db.frame_overrides(V.key(10)).get(V.HALF) is None
-    assert window.db.instance_flags(V.key(10), V.HALF) is None
-    assert tabs.tabText(tabs.currentIndex()) == "可见性审查 (17)"
-    assert press(window, "Ctrl+Y")
-    assert window.db.frame_overrides(V.key(10))[V.HALF].occluder == "viewpoint"
+    assert lines(window) == LINES
 
 
-def test_shift_z_and_the_grave_keys_set_their_halves(window):
-    review(window)
-    pick(window, V.HALF)
-    assert press(window, "Shift+Z")
-    assert window.db.frame_overrides(V.key(10))[V.HALF].visibility == PARTIAL
-    assert window.handle_key(tilde()) is True                  # Shift+`, now on 11
-    QApplication.processEvents()
-    fo = window.db.frame_overrides(V.key(11))[V.HALF]
-    assert (fo.visibility, fo.occluder) == (PARTIAL, "cable")
-    assert press(window, "`")                                   # on 12
-    fo = window.db.frame_overrides(V.key(12))[V.HALF]
-    assert (fo.visibility, fo.occluder) == (FULL, "cable")
-    assert "被线挡住（完全）" in window.status_message()
-
-
-def test_shift_space_confirms_the_whole_run(window):
+def test_shift_space_is_spaces_alias(window):
     review(window)
     pick(window, V.TINY)
     assert press(window, "Shift+Space")
     assert "第 10–14 帧 → 确认（按计算）" in window.status_message()
     assert not any(line.startswith(V.TINY) for line in lines(window))
-    assert window.review.visibility_status() == "还要审 12 条（已审 5 / 17）"
+    assert window.review.selected_visibility()["instance"] == V.CABLED   # the next line
+    assert window.review.visibility_status() == "还要审 4 段 / 12 帧（已审 5 / 17 帧）"
     assert press(window, "Ctrl+Z")
     assert lines(window) == LINES
+
+
+def test_z_marks_the_whole_run_angle_and_one_ctrl_z_takes_it_back(window):
+    review(window)
+    pick(window, V.HALF)
+    assert press(window, "Z")
+    for step in range(10, 15):
+        fo = window.db.frame_overrides(V.key(step))[V.HALF]
+        assert (fo.visibility, fo.occluder) == (FULL, "viewpoint")
+        assert window.session.frame_status(step) == "verified"
+    assert ops(window) == 1
+    assert "第 10–14 帧 → 角度看不到（完全）" in window.status_message()
+    tabs = window.review.tabs()
+    assert tabs.tabText(tabs.currentIndex()) == "可见性审查 (12)"
+    assert window.review.selected_visibility() is None or \
+        window.review.selected_visibility()["instance"] != V.HALF
+    assert press(window, "Ctrl+Z")                               # one undo: all five
+    assert all(window.db.frame_overrides(V.key(s)).get(V.HALF) is None
+               and window.db.instance_flags(V.key(s), V.HALF) is None for s in range(10, 15))
+    assert tabs.tabText(tabs.currentIndex()) == "可见性审查 (17)"
+    assert press(window, "Ctrl+Y")
+    assert all(window.db.frame_overrides(V.key(s))[V.HALF].occluder == "viewpoint"
+               for s in range(10, 15))
+
+
+@pytest.mark.parametrize("key,label,occluder", [
+    ("Shift+Z", PARTIAL, "viewpoint"), ("`", FULL, "cable"), ("tilde", PARTIAL, "cable"),
+])
+def test_the_halves_answer_the_whole_run_too(window, key, label, occluder):
+    review(window)
+    pick(window, V.HALF)
+    if key == "tilde":
+        assert window.handle_key(tilde()) is True                  # Shift+`
+        QApplication.processEvents()
+    else:
+        assert press(window, key)
+    assert all((window.db.frame_overrides(V.key(s))[V.HALF].visibility,
+                window.db.frame_overrides(V.key(s))[V.HALF].occluder) == (label, occluder)
+               for s in range(10, 15))
+    assert ops(window) == 1
+
+
+def test_the_per_frame_listing_answers_one_frame(window):
+    review(window)
+    window.review.set_per_frame(True)
+    QApplication.processEvents()
+    assert window.review.per_frame()
+    assert len(lines(window)) == 17
+    assert "ram_module.01 第 12 帧 · occluded_partial（被螺丝挡住，自动）" in lines(window)
+    # the counts are the same either way
+    assert window.review.visibility_status() == "还要审 5 段 / 17 帧（已审 0 / 17 帧）"
+    lw = vis_list(window)
+    lw.setCurrentRow(lines(window).index("ram_module.01 第 12 帧 · occluded_partial"
+                                         "（被螺丝挡住，自动）"))
+    QApplication.processEvents()
+    assert here(window) == 12
+    assert press(window, "Z")
+    assert window.db.frame_overrides(V.key(12))[V.HALF].occluder == "viewpoint"
+    assert all(window.db.frame_overrides(V.key(s)).get(V.HALF) is None
+               for s in (10, 11, 13, 14))
+    assert ops(window) == 1
+    # the next line is ram_module.01's frame 13; back to 按段: the run is split
+    assert window.review.selected_visibility()["steps"] == [13]
+    window.review.set_per_frame(False)
+    QApplication.processEvents()
+    assert [line for line in lines(window) if line.startswith(V.HALF)] == [
+        "ram_module.01 第 10–11 帧 · occluded_partial（被螺丝挡住，自动）",
+        "ram_module.01 第 13–14 帧 · occluded_partial（被螺丝挡住，自动）"]
+    assert window.review.selected_visibility()["steps"] == [13, 14]   # kept, by frame
 
 
 def test_digits_and_ctrl_v_set_a_label_by_hand(window):
@@ -287,7 +327,7 @@ def test_when_nothing_is_left_the_tab_says_so(window):
         session.review_visibility(entry["instance"], "computed", steps=entry["steps"])
     review(window)
     assert lines(window) == []
-    assert window.review.visibility_status() == "可见性审查完成（17 条都审过了）"
+    assert window.review.visibility_status() == "可见性审查完成（17 帧都审过了）"
     assert window.guide.plan().now == G.VIS_REVIEW_DONE
 
 
@@ -319,13 +359,12 @@ def test_the_queue_is_not_built_while_annotating(window, monkeypatch):
 # --------------------------------------------------------------------------- #
 # the palette, the instance table, the generated tables
 # --------------------------------------------------------------------------- #
-def test_the_palette_has_the_four_answers_in_review(window):
+def test_the_palette_has_the_three_answers_in_review(window):
     review(window)
     vis_list(window).setCurrentRow(-1)
     window.refresh_guidance()
     palette = window.palette
-    for name in ("vis_review_computed", "vis_review_run", "vis_review_cable",
-                 "vis_review_viewpoint"):
+    for name in ("vis_review_computed", "vis_review_cable", "vis_review_viewpoint"):
         button = palette.button(name)
         assert not button.isHidden() and not button.isEnabled(), name
         assert "选一条" in button.reason()
@@ -337,7 +376,8 @@ def test_the_palette_has_the_four_answers_in_review(window):
     assert button.isEnabled() and button.key == "Z"
     QTest.mouseClick(button, Qt.MouseButton.LeftButton)
     QApplication.processEvents()
-    assert window.db.frame_overrides(V.key(10))[V.HALF].occluder == "viewpoint"
+    assert all(window.db.frame_overrides(V.key(s))[V.HALF].occluder == "viewpoint"
+               for s in range(10, 15))
     window.refresh_guidance()
     assert palette.button("undo").isEnabled()
     window.set_mode(A.MODE_ANNOTATE)
@@ -372,11 +412,12 @@ def test_the_task_card_says_angle_not_cable():
 def test_the_cheat_sheet_and_the_guide_table_list_the_verdicts():
     html = A.cheat_sheet_html()
     assert "<h4>可见性审查（Review 模式）</h4>" in html
-    for keys in ("Space", "Shift+Space", "1 / Ctrl+1", "Ctrl+V", "`", "Shift+`", "Z",
+    for keys in ("Space / Shift+Space", "1 / Ctrl+1", "Ctrl+V", "`", "Shift+`", "Z",
                  "Shift+Z"):
         assert f"<tr><td><b>{keys}</b></td><td>可见性审查" in html, keys
     table = A.shortcut_markdown()
-    assert "| `1 / Ctrl+1` | 可见性审查：手动设为 visible（这一帧，记为审过） | " \
+    assert "| `1 / Ctrl+1` | 可见性审查：这一段手动设为 visible（记为审过） | " \
            "可见性审查（Review 模式） |" in table
-    assert "| `Z` | 可见性审查：角度看不到（完全）" in table
+    assert "| `Z` | 可见性审查：这一段角度看不到（完全）" in table
+    assert "| `Space / Shift+Space` | 可见性审查：选中的这一段按计算的对" in table
     assert "| `Return / Enter` | 接受队列选中的这一帧 |" in table

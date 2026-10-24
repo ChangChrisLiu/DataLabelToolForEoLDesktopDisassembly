@@ -7,9 +7,11 @@ and one set ``out_of_view`` by hand on frame 12.
 
 Pinned here, without a window: what the queue lists and how it compresses
 runs and names the parts that hide one; each verdict's op, its stamp and its
-undo; that confirmed frames stay confirmed and a difference that was already
-there opens a conflict instead of being signed; the new reason ``viewpoint``;
-and that the queue costs nothing when nothing was written.
+undo -- one frame, and a whole run as one op (a 40-frame run is one ``Z``);
+that confirmed frames stay confirmed, a difference that was already there
+opens a conflict instead of being signed, and revealed pixels are signed on
+the frame on screen only; the new reason ``viewpoint``; and that the queue
+costs nothing when nothing was written.
 """
 from __future__ import annotations
 
@@ -17,10 +19,11 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import numpy as np
 import pytest
 
 import vis_review_scene as V
-from session_scene import DESKTOP, VIEW, rect
+from session_scene import DESKTOP, VIEW, cell, rect
 from tda.core import masks
 from tda.core import vis_review as VR
 from tda.core.model import (
@@ -347,10 +350,115 @@ def test_a_frame_nobody_confirmed_is_refused(scene):
     assert ops(scene) == 0
 
 
-def test_only_space_reaches_past_the_open_frame(scene):
-    scene.goto(14, force=True)
-    with pytest.raises(ValueError):
+def test_a_verdict_over_a_run_is_one_op_and_one_undo(scene):
+    """The coordinator's ruling: a line is a run, every key answers all of it."""
+    scene.goto(10, force=True)
+    before = {s: scene.db.compiled(V.key(s))[V.HALF] for s in STEPS}
+    result = scene.review_visibility(V.HALF, VR.VERDICT_VIEWPOINT, FULL, steps=STEPS)
+    assert result["moved"] == STEPS and sorted(result["accepted"]) == STEPS
+    assert ops(scene) == 1 and open_conflicts(scene) == []
+    for step in STEPS:
+        fo = scene.db.frame_overrides(V.key(step))[V.HALF]
+        assert (fo.visibility, fo.occluder) == (FULL, OCCLUDER_VIEWPOINT)
+        row = scene.db.compiled(V.key(step))[V.HALF]
+        assert row["status"] == "verified" and row["visibility"] == FULL
+        assert scene.frame_status(step) == "verified"
+        assert scene.db.instance_flags(V.key(step), V.HALF)["verdict"] == "viewpoint"
+    assert V.HALF not in {e["instance"] for e in scene.visibility_queue()}
+    assert scene.undo()
+    for step in STEPS:
+        assert scene.db.frame_overrides(V.key(step)).get(V.HALF) is None
+        assert scene.db.instance_flags(V.key(step), V.HALF) is None
+        assert scene.db.compiled(V.key(step))[V.HALF]["visibility"] == \
+            before[step]["visibility"]
+        assert scene.frame_status(step) == "verified"
+    assert open_conflicts(scene) == [] and entry(scene, V.HALF)["steps"] == STEPS
+
+
+def test_pixels_a_label_reveals_are_signed_on_the_frame_on_screen_only(scene):
+    """U15 review round 4, per frame: the half-hidden run set 被线挡住（完全）
+    (empty rows, signed), the part then redrawn elsewhere at 9 (改全部: the
+    empty rows still agree), then a digit over the run from frame 12 -- the
+    label shows pixels nobody confirmed; 12, on screen, is signed, the others
+    keep their conflicts for Review."""
+    scene.goto(10, force=True)
+    scene.review_visibility(V.HALF, VR.VERDICT_CABLE, FULL, steps=STEPS)
+    scene.goto(9, force=True)
+    scene.begin_edit(V.HALF)
+    scene.set_editing_mask(rect(200, 200, 230, 230, V.HW))
+    scene.commit_edit(api.SCOPE_KEYFRAME)
+    scene.goto(12, force=True)
+    assert open_conflicts(scene) == []
+    result = scene.review_visibility(V.HALF, VR.VERDICT_LABEL, PARTIAL, steps=STEPS)
+    assert result["accepted"] == [12] and sorted(result["withheld"]) == [10, 11, 13, 14]
+    assert open_conflicts(scene) == [(s, V.HALF) for s in (10, 11, 13, 14)]
+    assert masks.rle_area(scene.db.compiled(V.key(12))[V.HALF]["visible_rle"]) == 900
+    assert all(masks.rle_area(scene.db.compiled(V.key(s))[V.HALF]["visible_rle"]) == 0
+               for s in (10, 11, 13, 14))
+    assert ops(scene) == 2
+    assert scene.undo()
+    assert open_conflicts(scene) == []
+
+
+def test_a_run_is_refused_as_a_whole_naming_the_frames(scene, monkeypatch):
+    import tda.ui.session_visreview as SV
+
+    real = SV.shape_applies
+
+    def no_shape_on_12(db, tax, key, *args, **kwargs):
+        return "no_shape" if key.step == 12 else real(db, tax, key, *args, **kwargs)
+
+    monkeypatch.setattr(SV, "shape_applies", no_shape_on_12)
+    scene.goto(10, force=True)
+    with pytest.raises(SessionRefusal) as refused:
         scene.review_visibility(V.HALF, VR.VERDICT_VIEWPOINT, FULL, steps=STEPS)
+    assert str(refused.value) == f"第 12 帧：{T.VIEWPOINT_NEEDS_SHAPE}"
+    assert ops(scene) == 0
+    assert all(scene.db.frame_overrides(V.key(s)).get(V.HALF) is None for s in STEPS)
+
+
+def test_a_forty_frame_viewpoint_run_is_one_z_one_op_one_undo(tmp_path):
+    """The motherboard drawn 5 px wide over the whole sheet: ``too_small`` on
+    frames 2-41, all confirmed -- one line; one Z over it. (5 x 30 px: a part
+    under the conflict floor of 20 px would not be compared back on the undo,
+    see the U24 report.)"""
+    from session_scene import make_session, seed_shapes
+
+    session = make_session(tmp_path, last_step=42, hw=V.HW)
+    session.sweeper_enabled = False
+    try:
+        keys = seed_shapes(session, 1, grid=8, anchor=42, refresh=False)
+        board = "motherboard.01"
+        ys, xs = np.nonzero(cell(keys.index(board), V.HW))
+        V.keyframe(session, board, rect(int(xs.min()), int(ys.min()), int(xs.min()) + 5,
+                                        int(ys.min()) + 30, V.HW), anchor=42)
+        session.refresh_all()
+        for step in range(41, 1, -1):
+            session.goto(step, force=True)
+            assert session.confirm_frame(), step
+        session.set_visibility_live(True)
+        [line] = [e for e in session.visibility_queue() if e["instance"] == board]
+        run = list(range(2, 42))
+        assert line["steps"] == run and line["visibility"] == "too_small"
+        session.goto(2, force=True)
+        result = session.review_visibility(board, VR.VERDICT_VIEWPOINT, FULL,
+                                           steps=line["steps"])
+        assert result["moved"] == run and sorted(result["accepted"]) == run
+        assert ops(session) == 1 and open_conflicts(session) == []
+        assert all(session.db.frame_overrides(V.key(s))[board].occluder == OCCLUDER_VIEWPOINT
+                   and session.db.compiled(V.key(s))[board]["visibility"] == FULL
+                   and session.frame_status(s) == "verified" for s in run)
+        assert board not in {e["instance"] for e in session.visibility_queue()}
+        assert session.undo()
+        assert all(session.db.frame_overrides(V.key(s)).get(board) is None
+                   and session.db.instance_flags(V.key(s), board) is None
+                   and session.db.compiled(V.key(s))[board]["visibility"] == "too_small"
+                   for s in run)
+        assert open_conflicts(session) == []
+        assert [e["steps"] for e in session.visibility_queue()
+                if e["instance"] == board] == [run]
+    finally:
+        session.close(force=True)
 
 
 def test_viewpoint_needs_a_shape_in_its_place(scene, monkeypatch):

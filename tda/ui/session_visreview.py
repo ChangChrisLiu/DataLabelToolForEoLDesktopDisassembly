@@ -17,8 +17,14 @@ frame stays confirmed under the new label, both ways (the op carries
 :data:`~tda.ui.session_cable.CABLE_BY`, so :func:`~tda.ui.session_cable.apply_cable`
 re-signs its undo and redo the same way).
 
-A stamp alone (``Space``, ``Shift+Space``) changes no input of any frame: no
-compilation, no re-check, and the frame in hand keeps its compiled frame.
+A queue line is a run of frames with one signature, so a verdict covers the
+whole run as that one op (the coordinator's ruling on U24): the safeguards
+above hold frame by frame -- the ones already in dispute are not signed, and
+pixels a label *reveals* are signed only on the frame on screen (U15 review
+round 4); the others keep their conflicts for Review.
+
+A stamp alone (``Space``) changes no input of any frame: no compilation, no
+re-check, and the frame in hand keeps its compiled frame.
 """
 from __future__ import annotations
 
@@ -32,11 +38,12 @@ from tda.core.model import (
 )
 from tda.core.occluder import FULL, PARTIAL, occluded_override, shape_applies
 from tda.core.truth import VERIFIED
-from tda.core.truth_inputs import frame_hw
+from tda.core.truth_inputs import InputCache, frame_hw
 from tda.core.vis_review import (
     VERDICT_CABLE,
     VERDICT_COMPUTED,
     VERDICT_LABEL,
+    VERDICT_VIEWPOINT,
     VERDICTS,
     make_stamp,
     with_stamp,
@@ -53,6 +60,7 @@ from tda.ui.session_cable import (
     _same,
     _settled,
     _signed,
+    _steps_text,
     disputed_before,
 )
 from tda.ui.session_edit import _mask_without_reason
@@ -125,18 +133,22 @@ class VisReviewMixin:
     # -- verdicts ------------------------------------------------------------
     def review_visibility(self, instance: str, verdict: str, label: Optional[str] = None,
                           steps: Optional[Iterable[int]] = None) -> dict:
-        """One verdict on ``instance``: a stamp, and the label it names.
+        """One verdict on ``instance`` over ``steps``: stamps, and the label it names.
 
         ``verdict`` is one of :data:`~tda.core.vis_review.VERDICTS`:
-        ``computed`` stamps the row as it is (``steps`` may name a run --
-        ``Shift+Space``); ``label`` sets ``label`` (a visibility value) by
-        hand, without a reason; ``cable`` / ``viewpoint`` set 完全 / 部分
-        (``label`` :data:`~tda.core.occluder.FULL` / ``PARTIAL``) with that
-        reason. Every verdict but ``computed`` acts on the open frame only.
+        ``computed`` stamps the rows as they are; ``label`` sets ``label`` (a
+        visibility value) by hand, without a reason; ``cable`` / ``viewpoint``
+        set 完全 / 部分 (``label`` :data:`~tda.core.occluder.FULL` /
+        ``PARTIAL``) with that reason. ``steps`` is the frames -- the queue's
+        run, one frame in its 按帧 listing -- and defaults to the open frame;
+        all of them are **one op**, one ``Ctrl+Z``. The U15 safeguards hold per
+        frame: a frame that already disagreed is not signed, and pixels a label
+        reveals are signed on the open frame only (:func:`accept_own_label`).
 
-        Refused (:class:`~tda.ui.session_api.SessionRefusal`) on a frame that
-        is not confirmed, on a components-gallery shot, and -- for 完全 / 部分
-        -- where the part has no shape in its place here.
+        Refused (:class:`~tda.ui.session_api.SessionRefusal`), with nothing
+        written, when a frame is not confirmed, on a components-gallery shot,
+        and -- for 完全 / 部分 -- where the part has no shape in its place on
+        some frame; a refusal over several frames names them.
         """
         if not self.is_open:
             raise SessionRefusal("no view is open")
@@ -144,17 +156,34 @@ class VisReviewMixin:
             raise SessionRefusal(T.NOT_IN_GALLERY)
         if verdict not in VERDICTS:
             raise ValueError(f"verdict must be one of {VERDICTS}, got {verdict!r}")
+        if verdict == VERDICT_LABEL and label not in api.VISIBILITY_VALUES:
+            raise SessionRefusal(
+                f"visibility must be one of {api.VISIBILITY_VALUES}, got {label!r}")
+        if verdict not in (VERDICT_COMPUTED, VERDICT_LABEL) and label not in (FULL, PARTIAL):
+            raise SessionRefusal(f"完全 / 部分 is {FULL!r} or {PARTIAL!r}, got {label!r}")
         key = self.current()
         instance = str(instance)
         wanted = [key.step] if steps is None else sorted({int(s) for s in steps})
-        if verdict != VERDICT_COMPUTED and wanted != [key.step]:
-            raise ValueError("only 确认（按计算） reaches past the open frame")
         frames, before = [], []
+        refused: dict[str, list[int]] = {}
+        cache = InputCache()
+        shapes = (self.db.keyframes(key.desktop, key.view, instance)
+                  if verdict in (VERDICT_CABLE, VERDICT_VIEWPOINT) else None)
         for step in wanted:
             here = FrameKey(key.desktop, step, key.view)
-            state, back = self._verdict_frame(here, instance, verdict, label)
+            try:
+                state, back = self._verdict_frame(here, instance, verdict, label,
+                                                  cache, shapes)
+            except SessionRefusal as why:
+                refused.setdefault(str(why), []).append(step)
+                continue
             frames.append(state)
             before.append(back)
+        if refused:
+            if len(wanted) == 1:
+                raise SessionRefusal(next(iter(refused)))
+            raise SessionRefusal("；".join(f"第 {_steps_text(found)} 帧：{why}"
+                                          for why, found in refused.items()))
         common = {"desktop": key.desktop, "view": key.view, "step": key.step,
                   "instance": instance, "steps": wanted, "verdict": verdict}
         moved = [f["step"] for f in frames if "override" in f]
@@ -187,8 +216,13 @@ class VisReviewMixin:
         return self._after_edit(out)
 
     def _verdict_frame(self, key: FrameKey, instance: str, verdict: str,
-                       label: Optional[str]) -> tuple[dict, dict]:
-        """``(after, before)`` of one frame: its flags, and its override when it moves."""
+                       label: Optional[str], cache: Optional[InputCache] = None,
+                       shapes=None) -> tuple[dict, dict]:
+        """``(after, before)`` of one frame: its flags, and its override when it moves.
+
+        ``cache`` / ``shapes`` (the part's keyframes of this view) are read
+        once for a run.
+        """
         frame = self.db.get_frame(key) or {}
         if frame.get("review_status") != VERIFIED:
             raise SessionRefusal(T.NOT_CONFIRMED.format(step=key.step))
@@ -201,18 +235,13 @@ class VisReviewMixin:
             visibility, reason = row.get("visibility"), (previous.occluder if previous
                                                           else None)
         elif verdict == VERDICT_LABEL:
-            if label not in api.VISIBILITY_VALUES:
-                raise SessionRefusal(
-                    f"visibility must be one of {api.VISIBILITY_VALUES}, got {label!r}")
             # what a digit always wrote (set_visibility): the label, no reason,
             # a hand-drawn single-frame mask kept and 完全's empty one dropped
             after = FrameOverride(key, instance, _mask_without_reason(previous), label, None)
             visibility, reason = label, None
         else:
-            if label not in (FULL, PARTIAL):
-                raise SessionRefusal(f"完全 / 部分 is {FULL!r} or {PARTIAL!r}, got {label!r}")
             reason = OCCLUDER_CABLE if verdict == VERDICT_CABLE else OCCLUDER_VIEWPOINT
-            why = shape_applies(self.db, self.tax, key, instance)
+            why = shape_applies(self.db, self.tax, key, instance, cache, shapes)
             if why:
                 raise SessionRefusal(_REFUSALS[reason].get(why, why))
             hw = frame_hw(self.db, key, self.truth.cache_dir) if label == FULL else (0, 0)

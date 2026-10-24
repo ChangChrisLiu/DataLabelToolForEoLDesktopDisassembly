@@ -13,11 +13,13 @@ mode's only (the 可见性审查 queue), bare ``1``-``7`` with ``Ctrl`` as an al
 
 **The visibility review (task U24).**  Annotate mode has no label keys any
 more: the compiler derives every label, and the grave key still says 被线挡住
-while drawing.  Review's fifth queue lists the labels to audit; ``Space``
-confirms one as computed (``Shift+Space`` the whole run), a digit sets one by
+while drawing.  Review's fifth queue lists the labels to audit, one line per
+run of frames; every key answers the whole selected run as one op: ``Space``
+(``Shift+Space`` its alias) confirms it as computed, a digit sets a label by
 hand, `` ` `` / ``Shift+``` is 被线挡住 完全 / 部分 and ``Z`` / ``Shift+Z`` is
-角度看不到 -- the camera cannot see the part, nothing covers it.  ``Ctrl+Z`` /
-``Ctrl+Y`` work in Review for them.
+角度看不到 -- the camera cannot see the part, nothing covers it.  One frame
+of a run is a line of the panel's 按帧 listing.  ``Ctrl+Z`` / ``Ctrl+Y`` work
+in Review for them.
 
 **The left hand (task U22).**  The annotator's right hand is on the mouse or
 the pen all day, so the keys pressed hundreds of times a day sit under the left
@@ -174,7 +176,7 @@ def _visibility(index: int) -> Action:
     value = api.VISIBILITY_VALUES[index]
     return Action(f"visibility_{index + 1}", (f"{index + 1}", f"Ctrl+{index + 1}"),
                   "act_set_visibility", f"Visibility review: set {value} by hand",
-                  f"可见性审查：手动设为 {value}（这一帧，记为审过）", "vis_review",
+                  f"可见性审查：这一段手动设为 {value}（记为审过）", "vis_review",
                   (value,), _REV)
 
 
@@ -337,35 +339,32 @@ ACTIONS: tuple[Action, ...] = (
     # While annotating nobody sets a visibility label any more (the compiler
     # derives it; ` still says 被线挡住 while drawing). At the end, Review's
     # fifth queue lists every confirmed (frame, part) whose label is not plain
-    # visible, and these keys answer the selected row -- each answer is one op
-    # (Ctrl+Z) and stamps the row reviewed.
-    Action("vis_review_computed", ("Space",), "act_vis_review",
-           "Visibility review: the label is right as it is (stamp this frame); "
+    # visible, a line per run of frames with one signature, and these keys
+    # answer the selected line -- the whole run, as one op (Ctrl+Z), stamped
+    # reviewed; one frame of a run is a line of the panel's 按帧 listing.
+    Action("vis_review_computed", ("Space", "Shift+Space"), "act_vis_review",
+           "Visibility review: the selected run's label is right as it is (stamp it); "
            "on the other queues Space accepts the frame",
-           "可见性审查：这一帧这个零件按计算的对，记为审过（其他队列里 = 接受这一帧）",
+           "可见性审查：选中的这一段按计算的对，记为审过（其他队列里 Space = 接受这一帧）",
            "vis_review", ("computed",), _REV, short="确认可见性"),
-    Action("vis_review_run", ("Shift+Space",), "act_vis_review_run",
-           "Visibility review: the whole selected run is right as it is",
-           "可见性审查：选中这一条的整段帧都按计算的对，一次记为审过", "vis_review", (),
-           _REV, short="确认整段"),
     *[_visibility(i) for i in range(7)],
     Action("cycle_visibility", ("Ctrl+V",), "act_cycle_visibility",
            "Visibility review: the next value, by hand",
-           "可见性审查：手动换成下一个取值（这一帧，记为审过）", "vis_review", (), _REV),
+           "可见性审查：这一段手动换成下一个取值（记为审过）", "vis_review", (), _REV),
     Action("vis_review_cable", ("`",), "act_vis_review",
            "Visibility review: under a cable, completely",
-           "可见性审查：被线挡住（完全）——零件在原位，被线盖住", "vis_review",
+           "可见性审查：这一段被线挡住（完全）——零件在原位，被线盖住", "vis_review",
            ("cable", _FULL), _REV, short="被线挡住"),
     Action("vis_review_cable_partial", ("Shift+`",), "act_vis_review",
            "Visibility review: under a cable, partly",
-           "可见性审查：被线挡住（部分）", "vis_review", ("cable", _PARTIAL), _REV),
+           "可见性审查：这一段被线挡住（部分）", "vis_review", ("cable", _PARTIAL), _REV),
     Action("vis_review_viewpoint", ("Z",), "act_vis_review",
            "Visibility review: not visible from this viewpoint (nothing covers it)",
-           "可见性审查：角度看不到（完全）——这个相机从它的位置看不到，不是被挡住",
+           "可见性审查：这一段角度看不到（完全）——这个相机从它的位置看不到，不是被挡住",
            "vis_review", ("viewpoint", _FULL), _REV, short="角度看不到"),
     Action("vis_review_viewpoint_partial", ("Shift+Z",), "act_vis_review",
            "Visibility review: partly not visible from this viewpoint",
-           "可见性审查：角度看不到（部分）", "vis_review", ("viewpoint", _PARTIAL), _REV),
+           "可见性审查：这一段角度看不到（部分）", "vis_review", ("viewpoint", _PARTIAL), _REV),
     # Task U8: the state the picture shows when the log's is different (a clip
     # shut again).  ``T`` for 状态 / sTate: free in every mode.
     Action("cycle_state", ("T",), "act_cycle_state",
@@ -552,12 +551,12 @@ PALETTE_STATE: tuple[str, ...] = (
 PALETTE_OTHER: tuple[str, ...] = ("flash_compare", "cycle_candidate", "clear_edit")
 #: What the strip keeps in Review mode (U2b round 1): the canvas is read-only,
 #: so no tool and no brush -- only the difference map and the queue's keys.
-#: Task U24: the 可见性审查 queue's four most used answers too (Shift 部分 has
-#: keys only); undo / redo follow from their modes.
+#: Task U24: the 可见性审查 queue's three most used answers too (the digits and
+#: Shift 部分 have keys only); undo / redo follow from their modes.
 PALETTE_REVIEW: tuple[str, ...] = (
     "review_accept", "review_rework", "review_keep_old", "review_accept_new",
-    "review_accept_all_new", "vis_review_computed", "vis_review_run",
-    "vis_review_cable", "vis_review_viewpoint", "toggle_heat",
+    "review_accept_all_new", "vis_review_computed", "vis_review_cable",
+    "vis_review_viewpoint", "toggle_heat",
 )
 
 
@@ -612,7 +611,7 @@ def mode_cheat_rows(mode: str) -> list[tuple[str, str]]:
                 continue
             if action.name.startswith("visibility_"):
                 if not seen_visibility:
-                    rows.append(("1–7", "可见性审查：手动设标签（这一帧，记为审过）"))
+                    rows.append(("1–7", "可见性审查：这一段手动设标签（记为审过）"))
                     seen_visibility = True
                 continue
             rows.append((_compact_keys(action), action.label_zh + _how_text(action)))

@@ -75,7 +75,7 @@ __all__ = [
     "with_stamp",
 ]
 
-#: ``Space`` / ``Shift+Space``: the label is right as the frame has it.
+#: ``Space`` (``Shift+Space``): the label is right as the frames have it.
 VERDICT_COMPUTED = "computed"
 #: A digit (or ``Ctrl+V``): a bare label set by hand, no reason.
 VERDICT_LABEL = "label"

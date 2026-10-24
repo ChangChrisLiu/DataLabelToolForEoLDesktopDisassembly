@@ -395,8 +395,7 @@ class GuideMixin:
         why_row = (not_review if not review else
                    "先切到右侧 Review 的「可见性审查」，选一条" if not facts.vis_review
                    else "先在「可见性审查」里选一条")
-        for name in ("vis_review_computed", "vis_review_run", "vis_review_cable",
-                     "vis_review_viewpoint"):
+        for name in ("vis_review_computed", "vis_review_cable", "vis_review_viewpoint"):
             states[name] = (bool(row), False, why_row)
         # The 「状态」 group (task U13): each slot's own gates, in its words.
         for name in A.PALETTE_STATE:

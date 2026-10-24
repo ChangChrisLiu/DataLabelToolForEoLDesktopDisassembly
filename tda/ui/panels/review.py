@@ -6,11 +6,12 @@ without opening anything.  Activating an entry asks for its frame; ``Enter``
 confirms the frame that is open and ``R`` marks it for rework.
 
 The fifth tab, 「可见性审查」 (task U24), lists the confirmed labels still to be
-audited, one line per part and run of frames; **selecting** a line asks for
-its frame and part (:attr:`ReviewPanel.sigVisibilityPicked`) -- the keys then
-answer it -- and a line above the list says how far the view is, or
-「可见性审查完成」.  The session lists that queue only while Review shows it;
-a refresh without it leaves the tab as it was.
+audited, one line per part and run of frames (按段) or, toggled, one per frame
+(按帧); **selecting** a line asks for its frame and part
+(:attr:`ReviewPanel.sigVisibilityPicked`) -- the keys then answer the whole
+line -- and a line above the list says how far the view is (「还要审 n 段 / m
+帧」), or 「可见性审查完成」.  The session lists that queue only while Review
+shows it; a refresh without it leaves the tab as it was.
 
 The panel decides nothing: the lists **report**
 (:attr:`ReviewPanel.sigOpenStep`, :attr:`ReviewPanel.sigRework`) and the window
@@ -30,10 +31,13 @@ from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QButtonGroup,
+    QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -59,8 +63,11 @@ QUEUE_TITLES: dict[str, str] = {
 }
 
 #: The keys of the 可见性审查 tab, under its progress line.
-VIS_KEYS = ("Space 确认（按计算） · Shift+Space 整段 · 数字键 手动设 · "
-            "` 被线挡住（Shift 部分） · Z 角度看不到（Shift 部分） · Ctrl+Z 撤销")
+VIS_KEYS = ("选中的一行整段生效：Space 确认（按计算） · 数字键 手动设 · "
+            "` 被线挡住（Shift 部分） · Z 角度看不到（Shift 部分） · Ctrl+Z 撤销；"
+            "只改一帧：切到「按帧」")
+#: The two listings of the 可见性审查 tab: a line per run, a line per frame.
+BY_RUN, BY_FRAME = "按段", "按帧"
 
 
 def _entry_text(queue: str, entry: dict) -> str:
@@ -107,6 +114,8 @@ class ReviewPanel(QWidget):
         self._refreshing = False
         #: The 可见性审查 line picked, handed on from the event loop.
         self._picked: Optional[tuple[int, str]] = None
+        #: The runs the last refresh read: what 按段 / 按帧 re-lists.
+        self._vis_runs: list[dict] = []
         self._pick_timer = QTimer(self)
         self._pick_timer.setSingleShot(True)
         self._pick_timer.setInterval(0)
@@ -180,21 +189,58 @@ class ReviewPanel(QWidget):
         return self.queue_at(max(0, self._tabs.currentIndex()))
 
     def _visibility_page(self, lw: QListWidget) -> QWidget:
-        """The 可见性审查 tab: a progress line, the keys, and the list (task U24)."""
+        """The 可见性审查 tab: a progress line with the 按段 / 按帧 toggle, the
+        keys, and the list (task U24)."""
         page = QWidget()
         box = QVBoxLayout(page)
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(2)
         self._vis_status = QLabel("")
         self._vis_status.setWordWrap(True)
+        self._vis_by_run = QToolButton()
+        self._vis_by_frame = QToolButton()
+        self._vis_listing = QButtonGroup(page)
+        for button, text, tip in (
+                (self._vis_by_run, BY_RUN, "一行一段（同一零件、相邻帧、标签和原因都相同）：键作用于整段"),
+                (self._vis_by_frame, BY_FRAME, "一行一帧：只改这一帧时用")):
+            button.setText(text)
+            button.setCheckable(True)
+            button.setToolTip(tip)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self._vis_listing.addButton(button)
+        self._vis_listing.setExclusive(True)
+        self._vis_by_run.setChecked(True)
+        self._vis_by_frame.toggled.connect(self._on_listing_toggled)
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.addWidget(self._vis_status, 1)
+        head.addWidget(self._vis_by_run)
+        head.addWidget(self._vis_by_frame)
         self._vis_keys = QLabel(VIS_KEYS)
         self._vis_keys.setWordWrap(True)
         self._vis_keys.setStyleSheet("color: gray; font-size: 8pt")
-        box.addWidget(self._vis_status)
+        box.addLayout(head)
         box.addWidget(self._vis_keys)
         box.addWidget(lw, 1)
         lw.currentItemChanged.connect(self._on_visibility_current)
         return page
+
+    def per_frame(self) -> bool:
+        """Is the 可见性审查 list one line per frame (按帧) rather than per run?"""
+        return self._vis_by_frame.isChecked()
+
+    def set_per_frame(self, on: bool) -> None:
+        """按帧 (``True``) or 按段: the same queue, the runs split or not."""
+        (self._vis_by_frame if on else self._vis_by_run).setChecked(True)
+
+    def _on_listing_toggled(self, _checked: bool) -> None:
+        """Re-list what the last refresh read; nothing is asked of the session."""
+        quiet, self._refreshing = self._refreshing, True
+        try:
+            self._fill_visibility(list(api.QUEUE_NAMES).index(api.QUEUE_VISIBILITY),
+                                  self._vis_runs)
+        finally:
+            self._refreshing = quiet
 
     # -- content ------------------------------------------------------------
     def refresh(self) -> None:
@@ -229,14 +275,23 @@ class ReviewPanel(QWidget):
             self._refreshing = False
 
     def _fill_visibility(self, index: int, entries: list[dict]) -> None:
-        """The 可见性审查 list, its count (rows, not lines) and its progress line."""
+        """The 可见性审查 list, its count (frames) and its progress line.
+
+        ``entries`` are the session's runs; in the 按帧 listing each run is
+        split into its frames -- the uncompressed queue.
+        """
+        self._vis_runs = list(entries)
         lw = self._lists[api.QUEUE_VISIBILITY]
         keep = self.selected_visibility()
         here = (int(self._session.current().step) if session_is_open(self._session)
                 else None)
+        lines = entries
+        if self.per_frame():
+            lines = [dict(entry, step=int(step), steps=[int(step)])
+                     for entry in entries for step in entry.get("steps") or ()]
         lw.clear()
         rows = 0
-        for entry in entries:
+        for entry in lines:
             text = _entry_text(api.QUEUE_VISIBILITY, entry)
             item = QListWidgetItem(text)
             item.setData(STEP_ROLE, int(entry.get("step", -1)))
@@ -252,11 +307,11 @@ class ReviewPanel(QWidget):
             wanted = [here] if here in (keep.get("steps") or ()) else list(keep.get("steps") or ())
             self.select_visibility(str(keep.get("instance")), wanted)
         self._tabs.setTabText(index, f"{QUEUE_TITLES[api.QUEUE_VISIBILITY]} ({rows})")
-        self._vis_status.setText(self._visibility_line(rows)
+        self._vis_status.setText(self._visibility_line(len(entries), rows)
                                  if session_is_open(self._session) else "")
 
-    def _visibility_line(self, pending: int) -> str:
-        """「还要审 n 条（已审 r / t）」, or 「可见性审查完成」."""
+    def _visibility_line(self, runs: int, pending: int) -> str:
+        """「还要审 n 段 / m 帧（已审 r / t 帧）」, or 「可见性审查完成」."""
         progress = getattr(self._session, "visibility_progress", None)
         reviewed, total = (0, pending)
         if callable(progress) and session_is_open(self._session):
@@ -265,10 +320,30 @@ class ReviewPanel(QWidget):
             except Exception:  # noqa: BLE001 - a count is never worth a failure
                 reviewed, total = 0, pending
         if pending:
-            return f"还要审 {pending} 条（已审 {reviewed} / {total}）"
+            return f"还要审 {runs} 段 / {pending} 帧（已审 {reviewed} / {total} 帧）"
         if total:
-            return f"{VT.DONE}（{total} 条都审过了）"
+            return f"{VT.DONE}（{total} 帧都审过了）"
         return f"{VT.DONE}{VT.NOTHING_TO_REVIEW}"
+
+    def visibility_row(self) -> int:
+        """The row of the selected 可见性审查 line, ``-1`` for none."""
+        return self._lists[api.QUEUE_VISIBILITY].currentRow()
+
+    def select_visibility_row(self, row: int) -> bool:
+        """Select line ``row`` (the last one when the list is shorter); ``False`` when empty.
+
+        After an answer the line that took the answered one's place is the next
+        one. No :attr:`sigVisibilityPicked`: the window moves there itself.
+        """
+        lw = self._lists[api.QUEUE_VISIBILITY]
+        if lw.count() == 0:
+            return False
+        quiet, self._refreshing = self._refreshing, True
+        try:
+            lw.setCurrentRow(min(max(int(row), 0), lw.count() - 1))
+        finally:
+            self._refreshing = quiet
+        return True
 
     def visibility_status(self) -> str:
         """The 可见性审查 tab's progress line, as shown."""

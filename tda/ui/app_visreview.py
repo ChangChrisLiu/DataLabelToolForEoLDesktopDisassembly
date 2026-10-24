@@ -3,18 +3,18 @@
 Mixed into :class:`tda.ui.app.MainWindow`.  While annotating there is no label
 key at all (the compiler derives the labels; `` ` `` still says 被线挡住 while
 drawing).  In Review, the tab lists the confirmed labels still to audit, one
-line per part and run of frames:
+line per part and run of frames (按段) -- or one per frame (按帧, the panel's
+toggle):
 
 * **selecting** a line opens its frame -- through the same gate as any move --
   and selects the part in the instance table (on OAK / RealSense the 主视角
   dock, task U23, follows the selection);
-* ``Space`` stamps the selected part on the frame on screen as it is,
-  ``Shift+Space`` the whole run; a digit (``Ctrl+V`` the next value) sets a
-  label by hand, `` ` `` / ``Shift+``` is 被线挡住 完全 / 部分, ``Z`` /
-  ``Shift+Z`` is 角度看不到 完全 / 部分.  Every answer is one op of the session
-  (``Ctrl+Z``) and stamps the row reviewed;
-* after an answer about one frame the walk goes on to the next frame of the
-  same run, then to the next line, so a run is a few presses of one key.
+* every key answers the **whole selected line**, as one op of the session
+  (one ``Ctrl+Z``), and stamps its rows reviewed: ``Space`` (``Shift+Space``)
+  as it is, a digit (``Ctrl+V`` the next value) a label by hand, `` ` `` /
+  ``Shift+``` 被线挡住 完全 / 部分, ``Z`` / ``Shift+Z`` 角度看不到 完全 / 部分.
+  A 40-frame run is one ``Z``. One frame of a run: the 按帧 listing;
+* after an answer the selection moves to the next line and its frame.
 
 On the other Review tabs ``Space`` still accepts the frame, as it did.
 """
@@ -39,7 +39,10 @@ NOT_IN_REVIEW = ("可见性标签只在复查模式的「可见性审查」里�
 OTHER_TAB = "先切到右侧 Review 的「可见性审查」，选一条 / open the 可见性审查 tab first"
 #: The frame already disagreed with what was confirmed before the answer (a
 #: re-trace elsewhere): the label is written, the conflict is Review's to settle.
-CONFLICT_LEFT = "；这一帧原来就和确认时不一样：冲突留在 Conflicts 里"
+CONFLICT_LEFT = "；有的帧原来就和确认时不一样：冲突留在 Conflicts 里"
+#: Pixels a label revealed on frames other than the one on screen (U15 review
+#: round 4): written, not signed -- their conflicts are Review's.
+WITHHELD = "；第 {steps} 帧露出了确认时没有的像素：没代签，冲突留在 Conflicts 里"
 
 
 class VisReviewMixin:
@@ -98,28 +101,19 @@ class VisReviewMixin:
     # -- the keys ----------------------------------------------------------------
     @S.guard
     def act_vis_review(self, verdict: str, label: Optional[str] = None) -> None:
-        """``Space`` / `` ` `` / ``Z`` (and their Shift halves) on the selected line."""
+        """``Space`` / `` ` `` / ``Z`` (and their Shift halves): the whole selected line."""
         if verdict == "computed" and self.mode == A.MODE_REVIEW and not self.on_visibility_tab():
             self.act_confirm()          # the other queues: Space accepts the frame, as before
             return
         target = self._verdict_target()
         if target is None:
             return
-        entry, step = target
-        self._answer(entry, verdict, label, [step])
-
-    @S.guard
-    def act_vis_review_run(self) -> None:
-        """``Shift+Space``: every frame of the selected line, as it is."""
-        target = self._verdict_target()
-        if target is None:
-            return
         entry, _step = target
-        self._answer(entry, "computed", None, [int(s) for s in entry["steps"]])
+        self._answer(entry, verdict, label, [int(s) for s in entry["steps"]])
 
     @S.guard
     def act_set_visibility(self, value: str) -> None:
-        """A digit (``Ctrl`` + digit): this label, by hand, on the selected line's frame."""
+        """A digit (``Ctrl`` + digit): this label, by hand, over the selected line."""
         self.act_vis_review("label", value)
 
     @S.guard
@@ -137,22 +131,25 @@ class VisReviewMixin:
     # -- answering ---------------------------------------------------------------
     def _answer(self, entry: dict, verdict: str, label: Optional[str], steps: list[int]) -> None:
         instance = str(entry["instance"])
+        row = self.review.visibility_row()
         try:
-            result = self.session.review_visibility(
-                instance, verdict, label, steps=steps if verdict == "computed" else None)
+            result = self.session.review_visibility(instance, verdict, label, steps=steps)
         except SessionRefusal as refused:
             self.report(f"可见性审查：{refused}")
             return
         name = self._label_of(instance)[0] or instance_label(instance)
         said = label if verdict != "computed" else entry.get("visibility")
         note = VT.verdict_note(name, verdict, said, steps)
-        if result.get("conflicts"):
+        withheld = result.get("withheld") or []
+        if withheld:
+            note += WITHHELD.format(steps=VT.steps_text(withheld))
+        elif result.get("conflicts"):
             note += CONFLICT_LEFT
         self.logger.info("visibility review %s %s %s %s: %s", instance, steps, verdict, label,
                          {k: result.get(k) for k in ("moved", "accepted", "withheld",
                                                      "conflicts")})
         self.review.refresh()
-        if not self._walk_on(entry, steps):
+        if not self._walk_on(row):
             note += f"；{VT.DONE}"
         self.refresh_overlay()
         self.timeline.refresh_statuses()
@@ -160,26 +157,18 @@ class VisReviewMixin:
         self.report(note)
         self.refresh_guidance()
 
-    def _walk_on(self, entry: dict, done: list[int]) -> bool:
-        """After an answer: the next frame of the same run, else the next line.
+    def _walk_on(self, row: int) -> bool:
+        """After an answer: the next line -- the one now where the answered one was.
 
-        ``False`` when the list is empty: the view's review is done.
+        Its frame (unless the frame on screen is in it) and its part. ``False``
+        when the list is empty: the view's review is done.
         """
-        instance = str(entry["instance"])
-        run = [int(s) for s in entry.get("steps") or ()]
-        later = [s for s in run if s > max(done)]
-        earlier = [s for s in run if s < min(done)]
-        wanted = later[:1] or earlier[-1:]
-        if not self.review.select_visibility(instance, wanted or run):
+        if not self.review.select_visibility_row(row):
             return False
         picked = self.review.selected_visibility()
         if picked is None:
             return False
         steps = [int(s) for s in picked.get("steps") or ()]
         here = int(self.session.current().step)
-        if picked.get("instance") == instance and wanted and wanted[0] in steps:
-            step = wanted[0]
-        else:
-            step = here if here in steps else steps[0]
-        self._go_to_row(step, str(picked["instance"]))
+        self._go_to_row(here if here in steps else steps[0], str(picked["instance"]))
         return True
