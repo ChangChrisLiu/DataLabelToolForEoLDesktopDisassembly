@@ -89,3 +89,72 @@ def test_the_shot_the_cache_shows_stands_in_for_an_outlier_p0(tmp_path):
     frame, why = SC._exposed(small, ff, None, choices)
     assert why == "RGB131/P_2.png (P_0 outlier)" and abs(float(frame.mean()) - 140) < 60
     assert SC._exposed(small, ff, None, {})[1] is None         # no manifest: P_0 is exposed
+
+
+# --------------------------------------------------------------------------- #
+# U25 round 2 (N13, N15)
+# --------------------------------------------------------------------------- #
+def test_a_dark_p0_without_a_manifest_falls_back_to_the_first_exposed_shot(tmp_path):
+    import cv2
+
+    burst = tmp_path / "RGB71"
+    burst.mkdir()
+    p0, p1, p2 = ((burst / f"P_{k}.png").as_posix() for k in (0, 1, 2))
+    cv2.imwrite(p0, np.full((64, 64), 10, np.uint8))           # the lamp did not fire
+    cv2.imwrite(p1, np.full((64, 64), 20, np.uint8))           # nor here
+    cv2.imwrite(p2, _board(4)[:64, :64])
+    ff = SimpleNamespace(path=p0, aux={"burst": [p0, p1, p2]})
+    small = SC.A.load_frames([p0], "scan", None)[0]
+    frame, why = SC._exposed(small, ff, None, None)
+    assert why == "RGB71/P_2.png (P_0 dark)" and float(frame.mean()) > SC.DARK_MEAN
+
+
+def test_a_contrast_change_alone_is_aligned_away():
+    a = _board(1)
+    b = np.clip((_board(2).astype(np.float32) - 105) * 1.5 + 105, 0, 255).astype(np.uint8)
+    m = SC.measure(a, b, None, (1600, 1600))
+    assert m["frac"] < 0.002
+
+
+def test_a_step_that_hits_a_is_not_also_reported_as_b():
+    changes = {"steps": {"2": {"frac": 0.0, "blob": None, "blob_frac": 0.0},
+                         "3": {"frac": 0.5, "blob": None, "blob_frac": 0.4}},
+               "first_last": {"frac": 0.5, "blob": None, "blob_frac": 0.0}, "last": 3}
+    li = _li({2: [("remove", "psu"), ("unscrew", "screw")],
+              3: [("remove", "psu"), ("unscrew", "screw")]})
+    flags = DA.picture_flags({"d": 90}, changes, li)
+    # step 2: (a) only; step 3: a large change with a removal is no contradiction
+    assert [(f["kind"], f["step"]) for f in flags] == [("a", 2)]
+
+
+def _sheet(seqs):
+    rows = [{"Sequence Number": str(q)} for q in seqs]
+    return rows, SimpleNamespace(sheet_rows=len(rows), dupli_rows=[])
+
+
+def test_rows_are_aligned_to_captures_by_sequence_number():
+    di = SimpleNamespace(n_rows=5, n_steps=5)
+    rows, li = _sheet([1, 2, 3, 4, 5])
+    assert DA.capture_alignment(di, li, rows) == (None, "")          # rows = captures
+    # D56: number 3 skipped -> capture 3 has no row; 4 rows for 5 captures
+    rows, li = _sheet([1, 2, 4, 5])
+    align, note = DA.capture_alignment(di, li, rows)
+    assert align == {1: [1], 2: [2], 4: [3], 5: [4]} and "captures [3] have no row" in note
+    # D63: numbers 2-3 repeated -> their rows checked together; 7 rows for 5 captures
+    rows, li = _sheet([1, 2, 3, 2, 3, 4, 5])
+    align, note = DA.capture_alignment(di, li, rows)
+    assert align[2] == [2, 4] and align[5] == [7] and "[2, 3] used twice" in note
+    # D43: 4 rows numbered 1-4 for 5 captures -- which one has no row?
+    rows, li = _sheet([1, 2, 3, 4])
+    align, note = DA.capture_alignment(di, li, rows)
+    assert align == {} and "not checked" in note
+
+
+def test_an_aligned_capture_takes_the_actions_of_its_rows():
+    """D63: capture 4 is the row numbered 4 (sheet step 6), a reorient -- not the
+    unscrew of sheet step 4."""
+    changes = {"steps": {"4": {"frac": 0.7, "blob": None, "blob_frac": 0.6}},
+               "first_last": {"frac": 0.5, "blob": None, "blob_frac": 0.0}, "last": 5}
+    li = _li({4: [("unscrew", "screw")], 6: [("reorient", "chassis")]})
+    assert [f["step"] for f in DA.picture_flags({"d": 63}, changes, li)] == [4]
+    assert DA.picture_flags({"d": 63}, changes, li, {4: [6]}) == []

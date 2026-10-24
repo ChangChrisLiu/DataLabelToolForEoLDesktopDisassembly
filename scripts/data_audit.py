@@ -45,22 +45,25 @@ SURVEY_FIELDS = ("n_steps_cam1", "n_steps_cam2", "incomplete_steps", "ts_mismatc
 #: folders (RGB<n>1) and OAK rows (the sheet's numbering, dupli rows included).
 EYES: dict[int, str] = {
     1: "Folders are named by row; both dupli rows were photographed (RGB151, RGB331). "
-       "**Camera_1/Camera_2/RealSense capture 40 -- the 40th, which the 39-row sheet does not "
-       "have -- is the removed parts laid out on a monitor box, not a teardown step** (the "
-       "`rs_extra_from Components/001` comment says the opposite): it belongs in the "
-       "components gallery, and the index's step 38 should not exist.",
+       "Camera_1/Camera_2/RealSense capture 40 -- the 40th, which the 39-row sheet does not "
+       "have -- is the removed parts laid out on a monitor box: since round 2 it is shot "
+       "1040 of each components gallery (`oak.1.gallery_captures`), and the desktop has 37 "
+       "steps, as the sheet.",
     18: "RGB91 = row 9 (optical drive out) but RGB391 = row 40 (PSU out, OAK row 39 still "
         "has it): dupli row 30 skipped. RGB411 -> RGB421 changes nothing on the board while "
         "every later folder loses one motherboard screw: RGB421 re-shoots dupli row 43. "
         "Declared `duplicate_folders: [42]`.",
-    22: "NOT declared. The magnitudes tie 'skipped dupli 27' (0.616) and 'skipped dupli 32' "
-        "(0.614). The RAM latches decide it: RGB271 has all four closed, RGB281 one open, "
-        "RGB291 two (rows 28, 29 = RAM clip 1, 2), and RGB321 already has RAM 1 out (row 33) "
-        "-- so folders 27-31 are rows 27-31 and the scanner skipped dupli row 32 "
-        "('replacement of 31'), having photographed dupli 27 as RGB271. Proposed "
-        "`scan.22.duplicate_folders: [27]` -- please confirm on `D22/ram_latches.png`.",
+    22: "The magnitudes tie 'skipped dupli 27' (0.616) and 'skipped dupli 32' (0.614). The "
+        "frames decide it: RGB251 -> RGB261 changes nothing and RGB261 -> RGB271 unplugs the "
+        "CPU fan cable (row 26), which OAK/RS 024-026 still show and 027 does not -- the "
+        "row-26 captures were taken before the operation, and dupli 27 is step 26's real "
+        "state. The RAM clips then open one per folder, and RGB321 has RAM 1 out (row 33): "
+        "the scanner skipped dupli 32 ('replacement of 31'). Declared (round 2) "
+        "`duplicate_folders: [27]` + `replacing_folders: [27]`, and "
+        "`oak.22.dupli_replaces: [27, 32]` (RS 031 is under the scanner's striped light).",
     24: "RGB421 is the empty chassis of row 43: one row was skipped before it; the sheet's "
-        "dupli 37 ('replace the result of 36') is it. Declared `[]`.",
+        "dupli 37 ('replace the result of 36') is it. Declared `[]`; RS 036 is under the "
+        "scanner's blue light, so row 37 replaces it (`oak.24.dupli_replaces: [37]`, round 2).",
     28: "RGB91 already has the heatsink out, which OAK shows from row 10: one row skipped "
         "before folder 9 -- dupli 6. Declared `[]`. RGB41's P_0 is unexposed.",
     31: "The sheet says 'dupli (scanner also scans)' and the folders follow OAK one to one "
@@ -72,10 +75,10 @@ EYES: dict[int, str] = {
     40: "RGB371 = row 38 (motherboard out); the sheet: 'dupli (scanner does not scan)'. "
         "Declared `[]`.",
     41: "**Not a missing last capture**: RGB341 is the empty chassis (row 35). Aligned "
-        "through row 25 (SSD at 19->20, PSU at 22->23, CPU at 24->25 as in OAK); RGB331 "
-        "already has row 34's connector unplugged. So the scanner skipped one of the "
-        "motherboard-screw steps, rows 26-33 -- a real step, which `duplicate_folders` "
-        "cannot express (it needs a skipped-step rule). No rule yet.",
+        "through row 31: RGB251 CPU out (row 25), then RGB261..RGB311 lose one motherboard "
+        "screw each, at the positions OAK1 rows 27-31 lose them; RGB311 -> RGB321 loses the "
+        "two screws at the board's left edge at once (OAK1 rows 32 and 33). The scanner "
+        "skipped row 32 (screw 7): `scan.41.skipped_steps: [32]` (round 2).",
     48: "RGB241 = row 24 (PSU out), RGB251 = row 26 (a RAM clip open): the skip is dupli "
         "row 25 exactly, as the sheet says ('Dupli (scanner does not scan)'). The "
         "magnitudes put it at rows 18-23. Declared `[]`.",
@@ -83,16 +86,21 @@ EYES: dict[int, str] = {
         "too'); RGB41 -> RGB51 is the CPU fan. Declared `[6]`.",
     55: "RGB481 = row 49 (motherboard out); the sheet: 'dupli(Scanner does not scan)'. "
         "Declared `[]`.",
-    60: "NOT declared. RGB31 already has the case fan out (row 4): dupli row 3 ('dupli "
-        "scan') was skipped. 47 folders for 46 steps, so one folder re-shoots a state: the "
-        "magnitudes say RGB281 (next RGB291, bootstrap 0.82); 'Scanner rescan' notes sit on "
-        "rows 29/30/33. RGB271 -> RGB281 shows no part change in its two strongest "
-        "differences. Probably `duplicate_folders: [28]` -- please confirm. OAK row 2 shows "
-        "the case fan lifted mid-operation and row 3 has it back in place (a re-take?).",
-    61: "**Not a missing last capture**: RGB391 is the empty chassis (row 40). Aligned at row "
-        "11 (SSD), shifted by row 28 (the CPU is already out in RGB271): one step of rows "
-        "12-27 was never scanned (the PSU connectors 14/15 or the case connectors 20-26; "
-        "the magnitudes favour ~23). Needs a skipped-step rule. No rule yet.",
+    60: "RGB31 already has the case fan out (row 4): dupli row 3 ('dupli scan') was skipped. "
+        "47 folders for 46 steps: RGB271 -> RGB281 opens RAM clip 1 (row 29), RGB281 -> "
+        "RGB291 changes no clip (a cable moves), RGB291 -> RGB301 opens clip 2 -- RGB291 is "
+        "the re-scan ('Scanner rescan' on rows 29/30). Declared (round 2) "
+        "`duplicate_folders: [29]`. Camera_1 003/004 carry swapped times but the rows "
+        "follow the folders (002/003 fan lifted, 004 fan gone, as the scanner): "
+        "`oak.60.cam1_order: folder` replaces the time order.",
+    61: "**Not a missing last capture**: RGB391 is the empty chassis (row 40). Aligned "
+        "through row 19 (RGB161 PSU out = row 16; the SATA cable's two ends go at RGB181 and "
+        "RGB191 = rows 18, 19); RGB261 has the CPU lever open (row 27) and RGB271 the CPU out "
+        "(row 28). The skipped step is one of rows 20-26, the seven identical 'Case - "
+        "motherboard connector' rows, whose plugs lie under the cable bundle in every frame "
+        "-- it cannot be seen which. Declared `scan.61.skipped_steps: [26]`, the last of "
+        "them; **uncertain**: if it was an earlier one, the scanner frames of steps k..25 "
+        "each show one plug more than the sheet says (round 2).",
     62: "RGB271 -> RGB281 removes SATA 3 (row 29), RGB281 -> RGB291 the card cover (row 30), "
         "then one card per folder: the skip is dupli row 28 exactly, as the sheet says. The "
         "magnitudes favour a skip near row 18 -- wrong. Declared `[]`; OAK row 27 was shot "
@@ -100,7 +108,7 @@ EYES: dict[int, str] = {
     65: "Aligned: RGB271 -> RGB281 and RGB281 -> RGB291 each open a RAM clip (rows 28, 29), "
         "RGB301 -> RGB311 the CPU locker (row 31), RGB311 -> RGB321 the CPU (row 32). The flag "
         "comes from **RGB331, whose P_0 is black (unexposed)**: an outlier change, not a "
-        "misalignment -- check that the cache chose another shot of that burst.",
+        "misalignment -- the local cache shows RGB331/P_8 instead (section 2d).",
     9: "Counts match and the end is in step (RGB461 and OAK row 46 are the first without the "
        "motherboard). The low score is the OAK view: no chassis box found, so the whole "
        "frame (operator, tools) is compared.",
@@ -139,21 +147,72 @@ LATCHES = frozenset({"ram_latch", "cpu_socket_lever", "psu_latch", "drive_latch"
 FIRST_LAST = 0.15
 
 
-def picture_flags(rec: dict, changes: dict, li) -> list[dict]:
-    """The steps whose scanner change contradicts what the sheet says happened."""
+def capture_alignment(di, li, rows: list[dict]) -> tuple[Optional[dict[int, list[int]]], str]:
+    """Which sheet steps each Camera_1 capture (index step) is, for the picture check.
+
+    ``(None, "")`` when the sheet's rows are the captures (row ``k`` = capture
+    ``k``, as the importer and the index number them). Otherwise (U25 round 2,
+    N13) a sheet without ``dupli`` rows whose Sequence Numbers run up to the
+    capture count is aligned by them -- capture ``k`` is the rows numbered
+    ``k``: a repeated number gives its rows together (D63's 11-13), a skipped
+    one leaves its capture without a row (D56's 41). Anything else cannot be
+    told, and the desktop is not checked: ``({}, why)``.
+    """
+    captures = int(getattr(di, "n_rows", 0) or di.n_steps)
+    if li.sheet_rows == captures:
+        return None, ""
+    head = f"the sheet has {li.sheet_rows} rows for {captures} Camera_1 captures"
+    if li.dupli_rows:
+        return {}, f"{head} and dupli rows: not checked"
+    seqs: list[int] = []
+    for r in rows:
+        try:
+            seqs.append(int(float(str(r.get("Sequence Number") or "").strip())))
+        except ValueError:
+            return {}, f"{head} and a Sequence Number that is not a number: not checked"
+    if not seqs or max(seqs) != captures or len(seqs) != li.sheet_rows:
+        return {}, (f"{head}, and its Sequence Numbers (1-{max(seqs) if seqs else 0}) do "
+                    f"not say which capture has no row: not checked")
+    out: dict[int, list[int]] = {}
+    for step, q in enumerate(seqs, start=1):
+        out.setdefault(q, []).append(step)
+    twice = sorted(q for q, v in out.items() if len(v) > 1)
+    none = sorted(set(range(1, captures + 1)) - set(out))
+    parts = [f"{head}: aligned by Sequence Number"]
+    if twice:
+        parts.append(f"numbers {twice} used twice (their rows checked together)")
+    if none:
+        parts.append(f"captures {none} have no row (not checked)")
+    return out, "; ".join(parts)
+
+
+def picture_flags(rec: dict, changes: dict, li,
+                  align: Optional[dict[int, list[int]]] = None) -> list[dict]:
+    """The steps whose scanner change contradicts what the sheet says happened.
+
+    ``align`` maps an index step to the sheet steps it is (:func:`capture_alignment`);
+    ``None`` = the same number. A step that hits (a) is not tested for (b).
+    """
     out = []
-    acts: dict[int, list[tuple[str, str, str]]] = {}
+    by_sheet: dict[int, list[tuple[str, str, str]]] = {}
     for a in li.actions:
         cls = li.instances[a.target].cls if a.target in li.instances else str(a.target)
-        acts.setdefault(a.step, []).append((a.verb, cls, a.target))
-    names = {s.step: s.raw_name for s in li.steps}
+        by_sheet.setdefault(a.step, []).append((a.verb, cls, a.target))
+    sheet_names = {s.step: s.raw_name for s in li.steps}
+
+    def sheet_steps(s: int) -> list[int]:
+        return [s] if align is None else align.get(s, [])
+
     for key, m in sorted(changes.get("steps", {}).items(), key=lambda kv: int(kv[0])):
         s = int(key)
-        here = acts.get(s, [])
+        here = [a for k in sheet_steps(s) for a in by_sheet.get(k, [])]
+        name = " / ".join(str(sheet_names.get(k, "")) for k in sheet_steps(s))
+        if sheet_steps(s) != [s]:
+            name += f" (sheet row {', '.join(str(k) for k in sheet_steps(s)) or 'none'})"
         verbs = {v for v, _c, _t in here}
         leaving = [(v, c) for v, c, _t in here if v in ("remove", "displace") and c in VISIBLE_PARTS]
         if leaving and m["frac"] < NO_CHANGE:
-            out.append({"step": s, "kind": "a", "name": names.get(s, ""), "m": m,
+            out.append({"step": s, "kind": "a", "name": name, "m": m, "limit": NO_CHANGE,
                         "why": f"{'/'.join(sorted({v for v, _ in leaving}))} "
                                f"{', '.join(sorted({c for _, c in leaving}))} but no visible change"})
             continue
@@ -162,14 +221,30 @@ def picture_flags(rec: dict, changes: dict, li) -> list[dict]:
         if quiet:
             limit = max(QUIET_VERBS[v] for v in verbs)
             if m["frac"] > limit:
-                out.append({"step": s, "kind": "b", "name": names.get(s, ""), "m": m,
+                out.append({"step": s, "kind": "b", "name": name, "m": m, "limit": limit,
                             "why": f"only {'/'.join(sorted(verbs))} but {m['frac']:.0%} of the "
                                    f"chassis changed (limit {limit:.0%})"})
     fl = changes.get("first_last")
     if fl is not None and fl["frac"] < FIRST_LAST:
         out.append({"step": changes.get("last"), "kind": "c", "name": "first vs last", "m": fl,
+                    "limit": FIRST_LAST,
                     "why": f"the first and the last scanner frame differ by only {fl['frac']:.0%}"})
     return out
+
+
+def on_threshold(flag: dict) -> bool:
+    """A flag within 10 % of its limit (N14): the measure could go either way."""
+    frac, limit = flag["m"]["frac"], flag.get("limit")
+    if limit is None:
+        return False
+    if flag["kind"] == "b":
+        return frac <= 1.10 * limit
+    return frac >= 0.90 * limit
+
+
+def _pct(x: float) -> str:
+    """A fraction as a percentage, with a decimal below 1 % (0.5 %, not 0 %)."""
+    return f"{x:.1%}" if x < 0.01 else f"{x:.0%}"
 
 
 # --------------------------------------------------------------------------- #
@@ -318,7 +393,11 @@ def main(argv=None) -> int:
                 changes = load_or_compute(d, di, roi, args.diffs, paths.get("cache_dir"))
                 rows, meta = read_desktop_csv(sheet_files[d])
                 li = import_log(d, rows, meta, tax)
-                rec["pics"] = {"flags": picture_flags(rec, changes, li),
+                align, note = capture_alignment(di, li, rows)
+                rec["pics"] = {"flags": [] if align == {} else
+                               picture_flags(rec, changes, li, align),
+                               "skipped": note if align == {} else "",
+                               "aligned": note if align else "",
                                "dark": changes.get("dark_p0") or {},
                                "first_last": (changes.get("first_last") or {}).get("frac")}
             except (OSError, ValueError) as exc:
@@ -365,28 +444,33 @@ def poor(rec: dict) -> bool:
 EVIDENCE_PAIRS: dict[int, list[tuple[str, int, int]]] = {
     18: [("scan", 38, 39), ("oak1", 39, 40), ("scan", 41, 42), ("scan", 42, 43),
          ("scan", 44, 45)],
-    22: [("scan", 26, 27), ("scan", 27, 28), ("scan", 28, 29), ("scan", 31, 32)],
+    22: [("scan", 25, 26), ("scan", 26, 27), ("scan", 27, 28), ("oak1", 26, 27),
+         ("scan", 31, 32)],
     31: [("scan", 11, 12), ("scan", 12, 13), ("scan", 13, 14), ("oak1", 12, 13)],
-    41: [("scan", 19, 20), ("scan", 22, 23), ("scan", 24, 25), ("scan", 32, 33),
+    41: [("scan", 30, 31), ("scan", 31, 32), ("oak1", 31, 32), ("oak1", 32, 33),
          ("scan", 33, 34)],
     48: [("scan", 23, 24), ("scan", 24, 25), ("scan", 27, 28)],
     52: [("scan", 4, 5), ("scan", 5, 6)],
-    60: [("scan", 2, 3), ("oak1", 2, 3), ("scan", 26, 27), ("scan", 27, 28), ("scan", 28, 29)],
-    61: [("scan", 10, 11), ("scan", 15, 16), ("scan", 26, 27), ("scan", 30, 31)],
+    60: [("scan", 2, 3), ("scan", 27, 28), ("scan", 28, 29), ("scan", 29, 30)],
+    61: [("scan", 15, 16), ("scan", 17, 18), ("scan", 18, 19), ("scan", 25, 26),
+         ("scan", 26, 27)],
     62: [("scan", 26, 27), ("scan", 27, 28), ("scan", 28, 29), ("scan", 29, 30),
          ("oak1", 27, 28)],
     65: [("scan", 27, 28), ("scan", 28, 29), ("scan", 30, 31), ("scan", 31, 32),
          ("scan", 32, 33)],
 }
 #: Fixed crops (view, items, full-resolution box) for what the strongest
-#: differences do not show: D22's RAM latches.
+#: differences do not show: D22's RAM latches, D41's two left-edge screws (both
+#: gone between RGB311 and RGB321), D61's CPU lever and CPU (RGB261, RGB271).
 EVIDENCE_CROPS: dict[int, tuple[str, list[int], tuple[int, int, int, int]]] = {
     22: ("scan", [26, 27, 28, 29, 30, 31, 32, 33], (880, 700, 1060, 860)),
+    41: ("scan", [29, 30, 31, 32, 33], (330, 820, 520, 1080)),
+    61: ("scan", [24, 25, 26, 27, 28], (480, 700, 900, 1120)),
 }
 #: Whole frames side by side (view, items) -- the last folders against the last rows.
 EVIDENCE_FRAMES: dict[int, list[tuple[str, list[int]]]] = {
-    1: [("oak1", [39, 40]), ("oak2", [39, 40]), ("rs", [39, 40])],
     24: [("scan", [41, 42]), ("oak1", [42, 43])],
+    60: [("oak1", [2, 3, 4]), ("scan", [2, 3])],
     28: [("scan", [8, 9]), ("oak1", [9, 10])],
     36: [("scan", [41, 42]), ("oak1", [42, 43])],
     40: [("scan", [36, 37]), ("oak1", [37, 38])],
@@ -539,19 +623,15 @@ def report(records: list[dict], flagged: list[dict], args) -> str:
               + (f" -- {EYES[rec['d']]}" if rec["d"] in EYES else "") for rec in low] or ["- none"]
     lines += [""] + picture_section(records, args)
     lines += ["", "## 3. Method", ""] + METHOD
+    near = [(rec, f) for rec in records if rec.get("pics") for f in rec["pics"]["flags"]
+            if on_threshold(f)]
+    if near:
+        lines.append("- **On the threshold.** These picture flags are within 10 % of their "
+                     "limit, so a slightly different ROI or shot would flip them: "
+                     + ", ".join(f"D{rec['d']:02d} step {f['step']} {f['m']['frac']:.1%} "
+                                 f"(limit {_pct(f['limit'])})" for rec, f in near) + ".")
     return "\n".join(lines) + "\n"
 
-
-#: Desktops whose scanner frames are known to sit on the wrong step after some
-#: point (no rule yet), or whose sheet and cameras disagree in count: their
-#: picture flags past that point say more about the mapping than the log.
-SHIFTED = {22: "scanner one step off from row 27/32 on (D22 undeclared)",
-           41: "scanner one step off from rows 26-33 on (a skipped real step)",
-           60: "scanner one step off from about folder 28 on (D60 undeclared)",
-           61: "scanner one step off from rows 12-27 on (a skipped real step)",
-           43: "sheet 47 rows, Camera_1 48 captures", 56: "sheet 45 rows, Camera_1 46 captures",
-           63: "sheet 37 rows, Camera_1 34 captures",
-           1: "sheet 39 rows, Camera_1 40 captures (the 40th is the parts layout)"}
 
 #: What the flagged step pairs show when looked at (frames s-1 | s at full size
 #: with the blob boxed, rendered to ``D:\DataSet\.cache\tmp\u25\pics\``). The
@@ -562,30 +642,53 @@ PICTURE_EYES = {
     (2, 4): "lighting: the same glare gone again in RGB41. Not a data problem",
     (2, 33): "lighting: a blue cast on RGB331, plus the cables the disconnect moved. Not a "
              "data problem",
-    (2, 47): "real: the black part standing above the chassis and the blue part at its top "
-             "right in RGB461 are gone in RGB471, but row 47 only opens the power-module "
-             "blocker -- check the sheet for a missing removal",
+    (2, 47): "real, and logged under another verb: the blue power-module blocker itself "
+             "comes off between RGB461 and RGB471 (the sheet says `open`), and the front "
+             "panel opened at row 46 is closed back onto the chassis. No part is missing "
+             "from the sheet",
     (35, 7): "a real removal: the black bracket left of the CPU is gone in RGB71 (its screw "
              "post shows) -- black plastic on a dark board stays under 25 grey levels. Not a "
              "data problem",
     (37, 45): "a real displace, but the drive slides out of the top edge of the chassis, "
               "outside the ROI. Not a data problem",
-    (43, 47): "the motherboard is still in RGB471: the scanner has no frame of the empty "
-              "chassis; its last frame is a step behind the sheet",
-    (45, 11): "real: the PSU is pushed sideways between RGB101 and RGB111, but row 11 only "
-              "disconnects -- a `displace psu` is missing from the sheet (or belongs here)",
-    (56, 45): "the motherboard is still in RGB451: as D43, the last scanner frame is a step "
-              "behind the sheet",
+    (45, 11): "real, but the unlogged state change is step 10's: the PSU is already out of "
+              "its bay in RGB101 (row 10 \"Try to remove power module\", parsed as a failed "
+              "remove), and at row 11 it is only moved again while its second cable comes "
+              "off. The missing `displace psu` belongs to step 10",
     (59, 41): "lighting: a violet glare over the lower half of RGB411 (the whole burst); no "
               "part moved. Not a data problem",
     (59, 42): "lighting: the same glare gone again in RGB421. Not a data problem",
-    (60, 46): "the motherboard is still in RGB461: the known D60 one-step shift (undeclared)",
-    (63, 32): "real: the chassis is turned about 90 degrees between RGB311 and RGB321 (and "
-              "again for 33 and 34) to reach the motherboard screws; the sheet has no "
-              "reorient row",
-    (63, 33): "real: turned again (see step 32)",
-    (63, 34): "real: turned again (see step 32)",
 }
+#: What each looked-at flag is, for the summary line of 2c.
+PICTURE_KIND = {
+    (2, 3): "lighting", (2, 4): "lighting", (2, 33): "lighting", (59, 41): "lighting",
+    (59, 42): "lighting",
+    (35, 7): "measure", (37, 45): "measure",
+    (2, 47): "sheet", (45, 11): "sheet",
+}
+PICTURE_KIND_WORDS = {
+    "lighting": "lighting on part of the chassis (not a data problem)",
+    "measure": "real changes the measure cannot see (not a data problem)",
+    "sheet": "real changes the sheet records under another verb or step",
+    "unlogged": "real changes the sheet does not log",
+    "scanner": "scanner frames off a step",
+}
+
+
+def picture_summary(flagged: list[tuple[dict, dict]]) -> str:
+    """``"10 flags: 5 lighting ..., 0 scanner frames off a step"`` (N13)."""
+    counts = {k: 0 for k in PICTURE_KIND_WORDS}
+    unread = 0
+    for rec, f in flagged:
+        kind = PICTURE_KIND.get((rec["d"], f["step"]))
+        if kind is None:
+            unread += 1
+        else:
+            counts[kind] += 1
+    parts = [f"{n} {PICTURE_KIND_WORDS[k]}" for k, n in counts.items()]
+    if unread:
+        parts.append(f"{unread} not looked at yet")
+    return f"{len(flagged)} flag(s): " + "; ".join(parts) + "."
 
 
 def picture_section(records: list[dict], args) -> list[str]:
@@ -610,13 +713,28 @@ def picture_section(records: list[dict], args) -> list[str]:
         m = f["m"]
         blob = f"{m['blob']} ({m['blob_frac']:.1%})" if m.get("blob") else "-"
         eyes = PICTURE_EYES.get((rec["d"], f["step"]))
-        note = "; ".join(x for x in (SHIFTED.get(rec["d"], ""),
+        note = "; ".join(x for x in ("**on the threshold**" if on_threshold(f) else "",
                                      f"**by eye:** {eyes}" if eyes else "") if x)
         name = str(f["name"]).replace("|", "/")
         lines.append(f"| {rec['d']} | {f['step']} | {name} | ({f['kind']}) {f['why']} | "
                      f"{m['frac']:.1%} | {blob} | {note} |")
     if not flagged:
         lines.append("| - | - | - | none | - | - | - |")
+    lines += ["", "By eye: " + picture_summary(flagged)]
+    near = [(rec, f) for rec, f in flagged if on_threshold(f)]
+    if near:
+        lines += ["", "On the threshold (within 10 % of the limit, the measure could go either "
+                  "way): " + ", ".join(f"D{rec['d']:02d} step {f['step']} {f['m']['frac']:.1%} "
+                                       f"(limit {_pct(f['limit'])})" for rec, f in near) + "."]
+    skipped = [(rec["d"], rec["pics"]["skipped"]) for rec in records
+               if rec.get("pics") and rec["pics"].get("skipped")]
+    aligned = [(rec["d"], rec["pics"]["aligned"]) for rec in records
+               if rec.get("pics") and rec["pics"].get("aligned")]
+    if skipped or aligned:
+        lines += ["", "Where the sheet's rows are not the Camera_1 captures, the sheet's step "
+                  "is found by its Sequence Number; where that cannot be told, the desktop is "
+                  "not checked:", ""]
+        lines += [f"- D{d:02d}: {note}" for d, note in aligned + skipped]
     dark = [(rec["d"], rec["pics"]["dark"]) for rec in records
             if rec.get("pics") and rec["pics"]["dark"]]
     lines += ["", "### 2d. Scanner shots replaced within the burst", "",
@@ -677,10 +795,14 @@ def pictures_cell(rec: dict) -> str:
     pics = rec.get("pics")
     if not pics:
         return "-"
+    if pics.get("skipped"):
+        return "not checked: sheet rows are not the captures (2c)"
     kinds = {}
     for f in pics["flags"]:
         kinds[f["kind"]] = kinds.get(f["kind"], 0) + 1
     parts = [f"({k}) {n}" for k, n in sorted(kinds.items())] or ["no contradiction"]
+    if pics.get("aligned"):
+        parts.append("rows aligned by Sequence Number")
     if pics.get("first_last") is not None:
         parts.append(f"first->last {pics['first_last']:.0%}")
     if pics["dark"]:
@@ -766,9 +888,14 @@ METHOD = [
     "visible from above with < 0.5 %; (b) only unscrew / release (> 15 %), disconnect "
     "(> 25 %) or a latch opened (> 20 %); (c) first vs last < 15 %. RAM modules, CPUs and "
     "expansion cards are not held to (a): edge-on or a few pixels square at 256 px, their "
-    "visible removals measure under 0.5 %. The measure compares grey levels, so a lamp or "
-    "glare that lights one part of the chassis and not the rest is a change too: the "
-    "**by eye** notes in 2c say which flags are that.",
+    "visible removals measure under 0.5 %. A step that hits (a) is not tested for (b). The "
+    "sheet's step of a scanner step is the same number where the sheet's rows are the "
+    "Camera_1 captures; where they are not, it is found by the rows' Sequence Numbers "
+    "(capture k = the rows numbered k; D56's skipped 41 leaves a capture without a row, "
+    "D63's repeated 11-13 put two rows on one capture), and a desktop whose numbers cannot "
+    "say it (D43: 47 rows numbered 1-47 for 48 captures) is not checked. The measure "
+    "compares grey levels, so a lamp or glare that lights one part of the chassis and not "
+    "the rest is a change too: the **by eye** notes in 2c say which flags are that.",
     "- **RealSense column.** The same check against the RealSense frames where every row has "
     "one -- a second opinion only: its view of the chassis is smaller and the correlations are "
     "lower (a third of the desktops below 0.3), so a RealSense flag alone is not acted on.",

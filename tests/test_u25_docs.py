@@ -46,3 +46,17 @@ def test_the_data_audit_is_committed():
         < text.index("## 3. Method")
     for d in range(1, 67):
         assert f"\n| {d} |" in text, d
+
+
+def test_spec_states_the_round_2_rules():
+    body = _body()
+    section = body.split("### 2.2 统一索引", 1)[1].split("### 2.3", 1)[0]
+    for needed in ("`scan.<d>.skipped_steps: [k]`", "`oak.<d>.cam1_order: folder`",
+                   "`oak.<d>.gallery_captures: [文件夹]`", "`1000 + 文件夹号`",
+                   "手写的状态事件", "`op_log`", "已经没有了", "`desktop.meta.index_dupli_rows`",
+                   "**`import-logs` 只在库里的帧按这张表的收拢编号装过时才写**",
+                   "`index_v2_20261024.json`", "`extra_shot_drafts_skipped`"):
+        assert needed in section, needed
+    first = next(line for line in body.split("## 14. 修订记录", 1)[1].splitlines()
+                 if line.startswith("- **v1.25"))
+    assert "**第二轮**" in first and "D41 `[32]`" in first and "D61 `[26]`" in first
