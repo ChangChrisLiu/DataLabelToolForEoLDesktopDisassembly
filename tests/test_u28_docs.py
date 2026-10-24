@@ -1,0 +1,60 @@
+"""Task U28: the docs say what 「拆前 / 拆后」 does; the guide's prose does not grow.
+
+The guide is left alone (its prose is at the 7700 limit and the pair explains
+itself: the captions, the log's line, the toggle's tooltip); the quickstart's
+「主视角」 section gets two sentences, the spec a paragraph in §4.5 after the
+U23 one, and v1.28 on top of §14.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+from tda.ui.locator_pair import NO_CHANGE, NO_DIFF, POSE_BREAK
+
+ROOT = Path(__file__).resolve().parents[1]
+GUIDE = ROOT / "docs" / "annotation_guide.md"
+QUICK = ROOT / "docs" / "trial_quickstart.md"
+SPEC = ROOT / "docs" / "superpowers" / "specs" / "2026-09-17-teardown-annotator-design.md"
+
+
+def test_the_guide_prose_stays_within_its_limit():
+    body = GUIDE.read_text(encoding="utf-8")
+    prose = [line for line in body.splitlines() if not line.startswith("| `")]
+    assert sum(len(line) for line in prose) <= 7700
+
+
+def test_the_quickstart_says_it_in_two_sentences_of_the_dock_section():
+    body = QUICK.read_text(encoding="utf-8")
+    head = "### 换到 OAK / RealSense 以后：「主视角」小窗"
+    section = body.split(head, 1)[1].split("\n#", 1)[0].replace("\n", "")
+    for needed in ("第一次标某个零件时", "扫描仪视角也一样", "「拆前 / 拆后」", "被拆走（或第一次变状态）",
+                   "前后两步的扫描仪画面", "裁到同一处", "「第 8 帧：Heatsink · remove」",
+                   "「拆前/拆后」按钮随时切换"):
+        assert needed in section, needed
+    assert len(section) < 420
+
+
+def test_the_spec_has_the_paragraph_after_u23_and_v1_28_on_top():
+    body = SPEC.read_text(encoding="utf-8")
+    section = body.split("### 4.5 界面布局", 1)[1].split("### 4.6", 1)[0]
+    assert section.index("**主视角（v1.23，U23）**") < section.index("**拆前 / 拆后（v1.28，U28）**")
+    para = section.split("**拆前 / 拆后（v1.28，U28）**", 1)[1]
+    for needed in ("**离开的那一步 r**", "「拆前 第 r−1 帧」/「拆后 第 r 帧」", "**r 取编译后的状态时间线**",
+                   "级联已折进去", "`removed` 或 `displaced`", "第一次状态变化", NO_CHANGE,
+                   "**两帧裁到同一个窗口**", "r−1 帧上的外框", "最大连通区", "长边 512 px",
+                   "ROI 外扩 5 %", "2 % 的边框", POSE_BREAK, NO_DIFF, "0.02 %", "放大 1.6 倍",
+                   "帧长边的 1/6", "`crop_rect`", "整帧小图", "「第 8 帧：Heatsink · remove」",
+                   "「随 散热片 一起拆走」", "(a)", "**当前视角**", "`shape_keyframe`",
+                   "切分副本也算形状", "单帧像素", "**任何视角都一样，扫描仪视角也是**", "(b)",
+                   "「拆前/拆后」按钮", "换了零件就忘", "不加快捷键", "(c)", "照旧是主视角画面",
+                   "小窗照旧隐藏", "(d)", "`locator/open` 的意思不变", "什么都不读",
+                   "一次索引查询", "65–75 ms", "0.2 ms"):
+        assert needed in para, needed
+    changes = body.split("## 14. 修订记录", 1)[1]
+    first = next(line for line in changes.splitlines() if line.startswith("- "))
+    assert first.startswith("- **v1.28（2026-10-24）**：**拆前 / 拆后**（U28，§4.5）")
+    for needed in ("第一次标", "`removed` / `displaced`", "级联", "1.6 倍", "1/6", "随 … 一起拆走",
+                   "扫描仪视角", "「拆前/拆后」按钮", "无快捷键", "`locator/open` 不变",
+                   "`pairs` / `diffs`"):
+        assert needed in first, needed
+    assert changes.index("- **v1.28") < changes.index("- **v1.24")
