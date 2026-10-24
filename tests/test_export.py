@@ -219,13 +219,19 @@ def test_annotation_geometry_and_attributes(db, tax, tmp_path: Path):
         "visibility_reviewed": False,
         "amodal_complete": False, "implied": False, "tier": "gold", "verified": True,
     }
-    assert "amodal_segmentation" not in psu   # only a part 被线挡住 carries it (U15)
+    # every mask annotation carries its whole shape (U26; U15 gave it to a part
+    # 被线挡住 only): nothing covers the psu, so it is the visible mask
+    assert psu["amodal_segmentation"] == psu["segmentation"]
+    assert (psu["amodal_bbox"], psu["amodal_area"]) == ([5, 10, 20, 20], 400)
 
     screw = _ann_of(doc, 1, SCREW)
     assert screw["bbox"] == [50, 40, 8, 8]
     assert screw["area"] == 64
     assert screw["attributes"]["state"] == "fastened"
     assert screw["attributes"]["amodal_complete"] is None  # no keyframe for the screw
+    # ... so no shape either: its pixels are a 「只改这一帧」 mask's
+    assert (screw["amodal_segmentation"], screw["amodal_bbox"], screw["amodal_area"]) == (
+        None, None, None)
 
     # the segmentation really is the seeded mask
     coco = COCO(str(out))
