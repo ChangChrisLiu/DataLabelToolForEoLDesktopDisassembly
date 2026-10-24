@@ -259,17 +259,19 @@ def _prepare_truth(db, tax, desktops: Sequence[int], view: str,
     hundreds of missing shapes. The exports keep the digest shortcut.
 
     Returns ``{"truth", "desktops", "view", "steps", "updated", "conflicts",
-    "closed", "overtaken", "problems", "pending"}``; ``pending`` is what is
-    *still* queued afterwards, which is what the exports refuse on, ``closed``
-    the conflicts closed because the inputs agree with the frozen rows again
-    (U6), and ``overtaken`` the ones a newer disagreement replaced (U7).
+    "closed", "overtaken", "problems", "empty_visible", "pending"}``;
+    ``pending`` is what is *still* queued afterwards, which is what the exports
+    refuse on, ``closed`` the conflicts closed because the inputs agree with
+    the frozen rows again (U6), ``overtaken`` the ones a newer disagreement
+    replaced (U7), and ``empty_visible`` the reason behind every
+    ``empty_visible`` problem (U26, :mod:`tda.core.empty_visible`).
     """
     from tda.core.truth import TruthService
 
     truth = TruthService(db, tax)
     total = {"truth": truth, "desktops": list(desktops), "view": str(view),
              "steps": 0, "updated": 0, "conflicts": 0, "closed": 0, "overtaken": 0,
-             "problems": [], "pending": []}
+             "problems": [], "empty_visible": [], "pending": []}
     for desktop in desktops:
         runner = getattr(truth, "run_pending_rechecks", None)
         if callable(runner):
@@ -290,6 +292,7 @@ def _prepare_truth(db, tax, desktops: Sequence[int], view: str,
             total["closed"] += int(stats.get("closed", 0))
             total["overtaken"] += int(stats.get("overtaken", 0))
             total["problems"].extend(stats.get("problems") or [])
+            total["empty_visible"].extend(stats.get("empty_visible") or [])
         total["pending"].extend(_pending_rechecks(truth, int(desktop), str(view)))
     return total
 
@@ -344,6 +347,12 @@ def cmd_check(args: argparse.Namespace) -> int:
     open, and the re-checks still queued. A desktop with none of the first and
     six of the second is not a desktop to export, and answering 0 there was how
     an open conflict survived all the way into a release artefact.
+
+    A part covered completely by labelled parts (or a hand, a tool, a label)
+    is not one of the problems (task U26): its empty visible mask is what the
+    layers should give, and it is one summary line, 「n 个零件完全被挡住（正常）」.
+    An empty visible mask with no such reason -- nothing drawn -- still is
+    (:mod:`tda.core.empty_visible`).
     """
     with session(args, lock=True) as (_paths, db):
         desktop = int(args.desktop)
@@ -359,7 +368,12 @@ def _check_one(db, tax, args: argparse.Namespace, desktop: int, view: str) -> in
     # every frame compiled, as on a first run: a digest-skipped frame reports
     # no problems, and a check has to see them all every time
     stats = _prepare_truth(db, tax, [desktop], view, refresh=True, ignore_digest=True)
-    problems = list(stats["problems"])
+    # a part covered completely is what the layers should give, not a problem
+    # (U26): one summary line; an empty mask with no reason stays listed
+    from tda.core.empty_visible import split_problems
+
+    problems, expected = split_problems(list(stats["problems"]), stats["empty_visible"])
+    unexplained = [row for row in stats["empty_visible"] if not row.expected]
     standing = _open_conflicts(stats["truth"], db, [desktop], view)
     # a confirmed frame whose card still has an open ✂ row ships the new state
     # next to the old shape (U8 round 2): visible here, not only on the card
@@ -407,6 +421,7 @@ def _check_one(db, tax, args: argparse.Namespace, desktop: int, view: str) -> in
     if stats["pending"]:
         print(f"[check] {len(stats['pending'])} frames are still queued for "
               f"a re-check: {sorted(stats['pending'])[:10]}")
+    _print_empty_visible(expected, unexplained)
     if stale:
         print(f"[check] {len(stale)} confirmed frame(s) still carry the shape from "
               f"before their state changed ({SHAPE_PREDATES_STATE}, Q there): "
@@ -433,6 +448,30 @@ def _check_one(db, tax, args: argparse.Namespace, desktop: int, view: str) -> in
     print(f"problems: {len(problems)}")
     print(f"open conflicts: {standing}")
     return EXIT_ERROR if (problems or standing or stats["pending"]) else EXIT_OK
+
+
+def _print_empty_visible(expected: Sequence, unexplained: Sequence) -> None:
+    """The empty visible masks: one line for the expected ones, one for the rest (U26).
+
+    ``expected`` are the rows whose emptiness is what the frame should show,
+    ``unexplained`` the ones listed with the problems; each is an
+    :class:`~tda.core.empty_visible.EmptyVisible`. A part counts once however
+    many frames it is hidden on; the frames are given beside it.
+    """
+    from tda.core.empty_visible import COVERED
+
+    hidden = [row for row in expected if row.reason == COVERED]
+    absent = [row for row in expected if row.reason != COVERED]
+    if hidden:
+        print(f"[check] {len({row.instance for row in hidden})} 个零件完全被挡住（正常）："
+              f"{len(hidden)} 个零件帧，不算问题")
+    if absent:
+        print(f"[check] {len({row.instance for row in absent})} 个零件标了看不见（正常）："
+              f"{len(absent)} 个零件帧，不算问题")
+    if unexplained:
+        print(f"[check] {len(unexplained)} 个零件帧什么都看不见、也没有原因（empty_visible，"
+              f"列在下面）: "
+              + ", ".join(f"{row.instance}@{row.step}" for row in unexplained[:10]))
 
 
 def _add_check(sub) -> None:
@@ -570,6 +609,11 @@ def cmd_export_coco(args: argparse.Namespace) -> int:
                 allow_conflicts=bool(args.allow_conflicts),
                 only_verified=bool(args.only_verified),
                 roi_crop=bool(args.roi_crop), truth=truth,
+                # passed only to switch the amodal shapes or the hidden parts
+                # off (U26): the defaults are the exporter's own, and one that
+                # predates the keywords runs
+                **({} if getattr(args, "amodal", True) else {"amodal": False}),
+                **({} if getattr(args, "hidden", True) else {"hidden": False}),
             )
             if not _count(stats, "annotations"):
                 worst = max(worst, _nothing_exported("export-coco", view, out,
@@ -580,9 +624,28 @@ def cmd_export_coco(args: argparse.Namespace) -> int:
             outside = _context_count(stats)
             note = (f" ({outside} of them context objects outside the machine)"
                     if outside else "")
+            _report_amodal(stats)
             print(f"[export-coco] {_count(stats, 'images')} images, "
                   f"{_count(stats, 'annotations')} annotations{note} -> {out}")
         return worst
+
+
+def _report_amodal(stats: dict) -> None:
+    """The parts hidden completely, and the shapes a visible mask had to widen (U26).
+
+    Before the total, which stays the last line: it is the one a script reads.
+    """
+    found = stats.get("annotations")
+    info = stats.get("info") if isinstance(stats.get("info"), dict) else {}
+    if isinstance(found, list):
+        crowd = sum(1 for ann in found if isinstance(ann, dict) and ann.get("iscrowd"))
+        if crowd:
+            print(f"[export-coco] {crowd} annotation(s) are parts hidden completely: "
+                  f"empty segmentation, iscrowd 1, bbox = the amodal box")
+    union = int(info.get("amodal_union_rows") or 0)
+    if union:
+        print(f"[export-coco] {union} annotation(s) had visible pixels outside the compiled "
+              f"shape: exported with amodal = amodal | visible (their union)")
 
 
 def _add_export_coco(sub) -> None:
@@ -592,7 +655,18 @@ def _add_export_coco(sub) -> None:
     p.add_argument("--out", default=None,
                    help="one output file; only with a single view (without it each "
                         "view is written to <cache_dir>/coco_<view>.json)")
-    p.add_argument("--roi-crop", action="store_true", help="crop to the pose-segment ROI")
+    p.add_argument("--roi-crop", action="store_true",
+                   help="crop to the pose-segment ROI (the amodal shapes too)")
+    p.add_argument("--amodal", dest="amodal", action="store_true", default=True,
+                   help="give every mask annotation its whole shape: amodal_segmentation, "
+                        "amodal_bbox, amodal_area (the default)")
+    p.add_argument("--no-amodal", dest="amodal", action="store_false",
+                   help="leave the amodal fields out, for a smaller file")
+    p.add_argument("--hidden", dest="hidden", action="store_true", default=True,
+                   help="export a part the labelled parts cover completely as a crowd "
+                        "region with its amodal shape (the default)")
+    p.add_argument("--no-hidden", dest="hidden", action="store_false",
+                   help="leave the completely covered parts out")
     p.add_argument("--only-verified", dest="only_verified", action="store_true",
                    default=True, help="export confirmed rows only (the default)")
     p.add_argument("--no-only-verified", dest="only_verified", action="store_false",

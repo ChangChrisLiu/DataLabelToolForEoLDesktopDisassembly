@@ -22,7 +22,6 @@ from pathlib import Path
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from tda.core.export.coco import export_coco
 from tda.core.model import FrameKey
 from tda.core.truth import TruthService
 from tda.ui import session_api as api
@@ -74,6 +73,19 @@ def _drawn(session) -> None:
     session.goto(10)
     draw(session, CHASSIS, cell(1), api.SCOPE_KEYFRAME)
     draw(session, COOLER, cell(2), api.SCOPE_KEYFRAME)
+
+
+def export_coco(*args, **kw):
+    """The export's truth-table refresh alone: ``amodal=False, hidden=False``.
+
+    The amodal shapes (task U26) are not stored and cost one compilation per
+    exported frame on every export, whatever the digests say -- and a part
+    hidden completely needs its shape for its box; ``tests/test_u26_export.py``
+    counts those. What is under test here is the refresh in front of them.
+    """
+    from tda.core.export.coco import export_coco as real
+
+    return real(*args, amodal=False, hidden=False, **kw)
 
 
 # --------------------------------------------------------------------------- #

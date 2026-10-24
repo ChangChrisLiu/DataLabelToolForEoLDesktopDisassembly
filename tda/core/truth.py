@@ -59,6 +59,7 @@ from tda.core.cache import configured_cache_dir
 from tda.core.compiler import CompiledFrame, compile_frame, select_keyframe
 from tda.core.db import RESOLUTIONS, Db
 from tda.core.context import context_reach
+from tda.core.empty_visible import empty_visible
 from tda.core.model import (
     CONTEXT_PLACEMENT,
     FrameKey,
@@ -521,10 +522,17 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
         because their frozen rows agree with the inputs again (U6), and
         ``overtaken`` the ones a newer disagreement replaced (U7); ``cli check``
         and the exports print both.
+
+        ``empty_visible`` holds one :class:`~tda.core.empty_visible.EmptyVisible`
+        per ``empty_visible`` problem, in the order of the problems, with the
+        reason the visible mask is empty -- which ``cli check`` needs to tell a
+        part covered completely (expected) from one with nothing drawn (task
+        U26). ``problems`` itself is unchanged.
         """
         cache = InputCache()
         total: dict = {counter: 0 for counter in REFRESH_COUNTERS}
         total["problems"] = {} if per_step else []
+        total["empty_visible"] = []
         for step in steps:
             one = self.refresh(FrameKey(desktop, int(step), view), cache,
                                ignore_digest=ignore_digest)
@@ -534,6 +542,8 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
                 total["problems"][int(step)] = list(one["problems"])
             else:
                 total["problems"].extend(one["problems"])
+            if one.get("compiled") is not None:
+                total["empty_visible"].extend(empty_visible(one["compiled"], int(step)))
         return total
 
     # ------------------------------------------------------- pending rechecks

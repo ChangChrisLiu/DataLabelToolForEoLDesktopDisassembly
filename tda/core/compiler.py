@@ -85,7 +85,10 @@ Problems reported in :attr:`CompiledFrame.problems`
   it is treated as being above everything else in its group.
 * ``zorder_cycle:<a>,<b>`` -- contradictory pairwise overrides.
 * ``empty_visible:<instance>`` -- a mask instance whose visible mask came out
-  empty and that has no frame override to explain it.
+  empty and that has no frame override to explain it. A note, not a fault:
+  most are parts the layers above cover completely (``occluded_full``), and
+  ``cli check`` counts only the ones with no such reason -- nothing drawn --
+  as problems (:mod:`tda.core.empty_visible`, task U26).
 """
 from __future__ import annotations
 
