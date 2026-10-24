@@ -398,7 +398,10 @@ def test_the_quickstart_has_the_u22_note_first_in_section_6():
 def test_the_spec_has_v1_22_on_top_with_the_whole_table():
     body = SPEC.read_text(encoding="utf-8")
     changes = body.split("## 14. 修订记录", 1)[1]
-    first = next(line for line in changes.splitlines() if line.startswith("- "))
+    entries = [line for line in changes.splitlines() if line.startswith("- ")]
+    # on top when it landed; U23's v1.23 has gone above it since
+    assert entries[0].startswith(("- **v1.22", "- **v1.23"))
+    [first] = [e for e in entries[:2] if e.startswith("- **v1.22")]
     assert first.startswith("- **v1.22（2026-10-23）**：**左手键**（U22，§4.6）")
     for name, keys in MAP.items():
         if name in ("confirm", "tool_eraser", "flash_compare", "review_rework",
