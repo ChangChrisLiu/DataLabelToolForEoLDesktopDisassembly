@@ -13,11 +13,14 @@ can decide is here:
   on screen yet -- the first time it is annotated there (a keyframe, a cut
   copy of one, or one frame's own pixels all count as a shape) -- or when the
   annotator asked for it with the toggle next to the panel's caption; the
-  toggle also puts the location back.  Its choice holds for that part until
-  the part on screen is another.  Otherwise the location is up on the OAK /
-  RealSense views and the dock is down on the scanner view (it *is* the
-  scanner view).  Never on a components-gallery shot (a shot is not a step),
-  never in Steps (no frame on screen).
+  toggle also puts the location back.  Its choice is kept by ``(machine,
+  part)`` -- it follows the part to the other views -- until the part on
+  screen is another.  Otherwise the location is up on the OAK / RealSense
+  views and the dock is down on the scanner view (it *is* the scanner view);
+  while it is down there only because the part is drawn, the top bar's
+  「主视角」 asks for that part's pair instead of closing anything.  Never on
+  a components-gallery shot (a shot is not a step), never in Steps (no frame
+  on screen).
 * **whether the annotator wants it.**  The title bar's close button, the
   window's own dock menu and the 「主视角」 toggle on the top bar all set one
   flag, kept in the window's INI (``locator/open``, open by default) so a
@@ -57,7 +60,7 @@ from tda.ui.panels.locator_pair import PAIR_TIP
 
 __all__ = ["KIND_PAIR", "KIND_SCENE", "LOCATOR_HEIGHT", "LOCATOR_MODES", "LOCATOR_VIEWS",
            "LocatorMixin", "NOT_ON_THIS_VIEW", "PAIR_VIEWS", "SETTING", "TOGGLE_TIP",
-           "locator_toggle_button"]
+           "TOGGLE_TIP_DOWN", "TOP_NEEDS_PART", "locator_toggle_button"]
 
 #: The views the location scene shows on: the sequence's cameras other than the scanner.
 LOCATOR_VIEWS: tuple[str, ...] = tuple(v for v in VIEWS if v != SCAN)
@@ -78,6 +81,11 @@ TOGGLE_TIP = ("主视角：在 OAK / RealSense 的帧旁边显示扫描仪视角
 NOT_ON_THIS_VIEW = ("主视角只在拆解帧上显示（标注、复查模式）"
                     " / the scanner locator shows on frames of the teardown")
 PAIR_TIP_NO_PART = "拆前/拆后：先选中一个零件 / select a part first"
+#: The top bar's 「主视角」 on the scanner view while the part is drawn there (N2).
+TOGGLE_TIP_DOWN = ("主视角：扫描仪视角里已经画过这个零件，小窗收着；点一下看它的拆前 / 拆后"
+                   " / show this part's before / after frames")
+#: ... pressed there with no part to show it for.
+TOP_NEEDS_PART = "先选中一个零件，再按「主视角」看它的拆前 / 拆后 / select a part first"
 
 
 def locator_toggle_button() -> QToolButton:
@@ -264,6 +272,7 @@ class LocatorMixin:
             self._pair_choice = None           # the toggle answered for another part
         kind = self.locator_kind(fresh)
         self._locator_key = stamp
+        self._tip_locator_button(kind is None)
         if kind is None:                       # the scanner view, the part drawn there
             if not self.locator_dock.isHidden():
                 self.locator_dock.setVisible(False)
@@ -321,6 +330,15 @@ class LocatorMixin:
             button.setEnabled(bool(applies))
             button.setToolTip(TOGGLE_TIP if applies else f"{TOGGLE_TIP}\n{NOT_ON_THIS_VIEW}")
 
+    def _tip_locator_button(self, down_for_part: bool) -> None:
+        """The top bar's tooltip says what a press does now (N2)."""
+        button = getattr(self, "locator_button", None)
+        if button is None or not button.isEnabled():
+            return
+        tip = TOGGLE_TIP_DOWN if down_for_part else TOGGLE_TIP
+        if button.toolTip() != tip:
+            button.setToolTip(tip)
+
     def _want_locator(self, wanted: bool) -> None:
         if self.closed:          # a floating dock closed with the window is no wish
             return
@@ -328,9 +346,35 @@ class LocatorMixin:
         self.settings.setValue(SETTING, bool(wanted))
         self.follow_locator(force=True)
 
+    def locator_down_for_part(self) -> bool:
+        """Is the dock down only because of the part (the scanner view, drawn there)?
+
+        The annotator wants it and the frame is one it belongs next to; the
+        part on screen just has nothing to show there.  In that state the top
+        bar's 「主视角」 asks for the part's 「拆前 / 拆后」 instead of closing
+        a dock that is not even up (round 2, N2).
+        """
+        return (bool(getattr(self, "_locator_ready", False)) and not self.closed
+                and self.locator_applies() and bool(self.locator_wanted)
+                and self.locator_dock.isHidden())
+
     @S.guard
     def act_toggle_locator(self, checked: bool) -> None:
-        """The top bar's 「主视角」: open or close the panel, remembered."""
+        """The top bar's 「主视角」: open or close the panel, remembered.
+
+        While the dock is down only because of the part (:meth:`locator_down_for_part`)
+        a press shows that part's 「拆前 / 拆后」 and leaves the wish
+        (``locator/open``) as it is.
+        """
+        if self.locator_down_for_part():
+            self._sync_locator_button(True)          # the click unticked it: the wish stands
+            target = self.locator_target()
+            if not target or not self._locator_own_shapes(target)[0]:
+                self.report(TOP_NEEDS_PART)
+                return
+            self._pair_choice = (int(self.session.current().desktop), str(target), True)
+            self.follow_locator(force=True)
+            return
         self._want_locator(bool(checked))
         if checked and not self.locator_applies():
             self.report(NOT_ON_THIS_VIEW)

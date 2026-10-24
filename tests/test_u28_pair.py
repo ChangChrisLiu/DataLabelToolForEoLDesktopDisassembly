@@ -33,13 +33,17 @@ from tda.core.model import ActionRec, FrameKey, ShapeKeyframe, ShapePart, StateE
 from tda.core.truth import TruthService
 from tda.core.truth_inputs import events_of
 from tda.ui.locator_pair import (
+    DIFF_GUESS,
     MIN_SIDE_FRAC,
+    NO_AFTER,
     NO_BEFORE,
     NO_CHANGE,
     NO_DIFF,
+    NO_DIFF_ROI,
     PAD,
     POSE_BREAK,
     change_window,
+    change_windows,
     leaving_steps,
 )
 from tda.ui.locator_source import LocatorSource
@@ -190,6 +194,31 @@ def test_of_two_blobs_the_largest_wins():
     assert frac[0] * 400 >= 240 and frac[1] * 300 >= 190
 
 
+def test_up_to_three_candidates_largest_first():
+    before, after = _pictures()
+    after[20:40, 20:40] = 230              # 400 px
+    after[200:260, 250:350] = 10           # 6000 px
+    after[100:150, 60:110] = 230           # 2500 px
+    after[260:280, 20:40] = 230            # 400 px: a fourth, left out
+    found = change_windows(before, after)
+    assert len(found) == 3
+    lefts = [round(f[0] * 400) for f in found]
+    assert abs(lefts[0] - 250) <= 4 and abs(lefts[1] - 60) <= 4 and abs(lefts[2] - 20) <= 4
+    assert change_window(before, after) == found[0]
+
+
+def test_the_floor_counts_the_changed_pixels_before_the_morphology():
+    """N4: 12 x 12 px of a 1024 px frame is 0.014 %, under the 0.02 % floor."""
+    rng = np.random.default_rng(3)
+    base = rng.integers(60, 80, size=(1024, 1024, 3), dtype=np.uint8)
+    small = base.copy()
+    small[500:512, 500:512] = 230
+    assert change_windows(base, small) == []
+    larger = base.copy()
+    larger[500:520, 500:520] = 230                         # 0.04 %
+    assert len(change_windows(base, larger)) == 1
+
+
 def test_a_difference_below_the_floor_is_none():
     before, after = _pictures()
     assert change_window(before, after) is None                # nothing at all
@@ -235,7 +264,9 @@ def test_the_window_is_what_changed_when_it_was_never_drawn(scene):
     _session, source = scene
     before = source.stats["diffs"]
     pair = source.pair(DESKTOP, SSD)            # out at 10: not drawn at 14
-    assert pair.window_source == "diff" and pair.note == ""
+    # a guess, and the note says so (round 2, B2)
+    assert pair.window_source == "diff" and pair.note == DIFF_GUESS
+    assert pair.geometry is None and pair.window == pair.candidates[0]
     x0, y0, x1, y1 = pair.window
     assert 18 <= y0 and y1 <= 34                 # the moving square's rows (20-32)
     assert source.stats["diffs"] == before + 1
@@ -264,7 +295,8 @@ def test_a_scanner_roi_set_later_limits_the_difference(scene):
     session.db.conn.commit()
     pair = source.pair(DESKTOP, SSD)          # rebuilt: the ROI is one of its inputs
     assert pair.roi == (40.0, 40.0, 60.0, 60.0)
-    assert pair.window is None and pair.note == NO_DIFF   # nothing moved in there
+    # nothing moved in there -- which is all it can say (round 2, N9)
+    assert pair.window is None and pair.note == NO_DIFF_ROI
 
 
 def test_two_identical_frames_are_shown_whole_with_a_note(qapp, tmp_path):
@@ -297,12 +329,48 @@ def test_a_pose_break_between_the_two_frames_shows_them_whole(qapp, tmp_path):
 
 
 def test_a_missing_scanner_frame_falls_back_and_says_so(scene):
+    """Round 2, B1: 拆后 is never the 拆前 picture -- a later frame, or none."""
     session, source = scene
     session.db.set_frame_flags(FrameKey(DESKTOP, 10, "scan"), missing=True)
     pair = source.pair(DESKTOP, SSD)
-    assert pair.asked == (9, 10) and pair.steps == (9, 9)
-    assert pair.captions == ("拆前 第 9 帧", "拆后 第 9 帧（第 10 帧扫描仪没有图）")
-    assert pair.note == NO_DIFF                 # the same picture twice
+    assert pair.asked == (9, 10) and pair.steps == (9, 11)       # the nearest later one
+    assert pair.captions == ("拆前 第 9 帧", "拆后 第 11 帧（第 10 帧扫描仪没有图）")
+    assert pair.images[0] is not pair.images[1]
+    assert pair.window_source == "diff"
+    # no later frame at all: the slot stays empty, nothing is compared
+    for step in range(11, LAST_STEP + 1):
+        session.db.set_frame_flags(FrameKey(DESKTOP, step, "scan"), missing=True)
+    diffs = source.stats["diffs"]
+    pair = source.pair(DESKTOP, SSD)
+    assert pair.steps == (9, None) and pair.images[1] is None
+    assert pair.captions == ("拆前 第 9 帧", "拆后 第 10 帧")
+    assert pair.note == NO_AFTER.format(step=10) and pair.window is None
+    assert source.stats["diffs"] == diffs        # a non-diff is not counted
+
+
+def test_a_dupli_step_at_r_takes_the_next_frame_and_says_so(scene):
+    session, source = scene
+    steps = session.db.steps(DESKTOP)
+    for rec in steps:
+        if rec.step == 10:
+            rec.dupli = True
+    session.db.replace_steps(DESKTOP, steps, session.db.actions(DESKTOP))
+    pair = source.pair(DESKTOP, SSD)
+    assert pair.steps == (9, 11)
+    assert pair.captions[1] == "拆后 第 11 帧（第 10 帧是重复帧）"
+
+
+def test_the_next_frame_in_another_pose_segment_is_not_taken(qapp, tmp_path):
+    # the scanner was moved at 8; the drive latch opens at 7, whose frame is gone
+    session, source = make_scene(tmp_path, two_segments=True)
+    try:
+        session.db.set_frame_flags(FrameKey(DESKTOP, 7, "scan"), missing=True)
+        pair = source.pair(DESKTOP, "drive_latch.01")
+        assert pair.asked == (6, 7) and pair.steps == (6, None)
+        assert pair.note.startswith(NO_AFTER.format(step=7))
+        assert pair.images[1] is None
+    finally:
+        session.close(force=True)
 
 
 # --------------------------------------------------------------------------- #

@@ -553,6 +553,14 @@ def test_no_refresh_while_it_is_closed_or_on_the_scanner_view(window):
     assert not window.locator_shown()
     count = window.locator_refreshes
     reads = dict(window.locator_source.stats)
+    checks = window.locator_checks
+    goto(window, STEP - 3)                            # walking frames with it selected
+    goto(window, STEP - 4)
+    assert window.locator_target() == CHASSIS
+    assert not window.locator_shown()
+    assert window.locator_refreshes == count
+    assert window.locator_source.stats == reads
+    assert window.locator_checks == checks            # same part, same edit epoch
     select(window, part(window))
     window.refresh_guidance()
     QApplication.processEvents()

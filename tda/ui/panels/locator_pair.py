@@ -5,10 +5,17 @@ before and the frame after, side by side, each under its caption
 (「拆前 第 7 帧」 / 「拆后 第 8 帧」), both cropped to the **same** window around
 what changed (padded 1.6 times, at least a sixth of the frame, in the shape of
 the panel's cells, :func:`~tda.ui.panels.locator.crop_rect`).  The window is
-drawn on both, and the part's own outline on the "before" frame when the
-window is that outline.  :class:`InsetView` is the small whole frame that
-shows where the crop sits.
+drawn on both.  Two kinds of window, drawn apart (round 2, B2):
 
+* the part's own scanner outline -- the outline in the part's colour on the
+  "before" frame and a dashed box in that colour on both;
+* a guess from the difference of the two pictures -- a grey dashed box, no
+  part colour, no outline, and the panel's note says it is a guess.  Up to
+  three such candidates: :class:`CandidateBar` shows the ones not on screen
+  as small crops of the "before" frame, a click puts one on screen, and it
+  says which one is up (「候选 1/3」).
+
+:class:`InsetView` is the small whole frame that shows where the crop sits.
 As on the location scene (:class:`~tda.ui.panels.locator.LocatorView`): a
 click shows both frames whole and back, the wheel zooms both crops together,
 and nothing here takes the keyboard.
@@ -21,7 +28,7 @@ from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-from tda.ui.locator_pair import MIN_SIDE_FRAC, PAD, PairScene
+from tda.ui.locator_pair import CANDIDATE, MIN_SIDE_FRAC, PAD, PairScene
 from tda.ui.panels.locator import (
     BACKGROUND,
     CROP,
@@ -32,7 +39,8 @@ from tda.ui.panels.locator import (
     crop_rect,
 )
 
-__all__ = ["CELL_GAP", "InsetView", "PAIR_HINT", "PAIR_TIP", "PairView", "TOGGLE_TEXT"]
+__all__ = ["CELL_GAP", "CandidateBar", "GUESS_COLOUR", "InsetView", "PAIR_HINT", "PAIR_TIP",
+           "PairView", "TOGGLE_TEXT"]
 
 #: The toggle next to the dock's caption, and what it says it does.
 TOGGLE_TEXT = "拆前/拆后"
@@ -41,10 +49,13 @@ PAIR_TIP = ("拆前/拆后：这个零件被拆走（或第一次改变状态）
             " / the scanner frames before and after this part leaves")
 PAIR_HINT = ("拆走前后两帧，裁到同一处。单击：裁剪 ↔ 整帧；滚轮：放大 / 缩小。"
              "before and after the part leaves; click: crop or whole; wheel: zoom")
+CHIP_TIP = ("另一处变化：点一下换成它 / another place that changed: click to show it")
 #: Between the two pictures.
 CELL_GAP = 4.0
 NO_PICTURE = "（没有图）"
 CAPTION_PEN = QColor(230, 230, 230)
+#: A window guessed from the difference: grey, never the part's colour.
+GUESS_COLOUR = QColor(200, 200, 200)
 
 
 def _fit(src, cell: QRectF) -> QRectF:
@@ -56,10 +67,14 @@ def _fit(src, cell: QRectF) -> QRectF:
                   w, h)
 
 
+def _guess(pair: Optional[PairScene]) -> bool:
+    return pair is not None and pair.window_source == "diff"
+
+
 class PairView(QWidget):
     """Two pictures, one window: what the part looked like before and after it left."""
 
-    #: The mode or the zoom changed (the inset follows).
+    #: The mode, the zoom or the candidate changed (the inset and the chips follow).
     sigChanged = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
@@ -68,11 +83,13 @@ class PairView(QWidget):
         self._pixmaps: list[QPixmap] = [QPixmap(), QPixmap()]
         self._mode = CROP
         self._zoom = 1.0
+        #: Which of the pair's candidate windows is on screen.
+        self._index = 0
         self.paints = 0
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip(PAIR_HINT)
-        self.setMinimumSize(160, 90)
+        self.setMinimumSize(160, 80)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def sizeHint(self) -> QSize:  # noqa: D102 - Qt override
@@ -87,7 +104,11 @@ class PairView(QWidget):
             old = None if before is None else before.images[i]
             if new is not old:
                 self._pixmaps[i] = QPixmap.fromImage(new) if new is not None else QPixmap()
+        same_windows = (before is not None and pair is not None
+                        and before.candidates == pair.candidates)
         self._pair = pair
+        if reset_zoom or not same_windows:
+            self._index = 0
         if reset_zoom:
             self._zoom = 1.0
         self.update()
@@ -99,6 +120,50 @@ class PairView(QWidget):
     def pixmap(self, i: int) -> QPixmap:
         return self._pixmaps[int(i)]
 
+    # -- the candidates (a window guessed from the difference) -------------------
+    def candidate_count(self) -> int:
+        pair = self._pair
+        return len(pair.candidates) if pair is not None else 0
+
+    def candidate_index(self) -> int:
+        return self._index
+
+    def set_candidate(self, index: int) -> None:
+        """Put the difference's candidate ``index`` on screen (the zoom starts over)."""
+        index = int(index)
+        if not 0 <= index < self.candidate_count() or index == self._index:
+            return
+        self._index = index
+        self._zoom = 1.0
+        self.update()
+        self.sigChanged.emit()
+
+    def candidate_text(self) -> str:
+        """「候选 k/n」, or ``""`` when there is nothing to choose from."""
+        n = self.candidate_count()
+        return CANDIDATE.format(k=self._index + 1, n=n) if n > 1 else ""
+
+    def window(self) -> Optional[tuple]:
+        """The window on screen, in the before frame's pixels, or ``None``."""
+        pair = self._pair
+        if pair is None:
+            return None
+        if pair.candidates:
+            return tuple(pair.candidates[min(self._index, len(pair.candidates) - 1)])
+        return pair.window
+
+    def is_guess(self) -> bool:
+        """Is the window a guess from the difference (not the part's outline)?"""
+        return _guess(self._pair)
+
+    def window_colour(self) -> QColor:
+        """The window's pen: the part's colour for its outline, grey for a guess."""
+        pair = self._pair
+        if pair is None or self.is_guess():
+            return QColor(GUESS_COLOUR)
+        return QColor(*pair.colour)
+
+    # -- mode and zoom -----------------------------------------------------------
     def mode(self) -> str:
         return self._mode
 
@@ -133,18 +198,20 @@ class PairView(QWidget):
 
     def _has_window(self) -> bool:
         pair = self._pair
-        return (pair is not None and pair.window is not None
+        return (pair is not None and self.window() is not None
                 and pair.frame_hw[0][1] > 0)
 
-    def _crop(self, zoom: float) -> tuple[float, float, float, float]:
-        pair = self._pair
-        return crop_rect(pair.window, pair.frame_hw[0], self._aspect(), zoom,
+    def crop_of(self, window, zoom: float = 1.0, aspect: Optional[float] = None
+                ) -> tuple[float, float, float, float]:
+        """The before frame's crop around ``window`` (padded 1.6x, a sixth at least)."""
+        return crop_rect(window, self._pair.frame_hw[0],
+                         self._aspect() if aspect is None else aspect, zoom,
                          fill=1.0 / PAD, min_frac=MIN_SIDE_FRAC)
 
     def _max_zoom(self) -> float:
         if not self._has_window():
             return 1.0
-        base = self._crop(1.0)
+        base = self.crop_of(self.window())
         h_img, w_img = self._pair.frame_hw[0]
         return max(1.0, w_img / max(1.0, base[2] - base[0]),
                    h_img / max(1.0, base[3] - base[1]))
@@ -174,12 +241,12 @@ class PairView(QWidget):
         return w1 / float(w0), h1 / float(h0)
 
     def window_in(self, i: int) -> Optional[tuple[float, float, float, float]]:
-        """The window in frame ``i``'s pixels, ``None`` with no window."""
-        pair = self._pair
-        if pair is None or pair.window is None:
+        """The window on screen in frame ``i``'s pixels, ``None`` with no window."""
+        window = self.window()
+        if window is None:
             return None
         sx, sy = self._scale(i)
-        x0, y0, x1, y1 = pair.window
+        x0, y0, x1, y1 = window
         return (x0 * sx, y0 * sy, x1 * sx, y1 * sy)
 
     def source_rect(self, i: int) -> Optional[tuple[float, float, float, float]]:
@@ -192,7 +259,7 @@ class PairView(QWidget):
             return None
         if self.showing() == CROP:
             sx, sy = self._scale(i)
-            x0, y0, x1, y1 = self._crop(self._zoom)
+            x0, y0, x1, y1 = self.crop_of(self.window(), self._zoom)
             return (x0 * sx, y0 * sy, x1 * sx, y1 * sy)
         return (0.0, 0.0, float(w_img), float(h_img))
 
@@ -263,9 +330,9 @@ class PairView(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             r = pair.roi
             painter.drawRect(QRectF(at(r[0] * sx, r[1] * sy), at(r[2] * sx, r[3] * sy)))
-        colour = QColor(*pair.colour)
+        colour = self.window_colour()
         geometry = pair.geometry
-        if i == 0 and geometry is not None:
+        if i == 0 and geometry is not None and not self.is_guess():
             path = QPainterPath()
             for ring in geometry.outlines:
                 if len(ring) < 2:
@@ -294,7 +361,7 @@ class PairView(QWidget):
 class InsetView(QWidget):
     """The before frame, small and whole: where the two crops are cut from."""
 
-    SIDE = 84
+    SIDE = 72
 
     def __init__(self, view: PairView, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -341,7 +408,97 @@ class InsetView(QWidget):
             if rect.width() < 4 or rect.height() < 4:     # a screw: still a mark
                 centre = rect.center()
                 rect = QRectF(centre.x() - 2, centre.y() - 2, 4, 4)
-            painter.setPen(QPen(QColor(*pair.colour), 1.5))
-            painter.setBrush(QBrush(QColor(*pair.colour, 90)))
+            colour = view.window_colour()
+            painter.setPen(QPen(colour, 1.5))
+            fill = QColor(colour)
+            fill.setAlpha(90)
+            painter.setBrush(QBrush(fill))
             painter.drawRect(rect)
+        painter.end()
+
+
+class CandidateBar(QWidget):
+    """「候选 k/n」 and the other candidates as small crops of the before frame.
+
+    Shown only for a window guessed from the difference with more than one
+    candidate; a click on a chip puts that candidate on screen.
+    """
+
+    CHIP = 48
+    GAP = 4
+
+    def __init__(self, view: PairView, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._view = view
+        self.paints = 0
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setFixedHeight(self.CHIP)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(CHIP_TIP)
+        view.sigChanged.connect(self._follow)
+
+    def sizeHint(self) -> QSize:  # noqa: D102 - Qt override
+        return QSize(self._label_width() + 2 * (self.CHIP + self.GAP), self.CHIP)
+
+    def _follow(self) -> None:
+        self.setVisible(self._view.candidate_count() > 1)
+        self.update()
+
+    def _label_width(self) -> int:
+        return self.fontMetrics().horizontalAdvance(CANDIDATE.format(k=3, n=3)) + 8
+
+    def text(self) -> str:
+        return self._view.candidate_text()
+
+    def chips(self) -> list[tuple[int, QRectF]]:
+        """``(candidate index, where its chip is)`` for every candidate not on screen."""
+        view = self._view
+        x = float(self._label_width())
+        out = []
+        for index in range(view.candidate_count()):
+            if index == view.candidate_index():
+                continue
+            out.append((index, QRectF(x, 0.0, self.CHIP, self.CHIP)))
+            x += self.CHIP + self.GAP
+        return out
+
+    def mousePressEvent(self, event) -> None:  # noqa: D102 - Qt override
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: D102 - Qt override
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos = QPointF(event.position())
+            for index, rect in self.chips():
+                if rect.contains(pos):
+                    self._view.set_candidate(index)
+                    break
+        event.accept()
+
+    def paintEvent(self, event) -> None:  # noqa: D102 - Qt override
+        self.paints += 1
+        painter = QPainter(self)
+        view = self._view
+        pair = view.pair()
+        painter.setPen(self.palette().windowText().color())
+        painter.drawText(QRectF(0.0, 0.0, self._label_width(), self.CHIP),
+                         int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                         self.text())
+        pixmap = view.pixmap(0)
+        if pair is None or pixmap.isNull() or pair.frame_hw[0][1] <= 0:
+            painter.end()
+            return
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        h_img, w_img = pair.frame_hw[0]
+        sx, sy = pixmap.width() / float(w_img), pixmap.height() / float(h_img)
+        for index, rect in self.chips():
+            window = pair.candidates[index]
+            src = view.crop_of(window, 1.0, aspect=1.0)
+            painter.fillRect(rect, BACKGROUND)
+            target = _fit(src, rect)
+            painter.drawPixmap(target, pixmap,
+                               QRectF(src[0] * sx, src[1] * sy,
+                                      (src[2] - src[0]) * sx, (src[3] - src[1]) * sy))
+            painter.setPen(QPen(GUESS_COLOUR, 1.0, Qt.PenStyle.DotLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(rect.adjusted(0.5, 0.5, -0.5, -0.5))
         painter.end()

@@ -17,20 +17,25 @@ says about that step underneath.  :class:`PairMaker` builds it as a
   changes at all; when it never changes there is no pair
   (:data:`NO_CHANGE`).  :func:`leaving_steps` answers it for every part of a
   machine at once.
-* **Which frames.**  The scanner frames of ``r - 1`` and ``r``, through the
+* **Which frames.**  拆前 is the scanner frame of ``r - 1``, through the
   locator's own :meth:`~tda.ui.locator_source.LocatorSource.scan_step_for`
-  (the nearest earlier frame when a step has none, said in the caption).
+  (the nearest earlier frame when that step has none, said in the caption).
+  拆后 is the frame of ``r``, or -- when ``r`` has none -- the nearest *later*
+  one in ``r``'s pose segment, never an earlier one (that would be the 拆前
+  picture again); with no such frame the slot stays empty (:data:`NO_AFTER`).
 * **Which window.**  The part's own outline on the "before" frame when the
   scanner view has one (the stored row, or the frame compiled once -- the
   locator's :meth:`~tda.ui.locator_source.LocatorSource.geometry`), else the
-  largest region that differs between the two pictures
-  (:func:`change_window`) -- only inside one scanner pose segment: across a
-  pose break the two frames are not comparable and are shown whole
-  (:data:`POSE_BREAK`), as they are when nothing differs (:data:`NO_DIFF`).
+  regions that differ between the two pictures (:func:`change_windows`, up
+  to three candidates, largest first) -- a guess, and the panel says so
+  (:data:`DIFF_GUESS`) and draws it apart from an outline.  Only inside one
+  scanner pose segment: across a pose break the two frames are not
+  comparable and are shown whole (:data:`POSE_BREAK`), as they are when
+  nothing differs (:data:`NO_DIFF` / :data:`NO_DIFF_ROI`).
 
 Costs: the pictures are the locator's thumbnails (its LRU), the difference is
 taken on them at :data:`DIFF_SIDE` px (a few ms) and remembered by
-``(machine, the two frames, the ROI)``; the timeline is one fold per step that
+``(machine, the two frames, the ROI, the scanner digest)``; the timeline is one fold per step that
 has an event, remembered per machine until the scanner inputs or the action
 table move; a scene is remembered by part and rebuilt only when they do.
 Nothing here writes to the database.
@@ -54,17 +59,17 @@ from tda.ui.class_names import class_zh, instance_label, state_zh
 from tda.ui.locator_source import (
     EARLIER_DUPLI,
     EARLIER_MISSING,
-    NO_SCAN_FRAME,
     SCAN,
     UNREADABLE,
     Geometry,
 )
 
 __all__ = [
-    "AFTER", "BEFORE", "BEFORE_NONE", "DIFF_SIDE", "DISPLACED", "LEAVING_STATES", "LOG_LINE", "Leaving",
-    "NO_BEFORE", "NO_CHANGE", "NO_DIFF", "PAD", "PAIR_HEAD", "PAIR_HEAD_FIRST", "POSE_BREAK",
-    "PairMaker", "PairScene", "WITH_PARENT", "MIN_SIDE_FRAC", "change_window",
-    "leaving_steps", "qimage_rgb",
+    "AFTER", "BEFORE", "BEFORE_NONE", "CANDIDATE", "CANDIDATES", "DIFF_GUESS", "DIFF_SIDE",
+    "DISPLACED", "LEAVING_STATES", "LOG_LINE", "Leaving", "NO_AFTER", "NO_BEFORE",
+    "NO_CHANGE", "NO_DIFF", "NO_DIFF_ROI", "PAD", "PAIR_HEAD", "PAIR_HEAD_FIRST",
+    "POSE_BREAK", "PairMaker", "PairScene", "WITH_PARENT", "MIN_SIDE_FRAC", "change_window",
+    "change_windows", "leaving_steps", "qimage_rgb",
 ]
 
 DISPLACED = "displaced"
@@ -90,7 +95,17 @@ WITH_PARENT = "随 {parent} 一起拆走"
 NO_CHANGE = "这个零件没有离开或改变状态的步骤"
 POSE_BREAK = "两帧不在同一机位，无法对比"
 NO_DIFF = "两帧看不出差别"
+#: ... when the search was held to the scanner ROI (round 2, N9): outside it
+#: something may well have changed.
+NO_DIFF_ROI = "ROI 里两帧看不出差别"
 NO_BEFORE = "第 {step} 帧之前扫描仪没有图"
+#: No scanner frame at or after ``r`` in its pose segment (round 2, B1): the
+#: 拆后 slot stays empty -- it is never the 拆前 picture again.
+NO_AFTER = "第 {step} 帧扫描仪没有图"
+#: The window is a guess from the difference, not the part's outline (round 2, B2).
+DIFF_GUESS = "框是两帧变化最大的地方，不一定是它"
+#: Which of the difference's candidate windows is shown.
+CANDIDATE = "候选 {k}/{n}"
 
 # --- the window ---------------------------------------------------------------
 #: The window is padded this much (each side grows by a fifth of it) ...
@@ -104,9 +119,13 @@ DIFF_BLUR = 5
 DIFF_SIGMA = 1.5
 #: A pixel differs when one channel moved by more than this (0-255).
 DIFF_LEVEL = 30
-#: The largest region must cover this share of the picture, or "no difference".
+#: A region counts when this share of the picture's pixels changed in it --
+#: counted *before* the opening and closing, which only shape the region (N4) --
+#: or "no difference".
 DIFF_FLOOR = 0.0002
 DIFF_FLOOR_PX = 4
+#: How many candidate windows the difference offers (largest first).
+CANDIDATES = 3
 #: With no ROI, a margin this wide (share of the long side) is ignored: the
 #: scanner's frame edge flickers with whatever is beside the table.
 BORDER = 0.02
@@ -184,24 +203,43 @@ def qimage_rgb(image: Optional[QImage]) -> Optional[np.ndarray]:
 
 def change_window(before: np.ndarray, after: np.ndarray,
                   keep: Optional[tuple] = None) -> Optional[tuple[float, float, float, float]]:
-    """The largest region that differs between two pictures, or ``None``.
+    """The largest region that differs between two pictures, or ``None``."""
+    found = change_windows(before, after, keep, 1)
+    return found[0] if found else None
+
+
+def change_windows(before: np.ndarray, after: np.ndarray, keep: Optional[tuple] = None,
+                   count: int = CANDIDATES) -> list[tuple[float, float, float, float]]:
+    """The ``count`` largest regions that differ between two pictures, largest first.
 
     Both are shrunk to :data:`DIFF_SIDE` (never enlarged), blurred a little,
     and a pixel differs when a channel moved by more than :data:`DIFF_LEVEL`;
-    specks are opened away, nearby pieces closed together, and the largest
-    connected region wins -- unless it is smaller than :data:`DIFF_FLOOR` of
-    the picture.  ``keep`` limits the search to ``(x0, y0, x1, y1)`` given as
-    fractions of the picture (the scanner ROI); without it a :data:`BORDER`
-    margin is left out.  The answer is in fractions too, so it lands on the
-    frame at any resolution.
+    specks are opened away and nearby pieces closed together into regions,
+    ranked by their area.  A region counts only when at least
+    :data:`DIFF_FLOOR` of the picture's pixels (and :data:`DIFF_FLOOR_PX`)
+    changed inside it by more than :data:`DIFF_LEVEL` -- counted on the shrunk
+    pictures before the blur, the opening and the closing, which only find
+    and shape the regions (a 12 px change of a 1024 px frame does not count).
+    ``keep`` limits the search to
+    ``(x0, y0, x1, y1)`` given as fractions of the picture (the scanner ROI);
+    without it a :data:`BORDER` margin is left out.  The answers are in
+    fractions too, so they land on the frame at any resolution.
+
+    Measured on the 20 desktops whose scanner view is annotated (round 2): on
+    a step where only the one part changes, the largest region's crop holds
+    the part 44 % of the time and one of the first three 61 % -- a guess,
+    which the panel says it is.
     """
     if before is None or after is None or before.size == 0 or after.size == 0:
-        return None
+        return []
     h, w = before.shape[:2]
     scale = min(1.0, DIFF_SIDE / float(max(h, w)))
     size = (max(1, int(round(w * scale))), max(1, int(round(h * scale))))
     a = cv2.resize(before, size, interpolation=cv2.INTER_AREA) if scale < 1.0 else before
     b = cv2.resize(after, size, interpolation=cv2.INTER_AREA)
+    sharp = cv2.absdiff(a, b)          # what the floor is counted on: no blur yet
+    if sharp.ndim == 3:
+        sharp = sharp.max(axis=2)
     a = cv2.GaussianBlur(a, (DIFF_BLUR, DIFF_BLUR), DIFF_SIGMA)
     b = cv2.GaussianBlur(b, (DIFF_BLUR, DIFF_BLUR), DIFF_SIGMA)
     diff = cv2.absdiff(a, b)
@@ -216,19 +254,23 @@ def change_window(before: np.ndarray, after: np.ndarray,
     else:
         margin = int(round(BORDER * max(sh, sw)))
         region[margin:sh - margin, margin:sw - margin] = True
-    binary = ((diff > DIFF_LEVEL) & region).astype(np.uint8)
-    if not binary.any():
-        return None
-    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    changed = (diff > DIFF_LEVEL) & region
+    if not changed.any():
+        return []
+    binary = cv2.morphologyEx(changed.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
-    count, _labels, stats, _centres = cv2.connectedComponentsWithStats(binary, connectivity=8)
-    if count <= 1:
-        return None
-    best = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-    x, y, bw, bh, area = (int(v) for v in stats[best])
-    if area < max(DIFF_FLOOR_PX, DIFF_FLOOR * sh * sw):
-        return None
-    return (x / sw, y / sh, (x + bw) / sw, (y + bh) / sh)
+    labels_n, labels, stats, _centres = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    if labels_n <= 1:
+        return []
+    raw = np.bincount(labels[(sharp > DIFF_LEVEL) & region], minlength=labels_n)
+    floor = max(DIFF_FLOOR_PX, DIFF_FLOOR * sh * sw)
+    ranked = sorted((i for i in range(1, labels_n) if raw[i] >= floor),
+                    key=lambda i: -int(stats[i, cv2.CC_STAT_AREA]))
+    out = []
+    for i in ranked[:max(0, int(count))]:
+        x, y, bw, bh, _area = (int(v) for v in stats[i])
+        out.append((x / sw, y / sh, (x + bw) / sw, (y + bh) / sh))
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -257,6 +299,9 @@ class PairScene:
     window: Optional[tuple] = None
     #: ``part`` (the scanner outline) / ``diff`` (what changed) / ``""``.
     window_source: str = ""
+    #: The difference's candidate windows, largest first (``window`` is the
+    #: first); empty unless ``window_source == "diff"``.
+    candidates: tuple = ()
     #: The part's own outline on the before frame, when the window is it.
     geometry: Optional[Geometry] = None
     #: The part, with its change of state: 「理线夹 cable_clip.01（关上 → 打开）」.
@@ -394,10 +439,10 @@ class PairMaker:
             scene.with_line = WITH_PARENT.format(parent=class_zh(
                 getattr(parent, "cls", None), getattr(parent, "attrs", None),
                 leaving.left_with))
-        # the two scanner frames
+        # the two scanner frames: 拆前 at or before r - 1, 拆后 at or *after* r
         before, why_before = (source.scan_step_for(desktop, r - 1) if r - 1 >= 1
                               else (None, ""))
-        after, why_after = source.scan_step_for(desktop, r)
+        after, why_after = self._after_frame(desktop, r)
         scene.asked = (r - 1, r)
         scene.steps = (before, after)
         scene.captions = (
@@ -408,18 +453,39 @@ class PairMaker:
             if after is not None else AFTER.format(step=r, earlier=""),
         )
         notes = []
-        if after is None:
-            notes.append(NO_SCAN_FRAME.format(asked=r))
-        elif before is None:
+        if before is None:
             notes.append(NO_BEFORE.format(step=r))
+        if after is None:
+            notes.append(NO_AFTER.format(step=r))
         if before is not None:
             scene.roi = source.roi(desktop, before)
-        if before is not None and after is not None:
             note = self._window(scene, desktop, instance, before, after)
             if note:
                 notes.append(note)
         scene.note = "；".join(notes)
         return scene
+
+    def _after_frame(self, desktop: int, r: int) -> tuple[Optional[int], str]:
+        """``(the scanner frame shown as 拆后, why it is not r)`` -- round 2, B1.
+
+        The frame of ``r`` itself; when that one is missing or a dupli step,
+        the nearest **later** usable frame in ``r``'s pose segment (an earlier
+        one would be taken before the part left -- the 拆前 picture again); none
+        such, ``None``: the slot stays empty.
+        """
+        facts = self.source._desktop_facts(desktop)
+        usable = facts["usable"]
+        if r in usable:
+            return r, ""
+        why = "dupli" if r in facts["dupli"] else "missing"
+        later = [s for s in usable if s > r]
+        if not later:
+            return None, why
+        db = self.source.db
+        if (pose_segment_of(db, FrameKey(desktop, later[0], SCAN))
+                != pose_segment_of(db, FrameKey(desktop, r, SCAN))):
+            return None, why
+        return later[0], why
 
     def _log_line(self, found: dict, r: int, instance: str, leaving: Leaving) -> str:
         name = found["names"].get(r, "")
@@ -430,43 +496,46 @@ class PairMaker:
         return f"{line} · {verb}" if verb else line
 
     def _window(self, scene: PairScene, desktop: int, instance: str,
-                before: int, after: int) -> str:
-        """Fill the window in; the note when the frames are shown whole instead."""
+                before: int, after: Optional[int]) -> str:
+        """Fill the window in; the note to add (why whole frames, or that it is a guess)."""
         source = self.source
         db = source.db
-        if (pose_segment_of(db, FrameKey(desktop, before, SCAN))
-                != pose_segment_of(db, FrameKey(desktop, after, SCAN))):
-            geometry, _why, _where = source.geometry(desktop, before, instance)
+        geometry, _why, _where = source.geometry(desktop, before, instance)
+        if after is not None and (pose_segment_of(db, FrameKey(desktop, before, SCAN))
+                                  != pose_segment_of(db, FrameKey(desktop, after, SCAN))):
             scene.geometry = geometry
             return POSE_BREAK
-        geometry, _why, _where = source.geometry(desktop, before, instance)
         if geometry is not None:
             scene.geometry = geometry
             scene.window = tuple(float(v) for v in geometry.box)
             scene.window_source = "part"
             return ""
+        if after is None:            # nothing to compare with: no difference taken
+            return ""
         a, hw_a = source.thumbnail(desktop, before)
-        b, hw_b = source.thumbnail(desktop, after)
+        b, _hw_b = source.thumbnail(desktop, after)
         if a is None or b is None:
             unread = [s for s, img in ((before, a), (after, b)) if img is None]
             return "；".join(UNREADABLE.format(step=s) for s in unread)
         keep = self._keep(scene.roi, hw_a)
-        slot = (desktop, before, after, keep)
+        # the scanner inputs' digest (the frame rows) is part of the key (N5)
+        slot = (desktop, before, after, keep, source._desktop_facts(desktop).get("digest"))
         if slot in self._diffs:
             self._diffs.move_to_end(slot)
-            frac = self._diffs[slot]
+            fracs = self._diffs[slot]
         else:
-            frac = change_window(qimage_rgb(a), qimage_rgb(b), keep)
+            fracs = tuple(change_windows(qimage_rgb(a), qimage_rgb(b), keep))
             source.stats["diffs"] += 1
-            self._diffs[slot] = frac
+            self._diffs[slot] = fracs
             while len(self._diffs) > DIFF_CACHE:
                 self._diffs.popitem(last=False)
-        if frac is None:
-            return NO_DIFF
+        if not fracs:
+            return NO_DIFF_ROI if keep is not None else NO_DIFF
         h, w = hw_a
-        scene.window = (frac[0] * w, frac[1] * h, frac[2] * w, frac[3] * h)
+        scene.candidates = tuple((f[0] * w, f[1] * h, f[2] * w, f[3] * h) for f in fracs)
+        scene.window = scene.candidates[0]
         scene.window_source = "diff"
-        return ""
+        return DIFF_GUESS
 
     @staticmethod
     def _keep(roi: Optional[tuple], hw: tuple[int, int]) -> Optional[tuple]:

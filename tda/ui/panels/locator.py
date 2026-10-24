@@ -300,6 +300,7 @@ class LocatorPanel(QWidget):
         from tda.ui.panels.locator_pair import (
             PAIR_TIP,
             TOGGLE_TEXT,
+            CandidateBar,
             InsetView,
             PairView,
         )
@@ -326,16 +327,27 @@ class LocatorPanel(QWidget):
         self.pair_view = PairView()
         self.pair_view.setVisible(False)
         self.inset = InsetView(self.pair_view)
+        self.candidates = CandidateBar(self.pair_view)
+        self.candidates.setVisible(False)
         self.info = QLabel("")
         self.info.setWordWrap(True)
         self.info.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.info.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        # under the pair: the small whole frame, the other candidates (a
+        # guessed window), and the log's words -- beside the frame when there
+        # are no candidates, under the row when there are (the room they need)
         self.below = QWidget()
-        below = QHBoxLayout(self.below)
+        below = QVBoxLayout(self.below)
         below.setContentsMargins(0, 0, 0, 0)
-        below.setSpacing(4)
-        below.addWidget(self.inset, 0, Qt.AlignmentFlag.AlignTop)
-        below.addWidget(self.info, 1)
+        below.setSpacing(2)
+        self._row = QHBoxLayout()
+        self._row.setContentsMargins(0, 0, 0, 0)
+        self._row.setSpacing(4)
+        self._row.addWidget(self.inset, 0, Qt.AlignmentFlag.AlignTop)
+        self._row.addWidget(self.candidates, 0, Qt.AlignmentFlag.AlignTop)
+        self._row.addWidget(self.info, 1)
+        below.addLayout(self._row)
+        self._below_layout = below
         self.below.setVisible(False)
         self.note = QLabel("")
         self.note.setWordWrap(True)
@@ -382,9 +394,25 @@ class LocatorPanel(QWidget):
         self.caption.setText(head)
         self.info.setText("" if pair is None else "\n".join(pair.lines()))
         self._set_note("" if pair is None else pair.note)
+        self._place_info(self.pair_view.candidate_count() > 1)
         self.layout().activate()
         self.inset.update()
         self.shown += 1
+
+    def _place_info(self, candidates: bool) -> None:
+        """The log's words beside the small frame, or under it with the candidates."""
+        self.candidates.setVisible(candidates)
+        in_row = self._row.indexOf(self.info) >= 0
+        if candidates and in_row:
+            self._row.removeWidget(self.info)
+            self._below_layout.addWidget(self.info)
+        elif not candidates and not in_row:
+            self._below_layout.removeWidget(self.info)
+            self._row.addWidget(self.info, 1)
+
+    def candidate_text(self) -> str:
+        """「候选 k/n」 while a guessed window has others to choose from, else ``""``."""
+        return self.pair_view.candidate_text() if self.showing_pair() else ""
 
     def _showing_pair(self, on: bool) -> None:
         if self.pair_view.isHidden() == on:
