@@ -44,6 +44,7 @@ from tda.ui import app_actions as A
 from tda.ui import app_compat as compat
 from tda.ui import app_support as S
 from tda.ui.gallery import view_label
+from tda.ui.app_locator import LOCATOR_HEIGHT, locator_toggle_button
 from tda.ui.app_status import (  # re-exported: this was their home
     KNOWN_FAILURES,
     StatusMixin,
@@ -210,6 +211,13 @@ class ShellMixin:
             group.addButton(button)
             self.view_buttons[view] = button
             bar.addWidget(button)
+        bar.addSeparator()
+        # 主视角 (task U23): the scanner view's picture of the part, beside
+        # an OAK / RealSense frame; opens and closes the dock, remembered.
+        self.locator_button = locator_toggle_button()
+        self.locator_button.clicked.connect(
+            lambda checked=False: self.act_toggle_locator(bool(checked)))
+        bar.addWidget(self.locator_button)
         bar.addSeparator()
 
         self.mode_tabs = QTabBar()
@@ -379,12 +387,16 @@ class ShellMixin:
             Qt.Orientation.Horizontal,
         )
         # The guide above the card: enough for the "现在" line and the five
-        # steps, the rest to the card and the instance table.
+        # steps, the rest to the card and the instance table -- less the
+        # 主视角 panel at the foot of the column where it is up (task U23).
         height = self.height() or DEFAULT_WINDOW_SIZE[1]
-        self.resizeDocks([self.guide_dock, self.right_dock],
-                         [int(height * GUIDE_FRACTION),
-                          int(height * (1.0 - GUIDE_FRACTION))],
-                         Qt.Orientation.Vertical)
+        docks = [self.guide_dock, self.right_dock]
+        sizes = [int(height * GUIDE_FRACTION), int(height * (1.0 - GUIDE_FRACTION))]
+        locator = getattr(self, "locator_dock", None)
+        if locator is not None and not locator.isHidden() and not locator.isFloating():
+            docks.append(locator)
+            sizes = [sizes[0], max(1, sizes[1] - LOCATOR_HEIGHT), LOCATOR_HEIGHT]
+        self.resizeDocks(docks, sizes, Qt.Orientation.Vertical)
 
     def last_frame_for(self, annotator: str) -> dict:
         """The desktop/view/step this annotator last had open, as far as it is known."""

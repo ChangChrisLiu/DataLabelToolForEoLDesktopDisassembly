@@ -46,6 +46,7 @@ from tda.ui.app_edit import EditMixin
 from tda.ui.app_gallery import GalleryMixin
 from tda.ui.app_guide import GuideMixin
 from tda.ui.app_keys import FLASH_UNNAMED, KeysMixin
+from tda.ui.app_locator import LocatorMixin
 from tda.ui.app_pose import PoseMixin
 from tda.ui.app_rawdata import NO_IMAGE_TEXT, RawDataMixin
 from tda.ui.app_roi import RoiMixin
@@ -81,7 +82,8 @@ STEPS_UNSAVED = ("Steps 里有没 Apply 的修改（例如刚加的零件）：�
 
 class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateMixin,
                  VerbMixin, AssistMixin, GuideMixin, KeysMixin, RawDataMixin, GalleryMixin,
-                 CableMixin, ContextMixin, ToolsMixin, StatusMixin, ShellMixin, QMainWindow):
+                 CableMixin, ContextMixin, LocatorMixin, ToolsMixin, StatusMixin, ShellMixin,
+                 QMainWindow):
     """One annotator, one desktop/view, three modes."""
 
     def __init__(self, session, paths: dict, annotator: str, *,
@@ -116,6 +118,7 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateM
         self._build_central()
         self._build_top_bar()
         self._build_docks()
+        self._init_locator()    # 主视角 (task U23): a dock, so before the layout is restored
         self._build_status_bar()
         self._init_edit()
         self._init_adopt()
