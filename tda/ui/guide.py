@@ -167,6 +167,10 @@ class GuideFacts:
     #: A components-gallery shot (task U10): its title, ``零件合照 OAK1 第 2/5
     #: 张``; ``""`` on the teardown sequence.
     gallery: str = ""
+    #: Review's 「可见性审查」 tab is on top (task U24), and how many of its
+    #: rows are still to review (``-1``: not known).
+    vis_review: bool = False
+    vis_pending: int = -1
 
 
 @dataclass(frozen=True)
@@ -231,6 +235,12 @@ NOTHING_TO_DRAW = "这一帧不用画"
 RETRACE_NOTE = "重画会影响 {n} 个已确认帧，提交后用 Shift+N 一次接受"
 #: Review mode with several conflicts: when the bulk answer is the right one.
 REVIEW_BULK = "这些冲突是你刚重画的形状造成的 → Shift+N 一次接受（共 {n} 个）"
+#: Review's 「可见性审查」 tab (task U24): what the keys say about the selected row.
+VIS_REVIEW = ("可见性审查：选一条（一段帧；跳到那一帧、选中零件）→ 对就 Space；"
+              "不对：数字键手动设、` 键被线挡住、Z 角度看不到（加 Shift 是部分）——"
+              "都作用于这一整段，Ctrl+Z 撤销；只改一帧：面板切到「按帧」")
+#: ... and with nothing left to review in this view.
+VIS_REVIEW_DONE = "可见性审查完成：这个视角没有要审的了（换视角 F1–F4 继续）"
 
 
 def steps_text(steps) -> str:
@@ -349,6 +359,10 @@ def plan_for(facts: GuideFacts) -> GuidePlan:
                          f"这一帧在 {facts.view} 视角没有图像 — 按 PgDn / PgUp "
                          f"翻到有图像的帧")
     if facts.mode == "review":
+        if facts.vis_review:
+            return GuidePlan(PHASE_REVIEW, "复查 Review",
+                             VIS_REVIEW_DONE if facts.vis_pending == 0 else VIS_REVIEW,
+                             action="" if facts.vis_pending == 0 else "vis_review_computed")
         now = ("复查模式，画布只读：在右侧队列选一条 → Enter 接受这一帧，"
                "R 回标注模式返工；冲突：K 保留旧的，N 采用新的")
         if facts.open_conflicts > 1:

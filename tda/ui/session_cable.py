@@ -441,6 +441,19 @@ class CableMixin:
         return {name: label for name, fo in found.items()
                 if (label := cable_label(fo)) is not None}
 
+    def cable_reasons(self) -> dict[str, str]:
+        """``instance -> occluder`` of the labels :meth:`cable_labels` lists.
+
+        ``cable`` for 被线挡住; ``viewpoint`` for 角度看不到, which Review's
+        可见性审查 sets (task U24) -- the panels say which.
+        """
+        try:
+            found = self.db.frame_overrides(self.current()) or {}
+        except Exception:  # noqa: BLE001 - a missing table is "none set"
+            return {}
+        return {name: str(fo.occluder) for name, fo in found.items()
+                if cable_label(fo) is not None}
+
     def cable_carry(self, instance: str) -> str:
         """Why this frame cannot carry a 被线挡住 label of ``instance``, ``""`` when it can.
 

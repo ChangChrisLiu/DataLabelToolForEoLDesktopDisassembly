@@ -34,7 +34,7 @@ from tda.ui.gallery import (
 __all__ = ["GalleryMixin", "NOT_A_GALLERY", "PICK_A_PART"]
 
 #: 看不见 (`````` since task U22) outside the gallery.
-NOT_A_GALLERY = ("「看不见」只用在零件合照里（F6–F8）；拆解序列里用可见性键 Ctrl+1–7 / "
+NOT_A_GALLERY = ("「看不见」只用在零件合照里（F6–F8）；拆解序列里的可见性在复查的「可见性审查」里设 / "
                  "\"not in this shot\" is for the components gallery")
 #: 看不见 with nothing to act on.
 PICK_A_PART = "先在任务卡上点一条零件，再按 ` 键（看不见）/ pick a part on the card first"

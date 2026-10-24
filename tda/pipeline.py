@@ -41,6 +41,7 @@ from tda.core.model import (
     is_component_view,
 )
 from tda.core.truth_inputs import HW_INFERRED, TRUTH_AUX_KEYS, infer_hw
+from tda.core.vis_review import progress as vis_review_progress
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PATHS_PATH = "configs/paths.yaml"
@@ -848,7 +849,9 @@ def status_rows(db: Db, desktops: Optional[set[int]] = None) -> list[dict]:
     ``missing``, ``keyframes`` (drawn or imported shapes), ``verified``
     (frames a human signed off), and ``done`` / ``work``: the window's
     ``[done/total]``, which leaves out the frames the view has no image for
-    (task U2c).
+    (task U2c). A sequence view also carries ``vis_reviewed`` / ``vis_total``:
+    Review's 「可见性审查」 (task U24) -- confirmed rows whose label is not plain
+    ``visible`` or was set by hand, and how many of them are stamped reviewed.
     """
     totals = {name: db.count_per_desktop(name) for name in STATUS_TOTALS}
     per_view = {name: db.count_per_view(name) for name in VIEW_COUNTERS}
@@ -856,14 +859,19 @@ def status_rows(db: Db, desktops: Optional[set[int]] = None) -> list[dict]:
     out = []
     for desktop in sorted(d for d in ids if wanted(d, desktops)):
         meta = db.get_desktop(desktop) or {}
+        views = {view: {name: per_view[name].get((desktop, view), 0) for name in VIEW_COUNTERS}
+                 for view in ALL_VIEWS}
+        for view in VIEWS:
+            # a view nobody confirmed a frame of has nothing to audit: no query
+            counts = views[view]
+            reviewed, total = (vis_review_progress(db, desktop, view)
+                               if counts.get("verified") else (0, 0))
+            counts.update(vis_reviewed=reviewed, vis_total=total)
         out.append({
             "desktop": desktop,
             "brand": meta.get("brand_model_raw") or meta.get("brand") or "",
             **{name: totals[name].get(desktop, 0) for name in STATUS_TOTALS},
             # the sequence's four views and the components gallery's three
-            "views": {
-                view: {name: per_view[name].get((desktop, view), 0) for name in VIEW_COUNTERS}
-                for view in ALL_VIEWS
-            },
+            "views": views,
         })
     return out

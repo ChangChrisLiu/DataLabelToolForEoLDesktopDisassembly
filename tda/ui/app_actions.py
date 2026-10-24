@@ -8,7 +8,18 @@ binding here adds it everywhere; there is nowhere else to add one.
 **The 1-4 vs 1-7 collision.**  The plan gave the four views the number keys and
 the seven visibility values the same ones.  The ruling implemented here (and in
 the brief) is: the views are ``F1``-``F4``, and the visibility values are
-``Ctrl+1``-``Ctrl+7`` (task U22, below).
+``Ctrl+1``-``Ctrl+7`` (task U22, below) -- and since task U24 they are Review
+mode's only (the 可见性审查 queue), bare ``1``-``7`` with ``Ctrl`` as an alias.
+
+**The visibility review (task U24).**  Annotate mode has no label keys any
+more: the compiler derives every label, and the grave key still says 被线挡住
+while drawing.  Review's fifth queue lists the labels to audit, one line per
+run of frames; every key answers the whole selected run as one op: ``Space``
+(``Shift+Space`` its alias) confirms it as computed, a digit sets a label by
+hand, `` ` `` / ``Shift+``` is 被线挡住 完全 / 部分 and ``Z`` / ``Shift+Z`` is
+角度看不到 -- the camera cannot see the part, nothing covers it.  One frame
+of a run is a line of the panel's 按帧 listing.  ``Ctrl+Z`` / ``Ctrl+Y`` work
+in Review for them.
 
 **The left hand (task U22).**  The annotator's right hand is on the mouse or
 the pen all day, so the keys pressed hundreds of times a day sit under the left
@@ -52,6 +63,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from tda.core.model import Visibility
 from tda.ui import session_api as api
 
 __all__ = [
@@ -91,6 +103,7 @@ MODES: tuple[str, ...] = (MODE_STEPS, MODE_ANNOTATE, MODE_REVIEW)
 #: Modes an action is live in.  ``modes[0]`` is the mode the action belongs to
 #: first, which is what the cheat sheet and the tests use.
 _ANN = (MODE_ANNOTATE,)
+_REV = (MODE_REVIEW,)
 _ANN_REV = (MODE_ANNOTATE, MODE_REVIEW)
 _ALL = (MODE_ANNOTATE, MODE_REVIEW, MODE_STEPS)
 
@@ -100,9 +113,14 @@ GROUPS: tuple[tuple[str, str], ...] = (
     ("nav", "帧导航"),
     ("tool", "工具"),
     ("edit", "编辑与提交"),
+    ("vis_review", "可见性审查（Review 模式）"),
     ("display", "显示"),
     ("session", "会话"),
 )
+
+#: The two halves of 被线挡住 / 角度看不到 (:mod:`tda.core.occluder`'s FULL / PARTIAL).
+_FULL = Visibility.OCCLUDED_FULL.value
+_PARTIAL = Visibility.OCCLUDED_PARTIAL.value
 
 
 @dataclass(frozen=True)
@@ -151,11 +169,15 @@ def _view(view: str, key: str, zh: str) -> Action:
 
 
 def _visibility(index: int) -> Action:
-    # Ctrl+digit since task U22: the bare 1 and 2 are the brush size now.
+    # Ctrl+digit since task U22 (the bare 1 and 2 are the brush size there).
+    # Task U24: the labels are not set while annotating any more -- only in
+    # Review's 可见性审查, where nothing else wants the digits: the bare digit
+    # is the key, Ctrl+digit its alias.
     value = api.VISIBILITY_VALUES[index]
-    return Action(f"visibility_{index + 1}", (f"Ctrl+{index + 1}",),
-                  "act_set_visibility", f"Visibility: {value}",
-                  f"可见性设为 {value}", "view", (value,), _ANN)
+    return Action(f"visibility_{index + 1}", (f"{index + 1}", f"Ctrl+{index + 1}"),
+                  "act_set_visibility", f"Visibility review: set {value} by hand",
+                  f"可见性审查：这一段手动设为 {value}（记为审过）", "vis_review",
+                  (value,), _REV)
 
 
 def _tool(name: str, keys, label: str, zh: str, short: str) -> Action:
@@ -174,7 +196,6 @@ ACTIONS: tuple[Action, ...] = (
     _view("cmp_oak1", "F6", "切换到零件合照 OAK1（拆下来的零件摆在桌上拍的照片）"),
     _view("cmp_oak2", "F7", "切换到零件合照 OAK2"),
     _view("cmp_rs", "F8", "切换到零件合照 RealSense"),
-    *[_visibility(i) for i in range(7)],
     # -- frame navigation ---------------------------------------------------
     Action("step_back", ("PgDown",), "act_step", "Previous step (k-1)",
            "上一步 k-1（倒序标注的“前进”）", "nav", (-1,), _ANN_REV, repeat=True),
@@ -266,7 +287,9 @@ ACTIONS: tuple[Action, ...] = (
     Action("confirm", ("Space",), "act_confirm", "Confirm the frame",
            "确认当前帧并后退一帧", "edit", (), _ANN, short="确认整帧"),
     # Review mode: the canvas is read-only, so its two keys are the queue's.
-    Action("review_accept", ("Return", "Enter", "Space"), "act_confirm",
+    # Task U24: Space went to the 可见性审查 queue (vis_review_computed), which
+    # still accepts the frame on the other tabs.
+    Action("review_accept", ("Return", "Enter"), "act_confirm",
            "Accept the frame the queue points at", "接受队列选中的这一帧",
            "edit", (), (MODE_REVIEW,), short="接受这一帧"),
     Action("review_rework", ("R",), "act_rework_selected",
@@ -284,9 +307,11 @@ ACTIONS: tuple[Action, ...] = (
            "Conflicts: take every new value (pick the parts, then confirm)",
            "接受全部新值…（冲突是你刚重画的形状造成的：按零件勾选，一次接受）",
            "edit", (), (MODE_REVIEW,), short="接受全部新值…"),
-    Action("undo", ("Ctrl+Z",), "act_undo", "Undo", "撤销", "edit", (), _ANN,
+    # Task U24: the visibility review's verdicts are ops of the same history,
+    # so Ctrl+Z / Ctrl+Y work in Review too.
+    Action("undo", ("Ctrl+Z",), "act_undo", "Undo", "撤销", "edit", (), _ANN_REV,
            short="撤销"),
-    Action("redo", ("Ctrl+Y",), "act_redo", "Redo", "重做", "edit", (), _ANN,
+    Action("redo", ("Ctrl+Y",), "act_redo", "Redo", "重做", "edit", (), _ANN_REV,
            short="重做"),
     Action("toggle_hidden", ("H",), "act_toggle_hidden", "Hide/show instance",
            "隐藏或显示选中实例", "edit", (), _ANN),
@@ -310,8 +335,36 @@ ACTIONS: tuple[Action, ...] = (
            "选中零件从这一帧到第 N 步都标被线挡住（完全 / 部分 / 撤回；一次撤销）；"
            "框外零件 = 这一段都标不在 / 撤回",
            "edit", (), _ANN),
-    Action("cycle_visibility", ("Ctrl+V",), "act_cycle_visibility", "Cycle visibility",
-           "循环切换可见性取值", "edit", (), _ANN),
+    # -- 可见性审查 (task U24): Review mode only -------------------------------
+    # While annotating nobody sets a visibility label any more (the compiler
+    # derives it; ` still says 被线挡住 while drawing). At the end, Review's
+    # fifth queue lists every confirmed (frame, part) whose label is not plain
+    # visible, a line per run of frames with one signature, and these keys
+    # answer the selected line -- the whole run, as one op (Ctrl+Z), stamped
+    # reviewed; one frame of a run is a line of the panel's 按帧 listing.
+    Action("vis_review_computed", ("Space", "Shift+Space"), "act_vis_review",
+           "Visibility review: the selected run's label is right as it is (stamp it); "
+           "on the other queues Space accepts the frame",
+           "可见性审查：选中的这一段按计算的对，记为审过（其他队列里 Space = 接受这一帧）",
+           "vis_review", ("computed",), _REV, short="确认可见性"),
+    *[_visibility(i) for i in range(7)],
+    Action("cycle_visibility", ("Ctrl+V",), "act_cycle_visibility",
+           "Visibility review: the next value, by hand",
+           "可见性审查：这一段手动换成下一个取值（记为审过）", "vis_review", (), _REV),
+    Action("vis_review_cable", ("`",), "act_vis_review",
+           "Visibility review: under a cable, completely",
+           "可见性审查：这一段被线挡住（完全）——零件在原位，被线盖住", "vis_review",
+           ("cable", _FULL), _REV, short="被线挡住"),
+    Action("vis_review_cable_partial", ("Shift+`",), "act_vis_review",
+           "Visibility review: under a cable, partly",
+           "可见性审查：这一段被线挡住（部分）", "vis_review", ("cable", _PARTIAL), _REV),
+    Action("vis_review_viewpoint", ("Z",), "act_vis_review",
+           "Visibility review: not visible from this viewpoint (nothing covers it)",
+           "可见性审查：这一段角度看不到（完全）——这个相机从它的位置看不到，不是被挡住",
+           "vis_review", ("viewpoint", _FULL), _REV, short="角度看不到"),
+    Action("vis_review_viewpoint_partial", ("Shift+Z",), "act_vis_review",
+           "Visibility review: partly not visible from this viewpoint",
+           "可见性审查：这一段角度看不到（部分）", "vis_review", ("viewpoint", _PARTIAL), _REV),
     # Task U8: the state the picture shows when the log's is different (a clip
     # shut again).  ``T`` for 状态 / sTate: free in every mode.
     Action("cycle_state", ("T",), "act_cycle_state",
@@ -426,8 +479,10 @@ _IGNORED_MODIFIERS = (_as_int(Qt.KeyboardModifier.KeypadModifier)
                       | _as_int(Qt.KeyboardModifier.GroupSwitchModifier))
 _SHIFT = _as_int(Qt.KeyboardModifier.ShiftModifier)
 #: Keys a US layout produces with Shift where the binding names the unshifted
-#: character, so both spellings have to resolve to the same action.
-_SHIFTED = {_as_int(Qt.Key.Key_ParenRight): _as_int(Qt.Key.Key_0)}
+#: character, so both spellings have to resolve to the same action. ``~`` is
+#: ``Shift+``` (task U24: 被线挡住（部分） in the visibility review).
+_SHIFTED = {_as_int(Qt.Key.Key_ParenRight): _as_int(Qt.Key.Key_0),
+            _as_int(Qt.Key.Key_AsciiTilde): _as_int(Qt.Key.Key_QuoteLeft)}
 
 
 def _combined(spec: str) -> Optional[int]:
@@ -496,9 +551,12 @@ PALETTE_STATE: tuple[str, ...] = (
 PALETTE_OTHER: tuple[str, ...] = ("flash_compare", "cycle_candidate", "clear_edit")
 #: What the strip keeps in Review mode (U2b round 1): the canvas is read-only,
 #: so no tool and no brush -- only the difference map and the queue's keys.
+#: Task U24: the 可见性审查 queue's three most used answers too (the digits and
+#: Shift 部分 have keys only); undo / redo follow from their modes.
 PALETTE_REVIEW: tuple[str, ...] = (
     "review_accept", "review_rework", "review_keep_old", "review_accept_new",
-    "review_accept_all_new", "toggle_heat",
+    "review_accept_all_new", "vis_review_computed", "vis_review_cable",
+    "vis_review_viewpoint", "toggle_heat",
 )
 
 
@@ -542,7 +600,8 @@ def mode_cheat_rows(mode: str) -> list[tuple[str, str]]:
     """``(keys, what)`` for every binding live in ``mode``, in table order.
 
     The guide panel's collapsible cheat sheet: only what works *here*, and the
-    seven visibility keys as one row -- they are one idea with seven values.
+    seven visibility keys as one row -- they are one idea with seven values
+    (Review's 可见性审查 since task U24).
     """
     rows: list[tuple[str, str]] = []
     seen_visibility = False
@@ -552,7 +611,7 @@ def mode_cheat_rows(mode: str) -> list[tuple[str, str]]:
                 continue
             if action.name.startswith("visibility_"):
                 if not seen_visibility:
-                    rows.append(("Ctrl+1–7", "选中实例的可见性"))
+                    rows.append(("1–7", "可见性审查：这一段手动设标签（记为审过）"))
                     seen_visibility = True
                 continue
             rows.append((_compact_keys(action), action.label_zh + _how_text(action)))

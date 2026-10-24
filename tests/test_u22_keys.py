@@ -62,13 +62,17 @@ MAP: dict[str, tuple[str, ...]] = {
     "radius_up": ("2", "]"),
     "cycle_visibility": ("Ctrl+V",),
     "toggle_outline": ("Shift+Q",),
-    **{f"visibility_{n}": (f"Ctrl+{n}",) for n in range(1, 8)},
+    # task U24: Review's 可见性审查 only, where the bare digit is free -- the
+    # U22 key stays the alias
+    **{f"visibility_{n}": (f"{n}", f"Ctrl+{n}") for n in range(1, 8)},
     # unchanged, and the reason the left hand was free for the rest
     "confirm": ("Space",),
     "tool_eraser": ("E",),
     "flash_compare": ("Tab",),
     "review_rework": ("R",),
-    "review_accept": ("Return", "Enter", "Space"),
+    # task U24: Review's Space is the 可见性审查 verdict (which still accepts
+    # the frame on the other tabs)
+    "review_accept": ("Return", "Enter"),
 }
 #: Keys the map took away with nothing to replace them in Annotate mode.
 RETIRED = ("I", "Ctrl+I", "P", "Y", "3", "4", "5", "6", "7")
@@ -141,7 +145,9 @@ def test_review_mode_has_the_difference_map_on_g_and_nothing_on_q_or_d():
     assert named("G") == "toggle_heat"
     assert named("Shift+G") == "toggle_grid"
     assert named("Shift+Q") == "toggle_outline"
-    assert (named("Q"), named("D"), named("W"), named("`")) == (None, None, None, None)
+    assert (named("Q"), named("D"), named("W")) == (None, None, None)
+    # task U24: ` answers the 可见性审查 queue in Review (被线挡住)
+    assert named("`") == "vis_review_cable"
 
 
 # --------------------------------------------------------------------------- #
@@ -295,9 +301,12 @@ def test_the_pure_modules_name_the_mapped_keys():
 
 def test_the_mode_cheat_sheet_says_ctrl_digits():
     rows = dict(A.mode_cheat_rows(A.MODE_ANNOTATE))
-    assert "Ctrl+1–7" in rows and "1–7" not in rows
+    # task U24: no label key while annotating any more; Review's row is 1–7
+    assert "Ctrl+1–7" not in rows and "1–7" not in rows
     assert rows["Q / Enter / Ctrl+K"].startswith("提交编辑")
     assert rows["1 / ["].startswith("笔刷变小")
+    review = dict(A.mode_cheat_rows(A.MODE_REVIEW))
+    assert review["1–7"].startswith("可见性审查")
 
 
 # A sentence on screen that names a key the keyboard moved.  Scanned in every
@@ -399,9 +408,9 @@ def test_the_spec_has_v1_22_on_top_with_the_whole_table():
     body = SPEC.read_text(encoding="utf-8")
     changes = body.split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
-    # on top when it landed; U23's v1.23 has gone above it since
-    assert entries[0].startswith(("- **v1.22", "- **v1.23"))
-    [first] = [e for e in entries[:2] if e.startswith("- **v1.22")]
+    # on top when it landed; U23's v1.23 and U24's v1.24 have gone above it since
+    assert entries[0].startswith(("- **v1.22", "- **v1.23", "- **v1.24"))
+    [first] = [e for e in entries[:3] if e.startswith("- **v1.22")]
     assert first.startswith("- **v1.22（2026-10-23）**：**左手键**（U22，§4.6）")
     for name, keys in MAP.items():
         if name in ("confirm", "tool_eraser", "flash_compare", "review_rework",

@@ -230,7 +230,9 @@ def test_a_label_set_by_hand_on_an_undrawn_part_keeps_its_marked_cell(window):
     window.session.goto(LAST_STEP, force=True)
     QApplication.processEvents()
     assert window.instances.select_instance(CHASSIS)
-    press(window, "visibility_2")                          # 部分遮挡
+    # a label set by hand (task U24: Review's 可见性审查 sets them, not a key here)
+    window.session.set_visibility(CHASSIS, "occluded_partial")     # 部分遮挡
+    QApplication.processEvents()
     cell_ = vis_cell(window, CHASSIS)
     assert cell_.text() == "occ-p"
     assert "⚠" not in cell_.text()                         # nothing drawn to hide
@@ -248,7 +250,8 @@ def test_a_drawn_part_hidden_by_a_label_still_warns(window):
     session.clear_edit()
     window.instances.refresh()
     assert window.instances.select_instance(CHASSIS)
-    press(window, "visibility_4")                          # 画面外
+    window.session.set_visibility(CHASSIS, "out_of_view")          # 画面外 (task U24)
+    QApplication.processEvents()
     assert vis_cell(window, CHASSIS).text() == "⚠ out"
 
 

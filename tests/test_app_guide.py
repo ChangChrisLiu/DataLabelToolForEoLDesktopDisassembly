@@ -357,11 +357,12 @@ def test_review_mode_keeps_only_what_works_there(window):
     for name in A.PALETTE_TOOLS:
         assert palette.button(name).isHidden()
     assert palette.radius_slider.isHidden() and palette.radius_spin.isHidden()
-    for name in ("commit", "commit_override", "commit_all", "confirm", "undo",
-                 "redo", "flash_compare", "cycle_candidate", "clear_edit"):
+    for name in ("commit", "commit_override", "commit_all", "confirm",
+                 "flash_compare", "cycle_candidate", "clear_edit"):
         assert palette.button(name).isHidden(), name
     shown = [n for n, b in palette.buttons().items() if not b.isHidden()]
-    assert sorted(shown) == sorted(A.PALETTE_REVIEW)
+    # task U24: the 可见性审查 verdicts are ops, so undo / redo are Review's too
+    assert sorted(shown) == sorted(A.PALETTE_REVIEW + ("undo", "redo"))
     assert palette.button("toggle_heat").isEnabled()          # D works in Review
     assert palette.button("review_accept").isEnabled()
     keep = palette.button("review_keep_old")
@@ -591,7 +592,8 @@ def test_the_cheat_sheet_lists_only_this_modes_keys(window):
     review = dict(A.mode_cheat_rows(A.MODE_REVIEW))
     assert "W / B" in annotate and "K" not in annotate
     assert "K" in review and "W / B" not in review
-    assert "Ctrl+1–7" in annotate
+    # task U24: the visibility labels are Review's 可见性审查 now
+    assert "1–7" in review and "Ctrl+1–7" not in annotate
     window.guide.cheat_button.setChecked(True)
     assert not window.guide.cheat.isHidden()
 
