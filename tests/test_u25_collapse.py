@@ -295,8 +295,18 @@ def test_u25_yaml_entries_parse():
         assert scan[d]["duplicate_folders"] == [], d
     assert fixes["oak"][31]["dupli_replaces"] == [13]
     assert fixes["oak"][62]["dupli_replaces"] == [28]
-    # the two the frames could not settle are left to a human (and to MISMATCH)
-    assert 22 not in scan and 60 not in scan
+    # round 2 (the coordinator's rulings on the reviewer's readings)
+    assert fixes["oak"][24]["dupli_replaces"] == [37]
+    assert fixes["oak"][22]["dupli_replaces"] == [27, 32]
+    assert scan[22] == {**scan[22], "duplicate_folders": [27], "replacing_folders": [27]}
+    assert scan[60]["duplicate_folders"] == [29]
+    assert "cam1_reorder_by_ts" not in fixes["oak"][60]
+    assert fixes["oak"][60]["cam1_order"] == "folder"
+    assert "dupli_replaces" not in fixes["oak"][60]
+    assert fixes["oak"][1]["gallery_captures"] == ["040"]
+    assert 38 not in scan[1]["missing_steps"]
+    assert scan[41]["skipped_steps"] == [32] and scan[61]["skipped_steps"] == [26]
+    assert "UNCERTAIN" in scan[61]["reason"]
     for view in ("oak", "scan", "rs"):
         for desktop, entry in fixes[view].items():
             if isinstance(desktop, int):

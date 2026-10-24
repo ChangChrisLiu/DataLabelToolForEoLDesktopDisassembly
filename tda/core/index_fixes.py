@@ -75,7 +75,11 @@ def verify_cam2_fixes(
 
 
 def declared_missing(fixes: dict, view: str, desktop: int) -> set[int]:
-    """The steps ``missing_steps`` / ``missing_steps_range`` declare for one view."""
+    """The steps ``missing_steps`` / ``missing_steps_range`` declare for one view.
+
+    A scanner's ``skipped_steps`` (U25 round 2) are missing too: the scanner
+    never photographed them.
+    """
     entry = (fixes.get(view) or {}).get(desktop)
     if not isinstance(entry, dict):
         return set()
@@ -83,6 +87,8 @@ def declared_missing(fixes: dict, view: str, desktop: int) -> set[int]:
     rng = entry.get("missing_steps_range")
     if rng:
         steps |= set(range(int(rng[0]), int(rng[1]) + 1))
+    if view == "scan":
+        steps |= {int(s) for s in entry.get("skipped_steps") or []}
     return steps
 
 
@@ -134,7 +140,8 @@ def verify_scan_rule(desktop: int, scan_fix: dict, dupli_rows: list[int], n_step
     declaration (or its absence) does not fit the folders on the drive, which is
     what ``scan-align`` is for. Silent for every other desktop.
     """
-    declared = "duplicate_folders" in (scan_fix or {})
+    scan_fix = scan_fix or {}
+    declared = "duplicate_folders" in scan_fix or "skipped_steps" in scan_fix
     if not declared and not dupli_rows:
         return []
     dup = sorted(int(n) for n in (scan_fix.get("duplicate_folders") or []))
@@ -145,6 +152,9 @@ def verify_scan_rule(desktop: int, scan_fix: dict, dupli_rows: list[int], n_step
     replacing = sorted(int(n) for n in (scan_fix.get("replacing_folders") or []))
     if replacing:
         head += f" (replacing {replacing})"
+    skipped = sorted(int(n) for n in (scan_fix.get("skipped_steps") or []))
+    if skipped:
+        head += f", skipped steps {skipped}"
     if not declared:
         head = (f"scan[{desktop}] (no scan.{desktop}.duplicate_folders declared -- run "
                 f"scan-align; dupli rows {dupli_rows} taken as all skipped by the scanner)")

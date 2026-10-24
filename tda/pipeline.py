@@ -27,7 +27,12 @@ from typing import Callable, Iterable, Optional
 
 from tda.core import db_pose, rawroot
 from tda.core.db import Db
-from tda.core.db_moves import PhotoMoveConflict, describe_blockers
+from tda.core.db_moves import (
+    LOADED_DUPLI_KEY,
+    PhotoMoveConflict,
+    describe_blockers,
+    describe_left,
+)
 from tda.core.pose_breaks import describe_discard, describe_uncarried
 from tda.core.db_backup import DEFAULT_KEEP
 from tda.core.db_status import VIEW_COUNTERS
@@ -396,14 +401,21 @@ def _load_one(
                 "the new index would move annotated components-gallery shots: "
                 + "; ".join(refused) + " -- re-check the Components folders, or move the "
                 "work off those shots first")
-        # a photo the new index puts on another step takes its work along (U25)
+        # a photo the new index puts on another step takes its work along (U25);
+        # work on a photo the index no longer has in that view cannot follow it
+        left = db.photos_left(desktop, di)
+        if left:
+            raise PhotoMoveConflict(describe_left(desktop, left))
         moves = db.plan_photo_moves(desktop, di)
         blockers = db.photo_move_blockers(desktop, moves) if moves else []
         if blockers:
             raise PhotoMoveConflict(describe_blockers(desktop, blockers))
         moved_work = db.apply_photo_moves(desktop, moves) if moves else {}
         merge_desktop_meta(
-            db, desktop, {"index_issues": list(di.issues), "index_n_steps": di.n_steps}
+            db, desktop, {"index_issues": list(di.issues), "index_n_steps": di.n_steps,
+                          # import-logs checks the frames carry this sheet's
+                          # collapse before it renumbers the step table (U25 B2)
+                          LOADED_DUPLI_KEY: list(getattr(di, "dupli_rows", []) or [])}
         )
         frames = di.frames
         # a sheet row of the laid-out parts the gallery already holds is not

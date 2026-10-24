@@ -23,7 +23,16 @@
 #                                   <= n), a duplicate folder an extra shot of it.
 #                                   [] = the scanner skipped every dupli row.
 #   scan.<d>.replacing_folders: [n] a duplicate folder that is the step's frame.
+#   scan.<d>.skipped_steps: [k]     steps the scanner never photographed (D41,
+#                                   D61): the folders from there on are one step
+#                                   later each, and step k has no scanner frame.
 #   scan/rs.<d>.missing_steps:      logical (collapsed) steps with no frame.
+#   oak.<d>.cam1_order: folder      the rows follow the Camera_1 folder numbers
+#                                   even where the capture times disagree (D60).
+#   oak.<d>.gallery_captures: [dir] Camera_1 folders that photographed the laid-out
+#                                   parts, not a row (D1's 040): they are no row;
+#                                   their OAK1/OAK2/RealSense photos become shot
+#                                   1000 + folder number of the components gallery.
 # The scanner declarations come from `python -m tda.cli scan-align --desktop N`
 # plus a look at the frames; every one is asserted (a MISMATCH line otherwise).
 
@@ -33,15 +42,27 @@ oak:
       from_dir: "004"
       to_cam1_dir: "003"
       note: "cam2 folder 003 missing; cam2 004 holds the capture cam1 filed as 003; cam2 005 holds two captures -> split by timestamp"
-    cam1_reorder_by_ts: true
+    cam1_order: folder
     reason: >-
       Camera_1 folders 003/004 carry swapped capture times (003 = 10:20:48.178,
-      004 = 10:19:31.616), so folder order is not time order; Camera_2 has no 003
-      at all, its 004 holds the capture that Camera_1 filed as 003, and its 005
-      holds two captures (Camera_1 folders 004 and 005).  Survey: cam1 47 vs cam2 46.
-      `to_cam1_dir` is a Camera_1 *folder* name, not a logical step number: because
-      cam1_reorder_by_ts makes folder 003 logical step 4, this shift resolves to
-      logical step 4, and the resulting step is stated in DesktopIndex.issues.
+      004 = 10:19:31.616; the RealSense file times agree), but the rows follow the
+      folder numbers: 002 and 003 show the case fan lifted (row 2, and row 3
+      "dupli scan" repeating it), 004 and 005 the fan gone (row 4 "Case fan"), as
+      the scanner does (RGB21 lifted, RGB31 gone). Until U25 round 2 the index
+      ordered them by time (cam1_reorder_by_ts), which put the fan-gone capture on
+      the dupli row and the fan-lifted one on step "Case fan" (checked by eye).
+      Camera_2 has no 003 at all, its 004 holds the capture Camera_1 filed as 003,
+      and its 005 holds two captures (Camera_1 folders 004 and 005); timestamp
+      pairing puts each on its Camera_1 partner. Survey: cam1 47 vs cam2 46.
+  1:
+    gallery_captures: ["040"]
+    reason: >-
+      Camera_1's 40th capture (folder 040; Camera_2's partner and the RealSense
+      frame in Components/001 with it) photographs the dismantled parts laid out
+      on the monitor box -- a parts photo, not a teardown step; the 39-row sheet
+      has no row for it. It becomes shot 1040 of each camera's components gallery,
+      and the desktop has 37 steps, as the sheet (39 rows, dupli 15 and 33) says
+      (checked by eye, U25 round 2).
   31:
     dupli_replaces: [13]
     reason: >-
@@ -55,6 +76,17 @@ oak:
       Row 28 "dupli (Scanner does not scan)" re-takes row 27 (SATA 2): the row-27
       OAK capture was taken under the scanner's blue light, row 28 is clean
       (checked by eye, U25). The re-take is the step's frame.
+  22:
+    dupli_replaces: [27, 32]
+    reason: >-
+      Row 27 "dupli": the row-26 captures ("CPU fan connector") were taken before
+      the operation -- the CPU fan cable is still across the board on OAK1/OAK2/RS
+      024-026 and gone on 027/028, as the scanner shows (RGB251 -> RGB261 changes
+      nothing, RGB261 -> RGB271 the cable goes). Row 32 "replacement of 31
+      (dupli)": the RS 031 frame is under the scanner's striped light (blue -19,
+      grey 124, stripe 14.2 vs about 97 / 10.8 for its neighbours); 032 is clean.
+      Both re-takes are their step's frame (U25 round 2, reviewer's reading
+      checked by eye).
   42:
     cam2_swap: [["016", "017"]]
     reason: >-
@@ -64,9 +96,14 @@ oak:
   24:
     cam2_extra_from: "Components/C2/043"
     as_step: 43
+    dupli_replaces: [37]
     reason: >-
       The last Disassemble capture of Camera_2 was filed under Components/C2/043,
       so Disassemble/Camera_2 holds only 42 of 43 steps (survey: cam1 43 vs cam2 42).
+      Row 37 "dupli (replace the result of 36)": the RS 036 frame was taken under
+      the scanner's blue structured light (blue +19.9 vs -6 for 037); OAK1/OAK2
+      036 and 037 show the same state, so the re-take is the step's frame in every
+      view (U25 round 2).
   10:
     step1_keep: "latest"
     reason: >-
@@ -75,16 +112,15 @@ oak:
 scan:
   1:
     duplicate_folders: [15, 33]
-    missing_steps: [2, 3, 4, 27, 28, 29, 30, 32, 33, 38]
+    missing_steps: [2, 3, 4, 27, 28, 29, 30, 32, 33]
     reason: >-
       Desktop 1 is the only machine whose scanner run skipped interior steps; the
       folders RGB21/RGB31/RGB41/RGB281..RGB321/RGB341/RGB351 were never captured.
       Its folders are named by sheet row, and it photographed both dupli rows
       (RGB151, RGB331). In collapsed steps (dupli rows 15 and 33) the gaps are
       2-4, 27-30 and 32-33; RGB331 is the only photo of step 31 (row 32's state)
-      and stands in for it. Step 38 is Camera_1's 40th capture, which the
-      39-row sheet does not have and which shows the parts laid out on the bench,
-      not a teardown step (U25 audit) -- the scanner never photographed it.
+      and stands in for it. Camera_1's 40th capture, the parts laid out, is a
+      gallery shot (oak.1.gallery_captures), not a step.
   18:
     duplicate_folders: [42]
     reason: >-
@@ -95,6 +131,38 @@ scan:
       loses one motherboard screw, and RGB491 is the empty chassis of row 50
       (scan-align: "skipped row 30" 0.78 vs "skipped row 43" 0.62, bootstrap 0.99;
       checked by eye, U25).
+  22:
+    duplicate_folders: [27]
+    replacing_folders: [27]
+    reason: >-
+      45 folders for 44 steps (46 rows, dupli 27 and 32). Folders 1-26 are rows
+      1-26, but RGB261, like OAK/RS 026, was taken before row 26's operation:
+      RGB251 -> RGB261 changes nothing, RGB261 -> RGB271 unplugs the CPU fan
+      cable. RGB271 is the re-take (row 27 "dupli") and step 26's frame, RGB261
+      its extra shot (as oak.22.dupli_replaces). The RAM clips follow one per
+      folder (RGB281 one open ... RGB311 four) and RGB321 has RAM 1 out (row 33):
+      the scanner skipped dupli row 32 (U25 round 2, checked by eye).
+  41:
+    skipped_steps: [32]
+    reason: >-
+      34 folders for 35 steps: the scanner skipped a real step. Folders 1-31 are
+      rows 1-31 (RGB251 CPU out = row 25, RGB261..RGB311 one motherboard screw
+      each, at the positions OAK1 rows 27-31 lose them); RGB311 -> RGB321 loses
+      two screws at once (the two at the board's left edge, OAK1 rows 32 and
+      33), so the scanner did not photograph row 32 (screw 7). RGB331 = row 34
+      (connector 6), RGB341 = row 35 (motherboard out). (U25 round 2, by eye.)
+  61:
+    skipped_steps: [26]
+    reason: >-
+      39 folders for 40 steps: the scanner skipped a real step between rows 20
+      and 26, the seven identical "Case - motherboard connector" rows. RGB161 has
+      the PSU out (row 16), RGB171 -> RGB181 -> RGB191 lose the SATA cable's two
+      ends (rows 18, 19), RGB261 has the CPU lever open (row 27) and RGB271 the
+      CPU out (row 28) -- so folders 1-19 are rows 1-19 and folder 26 is row 27.
+      The front-panel plugs lie under the cable bundle in every scanner frame, so
+      which of rows 20-26 was skipped cannot be seen: 26, the last of them, is
+      declared. UNCERTAIN: if it was an earlier one, the scanner frames of steps
+      k..25 each show one plug more than the sheet says (U25 round 2).
   24:
     duplicate_folders: []
     reason: >-
@@ -150,6 +218,16 @@ scan:
       RGB271 -> RGB281 removes SATA 3 (row 29), RGB281 -> RGB291 the card cover
       (row 30), then one card per folder -- the shift starts at row 28 exactly
       (checked by eye; the magnitudes alone put it near row 18; U25).
+  60:
+    duplicate_folders: [29]
+    reason: >-
+      47 folders for 46 steps (47 rows, dupli 3 "dupli scan"). The scanner
+      skipped dupli row 3 (RGB21 fan lifted, RGB31 fan gone = row 4; RGB241 ->
+      RGB251 the PSU = row 26) and photographed row 29 twice: RGB271 -> RGB281
+      opens RAM clip 1 (row 29), RGB281 -> RGB291 leaves every clip as it was and
+      only moves a cable, RGB291 -> RGB301 opens clip 2 (row 30); the sheet notes
+      "Scanner rescan" on rows 29 and 30. RGB291 is the re-scan, an extra shot of
+      step 28 (U25 round 2, reviewer's reading checked by eye).
 rs:
   42:
     missing_steps_range: [1, 12]
@@ -159,9 +237,11 @@ rs:
     rs_extra_from: "Components/001"
     as_step: 40
     reason: >-
-      The last Disassemble frame of the RealSense was filed under Components/001
-      (5 s after cam1 step 040), so Disassemble holds 39 of 40 steps; it is not a
-      layout photo of the components gallery (task U10).
+      The RealSense frame of Camera_1's 40th capture was filed under
+      Components/001 (5 s after cam1 040), so Disassemble holds 39 frames. That
+      capture IS a photo of the laid-out parts (oak.1.gallery_captures): this
+      frame goes with it to shot 1040 of the RealSense gallery. (Until U25 round 2
+      this comment said it was not a layout photo, and the frame filled step 40.)
   24:
     rs_extra_from: "Components/043"
     as_step: 43

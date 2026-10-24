@@ -23,20 +23,34 @@ anchored on D18's old missing step 50 lands on step 48 next to the photo it was
 drawn beside. When two old steps land on one (a ``dupli`` row's frame became an
 extra shot), the one whose photo is the new step's own frame keeps its rows; a
 keyed row of the other is dropped and counted, its keyframes are kept unless
-they would duplicate a non-draft shape of the same part.
+they would duplicate a non-draft shape of the same part -- or, for a Label
+Studio draft, a draft of the same label from the step's own photo (U25 round 2:
+D24's oak1 step 36 would otherwise show the part twice). Its frame row's human
+columns are carried onto the new step where that one has none, and counted as
+dropped where it has its own; a pose break that lands on one already there is
+counted too.
 
-A desktop with a **verified** frame among the moving ones is refused before
-anything is written (:class:`PhotoMoveConflict`): a signed-off frame changes
-only through the re-check queue, never by a renumbering.
+The hand-written state events (``state_event.auto = 0``) follow the step table,
+and the step table follows the OAK1 rows: they move with ``oak1``'s
+renumbering (U25 round 2). ``op_log`` payloads are history and keep the step
+numbers they were written with.
+
+A desktop is refused before anything is written (:class:`PhotoMoveConflict`)
+when a **verified** frame is among the moving ones -- a signed-off frame
+changes only through the re-check queue, never by a renumbering -- or when work
+sits on a photo the new index no longer has in that view at all
+(:meth:`PhotoMoveMixin.photos_left`): moving it to a neighbour would put it on
+another photo.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Iterable, Optional
 
 from tda.core.model import LS_PREFIX, VIEWS, FrameKey
 
-__all__ = ["FRAME_WORK_COLUMNS", "PhotoMoveConflict", "PhotoMoveMixin", "ViewMove",
+__all__ = ["FRAME_WORK_COLUMNS", "LOADED_DUPLI_KEY", "PhotoMoveConflict", "PhotoMoveMixin",
+           "ViewMove", "describe_blockers", "describe_left", "loaded_collapse_refusal",
            "plan_view_moves"]
 
 #: Frame columns that hold what a human said about the photo.
@@ -47,6 +61,45 @@ _KEYED_INPUTS = ("frame_override", "instance_frame_flags", "occluder_mask",
                  "frame_transform")
 #: Derived from the inputs: dropped for a moved frame, rebuilt by the compiler.
 _DERIVED = ("compiled_mask", "frame_digest", "recheck_queue")
+#: The view whose rows the step table follows: the sheet's rows are the
+#: Camera_1 captures, so the hand-written state events move with ``oak1``.
+STEP_TABLE_VIEW = "oak1"
+#: Desktop-meta key ``load-index`` writes: the ``dupli`` rows the loaded index
+#: collapsed (``[]`` for none). Absent = loaded before U25 (or never).
+LOADED_DUPLI_KEY = "index_dupli_rows"
+
+
+def _new_places(di, view: str) -> tuple[dict[str, int], dict[str, int]]:
+    """``(new_main, new_extra)``: where ``di`` puts each photo of ``view``."""
+    new_main: dict[str, int] = {}
+    new_extra: dict[str, int] = {}
+    for key, ff in di.frames.items():
+        if key.view != view:
+            continue
+        new_main[ff.path] = key.step
+        for shot in (ff.aux or {}).get("extra_shots") or []:
+            path = shot.get("path") if isinstance(shot, dict) else shot
+            if path:
+                new_extra[path] = key.step
+    return new_main, new_extra
+
+
+def _draft_label(instance: str) -> str:
+    """``ls:<label>#<n>`` -> ``<label>``: one part per label on one photo."""
+    return str(instance)[len(LS_PREFIX):].rsplit("#", 1)[0]
+
+
+def _written_columns(row) -> dict:
+    """The human frame columns of a row that hold something (``{}`` for none)."""
+    if row is None:
+        return {}
+    out = {}
+    for c in FRAME_WORK_COLUMNS:
+        v = row[c]
+        if v is None or (c == "review_status" and v == "unlabeled"):
+            continue
+        out[c] = v
+    return out
 
 
 class PhotoMoveConflict(ValueError):
@@ -66,6 +119,17 @@ class ViewMove:
     dropped_rows: int = 0
     dropped_keyframes: int = 0
     derived_rows: int = 0
+    #: Label Studio drafts of an extra shot's photo dropped because the step's
+    #: own photo has a draft of the same label (N5).
+    dropped_drafts: int = 0
+    #: Human frame columns carried from an extra shot's old step onto its new
+    #: step, and the ones dropped because the new step had its own (N4).
+    carried_columns: int = 0
+    dropped_columns: list[str] = field(default_factory=list)
+    #: Pose breaks that landed on a step that already had one (N4).
+    dropped_breaks: int = 0
+    #: Hand-written state events renumbered with the step table (oak1 only, B3).
+    events: int = 0
 
     def touched(self) -> set[int]:
         """The old steps that move, and the new steps whose own photo changes."""
@@ -77,9 +141,23 @@ class ViewMove:
         span = ", ".join(f"{a}->{b}" for a, b in sorted(self.steps.items())[:6])
         more = f" ... ({len(self.steps)} steps)" if len(self.steps) > 6 else ""
         extra = []
+        if self.events:
+            extra.append(f"{self.events} hand-written state event(s) renumbered with the "
+                         f"step table")
         if self.dropped_rows or self.dropped_keyframes:
             extra.append(f"dropped {self.dropped_rows} row(s) and {self.dropped_keyframes} "
                          f"keyframe(s) that collided with the step's own photo")
+        if self.dropped_drafts:
+            extra.append(f"dropped {self.dropped_drafts} Label Studio draft(s) of an extra "
+                         f"shot whose label the step's own photo already has")
+        if self.carried_columns:
+            extra.append(f"{self.carried_columns} frame column(s) carried from an extra "
+                         f"shot's old step")
+        if self.dropped_columns:
+            extra.append(f"dropped frame column(s) the new step has its own of: "
+                         f"{', '.join(self.dropped_columns)}")
+        if self.dropped_breaks:
+            extra.append(f"{self.dropped_breaks} pose break(s) landed on one already there")
         if self.derived_rows:
             extra.append(f"{self.derived_rows} compiled/derived row(s) to rebuild")
         return (f"{self.view}: {self.photos} photo(s) moved step ({span}{more}); "
@@ -148,22 +226,49 @@ class PhotoMoveMixin:
             keyed |= {int(r[0]) for r in self.conn.execute(
                 "SELECT DISTINCT anchor_step FROM shape_keyframe WHERE desktop=? AND view=?",
                 (desktop, view))}
-            new_main: dict[str, int] = {}
-            new_extra: dict[str, int] = {}
-            for key, ff in di.frames.items():
-                if key.view != view:
-                    continue
-                new_main[ff.path] = key.step
-                for shot in (ff.aux or {}).get("extra_shots") or []:
-                    path = shot.get("path") if isinstance(shot, dict) else shot
-                    if path:
-                        new_extra[path] = key.step
+            if view == STEP_TABLE_VIEW:
+                keyed |= set(self._hand_event_steps(desktop))
+            new_main, new_extra = _new_places(di, view)
             moves, main_source = plan_view_moves(old_photos, keyed, new_main, new_extra,
                                                  di.n_steps)
             if moves:
                 photos = sum(1 for p, s in old_photos.items() if s in moves)
                 out[view] = ViewMove(view, moves, main_source, photos=photos)
         return out
+
+    def photos_left(self, desktop: int, di) -> list[str]:
+        """Work on a stored photo the new index no longer has in that view (N3).
+
+        ``"<view> step <n> (<path>): <work>"`` for every sequence frame whose
+        photo is neither a frame nor an extra shot of the view in ``di`` and
+        that somebody worked on (:meth:`frame_work`, or a human column of the
+        frame row): moving it to a neighbouring step would put it on another
+        photo. A photo moved into the components gallery (D1's Camera_1 040)
+        has left the sequence too.
+        """
+        out: list[str] = []
+        cols = ", ".join(FRAME_WORK_COLUMNS)
+        for view in VIEWS:
+            new_main, new_extra = _new_places(di, view)
+            for r in self.frames_for(desktop, view):
+                path = r.get("path")
+                if not path or r.get("missing") or path in new_main or path in new_extra:
+                    continue
+                key = FrameKey(desktop, int(r["step"]), view)
+                work = list(self.frame_work(key))
+                row = self.conn.execute(
+                    f"SELECT {cols} FROM frame WHERE desktop=? AND step=? AND view=?",
+                    (desktop, key.step, view)).fetchone()
+                written = _written_columns(row)
+                if written and not any(w.startswith("review status") for w in work):
+                    work.append("frame column(s) " + ", ".join(sorted(written)))
+                if work:
+                    out.append(f"{view} step {key.step} ({path}): {', '.join(work)}")
+        return out
+
+    def _hand_event_steps(self, desktop: int) -> list[int]:
+        return [int(r[0]) for r in self.conn.execute(
+            "SELECT DISTINCT step FROM state_event WHERE desktop=? AND auto=0", (desktop,))]
 
     def photo_move_blockers(self, desktop: int, moves: dict[str, ViewMove]) -> list[str]:
         """``"<view> step <n>"`` of every verified frame a move would touch."""
@@ -186,13 +291,30 @@ class PhotoMoveMixin:
         with self.transaction():
             for view, vm in moves.items():
                 work_by_view[view] = self._move_view(desktop, view, vm)
+            table = moves.get(STEP_TABLE_VIEW)
+            if table is not None:
+                table.events = self._move_hand_events(desktop, table.steps)
         return work_by_view
+
+    def _move_hand_events(self, desktop: int, steps: dict[int, int]) -> int:
+        """Renumber the hand-written state events with the step table (B3)."""
+        n = 0
+        for r in self.conn.execute(
+                "SELECT id, step FROM state_event WHERE desktop=? AND auto=0",
+                (desktop,)).fetchall():
+            new = steps.get(int(r["step"]))
+            if new is not None and new != int(r["step"]):
+                self.conn.execute("UPDATE state_event SET step=? WHERE id=?", (new, r["id"]))
+                n += 1
+        return n
 
     def restore_frame_work(self, desktop: int, work_by_view: dict) -> None:
         """Put the moved photos' human columns back on their new frame rows."""
         with self.transaction():
             for view, work in work_by_view.items():
                 for step, cols in work.items():
+                    if not cols:
+                        continue
                     sets = ", ".join(f"{c}=?" for c in cols)
                     self.conn.execute(
                         f"UPDATE frame SET {sets} WHERE desktop=? AND step=? AND view=?",
@@ -208,19 +330,35 @@ class PhotoMoveMixin:
         moves = vm.steps
         olds = sorted(moves, key=lambda s: self._source_order(vm, s))
         # the frame rows' human columns: kept aside, the rows themselves deleted.
-        # A new step whose own photo does not move keeps its row as it is.
+        # A new step whose own photo does not move keeps its row as it is. The
+        # row of an old step whose photo became an extra shot gives its columns
+        # to the new step where that has none, and counts the rest as dropped.
         work: dict[int, dict] = {}
+        held: dict[int, dict] = {}     # what the new step's row will hold
         cols = ", ".join(FRAME_WORK_COLUMNS)
+        sql = f"SELECT {cols} FROM frame WHERE desktop=? AND step=? AND view=?"
         for old in olds:
             new = moves[old]
             src = vm.main_source.get(new)
-            if new in work or (src is not None and src not in moves):
-                continue
-            row = self.conn.execute(
-                f"SELECT {cols} FROM frame WHERE desktop=? AND step=? AND view=?",
-                (desktop, old, view)).fetchone()
-            if row is not None:
-                work[new] = {c: row[c] for c in FRAME_WORK_COLUMNS}
+            row = self.conn.execute(sql, (desktop, old, view)).fetchone()
+            if new not in held:
+                if src is not None and src not in moves:
+                    held[new] = _written_columns(
+                        self.conn.execute(sql, (desktop, new, view)).fetchone())
+                    work[new] = {}
+                elif row is not None:
+                    work[new] = {c: row[c] for c in FRAME_WORK_COLUMNS}
+                    held[new] = _written_columns(row)
+                    continue
+                else:
+                    held[new], work[new] = {}, {}
+                    continue
+            for c, v in _written_columns(row).items():
+                if c not in held[new]:
+                    held[new][c] = work[new][c] = v
+                    vm.carried_columns += 1
+                elif held[new][c] != v:
+                    vm.dropped_columns.append(f"step {old}->{new} {c}={v}")
         for table in _DERIVED:
             for step in vm.touched():
                 vm.derived_rows += self.conn.execute(
@@ -233,7 +371,7 @@ class PhotoMoveMixin:
         for old in olds:
             self.conn.execute("DELETE FROM frame WHERE desktop=? AND step=? AND view=?",
                               (desktop, old, view))
-        self._move_pose_rows(desktop, view, moves)
+        self._move_pose_rows(desktop, view, moves, vm)
         return work
 
     def _move_keyed(self, table: str, desktop: int, view: str, olds: list[int],
@@ -278,27 +416,44 @@ class PhotoMoveMixin:
         order = {old: i for i, old in enumerate(olds)}
         targets = sorted(set(moves.values()) - set(moves))
         taken: set[tuple] = set()
+        # labels of the Label Studio drafts on each new step's own photo
+        main_labels: dict[int, set[str]] = {}
         if targets:     # shapes already on a target step that does not move stay first
-            taken = {(r["instance"], r["pose_segment"], r["anchor_step"]) for r in
-                     self.conn.execute(
-                         f"SELECT instance, pose_segment, anchor_step FROM shape_keyframe "
-                         f"WHERE desktop=? AND view=? AND anchor_step IN "
-                         f"({','.join('?' * len(targets))})", (desktop, view, *targets))
-                     if not str(r["instance"]).startswith(LS_PREFIX)}
+            for r in self.conn.execute(
+                    f"SELECT instance, pose_segment, anchor_step FROM shape_keyframe "
+                    f"WHERE desktop=? AND view=? AND anchor_step IN "
+                    f"({','.join('?' * len(targets))})", (desktop, view, *targets)):
+                if str(r["instance"]).startswith(LS_PREFIX):
+                    main_labels.setdefault(int(r["anchor_step"]), set()).add(
+                        _draft_label(r["instance"]))
+                else:
+                    taken.add((r["instance"], r["pose_segment"], r["anchor_step"]))
         for r in sorted(rows, key=lambda r: (order[int(r["anchor_step"])], r["id"])):
-            new = moves[int(r["anchor_step"])]
+            old = int(r["anchor_step"])
+            new = moves[old]
             ident = (r["instance"], r["pose_segment"], new)
             draft = str(r["instance"]).startswith(LS_PREFIX)
             if not draft and ident in taken:
                 self.conn.execute("DELETE FROM shape_keyframe WHERE id=?", (r["id"],))
                 vm.dropped_keyframes += 1
                 continue
+            if draft:
+                label = _draft_label(r["instance"])
+                if vm.main_source.get(new) in (None, old):
+                    main_labels.setdefault(new, set()).add(label)
+                elif label in main_labels.get(new, ()):
+                    # drawn on an extra shot's photo, and the step's own photo
+                    # already has this part: two sets would show (N5)
+                    self.conn.execute("DELETE FROM shape_keyframe WHERE id=?", (r["id"],))
+                    vm.dropped_drafts += 1
+                    continue
             taken.add(ident)
             self.conn.execute("UPDATE shape_keyframe SET anchor_step=? WHERE id=?",
                               (new, r["id"]))
             vm.keyframes += 1
 
-    def _move_pose_rows(self, desktop: int, view: str, moves: dict[int, int]) -> None:
+    def _move_pose_rows(self, desktop: int, view: str, moves: dict[int, int],
+                        vm: Optional[ViewMove] = None) -> None:
         for r in self.conn.execute("SELECT seg, start_step, end_step, ref_step FROM "
                                    "pose_segment WHERE desktop=? AND view=?",
                                    (desktop, view)).fetchall():
@@ -318,9 +473,46 @@ class PhotoMoveMixin:
                               (desktop, view, b["step"]))
         for b in moving:
             b["step"] = moves[int(b["step"])]
-            self.conn.execute(
+            cur = self.conn.execute(
                 f"INSERT OR IGNORE INTO pose_break ({', '.join(b)}) "
                 f"VALUES ({', '.join('?' * len(b))})", tuple(b.values()))
+            if cur.rowcount == 0 and vm is not None:
+                vm.dropped_breaks += 1
+
+
+def describe_left(desktop: int, left: list[str], limit: int = 6) -> str:
+    shown = "; ".join(left[:limit]) + (f"; and {len(left) - limit} more"
+                                       if len(left) > limit else "")
+    return (f"D{desktop:02d}: work sits on photos the new index no longer has in their "
+            f"view ({shown}); moving it to a neighbouring step would put it on another "
+            f"photo -- check the index fixes, or move the work off those frames first")
+
+
+def loaded_collapse_refusal(meta: Optional[dict], has_frames: bool,
+                            dupli_rows: Iterable[int]) -> Optional[str]:
+    """Why the step table may not be renumbered over these frames; ``None`` if it may.
+
+    ``load-index`` records the ``dupli`` rows its index collapsed
+    (:data:`LOADED_DUPLI_KEY`). A sheet whose rows collapse differently -- or
+    any collapse at all over frames loaded before U25 -- would put the step
+    table one or two steps off the photos (U25 round 2, B2). A desktop with no
+    frames yet has nothing to be off from.
+    """
+    if not has_frames:
+        return None
+    want = sorted({int(r) for r in dupli_rows})
+    loaded = (meta or {}).get(LOADED_DUPLI_KEY)
+    if loaded is None:
+        if not want:
+            return None
+        return (f"its frames were loaded before the sheet's dupli rows {want} were "
+                f"collapsed into steps (an index written before U25), so the step table "
+                f"would end up one or two steps off the photos")
+    if sorted(int(r) for r in loaded) != want:
+        return (f"its frames were loaded with dupli rows {sorted(loaded) or 'none'} "
+                f"collapsed, the sheet has {want or 'none'}, so the step table would end "
+                f"up off the photos")
+    return None
 
 
 def describe_blockers(desktop: int, blockers: list[str], limit: int = 6) -> str:

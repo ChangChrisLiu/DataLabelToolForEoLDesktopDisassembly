@@ -313,8 +313,10 @@ class Declaration:
     #: duplicate folders that re-shoot a state no ``dupli`` row repeats
     reshot_folders: list[int] = field(default_factory=list)
     missing_steps: list[int] = field(default_factory=list)        # collapsed steps
-    #: Folders the ``duplicate_folders`` rule cannot put on their step (a real
-    #: step the scanner skipped, a folder out of order): the rule is not enough.
+    #: Real steps the scanner never photographed (``scan.<d>.skipped_steps``,
+    #: U25 round 2): a folder shows a state later than the rule would put it on.
+    skipped_steps: list[int] = field(default_factory=list)
+    #: Folders neither rule can put on their step (a folder out of order).
     unexpressed: list[str] = field(default_factory=list)
 
     @property
@@ -354,9 +356,10 @@ def declaration(phi: Sequence[int], folders: Sequence[int], n_rows: int,
     covered: set[int] = set()
     for n, r in zip(folders, phi):
         n, want = int(n), cstep[canon[r]]
-        if n - count == want:
+        at = n - count + len(out.skipped_steps)   # where the rule puts folder n
+        if at == want:
             pass                                  # the main shot of its step
-        elif n - count - 1 == want:
+        elif at - 1 == want:
             count += 1                            # an extra shot of its step
             out.duplicate_folders.append(n)
             rows = dupli_of_step.get(want) or []
@@ -364,10 +367,13 @@ def declaration(phi: Sequence[int], folders: Sequence[int], n_rows: int,
                 out.captured_dupli[rows.pop(0)] = n
             else:
                 out.reshot_folders.append(n)
+        elif want > at:
+            # the scanner is ahead: the steps in between were never photographed
+            out.skipped_steps.extend(range(at, want))
         else:
             out.unexpressed.append(
                 f"folder {n} shows the state of row {r} (step {want}) but the rule "
-                f"puts it on step {n - count}")
+                f"puts it on step {at}")
         covered.add(want)
     out.skipped_dupli = [r for r in dupli if r not in out.captured_dupli]
     n_steps = cstep[n_rows] if n_rows else 0
@@ -917,6 +923,8 @@ def describe(a: Analysis, top: int = 12) -> str:
                 f"best mapping")
             lines.append(f"declaration: scan.{a.desktop}.duplicate_folders: "
                          f"{p.duplicate_folders}"
+                         + (f", scan.{a.desktop}.skipped_steps: {p.skipped_steps}"
+                            if p.skipped_steps else "")
                          + (f"   (cannot express: {'; '.join(p.unexpressed[:3])})"
                             if p.unexpressed else "")
                          + ("   -- decided" if j.decided else "   -- NOT decided: look "

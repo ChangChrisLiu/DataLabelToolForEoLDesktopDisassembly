@@ -226,6 +226,8 @@ def test_a_view_whose_photos_stay_still_loses_its_rows_past_the_new_last_step(en
     assert run(env, "load-index", "--index", old) == 0
     db = open_db(env)
     try:
+        # the old last scanner step had no photo (a missing frame), as on D24
+        db.upsert_frame(FrameKey(95, 6, "scan"), None, {}, None, {"missing": True})
         kf = _keyframe(db, 95, "scan", "chassis", 6)
     finally:
         db.close()
@@ -237,6 +239,42 @@ def test_a_view_whose_photos_stay_still_loses_its_rows_past_the_new_last_step(en
             assert db.get_frame(FrameKey(95, 6, view)) is None, view
             assert db.get_frame(FrameKey(95, 5, view))["path"] == f"F:/{view}/95/r5.png"
         assert [k.anchor_step for k in db.keyframes(95, "scan") if k.id == kf] == [5]
+    finally:
+        db.close()
+
+
+def test_work_on_a_photo_that_left_the_index_is_refused_not_moved(env, tmp_path, capsys):
+    """N3: the new index no longer has photo r6 at all; a shape drawn on it would
+    land on another photo, so the desktop is refused and nothing is written. The
+    same photo with no work on it is simply dropped."""
+    old = _index_file(tmp_path / "old.json", 95, {r: r for r in range(1, 7)})
+    assert run(env, "load-index", "--index", old) == 0
+    db = open_db(env)
+    try:
+        kf = _keyframe(db, 95, "scan", "chassis", 6)
+        before = db.conn.execute("SELECT COUNT(*) FROM frame WHERE desktop=95").fetchone()[0]
+    finally:
+        db.close()
+    new = _index_file(tmp_path / "new.json", 95, {r: r for r in range(1, 6)})
+    capsys.readouterr()
+    assert run(env, "load-index", "--index", new) == 1
+    out = capsys.readouterr().out
+    assert "no longer has in their view" in out and "scan step 6" in out
+    assert "re-run build-index" not in out.split("refused because work")[1]
+    db = open_db(env)
+    try:
+        assert db.conn.execute("SELECT COUNT(*) FROM frame WHERE desktop=95").fetchone()[0] \
+            == before
+        assert [k.anchor_step for k in db.keyframes(95, "scan") if k.id == kf] == [6]
+        db.conn.execute("DELETE FROM shape_keyframe WHERE id=?", (kf,))
+        db.conn.commit()
+    finally:
+        db.close()
+    assert run(env, "load-index", "--index", new) == 0
+    db = open_db(env)
+    try:
+        for view in VIEWS:
+            assert db.get_frame(FrameKey(95, 6, view)) is None, view
     finally:
         db.close()
 

@@ -55,7 +55,8 @@ from tda.core.log_report import _expected_steps
 from tda.core.logs import LogImport, import_log, iter_desktop_csvs, read_desktop_csv
 from tda.core import extra as X
 from tda.core.extra import extra_keys
-from tda.core.model import ALL_VIEWS, StepRec, StepType, is_context, is_extra
+from tda.core.db_moves import loaded_collapse_refusal
+from tda.core.model import ALL_VIEWS, VIEWS, StepRec, StepType, is_context, is_extra
 from tda.core.states import INITIAL_STEP, events_from_actions, initial_overrides
 from tda.core.taxonomy import Taxonomy
 from tda.core.merge_replay import (
@@ -95,12 +96,15 @@ REFUSED_IMPLAUSIBLE = "implausible_shrink"
 #: The sheet (or the implied-instance rule) now produces a key an annotator
 #: added in S1 for a part the log did not name -- ``--adopt-extras`` answers it.
 REFUSED_EXTRAS = "extra_keys"
+#: The frames in the database are not loaded under the step numbering this
+#: sheet collapses to (U25 round 2, B2) -- ``load-index`` answers it.
+REFUSED_NOT_LOADED = "frames_not_renumbered"
 
 __all__ = [
     "DesktopRun", "INFERRED_HEADING", "LogsRun", "add_cage_latches", "add_implied_instances",
     "brand_model",
     "chassis_type", "desktop_fields", "expected_steps", "extra_clash", "import_logs_into_db",
-    "inferred_section", "REFUSED_EXTRAS",
+    "inferred_section", "REFUSED_EXTRAS", "REFUSED_NOT_LOADED",
 ]
 
 
@@ -184,6 +188,9 @@ class DesktopRun:
     source: str
     status: str  # imported | skipped | refused | failed
     steps: int = 0
+    #: The sheet's own rows (``dupli`` rows included): what ``n_logged_steps``
+    #: counts, so the report compares this, not the collapsed steps (U25 N2).
+    sheet_rows: int = 0
     actions: int = 0
     instances: int = 0
     events: int = 0
@@ -193,8 +200,8 @@ class DesktopRun:
     ls_notes_dropped: int = 0
     brand: str = ""
     #: For a ``refused`` run, which refusal it was: :data:`REFUSED_VERIFIED`,
-    #: :data:`REFUSED_IMPLAUSIBLE` or :data:`REFUSED_EXTRAS`. Empty for every
-    #: other status.
+    #: :data:`REFUSED_IMPLAUSIBLE`, :data:`REFUSED_EXTRAS` or
+    #: :data:`REFUSED_NOT_LOADED`. Empty for every other status.
     reason: str = ""
     issues: list[str] = field(default_factory=list)
     #: ``"<key>.<field> = <value>"`` per relational field the heuristic filled.
@@ -1053,6 +1060,25 @@ def _force_warning(db: Db, desktop: int, previous: list[StepRec]) -> str:
     )
 
 
+def _collapse_refusal(db: Db, desktop: int, li: LogImport) -> Optional[str]:
+    """Why the sheet may not be written over this desktop's frames (U25 round 2, B2).
+
+    The step table follows the sheet's rows with its ``dupli`` rows collapsed;
+    the frames follow the index ``load-index`` last loaded. When those collapse
+    differently -- ``load-index`` was refused (a verified frame), failed, or was
+    never run with a U25 index -- writing the step table would put every step
+    after the first ``dupli`` row on another photo, silently. Refused instead.
+    """
+    has_frames = db.conn.execute(
+        f"SELECT 1 FROM frame WHERE desktop=? AND view IN ({','.join('?' * len(VIEWS))}) "
+        f"LIMIT 1", (desktop, *VIEWS)).fetchone() is not None
+    why = loaded_collapse_refusal(db.get_desktop(desktop), has_frames, li.dupli_rows)
+    if why is None:
+        return None
+    return (f"D{desktop:02d}: {why}. Refused, nothing written -- run load-index for it "
+            f"first (from an index built with this sheet), then import-logs again")
+
+
 def _verified_refusal(db: Db, desktop: int, frozen: int, log: Optional[Log]) -> DesktopRun:
     """Report and refuse a forced re-import of a desktop with frozen frames.
 
@@ -1145,6 +1171,12 @@ def _import_one(
     """Read and write one desktop; raises if the sheet cannot be parsed."""
     rows, meta = read_desktop_csv(path)
     li = import_log(desktop, rows, meta, tax)
+    refusal = _collapse_refusal(db, desktop, li)
+    if refusal:
+        if log:
+            log(f"[import-logs] refused: {refusal}")
+        return DesktopRun(desktop, str(path), "refused", reason=REFUSED_NOT_LOADED,
+                          issues=[refusal])
     clash = extra_clash(db, li, tax)
     if clash and not adopt_extras:
         refusal = _extras_refusal(desktop, clash)
@@ -1205,6 +1237,7 @@ def _import_one(
             log(f"[import-logs]   {text}")
     return DesktopRun(
         desktop=desktop, source=str(path), status="imported", steps=len(li.steps),
+        sheet_rows=int(getattr(li, "sheet_rows", 0) or len(li.steps)),
         actions=len(li.actions), instances=len(li.instances), events=events,
         durations=filled, ls_notes=kept, ls_notes_dropped=dropped,
         brand=str(li.meta.get("brand_model_raw") or ""),

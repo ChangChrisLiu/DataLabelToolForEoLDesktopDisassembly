@@ -192,7 +192,7 @@ class FolderSteps:
     the scanner's ``RGB301``, ``Front_OAK_18_30.jpg`` Camera_1's ``030`` -- and
     a folder is a step only until the sheet's ``dupli`` rows are collapsed or
     the scanner's duplicate folders are declared. The index knows where every
-    folder went (:func:`tda.core.index.step_of_folder`); an index written before
+    folder went (:func:`tda.core.index.folder_steps`); an index written before
     that, or a folder it does not know, answers ``None`` and the number is kept.
     """
 
@@ -206,6 +206,27 @@ class FolderSteps:
             di = self.index.get(int(desktop))
             self._cache[key] = folder_steps(di, view) if di is not None else {}
         return self._cache[key].get(int(number))
+
+    def is_extra(self, desktop: int, view: str, number: int) -> bool:
+        """Is folder ``number`` an extra shot of its step rather than the step's photo?
+
+        The scanner by its own ``RGB<n>1`` folder; the other views by the
+        Camera_1 folder of the step's frame (the rows are the Camera_1 captures,
+        and ``dupli_replaces`` swaps all three OAK/RealSense views alike).
+        """
+        step = self(desktop, view, number)
+        di = self.index.get(int(desktop))
+        if step is None or di is None:
+            return False
+        main = di.frames.get(FrameKey(int(desktop), step, "scan" if view == "scan" else "oak1"))
+        if main is None or not main.src_step_dir:
+            return False
+        name = main.src_step_dir
+        if view == "scan":
+            digits = name[3:-1] if name.startswith("RGB") and name.endswith("1") else ""
+        else:
+            digits = name
+        return digits.isdigit() and int(digits) != int(number)
 
 
 # --------------------------------------------------------------------------- #
@@ -372,10 +393,15 @@ def import_ls_export(
         "relations_unresolved": 0, "frames_not_in_index": 0,
         "steps_out_of_range": 0, "frames_seen_twice": 0,
         "frames_renumbered": 0,
+        # drafts traced on a photo that is now an extra shot of its step (U25 N5)
+        "extra_shot_drafts_kept": 0, "extra_shot_drafts_skipped": 0,
         "purged_keyframes": purged_kf, "purged_relations": purged_rel,
     }
     state = _ImportState()
     resolve = FolderSteps(index)
+    # the step's own photo first, then its extra shots: a part drawn on both
+    # keeps the drawing on the photo the step shows (U25 round 2, N5)
+    pending: list[tuple[bool, FrameKey, list[dict]]] = []
 
     for project in export.get("projects") or []:
         if str(project.get("title") or "").strip() == "Metadata":
@@ -403,11 +429,15 @@ def import_ls_export(
                     len(labels_of(r)) for a in annotations for r in a.get("result") or []
                 )
                 continue
+            extra = resolve.is_extra(frame.desktop, frame.view, frame.step)
             step = resolve(frame.desktop, frame.view, frame.step)
             if step is not None and step != frame.step:
                 s["frames_renumbered"] += 1
                 frame = FrameKey(frame.desktop, step, frame.view)
-            _import_task(db, index, mapping, frame, annotations, state, s)
+            pending.append((extra, frame, annotations))
+
+    for extra, frame, annotations in sorted(pending, key=lambda p: p[0]):
+        _import_task(db, index, mapping, frame, annotations, state, s, extra=extra)
 
     for desktop in sorted(set(state.notes) | set(state.hints) | covered):
         lines = {}
@@ -434,14 +464,22 @@ class _ImportState:
         # per-frame label counters, so a second task on one frame keeps numbering
         self.counters: dict[FrameKey, dict[str, int]] = {}
         self.seen: set[FrameKey] = set()
+        # labels drawn on each frame's own photo (not on an extra shot of it)
+        self.main_labels: dict[FrameKey, set[str]] = {}
 
 
 def _import_task(
     db: Db, index: dict[int, DesktopIndex],
     mapping: dict[str, Optional[LabelMapping]], frame: FrameKey,
-    annotations: list[dict], state: _ImportState, s: dict,
+    annotations: list[dict], state: _ImportState, s: dict, extra: bool = False,
 ) -> None:
-    """Import one task's annotations onto one frame (see :func:`import_ls_export`)."""
+    """Import one task's annotations onto one frame (see :func:`import_ls_export`).
+
+    ``extra``: the task's image is an extra shot of the frame's step (a ``dupli``
+    capture, a duplicate scanner folder). Its drafts are adopted only for the
+    labels the step's own photo has none of -- otherwise the step would show the
+    part twice (U25 round 2, N5).
+    """
     if frame in state.seen:
         s["frames_seen_twice"] += 1
     else:
@@ -457,9 +495,16 @@ def _import_task(
     for annotation in annotations:
         keys: dict[str, str] = {}  # result id -> provisional instance key
         for rid, label, result in geometry_of(annotation):
+            if extra and label in state.main_labels.get(frame, ()):
+                s["extra_shot_drafts_skipped"] += 1
+                continue
             key = _import_shape(db, mapping, frame, rid, label, result, counter, state, s)
             if key is not None:
                 keys[rid] = key
+                if extra:
+                    s["extra_shot_drafts_kept"] += 1
+                else:
+                    state.main_labels.setdefault(frame, set()).add(label)
         for result in annotation.get("result") or []:
             kind = result.get("type")
             if kind in TEXT_TYPES:

@@ -103,11 +103,19 @@ def test_declaration_both_skipped_is_an_empty_list():
     assert d.duplicate_folders == [] and d.skipped_dupli == [4, 8] and d.expressible
 
 
-def test_declaration_a_real_step_skipped_cannot_be_expressed():
-    """The scanner skipped row 3 (not a dupli): the rule has no word for it."""
+def test_declaration_a_real_step_skipped_is_a_skipped_step():
+    """The scanner skipped row 3 (not a dupli): since U25 round 2 that is
+    ``skipped_steps`` (it used to be "cannot express")."""
     rows = [1, 2, 4, 5, 6]
     d = A.declaration(rows, [1, 2, 3, 4, 5], 6, [])
-    assert not d.expressible and "folder 3" in d.unexpressed[0]
+    assert d.expressible and d.skipped_steps == [3] and d.duplicate_folders == []
+
+
+def test_declaration_a_folder_out_of_order_cannot_be_expressed():
+    """Folder 4 shows an earlier state than folder 3: no rule says that."""
+    rows = [1, 2, 4, 3, 5]
+    d = A.declaration(rows, [1, 2, 3, 4, 5], 5, [])
+    assert not d.expressible and "folder 4" in d.unexpressed[0]
 
 
 def test_declaration_folders_named_by_row_with_gaps():

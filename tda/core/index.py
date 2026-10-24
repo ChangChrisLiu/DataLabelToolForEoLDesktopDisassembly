@@ -116,6 +116,14 @@ class DesktopIndex:
 #: ``dupli`` row and the scanner's duplicate folders. A list of
 #: ``{"path", "src_step_dir", "ts", "row"}`` -- not frames the app shows.
 EXTRA_SHOTS = "extra_shots"
+#: A photo of the laid-out parts taken in the sequence -- a sheet row of them
+#: (D66 step 13, put there by ``load-index``) or a Camera_1 capture that is no
+#: row at all (``oak.<d>.gallery_captures``, D1's 040) -- is gallery shot
+#: ``SEQUENCE_SHOT_BASE + number``: out of reach of the Components folders' own
+#: shots 1..N, so it is never renumbered under work drawn on it.
+SEQUENCE_SHOT_BASE = 1000
+#: ``aux`` key naming the sequence capture a gallery shot came from.
+SEQUENCE_CAPTURE_KEY = "sequence_capture"
 
 
 # ---------------------------------------------------------------------------
@@ -225,8 +233,9 @@ def scan_desktop(desktop: int, roots: dict, fixes: dict,
         issues.append(f"oak: no Disassemble folder under {oak_desktop}")
         return DesktopIndex(desktop, 0, frames, [], issues)
 
+    gallery: dict = {"dirs": {}, "ts": {}}
     step_of_dir, step_of_ts, issues_c1 = _build_logical_steps(
-        desktop, disassemble, oak_fix, fixes, frames
+        desktop, disassemble, oak_fix, fixes, frames, gallery
     )
     issues.extend(issues_c1)
     n_rows = len(step_of_dir)
@@ -237,10 +246,12 @@ def scan_desktop(desktop: int, roots: dict, fixes: dict,
 
     # OAK and RealSense first in row numbering (the sheet's), then collapsed
     issues.extend(
-        _add_oak_cam2(desktop, disassemble, oak_desktop, oak_fix, step_of_dir, step_of_ts, frames)
+        _add_oak_cam2(desktop, disassemble, oak_desktop, oak_fix, step_of_dir, step_of_ts, frames,
+                      gallery["ts"])
     )
     rs_fix = (fixes.get("rs") or {}).get(desktop, {}) or {}
-    issues.extend(_add_realsense(desktop, roots, aliases, step_of_dir, frames, rs_fix))
+    issues.extend(_add_realsense(desktop, roots, aliases, step_of_dir, frames, rs_fix,
+                                 gallery["dirs"]))
     issues.extend(_add_components(desktop, roots, oak_desktop, oak_fix, step_of_ts, frames,
                                   rs_fix))
     dupli, collapse_issues = _valid_dupli(dupli_rows, n_rows, sheet_rows)
@@ -376,14 +387,31 @@ def _build_logical_steps(
     oak_fix: dict,
     fixes: dict,
     frames: dict[FrameKey, FrameFile],
+    gallery: Optional[dict] = None,
 ) -> tuple[dict[str, int], dict[str, int], list[str]]:
     """Order the Camera_1 captures into logical steps and emit their frames.
 
     Returns ``(step_of_dir, step_of_ts, issues)``.
+
+    ``oak.<d>.cam1_order: folder`` keeps the folder order where the capture
+    times disagree (D60: the clocks of both cameras put folder 004 before 003,
+    but the photos are rows 3 and 4 in folder order). ``oak.<d>.gallery_captures``
+    names Camera_1 folders that photographed the laid-out parts, not a row (D1's
+    040): they are not rows, and become shot :data:`SEQUENCE_SHOT_BASE` + folder
+    number of the camera's components gallery; ``gallery`` receives
+    ``{"dirs": {folder: shot}, "ts": {capture token: shot}}`` so Camera_2 and
+    the RealSense put their frame of it there too.
     """
     issues: list[str] = []
     cam1 = scan_oak_camera(os.path.join(disassemble, "Camera_1"), issues)
     keep_rule = oak_fix.get("step1_keep")
+    gallery = gallery if gallery is not None else {}
+    gallery.setdefault("dirs", {})
+    gallery.setdefault("ts", {})
+    to_gallery = {str(g).zfill(3) for g in oak_fix.get("gallery_captures") or []}
+    for name in sorted(to_gallery - set(cam1)):
+        issues.append(f"fix:oak[{desktop}] gallery_captures MISMATCH: Camera_1 has no "
+                      f"folder {name}")
 
     captures: list[tuple[str, str, dict[str, str]]] = []  # (src_dir, ts_token, role_paths)
     for src_dir in sorted(cam1):
@@ -409,11 +437,35 @@ def _build_logical_steps(
             ts = next(iter(by_ts))
             captures.append((src_dir, ts, by_ts[ts]))
 
+    for src_dir, ts, role_paths in [c for c in captures if c[0] in to_gallery]:
+        shot = SEQUENCE_SHOT_BASE + int(src_dir)
+        key = FrameKey(desktop, shot, "cmp_oak1")
+        frames[key] = _oak_frame(key, ts, role_paths, src_dir)
+        frames[key].aux[SEQUENCE_CAPTURE_KEY] = f"Camera_1/{src_dir}"
+        gallery["dirs"][src_dir] = shot
+        gallery["ts"][ts] = shot
+        issues.append(f"fix:oak[{desktop}] gallery_captures: Camera_1 {src_dir} ({ts}) "
+                      f"photographs the laid-out parts, not a row: components-gallery "
+                      f"shot {shot}")
+    captures = [c for c in captures if c[0] not in to_gallery]
+
     by_ts_order = sorted(captures, key=lambda c: (c[1], c[0]))
     order_source = (fixes.get("general") or {}).get("step_order_source", "oak1_timestamp")
-    ordered = by_ts_order if order_source == "oak1_timestamp" else sorted(captures)
+    by_folder = oak_fix.get("cam1_order") == "folder"
+    ordered = by_ts_order if order_source == "oak1_timestamp" and not by_folder \
+        else sorted(captures)
     folder_order = [c[0] for c in captures]
-    if folder_order != [c[0] for c in ordered]:
+    if by_folder:
+        swapped = [f"{src}->row {i + 1}" for i, (src, _, _) in enumerate(by_ts_order)
+                   if folder_order[i] != src]
+        if swapped:
+            issues.append(f"fix:oak[{desktop}] cam1_order=folder applied: the rows follow "
+                          f"the Camera_1 folder numbers; the capture times alone would "
+                          f"give {', '.join(swapped)}")
+        else:
+            issues.append(f"fix:oak[{desktop}] cam1_order=folder declared but the capture "
+                          f"times already follow the folder order")
+    elif folder_order != [c[0] for c in ordered]:
         moved = [
             f"{src}->step {i + 1}"
             for i, (src, _, _) in enumerate(ordered)
@@ -467,8 +519,14 @@ def _add_oak_cam2(
     step_of_dir: dict[str, int],
     step_of_ts: dict[str, int],
     frames: dict[FrameKey, FrameFile],
+    gallery_ts: Optional[dict[str, int]] = None,
 ) -> list[str]:
-    """Pair Camera_2 captures onto the logical steps, applying the D24/D10 fixes."""
+    """Pair Camera_2 captures onto the logical steps, applying the D24/D10 fixes.
+
+    A capture paired with a Camera_1 ``gallery_captures`` folder goes to the same
+    shot of Camera_2's components gallery.
+    """
+    gallery_ts = gallery_ts or {}
     issues: list[str] = []
     cam2 = scan_oak_camera(os.path.join(disassemble, "Camera_2"), issues)
     captures: list[tuple[str, str, dict[str, str]]] = []
@@ -496,6 +554,13 @@ def _add_oak_cam2(
 
     assigned: dict[str, list[int]] = {}
     for src_dir, ts, role_paths in sorted(captures, key=lambda c: (c[1], c[0])):
+        if ts in gallery_ts:
+            key = FrameKey(desktop, gallery_ts[ts], "cmp_oak2")
+            frames[key] = _oak_frame(key, ts, role_paths, src_dir)
+            frames[key].aux[SEQUENCE_CAPTURE_KEY] = f"Camera_2/{src_dir}"
+            issues.append(f"oak2: {src_dir} ({ts}) pairs a Camera_1 gallery capture: "
+                          f"components-gallery shot {gallery_ts[ts]}")
+            continue
         step = step_of_ts.get(ts)
         if step is None:
             step = cam2_fix_step(oak_fix, src_dir, step_of_dir)
@@ -524,7 +589,8 @@ def _add_oak_cam2(
     return issues
 
 
-def scan_step(number: int, duplicate_folders: Iterable[int]) -> int:
+def scan_step(number: int, duplicate_folders: Iterable[int],
+              skipped_steps: Iterable[int] = ()) -> int:
     """The step scanner folder ``RGB<number>1`` belongs to (task U25, spec 2.2).
 
     ``number - #(duplicate folders <= number)``: a duplicate folder photographs
@@ -532,8 +598,17 @@ def scan_step(number: int, duplicate_folders: Iterable[int]) -> int:
     itself lands on that step (as an extra shot). Without duplicates folder
     ``n`` is step ``n`` -- which already covers a scanner that skipped a
     ``dupli`` row, because the collapsed steps do not count those rows either.
+
+    ``skipped_steps`` (``scan.<d>.skipped_steps``, U25 round 2) are steps the
+    scanner never photographed (D41, D61): the folders from there on are one
+    step later each -- the ``b``-th folder lands on the ``b``-th step that was
+    not skipped.
     """
-    return int(number) - sum(1 for d in duplicate_folders if int(d) <= int(number))
+    base = int(number) - sum(1 for d in duplicate_folders if int(d) <= int(number))
+    for k in sorted({int(s) for s in skipped_steps}):
+        if k <= base:
+            base += 1
+    return base
 
 
 def _add_scanner(
@@ -549,8 +624,8 @@ def _add_scanner(
     """Add the scanner (top-down) frames.
 
     A desktop whose rows were collapsed (it has ``dupli`` rows) or that declares
-    ``scan.<d>.duplicate_folders`` maps folder ``RGB<n>1`` with
-    :func:`scan_step`; a duplicate folder is an extra shot of its step, or the
+    ``scan.<d>.duplicate_folders`` or ``scan.<d>.skipped_steps`` maps folder
+    ``RGB<n>1`` with :func:`scan_step`; a duplicate folder is an extra shot of its step, or the
     step's frame when nothing else photographed it (D1's ``RGB331``). Every
     other desktop keeps the old rule: folder ``n`` is the step of Camera_1
     folder ``n``.
@@ -561,8 +636,9 @@ def _add_scanner(
     times the way :func:`_add_realsense` does.
     """
     scan_fix = scan_fix or {}
-    own = collapsed or "duplicate_folders" in scan_fix
+    own = collapsed or "duplicate_folders" in scan_fix or "skipped_steps" in scan_fix
     duplicates = {int(n) for n in (scan_fix.get("duplicate_folders") or [])}
+    skipped = {int(n) for n in (scan_fix.get("skipped_steps") or [])}
     issues: list[str] = []
     base = scanner_desktop_dir(roots["scanner_root"], desktop, issues)
     if base is None:
@@ -576,7 +652,7 @@ def _add_scanner(
         name = entry.name
         nominal = int(name[3:-1])
         if own:
-            step = scan_step(nominal, duplicates)
+            step = scan_step(nominal, duplicates, skipped)
             if not 1 <= step <= (n_steps or 0):
                 issues.append(f"scan: {name} would be step {step} of {n_steps}; skipped")
                 if leftover is not None:
@@ -639,8 +715,13 @@ def _add_realsense(
     step_of_dir: dict[str, int],
     frames: dict[FrameKey, FrameFile],
     rs_fix: Optional[dict] = None,
+    gallery_dirs: Optional[dict[str, int]] = None,
 ) -> list[str]:
     """Add the RealSense frames, aligning by folder number *and* file time.
+
+    The frame of a Camera_1 ``gallery_captures`` folder (by folder number, or
+    the ``rs_extra_from`` of its number) goes to the same shot of the
+    RealSense's components gallery.
 
     Spec 2.2 aligns the RealSense by folder number plus file time.  Unlike the
     scanner, these files were never re-copied, so ``original_color.png``'s mtime
@@ -653,6 +734,7 @@ def _add_realsense(
     step 43) fills its nominal step ``as_step``, time-checked like any other.
     """
     issues: list[str] = []
+    gallery_dirs = gallery_dirs or {}
     rs_desktop = os.path.join(roots["rs_root"], f"Desktop {desktop}")
     base = first_existing(rs_desktop, aliases)
     if base is None:
@@ -663,6 +745,10 @@ def _add_realsense(
             continue
         nominal = int(entry.name)
         step = step_of_dir.get(f"{nominal:03d}")
+        if step is None and f"{nominal:03d}" in gallery_dirs:
+            issues.extend(_rs_gallery(desktop, entry.path, entry.name,
+                                      gallery_dirs[f"{nominal:03d}"], frames))
+            continue
         if step is None:
             issues.append(
                 f"rs: folder {entry.name} (nominal step {nominal}) has no cam1 folder; skipped"
@@ -682,12 +768,31 @@ def _add_realsense(
             key=key, path=norm(main.path), aux=aux, ts=ts, src_step_dir=entry.name
         )
         issues.extend(_check_rs_time(desktop, step, entry.name, ts, frames))
-    issues.extend(_rs_extra(desktop, rs_desktop, rs_fix or {}, step_of_dir, frames))
+    issues.extend(_rs_extra(desktop, rs_desktop, rs_fix or {}, step_of_dir, frames,
+                            gallery_dirs))
     return issues
 
 
+def _rs_gallery(desktop: int, path: str, src: str, shot: int,
+                frames: dict[FrameKey, FrameFile]) -> list[str]:
+    """The RealSense frame of a Camera_1 ``gallery_captures`` folder, as a gallery shot."""
+    main = os.path.join(path, "original_color.png")
+    if not os.path.isfile(main):
+        return [f"rs: {src} (a gallery capture) has no original_color.png; skipped"]
+    aux = {SEQUENCE_CAPTURE_KEY: f"RealSense/{src}"}
+    depth = os.path.join(path, "depth_raw.npy")
+    if os.path.isfile(depth):
+        aux["depth_npy"] = norm(depth)
+    key = FrameKey(desktop, shot, "cmp_rs")
+    frames[key] = FrameFile(key=key, path=norm(main), aux=aux,
+                            ts=iso_from_mtime(os.stat(main).st_mtime), src_step_dir=src)
+    return [f"rs: {src} is the frame of a Camera_1 gallery capture: components-gallery "
+            f"shot {shot}"]
+
+
 def _rs_extra(desktop: int, rs_desktop: str, rs_fix: dict, step_of_dir: dict[str, int],
-              frames: dict[FrameKey, FrameFile]) -> list[str]:
+              frames: dict[FrameKey, FrameFile],
+              gallery_dirs: Optional[dict[str, int]] = None) -> list[str]:
     """Apply a declared ``rs_extra_from`` fix; every outcome is an issue line."""
     folder = rs_fix.get("rs_extra_from")
     if not folder or "as_step" not in rs_fix:
@@ -697,6 +802,10 @@ def _rs_extra(desktop: int, rs_desktop: str, rs_fix: dict, step_of_dir: dict[str
     step = step_of_dir.get(f"{nominal:03d}")
     path = os.path.join(rs_desktop, *str(folder).split("/"))
     main = os.path.join(path, "original_color.png")
+    if step is None and f"{nominal:03d}" in (gallery_dirs or {}):
+        shot = gallery_dirs[f"{nominal:03d}"]
+        return [f"{head} (as Camera_1 {nominal:03d}, a gallery capture)"] + _rs_gallery(
+            desktop, path, str(folder), shot, frames)
     if step is None:
         return [f"{head} MISMATCH: nominal step {nominal} has no cam1 folder"]
     key = FrameKey(desktop, step, "rs")
@@ -917,6 +1026,46 @@ def _frame_to_json(ff: FrameFile) -> dict:
         "ts": ff.ts,
         "src_step_dir": ff.src_step_dir,
     }
+
+
+def keep_previous(index_path: str, report_path: Optional[str] = None,
+                  when: Optional[datetime] = None) -> list[str]:
+    """Copy an index file (and its report) aside before ``build-index`` overwrites it.
+
+    ``<stem>_v<version>_<YYYYMMDD><ext>`` next to it -- ``index_v2_20261024.json``,
+    ``index_report_v2_20261024.md`` -- so going back to the previous index needs
+    no manual copy (U25 round 2, N7). A copy that is already there with the same
+    bytes is not made again; a different one of the same name gets the time
+    appended. Returns the copies made.
+    """
+    import filecmp
+    import shutil
+
+    when = when or datetime.now()
+    if not os.path.isfile(index_path):
+        return []
+    version = "unknown"
+    try:
+        with open(index_path, encoding="utf-8") as fh:
+            m = re.search(r'"version"\s*:\s*(\d+)', fh.read(4096))
+        if m:
+            version = m.group(1)
+    except OSError:
+        pass
+    tag = f"v{version}_{when:%Y%m%d}"
+    kept: list[str] = []
+    for path in (index_path, report_path):
+        if not path or not os.path.isfile(path):
+            continue
+        stem, ext = os.path.splitext(path)
+        dest = f"{stem}_{tag}{ext}"
+        if os.path.exists(dest):
+            if filecmp.cmp(path, dest, shallow=False):
+                continue
+            dest = f"{stem}_{tag}_{when:%H%M%S}{ext}"
+        shutil.copy2(path, dest)
+        kept.append(dest)
+    return kept
 
 
 def save_index(idx: dict[int, DesktopIndex], path: str) -> None:

@@ -69,7 +69,13 @@ from tda.core import rawroot
 from tda.core.db import Db
 from tda.core.extra import extra_keys
 from tda.core.implied import implied_keys
-from tda.core.index import build_index, load_index, respell_paths, save_index
+from tda.core.index import (
+    build_index,
+    keep_previous,
+    load_index,
+    respell_paths,
+    save_index,
+)
 from tda.core.index_report import write_report
 from tda.core.logs import sheet_rows_by_desktop
 from tda.core.model import ALL_VIEWS, COMPONENT_VIEWS, VIEWS, is_cage_latch, is_context
@@ -124,6 +130,8 @@ def cmd_build_index(args: argparse.Namespace) -> int:
     index = build_index(sorted(wanted), roots, args.fixes, progress=True, sheets=sheets)
     if raw is not None:
         respell_paths(index, raw.to_recorded, raw.respell)
+    for kept in keep_previous(out, report):
+        print(f"[build-index] kept the previous {kept}")
     save_index(index, out)
     write_report(index, report)
     print(f"[build-index] {len(index)} desktops, "
@@ -181,8 +189,21 @@ def cmd_load_index(args: argparse.Namespace) -> int:
         if failed:
             for text in failed:
                 print(f"[load-index] FAILED {text}")
+            conflicts = [t for t in failed if "PhotoMoveConflict" in t
+                         or "GalleryConflict" in t]
+            others = len(failed) - len(conflicts)
             print(f"[load-index] {len(failed)} desktops failed; every other desktop "
-                  f"was loaded. Re-run build-index for them, then load-index again.")
+                  f"was loaded, and nothing was written for these.")
+            if conflicts:
+                # a rebuilt index does not help here: the work is in the way (U25 N8)
+                print(f"[load-index] {len(conflicts)} of them were refused because work "
+                      f"sits on photos the new index moves or no longer has (listed "
+                      f"above): re-check those frames (or move the work off them), then "
+                      f"load-index again. Their step tables are left alone -- import-logs "
+                      f"refuses them until load-index has gone through.")
+            if others:
+                print(f"[load-index] for the other {others}: re-run build-index, then "
+                      f"load-index again.")
             return EXIT_ERROR
         return EXIT_OK
 
@@ -238,9 +259,11 @@ def logs_report(run: L.LogsRun, expected: Optional[dict[int, int]] = None) -> st
             lines.append(f"| D{r.desktop:02d} | | | | {r.status} | | | | | |")
             continue
         want = expected.get(r.desktop)
-        mark = "-" if want is None else ("ok" if want == r.steps else "MISMATCH")
+        # n_logged_steps counts the sheet's rows, dupli rows included (U25 N2)
+        mark = "-" if want is None else ("ok" if want == r.sheet_rows else "MISMATCH")
+        rows = f" ({r.sheet_rows} rows)" if r.sheet_rows and r.sheet_rows != r.steps else ""
         lines.append(
-            f"| D{r.desktop:02d} | {r.brand} | {r.steps} | {'' if want is None else want} "
+            f"| D{r.desktop:02d} | {r.brand} | {r.steps}{rows} | {'' if want is None else want} "
             f"| {mark} | {r.actions} | {r.instances} | {r.events} | {r.durations} "
             f"| {len(r.issues)} |"
         )
@@ -287,6 +310,12 @@ REFUSAL_ADVICE = {
         "would take over instances an annotator added in S1 (the sheet now names "
         "their keys; the report lists them). Nothing was written. Re-run with "
         "--adopt-extras to hand them to the sheet, or delete them in S1 first."
+    ),
+    L.REFUSED_NOT_LOADED: (
+        "have frames that are not loaded under the step numbering this sheet "
+        "collapses to (load-index was refused, failed or not run with a U25 "
+        "index). Nothing was written. Run load-index for them first, then "
+        "import-logs again."
     ),
 }
 
@@ -434,6 +463,12 @@ def cmd_import_ls(args: argparse.Namespace) -> int:
               f"{summary['instance_rows']} provisional instances, "
               f"{summary['relation_edges']} relations, "
               f"{summary['steps_with_notes']} steps with notes")
+        if summary.get("frames_renumbered") or summary.get("extra_shot_drafts_skipped") \
+                or summary.get("extra_shot_drafts_kept"):
+            print(f"[import-ls] {summary.get('frames_renumbered', 0)} image(s) landed on "
+                  f"another step number (U25); drafts on an extra shot of a step: "
+                  f"{summary.get('extra_shot_drafts_skipped', 0)} skipped (the step's own "
+                  f"photo has that part), {summary.get('extra_shot_drafts_kept', 0)} kept")
         print(f"[import-ls] wrote {out}")
         return EXIT_OK
 
