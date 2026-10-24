@@ -97,8 +97,10 @@ def test_only_verified_does_not_recompile_the_view(session, tmp_path, monkeypatc
     original = truth_mod.compile_frame
     monkeypatch.setattr(truth_mod, "compile_frame",
                         lambda *a, **k: (calls.append(1), original(*a, **k))[1])
+    # the truth table, that is: the amodal shapes (U26) are not stored and cost
+    # one compilation per exported frame, which test_u26_export counts
     export_coco(session.db, session.tax, [DESKTOP], VIEW, str(tmp_path / "v.json"),
-                only_verified=True)
+                only_verified=True, amodal=False)
     assert calls == []  # the frozen rows are the truth; nothing is derived again
 
 

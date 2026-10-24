@@ -786,9 +786,10 @@ def export_coco(
         ``amodal_bbox``, ``amodal_area`` (task U26, the module docstring). On
         by default; ``False`` (``--no-amodal``) leaves all three out -- they
         add 40-50 % to the file (D3 scan: 2.51 MB against 1.68 MB) -- and
-        spares the one compilation per frame they cost (a frame with a
-        被线挡住（完全） part is still compiled for that part's box).
-        ``info.amodal`` records it.
+        spares the one compilation per exported frame they cost on every
+        export, the digests notwithstanding: the shapes are not stored (a
+        frame with a 被线挡住（完全） part is still compiled for that part's
+        box). ``info.amodal`` records it.
 
     Steps typed ``ignore`` are skipped: they describe no moment of the teardown.
 

@@ -148,6 +148,28 @@ def test_pycocotools_reads_the_amodal_fields(scene, tmp_path):
         assert int(coco.annToMask(coco.anns[a["id"]]).sum()) == a["area"]
 
 
+def test_the_amodal_shapes_cost_one_compilation_per_exported_frame(scene, tmp_path,
+                                                                   monkeypatch):
+    """Not stored, so derived on every export -- once per frame, and only with them.
+
+    Without them the U2 property holds: an export over an untouched view
+    compiles nothing (``tests/test_session_fresh.py``).
+    """
+    import tda.core.truth as truth_mod
+
+    export(scene, tmp_path, "warm.json")            # the truth table is current now
+    original = truth_mod.compile_frame
+    steps: list[int] = []
+    monkeypatch.setattr(truth_mod, "compile_frame",
+                        lambda key, *a, **k: (steps.append(key.step), original(key, *a, **k))[1])
+    doc, _ = export(scene, tmp_path, "again.json")
+    assert sorted(steps) == sorted(i["extra"]["step"] for i in doc["images"])
+    steps.clear()
+    export(scene, tmp_path, "slim.json", amodal=False)
+    # the one 被线挡住（完全） part still needs its box: its frame only
+    assert steps == [V.CABLE_STEP]
+
+
 def test_the_cli_flag(scene, tmp_path, capsys):
     paths = tmp_path / "paths.yaml"
     root = tmp_path / "backups"
