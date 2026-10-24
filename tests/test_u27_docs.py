@@ -1,0 +1,59 @@
+"""Task U27's documents: the spec's paragraph and v1.27, the quickstart's sentence and recipe.
+
+The guide is untouched (its prose stays within 7700 characters). The spec has
+the relation fixes in §3.2 with the D23 example and v1.27 on top of §14; the
+quickstart says where Steps edits are described that they survive a forced
+re-import, and has the D23 recipe.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+GUIDE = ROOT / "docs" / "annotation_guide.md"
+QUICK = ROOT / "docs" / "trial_quickstart.md"
+SPEC = ROOT / "docs" / "superpowers" / "specs" / "2026-09-17-teardown-annotator-design.md"
+
+
+def test_the_guide_stays_within_its_budget():
+    body = GUIDE.read_text(encoding="utf-8")
+    prose = [line for line in body.splitlines() if not line.startswith("| `")]
+    assert sum(len(line) for line in prose) <= 7700
+    assert "relation_fix" not in body and "adopt-relations" not in body
+
+
+def test_the_spec_has_the_paragraph_in_3_2_and_v1_27_on_top():
+    body = SPEC.read_text(encoding="utf-8")
+    section = body.split("### 3.2 实例身份", 1)[1].split("### 3.2a", 1)[0]
+    [para] = [line for line in section.splitlines()
+              if line.startswith("- **关系字段在 Steps 里改，重导保留（v1.27，U27）**")]
+    for needed in ("`cable_clip.01`", "`cover.01`", "`parent = cover.01`", "勾 `attached`",
+                   "`cable_clip` 只能这样变成 `removed`", "`relation_fix`",
+                   "`{desktop, key, raw_name, cls, field, old, new, by, at}`",
+                   "改回导入时的值也记", "`replay_relations`", "relation fixes kept",
+                   "relation fix not matched", "按 raw name 找", "`parent` 不成环",
+                   "被合并掉的零件上的 fix 不套用", "`python -m tda.cli adopt-relations --desktop N`",
+                   "`--dry-run`", "U9/U12/U14/U21 的重放不受影响", "D22、D24–D26"):
+        assert needed in para, needed
+    changes = body.split("## 14. 修订记录", 1)[1]
+    entries = [line for line in changes.splitlines() if line.startswith("- ")]
+    assert entries[0].startswith("- **v1.27（2026-10-24）**：**关系字段重导保留**（U27，§3.2）")
+    for needed in ("`relation_fix`", "`replay_relations`", "`adopt-relations",
+                   "`tda/core/relation_replay.py`", "手设的螺丝头", "无迁移"):
+        assert needed in entries[0], needed
+    assert changes.index("- **v1.27") < changes.index("- **v1.24")
+
+
+def test_the_quickstart_says_steps_edits_survive_and_has_the_d23_recipe():
+    body = QUICK.read_text(encoding="utf-8")
+    steps = body.split("## 1. 先到 Steps 模式核对这台机器", 1)[1].split("\n## 2. ", 1)[0]
+    flat = steps.replace("\n   ", "")
+    assert ("实例表里改的关系字段（`Parent`、`Attached`、`Mounted on`、`Fastens`、`Socket host`、"
+            "`Cable` 等）每次 `Apply` 都记下来，`import-logs --force` 重新导入时保留。") in flat
+    recipe = steps.split("### 零件其实长在另一个零件上（实例表 `Parent`）", 1)[1]
+    flat = recipe.replace("\n", "")
+    for needed in ("`cable_clip.01`", "`cover.01`", "Steps → `Instances` → `cable_clip.01` 那一行",
+                   "`Parent` 填 `cover.01`、勾 `Attached` → `Apply`",
+                   "卡扣第 1 帧关着、第 2 帧打开、第 3 帧起随导风罩拆下", "重新导入也保留"):
+        assert needed in flat, needed
+    assert len(recipe) < 700

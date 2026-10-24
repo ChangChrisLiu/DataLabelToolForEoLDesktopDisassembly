@@ -74,7 +74,8 @@ D:\Anaconda\envs\tda\python.exe -m tda.cli app --annotator chang --desktop 13 --
      "已添加 4 个（未写入，按 Apply 保存）"。它们没有动作，一直是关上的，第 42 步跟主板一起离开。
    - 加错了：`Apply` 之前点 `Revert` 全部丢掉；`Apply` 之后在实例表那一行右键「Delete …」（只要
      还没画形状）。
-5. 改了就点 `Apply`（不想要就 `Revert`）；没改就直接下一步。
+5. 改了就点 `Apply`（不想要就 `Revert`）；没改就直接下一步。实例表里改的关系字段（`Parent`、`Attached`、
+   `Mounted on`、`Fastens`、`Socket host`、`Cable` 等）每次 `Apply` 都记下来，`import-logs --force` 重新导入时保留。
 6. 点顶部 `Annotate`。→ 回到画布，左边工具面板重新出现。
 
 内存卡扣（包括刚加的 4 个）、CPU 压杆已经挂在主板上，不用管。实例表里 `ls:` 开头的是旧 Label
@@ -108,6 +109,14 @@ Studio 草稿，只作参考。
 
 只能合并同一类；`ls:` 草稿要采纳（`Shift+A`）不能合并；两个在同一帧上都画了形状、或在同一步都有动作，就是
 两个零件，会拒绝。`import-logs --force` 重新导入时合并保留（表格里还是两行，导入后仍是 `cover.01`）。
+
+### 零件其实长在另一个零件上（实例表 `Parent`）
+
+D23 第 2 步「remove the cable from the case fan clip」松开的线卡扣 `cable_clip.01` 是 CPU 风扇导风罩
+`cover.01` 上的：松开只是把线拿出来，第 3 步卡扣跟导风罩一起拆下（第 3 步日志写的是 `open`，已用 `Shift+T`
+改成拆下）。Steps → `Instances` → `cable_clip.01` 那一行：`Parent` 填 `cover.01`、勾 `Attached` → `Apply`。
+→ 卡扣第 1 帧关着、第 2 帧打开、第 3 帧起随导风罩拆下（任务卡不再要它）。重新导入也保留。HP 的同类机器
+（D22、D24–D26、D29、D32、D33、D63…）一样改。
 
 ## 2. 第 42 帧（起点：已经拆完的样子）
 

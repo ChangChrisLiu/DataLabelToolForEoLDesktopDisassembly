@@ -47,12 +47,13 @@ def test_the_spec_has_the_paragraph_and_v1_19_on_top():
     changes = body.split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
     # on top when it landed; U20's v1.20, U21's v1.21, U22's v1.22, U23's
-    # v1.23, U24's v1.24, U25's v1.25 and U26's v1.26 have gone above it since
+    # v1.23, U24's v1.24, U25's v1.25, U26's v1.26 and U27's v1.27 have gone
+    # above it since
     assert entries[0].startswith(("- **v1.19（2026-10-17）**", "- **v1.20", "- **v1.21",
                                   "- **v1.22", "- **v1.23", "- **v1.24", "- **v1.25",
-                                  "- **v1.26"))
+                                  "- **v1.26", "- **v1.27"))
     assert any(e.startswith("- **v1.19（2026-10-17）**：**SAM 两个解码头**（U19")
-               for e in entries[:8])
+               for e in entries[:9])
 
 
 def test_the_readme_names_the_config():
