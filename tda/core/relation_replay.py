@@ -80,8 +80,8 @@ OP_VIEW = "-"
 #: ``attrs["of"]`` (``of`` below).
 FIELDS = ("parent", "attached", "mounted_on", "fastens", "socket_host", "cable",
           "slot_id", "group_id", "group_order", "removal_direction", OF_ATTR)
-#: The fields that name another instance (``of`` does when its class has no
-#: vocabulary for it: a RAM latch's module).
+#: The fields that always name another instance; ``of`` does when it holds a
+#: key (a RAM latch's module), see :func:`_names_a_part`.
 REFERENCES = POINTERS
 #: Relations only one class may carry (as the Steps table refuses them).
 ONLY_ON = {"fastens": "screw", "socket_host": "connector"}
