@@ -377,6 +377,7 @@ def test_constants_cover_the_spec_domains() -> None:
         "needs_review",
         "missing_shape",
         "unexplained",
+        "visibility",       # task U24: 可见性审查
     )
     assert api.RESOLUTIONS == ("keep_old", "accept_new")
 
@@ -856,8 +857,8 @@ def test_instances_refresh_on_frame_change(session: StubSession) -> None:
 def test_review_has_one_tab_per_queue(session: StubSession) -> None:
     panel = ReviewPanel(session)
     tabs = panel.tabs()
-    assert tabs.count() == 4
-    assert [panel.queue_at(i) for i in range(4)] == list(api.QUEUE_NAMES)
+    assert tabs.count() == 5                      # task U24: 可见性审查 is the fifth
+    assert [panel.queue_at(i) for i in range(5)] == list(api.QUEUE_NAMES)
     assert "2" in tabs.tabText(0)  # conflict count in the tab label
     conflicts = texts(panel.list_for(api.QUEUE_CONFLICTS))
     assert "12" in conflicts[0] and "cpu_cooler.01" in conflicts[0] and "1234" in conflicts[0]

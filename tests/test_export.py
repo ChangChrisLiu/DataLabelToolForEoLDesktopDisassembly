@@ -215,6 +215,8 @@ def test_annotation_geometry_and_attributes(db, tax, tmp_path: Path):
     assert psu["attributes"] == {
         "instance_key": PSU, "state": "installed", "placement": "in_chassis",
         "visibility": "visible", "occluder": None, "occlusion_ratio": 0.0,
+        # task U24: nobody audited it in Review's 可见性审查
+        "visibility_reviewed": False,
         "amodal_complete": False, "implied": False, "tier": "gold", "verified": True,
     }
     assert "amodal_segmentation" not in psu   # only a part 被线挡住 carries it (U15)

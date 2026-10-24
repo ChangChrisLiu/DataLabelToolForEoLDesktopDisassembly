@@ -7,9 +7,11 @@ carries geometry, and the 23 taxonomy classes as categories 1..23 in
 ``configs/taxonomy.yaml`` keeps its order.
 
 Beyond the COCO fields every annotation carries an ``attributes`` block (state,
-placement, visibility, the ``occluder`` nobody labels that hides it, occlusion
-ratio, amodal completeness, provenance, the view's ``tier`` and whether it is
-``verified``), because the spec's downstream users -- and the VLM export next
+placement, visibility, the ``occluder`` nobody labels that hides it -- or
+``viewpoint``, nothing hides it and this camera cannot see it --, whether a
+human audited that label in Review's 可见性审查 (``visibility_reviewed``, task
+U24), occlusion ratio, amodal completeness, provenance, the view's ``tier`` and
+whether it is ``verified``), because the spec's downstream users -- and the VLM export next
 door -- need the truth table's semantics, not only its pixels. A part
 被线挡住 (task U15) also carries its whole shape, ``amodal_segmentation`` /
 ``amodal_bbox``; one hidden completely is written with an empty segmentation,
@@ -86,6 +88,7 @@ from tda.core.states import GALLERY_EXPORT_STATE, FrameState, state_at
 from tda.core.taxonomy import Taxonomy
 from tda.core.truth import TruthService
 from tda.core.truth_inputs import events_of, infer_hw, pose_segment_of
+from tda.core.vis_review import stamp_covers
 
 __all__ = [
     "ANSWERABLE",
@@ -502,7 +505,7 @@ def view_tier(view: str, tax: Taxonomy) -> str:
 def _attributes(ctx: DesktopCtx, instance: str, row: dict, step: int,
                 keyframe: Optional[ShapeKeyframe], tier: Optional[str],
                 disputed: bool = False, gallery: bool = False,
-                occluder: Optional[str] = None) -> dict:
+                occluder: Optional[str] = None, reviewed: bool = False) -> dict:
     """The truth-table semantics carried alongside every annotation.
 
     ``tier`` and ``verified`` are deliberately two fields. The tier is the
@@ -526,9 +529,16 @@ def _attributes(ctx: DesktopCtx, instance: str, row: dict, step: int,
     ``removed`` and ``on_bench`` (:data:`~tda.core.states.GALLERY_EXPORT_STATE`).
 
     ``occluder`` is why a part in its place is (partly) not seen on this frame
-    -- ``"cable"`` / ``"other_unlabeled"``, nothing annotated covers it -- or
-    ``None`` (task U15, 「被线挡住」): the frame's own statement, read off its
+    -- ``"cable"`` / ``"other_unlabeled"``, nothing annotated covers it, or
+    ``"viewpoint"`` (task U24, 「角度看不到」), nothing covers it and this camera
+    cannot see it from where it stands -- or ``None`` (task U15, 「被线挡住」):
+    the frame's own statement, read off its
     :class:`~tda.core.model.FrameOverride`.
+
+    ``visibility_reviewed`` (task U24) says a human audited this row's label in
+    Review's 「可见性审查」 -- stamped for the very label and reason it has
+    (:func:`tda.core.vis_review.stamp_covers`); ``false`` for a row nobody
+    audited, a plain ``visible`` one included.
     """
     inst_state = ctx.state_at(step).get(instance)
     rec = ctx.instances.get(instance)
@@ -544,6 +554,7 @@ def _attributes(ctx: DesktopCtx, instance: str, row: dict, step: int,
         "placement": placement,
         "visibility": row.get("visibility"),
         "occluder": occluder,
+        "visibility_reviewed": bool(reviewed),
         "occlusion_ratio": row.get("occlusion_ratio"),
         "amodal_complete": None if keyframe is None else bool(keyframe.amodal_complete),
         "implied": bool(rec is not None and is_implied(rec)),
@@ -569,6 +580,8 @@ def _context_attributes(ctx: DesktopCtx, instance: str, row: dict,
         "placement": None,
         "visibility": row.get("visibility"),
         "occluder": occluder,
+        # the visibility review (task U24) audits the machine's parts only
+        "visibility_reviewed": False,
         "occlusion_ratio": row.get("occlusion_ratio"),
         "amodal_complete": None if keyframe is None else bool(keyframe.amodal_complete),
         "implied": False,
@@ -806,6 +819,8 @@ def export_coco(
             # 「被线挡住」 (task U15): the reason, and the amodal it keeps
             occluders = _occluders_of(db, key)
             amodals = _amodal_rles(service, key, sorted(set(occluders) & set(rows)))
+            # 「可见性审查」 (task U24): the rows stamped for the label they have
+            flags = db.instance_flags_at(key)
             for instance in sorted(rows):
                 row = rows[instance]
                 keyframe = ctx.keyframe_at(instance, key.step, row.get("placement") or "",
@@ -827,9 +842,11 @@ def export_coco(
                     cls = ctx.cls_of(instance)
                     if cls is None:
                         continue  # an unresolved draft key: no category to export it under
-                    attributes = _attributes(ctx, instance, row, key.step, keyframe, tier,
-                                             key.step in disputed, gallery,
-                                             occluders.get(instance))
+                    attributes = _attributes(
+                        ctx, instance, row, key.step, keyframe, tier, key.step in disputed,
+                        gallery, occluders.get(instance),
+                        stamp_covers(flags.get(instance), row.get("visibility"),
+                                     occluders.get(instance)))
                 ann = _annotation(ann_id, img_id, cat_of[cls], row, attributes,
                                   roi, include_boxes, amodals.get(instance))
                 if ann is not None:

@@ -356,8 +356,13 @@ class GuideMixin:
         stack = getattr(self.session, "undo_stack", None)
         can_undo = bool(getattr(stack, "can_undo", False))
         can_redo = bool(getattr(stack, "can_redo", False))
-        states["undo"] = (bool(not closed and can_undo), False, closed or "没有可以撤销的操作")
-        states["redo"] = (bool(not closed and can_redo), False, closed or "没有可以重做的操作")
+        # Review's verdicts (可见性审查, task U24) are in the same history: the
+        # read-only canvas does not close it
+        history = "" if self.mode == A.MODE_REVIEW else closed
+        states["undo"] = (bool(not history and can_undo), False,
+                          history or "没有可以撤销的操作")
+        states["redo"] = (bool(not history and can_redo), False,
+                          history or "没有可以重做的操作")
         heat_closed = "" if (image and self.mode in (A.MODE_ANNOTATE, A.MODE_REVIEW)) \
             else (closed or "这一帧没有图像")
         states["toggle_heat"] = (not heat_closed, bool(self.heat_visible), heat_closed)
@@ -385,6 +390,14 @@ class GuideMixin:
         listed = review and facts.open_conflicts > 0
         states["review_accept_all_new"] = (bool(listed), False,
                                            not_review if not review else "这个视图没有开放的冲突")
+        # 可见性审查 (task U24): a line of its tab selected
+        row = review and facts.vis_review and self.review.selected_visibility() is not None
+        why_row = (not_review if not review else
+                   "先切到右侧 Review 的「可见性审查」，选一条" if not facts.vis_review
+                   else "先在「可见性审查」里选一条")
+        for name in ("vis_review_computed", "vis_review_run", "vis_review_cable",
+                     "vis_review_viewpoint"):
+            states[name] = (bool(row), False, why_row)
         # The 「状态」 group (task U13): each slot's own gates, in its words.
         for name in A.PALETTE_STATE:
             why = closed or self.state_button_refusal(name, bool(facts.layer_dirty))
@@ -540,6 +553,11 @@ class GuideMixin:
             open_conflicts=(self.review.list_for(api.QUEUE_CONFLICTS).count()
                             if opened else 0),
             retrace_frozen=self._edit_reach if editing else (),
+            # 可见性审查 (U24): its tab on top in Review, and what is left
+            vis_review=bool(opened and self.mode == A.MODE_REVIEW
+                            and self.review.current_queue() == api.QUEUE_VISIBILITY),
+            vis_pending=(self.review.list_for(api.QUEUE_VISIBILITY).count()
+                         if opened else -1),
         )
 
     def _card_cut_copy(self, instance: Optional[str]) -> bool:

@@ -38,6 +38,7 @@ from tda.ui.app import MainWindow
 from tda.ui.app_roi import BENCH_NEEDS_ITEM
 from tda.ui.class_names import visibility_zh
 from tda.ui.panels.taskcard import card_header, row_view
+from test_app_actions import key_event
 
 LATCH = "ram_latch.01"
 SPLIT_STEP = LAST_STEP - 1          # open at 14, closed at 13: a ✂ row
@@ -88,6 +89,17 @@ def card_row(win_or_session, instance: str) -> dict:
 def press(win: MainWindow, name: str) -> None:
     """The key of action ``name``, through the window's own dispatch."""
     win.dispatch(A.action_named(name))
+    QApplication.processEvents()
+
+
+def set_label(win: MainWindow, instance: str, value: str) -> None:
+    """A visibility label set by hand on the open frame.
+
+    Task U24 took the digit keys out of Annotate (Review's 可见性审查 sets
+    labels now); labels set while annotating are still in older databases,
+    and the table and the card must still say so.
+    """
+    win.session.set_visibility(instance, value)
     QApplication.processEvents()
 
 
@@ -144,7 +156,7 @@ def test_pressing_2_on_a_split_row_does_not_say_space(window):
     window.session.goto(SPLIT_STEP, force=True)
     QApplication.processEvents()
     assert window.instances.select_instance(LATCH)
-    press(window, "visibility_2")                        # 部分遮挡
+    set_label(window, LATCH, "occluded_partial")         # 部分遮挡
     assert card_row(window, LATCH)["done"] is False
     plan = window.guide.plan()
     assert plan.phase != G.PHASE_CONFIRM and "Space" not in plan.now, plan
@@ -244,32 +256,37 @@ def test_the_first_show_fits_the_whole_frame_without_an_roi(qapp, tmp_path):
 # --------------------------------------------------------------------------- #
 # item 5: a visibility change is never silent
 # --------------------------------------------------------------------------- #
-def test_a_digit_key_says_what_it_did_and_how_to_undo_it(window):
+def test_a_digit_key_in_annotate_mode_reaches_nothing_and_says_where_labels_are(window):
+    """Task U24: no label key while annotating; a stray call of the slot says
+    where the labels are set now and writes nothing.  (Review's verdicts say
+    what they did and how to undo it: tests/test_u24_app.py.)"""
     answer_roi(window)
     seed_shapes(window.session, LAST_STEP)
     window.session.goto(LAST_STEP, force=True)
     QApplication.processEvents()
     assert window.instances.select_instance(CHASSIS)
-    press(window, "visibility_4")                         # 画面外
-    said = "机箱 chassis：这一帧的可见性 → 画面外（Ctrl+Z 撤销）"
-    assert said in window.status_message()
-    assert said in window.canvas.banner_text()
-    window.expire_visibility_note()                       # the banner is short-lived
-    assert said not in window.canvas.banner_text()
+    key = window.session.current()
+    assert window.handle_key(key_event("Ctrl+4")) is False
+    press(window, "visibility_4")                         # the slot itself
+    assert "可见性审查" in window.status_message()
+    assert window.db.frame_overrides(key).get(CHASSIS) is None
 
 
 def test_a_digit_key_with_nothing_selected_says_so(window):
+    """In Review's 可见性审查, with no line selected (task U24)."""
     answer_roi(window)
-    window.instances.table().setCurrentCell(-1, -1)
+    window.set_mode(A.MODE_REVIEW)
+    window.review.show_visibility()
+    window.review.list_for(api.QUEUE_VISIBILITY).setCurrentRow(-1)
     press(window, "visibility_4")
-    assert "实例表" in window.status_message()
+    assert "可见性审查" in window.status_message() and "选一条" in window.status_message()
 
 
 def test_an_overridden_visibility_is_marked_in_the_table_and_on_the_card(window):
     answer_roi(window)
     draw_chassis_at_start(window)
     assert window.instances.select_instance(CHASSIS)
-    press(window, "visibility_4")
+    set_label(window, CHASSIS, "out_of_view")
     row = next(r for r in window.instances.rows() if r["key"] == CHASSIS)
     assert row["vis_override"] is True and row["has_shape"] is True
     table = window.instances.table()
@@ -288,7 +305,7 @@ def test_a_plain_label_is_marked_but_not_warned(window):
     answer_roi(window)
     draw_chassis_at_start(window)
     assert window.instances.select_instance(CHASSIS)
-    press(window, "visibility_2")                          # 部分遮挡: still visible
+    set_label(window, CHASSIS, "occluded_partial")         # 部分遮挡: still visible
     table = window.instances.table()
     line = next(i for i in range(table.rowCount())
                 if table.item(i, 1) is not None and table.item(i, 1).text() == CHASSIS)
@@ -305,7 +322,7 @@ def test_ctrl_z_takes_a_visibility_back_exactly(window):
     before_override = window.db.frame_overrides(key).get(CHASSIS)
     before_mask = window.session.compiled().instances[CHASSIS].visible.copy()
     assert window.instances.select_instance(CHASSIS)
-    press(window, "visibility_4")
+    set_label(window, CHASSIS, "out_of_view")
     assert window.db.frame_overrides(key)[CHASSIS].visibility == "out_of_view"
     press(window, "undo")
     assert window.db.frame_overrides(key).get(CHASSIS) == before_override is None
@@ -327,7 +344,7 @@ def test_ctrl_z_keeps_a_drawn_frame_override_byte_exact(window):
     before = window.db.frame_overrides(key)[CHASSIS]
     window.instances.refresh()
     assert window.instances.select_instance(CHASSIS)
-    press(window, "visibility_3")
+    set_label(window, CHASSIS, "occluded_full")
     press(window, "undo")
     after = window.db.frame_overrides(key)[CHASSIS]
     assert (after.visible_rle, after.visibility) == (before.visible_rle, before.visibility)

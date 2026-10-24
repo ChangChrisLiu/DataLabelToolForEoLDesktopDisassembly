@@ -343,9 +343,12 @@ class OccluderMask:
 #: place is not seen (task U15, 「被线挡住」): something nobody labels. The
 #: annotator's ``I`` writes ``cable``; ``other_unlabeled`` is for anything else
 #: that is not annotated (a later dialog), so far store-level only.
+#: ``viewpoint`` (task U24, 「角度看不到」): nothing covers it -- this camera
+#: simply cannot see it from where it stands. Set in Review's 可见性审查 (``Z``).
 OCCLUDER_CABLE = "cable"
 OCCLUDER_OTHER = "other_unlabeled"
-OCCLUDERS = (OCCLUDER_CABLE, OCCLUDER_OTHER)
+OCCLUDER_VIEWPOINT = "viewpoint"
+OCCLUDERS = (OCCLUDER_CABLE, OCCLUDER_OTHER, OCCLUDER_VIEWPOINT)
 
 
 @dataclass

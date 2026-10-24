@@ -77,13 +77,15 @@ def test_action_names_and_bindings_are_unique():
 
 def test_views_are_f1_to_f4_and_ctrl_digits_set_visibility():
     """The ruling of the brief: ``F1..F4`` are views; visibility was ``1..7``
-    until task U22 gave ``1`` / ``2`` to the brush, and is ``Ctrl+1..7`` now."""
+    until task U22 gave ``1`` / ``2`` to the brush, and ``Ctrl+1..7``; since
+    task U24 the labels are Review's 可见性审查 only, where the bare digit is
+    free again: ``1..7``, with ``Ctrl+1..7`` as the alias."""
     views = {a.args[0]: a.keys[0] for a in A.ACTIONS if a.slot == "act_set_view"}
     assert views == {"scan": "F1", "oak1": "F2", "oak2": "F3", "rs": "F4",
                      # the components gallery (task U10); F5 stays "recompile"
                      "cmp_oak1": "F6", "cmp_oak2": "F7", "cmp_rs": "F8"}
-    digits = sorted(a.keys[0] for a in A.ACTIONS if a.slot == "act_set_visibility")
-    assert digits == [f"Ctrl+{i}" for i in range(1, 8)]
+    digits = sorted(a.keys for a in A.ACTIONS if a.slot == "act_set_visibility")
+    assert digits == [(f"{i}", f"Ctrl+{i}") for i in range(1, 8)]
 
 
 def test_lookup_matches_a_declared_key():
@@ -94,13 +96,17 @@ def test_lookup_matches_a_declared_key():
                         A.MODE_ANNOTATE) is None
 
 
-def test_visibility_keys_are_annotate_only():
+def test_visibility_keys_are_review_only():
+    """Task U24: the label keys left Annotate for Review's 可见性审查."""
     ctrl = Qt.KeyboardModifier.ControlModifier
-    assert A.action_for(Qt.Key.Key_3, ctrl, A.MODE_ANNOTATE) is not None
+    bare = Qt.KeyboardModifier.NoModifier
+    assert A.action_for(Qt.Key.Key_3, ctrl, A.MODE_ANNOTATE) is None
     assert A.action_for(Qt.Key.Key_3, ctrl, A.MODE_STEPS) is None
-    # a bare 3 is nothing since task U22 (1 and 2 are the brush size)
-    assert A.action_for(Qt.Key.Key_3, Qt.KeyboardModifier.NoModifier,
-                        A.MODE_ANNOTATE) is None
+    assert A.action_for(Qt.Key.Key_3, ctrl, A.MODE_REVIEW).name == "visibility_3"
+    assert A.action_for(Qt.Key.Key_3, bare, A.MODE_REVIEW).name == "visibility_3"
+    # a bare 3 is nothing in Annotate since task U22 (1 and 2 are the brush size)
+    assert A.action_for(Qt.Key.Key_3, bare, A.MODE_ANNOTATE) is None
+    assert A.action_for(Qt.Key.Key_1, bare, A.MODE_ANNOTATE).name == "radius_down"
 
 
 # --------------------------------------------------------------------------- #

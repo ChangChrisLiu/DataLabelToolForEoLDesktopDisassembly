@@ -118,6 +118,12 @@ NOT_DRAWN_TIP = "还没画：这一帧还没有它的形状 / not drawn yet"
 #: The Vis cell's tooltip of a part 被线挡住 here (task U15).
 CABLE_TIP = ("这一帧被线挡住（{how}）：零件在原位，形状保留；导出时写明被线缆挡住。"
              "选中后再按 ` 键换（完全 → 部分 → 撤回），Ctrl+Z 撤销 / hidden by a cable")
+#: Where a visibility label is changed since task U24: not while annotating.
+VIS_REVIEW_WHERE = "在复查的「可见性审查」里改"
+#: ... and of one 角度看不到 (task U24, Review's 可见性审查 sets it).
+VIEWPOINT_TAGS = {"occluded_full": "角度", "occluded_partial": "角度半"}
+VIEWPOINT_TIP = ("这一帧角度看不到（{how}）：零件在原位，这个相机从它的位置看不到它，不是被挡住；"
+                 "导出时写明。在复查「可见性审查」里设的 / not visible from this viewpoint")
 
 
 def _short(value: str) -> str:
@@ -368,22 +374,25 @@ class InstanceListPanel(QWidget):
             return item
         cable = data.get("cable")
         if not gone and cable in CABLE_TAGS:
-            # 「被线挡住」 (task U15): the label says why, so it is the tag
-            item.setText(CABLE_TAGS[cable])
+            # 「被线挡住」 (task U15): the label says why, so it is the tag --
+            # 「角度看不到」 (task U24) is the same label for another reason
+            viewpoint = data.get("occluder") == "viewpoint"
+            item.setText((VIEWPOINT_TAGS if viewpoint else CABLE_TAGS)[cable])
             item.setBackground(QBrush(OVERRIDE_COLOR))
             item.setForeground(QBrush(WARN_COLOR))
-            item.setToolTip(CABLE_TIP.format(how=CABLE_ZH[cable]))
+            item.setToolTip((VIEWPOINT_TIP if viewpoint else CABLE_TIP).format(
+                how=CABLE_ZH[cable]))
             return item
         if gone or not data.get("vis_override"):
             return item
         item.setBackground(QBrush(OVERRIDE_COLOR))
         note = (f"这一帧手动设的可见性：{visibility_zh(value)}"
-                f"（选中后按 Ctrl+1–7 改，Ctrl+Z 撤销）")
+                f"（{VIS_REVIEW_WHERE}，Ctrl+Z 撤销）")
         if data.get("has_shape") and value in HIDING_VISIBILITY:
             item.setText(f"⚠ {_short(value)}")
             item.setForeground(QBrush(WARN_COLOR))
             note = (f"已设为不可见（{visibility_zh(value)}）：它画好了，但这一帧不显示"
-                    f"它的形状；选中后按 Ctrl+1 改回可见，或 Ctrl+Z 撤销")
+                    f"它的形状；Ctrl+Z 撤销，或{VIS_REVIEW_WHERE}")
         item.setToolTip(note)
         return item
 

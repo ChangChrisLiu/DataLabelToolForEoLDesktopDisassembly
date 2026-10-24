@@ -129,12 +129,16 @@ QUEUE_CONFLICTS = "conflicts"
 QUEUE_NEEDS_REVIEW = "needs_review"
 QUEUE_MISSING_SHAPE = "missing_shape"
 QUEUE_UNEXPLAINED = "unexplained"
+#: 「可见性审查」 (task U24): every confirmed (frame, part) whose label is not
+#: plain ``visible`` or was set by hand, until a verdict stamps it reviewed.
+QUEUE_VISIBILITY = "visibility"
 
 QUEUE_NAMES: tuple[str, ...] = (
     QUEUE_CONFLICTS,
     QUEUE_NEEDS_REVIEW,
     QUEUE_MISSING_SHAPE,
     QUEUE_UNEXPLAINED,
+    QUEUE_VISIBILITY,
 )
 
 #: Keep the frozen shape and drop the conflicting edit.
@@ -317,7 +321,11 @@ class SessionLike(Protocol):
 
     # -- review -------------------------------------------------------------
     def queues(self) -> dict[str, list[dict]]:
-        """The four review queues, keyed by :data:`QUEUE_NAMES`."""
+        """The review queues, keyed by :data:`QUEUE_NAMES`.
+
+        :data:`QUEUE_VISIBILITY` may be absent: it is listed while Review shows
+        it (task U24), and a panel leaves its tab as it was otherwise.
+        """
 
     def resolve_conflict(self, cid: int, resolution: str) -> str:
         """Resolve conflict ``cid``; ``"resolved"`` / ``"superseded"`` / ``"refused"``.

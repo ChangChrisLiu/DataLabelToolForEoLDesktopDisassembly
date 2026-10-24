@@ -1,9 +1,16 @@
-"""Review dock: the four work queues of review mode (spec 4.4).
+"""Review dock: the work queues of review mode (spec 4.4).
 
 Conflicts, needs-review, missing shapes and unexplained differences each get a
 tab whose label carries the queue's size, so the remaining work is visible
 without opening anything.  Activating an entry asks for its frame; ``Enter``
 confirms the frame that is open and ``R`` marks it for rework.
+
+The fifth tab, 「可见性审查」 (task U24), lists the confirmed labels still to be
+audited, one line per part and run of frames; **selecting** a line asks for
+its frame and part (:attr:`ReviewPanel.sigVisibilityPicked`) -- the keys then
+answer it -- and a line above the list says how far the view is, or
+「可见性审查完成」.  The session lists that queue only while Review shows it;
+a refresh without it leaves the tab as it was.
 
 The panel decides nothing: the lists **report**
 (:attr:`ReviewPanel.sigOpenStep`, :attr:`ReviewPanel.sigRework`) and the window
@@ -21,7 +28,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
@@ -32,12 +39,15 @@ from PySide6.QtWidgets import (
 )
 
 from tda.ui import session_api as api
+from tda.ui import visreview_text as VT
 from tda.ui.panels import session_is_open
 
 __all__ = ["ReviewPanel", "QUEUE_TITLES"]
 
 STEP_ROLE = int(Qt.ItemDataRole.UserRole)
 CID_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+#: The whole entry of a 可见性审查 line (task U24): its part and its run.
+ENTRY_ROLE = int(Qt.ItemDataRole.UserRole) + 2
 
 #: Tab captions, in :data:`api.QUEUE_NAMES` order.
 QUEUE_TITLES: dict[str, str] = {
@@ -45,12 +55,19 @@ QUEUE_TITLES: dict[str, str] = {
     api.QUEUE_NEEDS_REVIEW: "Needs review",
     api.QUEUE_MISSING_SHAPE: "Missing shape",
     api.QUEUE_UNEXPLAINED: "Unexplained",
+    api.QUEUE_VISIBILITY: "可见性审查",
 }
+
+#: The keys of the 可见性审查 tab, under its progress line.
+VIS_KEYS = ("Space 确认（按计算） · Shift+Space 整段 · 数字键 手动设 · "
+            "` 被线挡住（Shift 部分） · Z 角度看不到（Shift 部分） · Ctrl+Z 撤销")
 
 
 def _entry_text(queue: str, entry: dict) -> str:
     """One line for a queue entry."""
     step = entry.get("step", "?")
+    if queue == api.QUEUE_VISIBILITY:
+        return VT.entry_text(entry)
     if queue == api.QUEUE_CONFLICTS:
         # A disagreement about a *label* moves no pixels: "visibility: visible
         # -> occluded_partial" is 0 differing pixels, and the row read "(Δ 0
@@ -73,6 +90,10 @@ class ReviewPanel(QWidget):
     #: the gate.  The panel used to call ``session.goto`` itself, un-forced, and
     #: an uncommitted layer then made it raise out of a Qt slot.
     sigOpenStep = Signal(int)
+    #: ``(step, part)``: the annotator selected a 可见性审查 line (task U24);
+    #: the window opens that frame -- through the gate -- and selects the part.
+    #: Never emitted by a refresh putting a selection back.
+    sigVisibilityPicked = Signal(int, str)
 
     def __init__(self, session: Optional[api.SessionLike] = None,
                  parent: Optional[QWidget] = None) -> None:
@@ -81,6 +102,15 @@ class ReviewPanel(QWidget):
         self._problems: list[str] = []
         #: The queue list whose row was activated and not yet answered for.
         self._activated: Optional[QListWidget] = None
+        #: Set while :meth:`refresh` rebuilds the lists: a selection it puts
+        #: back is not the annotator picking a line.
+        self._refreshing = False
+        #: The 可见性审查 line picked, handed on from the event loop.
+        self._picked: Optional[tuple[int, str]] = None
+        self._pick_timer = QTimer(self)
+        self._pick_timer.setSingleShot(True)
+        self._pick_timer.setInterval(0)
+        self._pick_timer.timeout.connect(self._emit_picked)
 
         self._tabs = QTabWidget()
         self._lists: dict[str, QListWidget] = {}
@@ -89,7 +119,10 @@ class ReviewPanel(QWidget):
             lw.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
             lw.itemActivated.connect(self._on_item_activated)
             self._lists[queue] = lw
-            self._tabs.addTab(lw, QUEUE_TITLES[queue])
+            if queue == api.QUEUE_VISIBILITY:
+                self._tabs.addTab(self._visibility_page(lw), QUEUE_TITLES[queue])
+            else:
+                self._tabs.addTab(lw, QUEUE_TITLES[queue])
 
         self._problems_label = QLabel("Problems")
         self._problems_list = QListWidget()
@@ -103,7 +136,8 @@ class ReviewPanel(QWidget):
             "Enter: open the selected entry's frame and accept it\n"
             "R: rework it in Annotate mode\n"
             "K: keep the frozen shape    N: take the edit\n"
-            "(左边工具面板上的「接受这一帧 / 返工 / 保留旧的 / 采用新的」是同样的键)"
+            "(左边工具面板上的「接受这一帧 / 返工 / 保留旧的 / 采用新的」是同样的键)\n"
+            f"可见性审查：{VIS_KEYS}"
         )
 
         layout = QVBoxLayout(self)
@@ -145,24 +179,100 @@ class ReviewPanel(QWidget):
         """Name of the queue currently on top."""
         return self.queue_at(max(0, self._tabs.currentIndex()))
 
+    def _visibility_page(self, lw: QListWidget) -> QWidget:
+        """The 可见性审查 tab: a progress line, the keys, and the list (task U24)."""
+        page = QWidget()
+        box = QVBoxLayout(page)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(2)
+        self._vis_status = QLabel("")
+        self._vis_status.setWordWrap(True)
+        self._vis_keys = QLabel(VIS_KEYS)
+        self._vis_keys.setWordWrap(True)
+        self._vis_keys.setStyleSheet("color: gray; font-size: 8pt")
+        box.addWidget(self._vis_status)
+        box.addWidget(self._vis_keys)
+        box.addWidget(lw, 1)
+        lw.currentItemChanged.connect(self._on_visibility_current)
+        return page
+
     # -- content ------------------------------------------------------------
     def refresh(self) -> None:
-        """Re-read ``session.queues()`` into the four lists."""
+        """Re-read ``session.queues()`` into the lists.
+
+        The 可见性审查 list is rebuilt only when the session lists that queue
+        (Review shows it); its selection is put back by part and frame, not by
+        row number -- a verdict takes rows out from above it.
+        """
         queues = self._session.queues() if session_is_open(self._session) else {}
-        for index, queue in enumerate(api.QUEUE_NAMES):
-            entries = list(queues.get(queue, []))
-            lw = self._lists[queue]
-            keep = lw.currentRow()
-            lw.clear()
-            for entry in entries:
-                item = QListWidgetItem(_entry_text(queue, entry))
-                item.setData(STEP_ROLE, int(entry.get("step", -1)))
-                if entry.get("id") is not None:
-                    item.setData(CID_ROLE, int(entry["id"]))
-                lw.addItem(item)
-            if 0 <= keep < lw.count():
-                lw.setCurrentRow(keep)
-            self._tabs.setTabText(index, f"{QUEUE_TITLES[queue]} ({len(entries)})")
+        self._refreshing = True
+        try:
+            for index, queue in enumerate(api.QUEUE_NAMES):
+                if queue == api.QUEUE_VISIBILITY:
+                    if queue in queues or not session_is_open(self._session):
+                        self._fill_visibility(index, list(queues.get(queue, [])))
+                    continue
+                entries = list(queues.get(queue, []))
+                lw = self._lists[queue]
+                keep = lw.currentRow()
+                lw.clear()
+                for entry in entries:
+                    item = QListWidgetItem(_entry_text(queue, entry))
+                    item.setData(STEP_ROLE, int(entry.get("step", -1)))
+                    if entry.get("id") is not None:
+                        item.setData(CID_ROLE, int(entry["id"]))
+                    lw.addItem(item)
+                if 0 <= keep < lw.count():
+                    lw.setCurrentRow(keep)
+                self._tabs.setTabText(index, f"{QUEUE_TITLES[queue]} ({len(entries)})")
+        finally:
+            self._refreshing = False
+
+    def _fill_visibility(self, index: int, entries: list[dict]) -> None:
+        """The 可见性审查 list, its count (rows, not lines) and its progress line."""
+        lw = self._lists[api.QUEUE_VISIBILITY]
+        keep = self.selected_visibility()
+        here = (int(self._session.current().step) if session_is_open(self._session)
+                else None)
+        lw.clear()
+        rows = 0
+        for entry in entries:
+            text = _entry_text(api.QUEUE_VISIBILITY, entry)
+            item = QListWidgetItem(text)
+            item.setData(STEP_ROLE, int(entry.get("step", -1)))
+            item.setData(ENTRY_ROLE, dict(entry))
+            # the line is wider than the dock: the whole of it, and who hides it
+            who = "、".join(entry.get("occluded_by") or ())
+            item.setToolTip(text + (f"\n挡住它的：{who}" if who else ""))
+            lw.addItem(item)
+            rows += len(entry.get("steps") or [entry.get("step")])
+        if keep is not None:
+            # the same part, at the frame on screen if its run still has it,
+            # else at the frames the old line covered
+            wanted = [here] if here in (keep.get("steps") or ()) else list(keep.get("steps") or ())
+            self.select_visibility(str(keep.get("instance")), wanted)
+        self._tabs.setTabText(index, f"{QUEUE_TITLES[api.QUEUE_VISIBILITY]} ({rows})")
+        self._vis_status.setText(self._visibility_line(rows)
+                                 if session_is_open(self._session) else "")
+
+    def _visibility_line(self, pending: int) -> str:
+        """「还要审 n 条（已审 r / t）」, or 「可见性审查完成」."""
+        progress = getattr(self._session, "visibility_progress", None)
+        reviewed, total = (0, pending)
+        if callable(progress) and session_is_open(self._session):
+            try:
+                reviewed, total = (int(v) for v in progress())
+            except Exception:  # noqa: BLE001 - a count is never worth a failure
+                reviewed, total = 0, pending
+        if pending:
+            return f"还要审 {pending} 条（已审 {reviewed} / {total}）"
+        if total:
+            return f"{VT.DONE}（{total} 条都审过了）"
+        return f"{VT.DONE}{VT.NOTHING_TO_REVIEW}"
+
+    def visibility_status(self) -> str:
+        """The 可见性审查 tab's progress line, as shown."""
+        return self._vis_status.text()
 
     def problems(self) -> list[str]:
         """Problems of the last refused confirmation (empty after a good one)."""
@@ -177,6 +287,47 @@ class ReviewPanel(QWidget):
         if session_is_open(self._session):
             return int(self._session.current().step)
         return None
+
+    def selected_visibility(self) -> Optional[dict]:
+        """The selected 可见性审查 entry (``instance``, ``steps``, ...), or ``None``."""
+        item = self._lists[api.QUEUE_VISIBILITY].currentItem()
+        found = None if item is None else item.data(ENTRY_ROLE)
+        return dict(found) if isinstance(found, dict) else None
+
+    def select_visibility(self, instance: str, steps=()) -> bool:
+        """Select the line of ``instance`` whose run holds one of ``steps``.
+
+        Without such a line the nearest later line of the part, then its
+        nearest earlier one, then the line that took its place; ``False``
+        when the list is empty. No :attr:`sigVisibilityPicked`: this is not
+        the annotator picking.
+        """
+        lw = self._lists[api.QUEUE_VISIBILITY]
+        wanted = [int(s) for s in steps or ()]
+        lines = [(row, lw.item(row).data(ENTRY_ROLE) or {}) for row in range(lw.count())]
+        pick = None
+        for row, entry in lines:
+            if entry.get("instance") == instance and set(wanted) & set(entry.get("steps") or ()):
+                pick = row
+                break
+        if pick is None and wanted:
+            mine = [(row, entry) for row, entry in lines if entry.get("instance") == instance]
+            later = [row for row, entry in mine if min(entry.get("steps") or [0]) > min(wanted)]
+            earlier = [row for row, entry in mine if row not in later]
+            pick = (later[0] if later else earlier[-1] if earlier else None)
+        if pick is None and lines:
+            after = [row for row, entry in lines if str(entry.get("instance")) > instance]
+            pick = after[0] if after else lines[-1][0]
+        quiet, self._refreshing = self._refreshing, True
+        try:
+            lw.setCurrentRow(-1 if pick is None else pick)
+        finally:
+            self._refreshing = quiet
+        return pick is not None
+
+    def show_visibility(self) -> None:
+        """Put the 可见性审查 tab on top."""
+        self._tabs.setCurrentIndex(list(api.QUEUE_NAMES).index(api.QUEUE_VISIBILITY))
 
     def selected_conflict(self) -> Optional[int]:
         """Id of the selected conflict, or ``None``."""
@@ -239,6 +390,30 @@ class ReviewPanel(QWidget):
         # leaves the other three tabs' selections alone.
         self._activated = item.listWidget()
         self.sigOpenStep.emit(int(step))
+
+    def _on_visibility_current(self, item: Optional[QListWidgetItem], _previous) -> None:
+        """The annotator selected a 可见性审查 line: its frame and part, please.
+
+        Asked from the event loop, not from inside this signal: the frame
+        change it causes rebuilds this very list, and clearing a list while it
+        is still delivering its own ``currentItemChanged`` deletes the item
+        being delivered (an access violation, not an exception).
+        """
+        if self._refreshing or item is None:
+            return
+        entry = item.data(ENTRY_ROLE) or {}
+        steps = list(entry.get("steps") or ())
+        if not steps or not entry.get("instance"):
+            return
+        here = (int(self._session.current().step) if session_is_open(self._session)
+                else None)
+        self._picked = (here if here in steps else int(steps[0]), str(entry["instance"]))
+        self._pick_timer.start()
+
+    def _emit_picked(self) -> None:
+        picked, self._picked = self._picked, None
+        if picked is not None:
+            self.sigVisibilityPicked.emit(*picked)
 
     def _on_frame_changed(self, _key: object) -> None:
         self._activated = None      # the move happened: there is nothing to put back

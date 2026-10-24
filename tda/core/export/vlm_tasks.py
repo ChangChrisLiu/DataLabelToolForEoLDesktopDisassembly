@@ -973,6 +973,10 @@ def seen_as(row: dict) -> dict:
 
 #: How V14 abstains on a part 被线挡住（完全）: in place, and why it is not seen.
 HIDDEN_BY = {"cable": "a cable", "other_unlabeled": "something not annotated"}
+#: ... and on a part 角度看不到 (task U24): nothing hides it, the camera cannot
+#: see it from where it stands (从这个视角看不到).
+VIEWPOINT = "viewpoint"
+UNSEEN_FROM_HERE = "not visible from this viewpoint"
 
 
 def unseen_reason(instance: str, row: dict, view: str) -> str:
@@ -980,9 +984,12 @@ def unseen_reason(instance: str, row: dict, view: str) -> str:
 
     ``"X is occluded_full in view scan"`` for a bare label; a part the frame
     says is 被线挡住 is ``"X is in place, hidden by a cable, in view scan"``
-    (X 在原位，被线缆挡住).
+    (X 在原位，被线缆挡住); one 角度看不到 (task U24) is ``"X is in place, not
+    visible from this viewpoint, in view oak2"`` (X 在原位，从这个视角看不到).
     """
     occluder = row.get("occluder")
+    if occluder == VIEWPOINT:
+        return f"{instance} is in place, {UNSEEN_FROM_HERE}, in view {view}"
     if occluder:
         return (f"{instance} is in place, hidden by "
                 f"{HIDDEN_BY.get(str(occluder), str(occluder))}, in view {view}")

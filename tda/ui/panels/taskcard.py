@@ -71,6 +71,9 @@ from tda.ui.session_cable import LABEL_ZH as CABLE_ZH
 #: A row's tail when the part is 被线挡住 on this frame (task U15).
 CABLE_SENTENCE = (" ⚠ 被线挡住（{how}）：形状照画，这一帧导出时写明被线缆挡住"
                   "（再按 ` 键换，Ctrl+Z 撤销）")
+#: ... and when it is 角度看不到 (task U24: Review's 可见性审查 says so).
+VIEWPOINT_SENTENCE = (" ⚠ 角度看不到（{how}）：形状照画，这个相机看不到它，导出时写明"
+                      "（复查「可见性审查」里设的）")
 
 #: A components-gallery row marked 「看不见」 (task U10).
 GALLERY_ABSENT_SENTENCE = (f"不在这张里（看不见）；其实在的话：右键这一条「撤回看不见」"
@@ -382,11 +385,13 @@ def row_view(row: dict, editing: Optional[str] = None, bench: bool = False,
         # A shape exists and a label hides it on this frame (round 3): the trial
         # DB's chassis vanished from step 42 that way, after a stray "4".
         sentence += (f" ⚠ 已设为不可见（{visibility_zh(invisible)}）：这一帧不显示它的"
-                     f"形状；选中后按 Ctrl+1 改回可见，或 Ctrl+Z 撤销")
+                     f"形状；Ctrl+Z 撤销，或在复查的「可见性审查」里改")
     cable = row.get("cable")
     if cable:
-        # in its place under a cable (task U15): the shape is the row's answer
-        sentence += CABLE_SENTENCE.format(how=CABLE_ZH.get(cable, cable))
+        # in its place under a cable (task U15) -- or out of this camera's
+        # sight (task U24): the shape is the row's answer
+        said = VIEWPOINT_SENTENCE if row.get("occluder") == "viewpoint" else CABLE_SENTENCE
+        sentence += said.format(how=CABLE_ZH.get(cable, cable))
     if editing is not None and instance == editing:
         chip = CHIP_BOXING if bench else CHIP_EDITING
     elif gallery and row.get("absent"):
@@ -610,7 +615,8 @@ PROBLEM_SENTENCES: tuple[tuple[str, str], ...] = (
     ("shape_size_mismatch:", "{what}：形状和这一帧的画面尺寸对不上，重画一次"),
     ("zorder_cycle:", "{what}：上下层级前后说反了（互相矛盾）→ Ctrl+Z 撤销刚才改的层级"),
     ("zorder_missing:", "{what}：不在层级顺序里，会被画在最上面 → 选中它用 Ctrl+↑/↓ 放到对的层"),
-    ("empty_visible:", "{what}：这一帧里它被完全挡住了 → 选中它按 Ctrl+3（完全遮挡）"),
+    ("empty_visible:", "{what}：这一帧里它被完全挡住了（自动算成完全遮挡，不用设；"
+                       "最后在复查的「可见性审查」里核对）"),
     ("pose_segment_ambiguous:", "{what}：跨了不止一个位姿段 → 先定好位姿分段"
                                 "（接受/拒绝断点提示，或 Ctrl+Shift+B）"),
     ("missing_shape:", "{what}：这一帧还缺形状，把它画出来"),

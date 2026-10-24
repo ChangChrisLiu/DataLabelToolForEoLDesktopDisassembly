@@ -51,13 +51,16 @@ from tda.ui.session_captive import CaptiveMixin, apply_captive_fix
 from tda.ui.session_reclass import ReclassMixin, apply_reclass
 from tda.ui.session_context import OP_KIND as CONTEXT_OP
 from tda.ui.session_context import ContextMixin, apply_context
+from tda.ui.session_visreview import OP_KIND as VIS_REVIEW_OP
+from tda.ui.session_visreview import VisReviewMixin, apply_vis_review
 
 __all__ = ["AnnotationSession"]
 
 log = logging.getLogger("tda.session")
 
 class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, CaptiveMixin,
-                        ReclassMixin, CableMixin, ContextMixin, TruthCacheMixin, QObject):
+                        ReclassMixin, CableMixin, ContextMixin, VisReviewMixin,
+                        TruthCacheMixin, QObject):
     """One annotator's working set: a desktop, a view, and the frame in hand."""
 
     #: The current frame changed; payload is a :class:`~tda.core.model.FrameKey`.
@@ -157,6 +160,22 @@ class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, Captive
             self._drop_gone_context_edit()
 
         self.undo_stack.register(CONTEXT_OP, context_handler, context_handler)
+        # 可见性审查 (task U24): a verdict that changed a label is re-signed both
+        # ways like a cable label; a stamp alone moves no input, so the frame
+        # in hand keeps its compilation
+        verdict = apply_cable(apply_vis_review)
+
+        def vis_review_handler(payload: dict) -> None:
+            stats = verdict(self.db, self.truth, payload, self._step)
+            if stats.get("moved"):
+                self.review.problems.update(stats["problems"])
+                self._settled(stats.get("frame"))
+                self._hand_to_sweeper(stats.get("rechecks") or [])
+            else:
+                self.review.invalidate()
+            self._announce()
+
+        self.undo_stack.register(VIS_REVIEW_OP, vis_review_handler, vis_review_handler)
         # a brush stroke is undone in the same history, but it touches nothing
         # but the editing layer: no database write, no recompilation
         self.undo_stack.register(
@@ -465,6 +484,11 @@ class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, Captive
             drawn=drawn,
             cable=self.cable_labels(),     # 「被线挡住」 (task U15)
         )
+        # ... or 角度看不到 (task U24): the same label, another reason
+        reasons = self.cable_reasons() if any(row.get("cable") for row in found) else {}
+        for row in found:
+            if row.get("cable"):
+                row["occluder"] = reasons.get(str(row["key"]))
         # which states each part can be set to here (task U8): the panel's combo;
         # which can be said to be taken out after all (task U9): its button
         found = self._with_state_choices(found, state, instances)
@@ -515,7 +539,13 @@ class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, Captive
         # a loosened captive screw may have been taken out after all (task U14)
         self._mark_loosened_screws(card, key)
         card = rows.mark_invisible(card, self._compiled_or_none())
-        return rows.mark_cable(card, {} if self.gallery else self.cable_labels())
+        card = rows.mark_cable(card, {} if self.gallery else self.cable_labels())
+        if any(row.get("cable") for row in card):
+            reasons = self.cable_reasons()       # 被线挡住 or 角度看不到 (task U24)
+            for row in card:
+                if row.get("cable"):
+                    row["occluder"] = reasons.get(str(row.get("instance", "")))
+        return card
 
     def _compiled_or_none(self) -> Optional[CompiledFrame]:
         """The compiled frame (cached), or ``None`` when it cannot be had."""

@@ -395,7 +395,8 @@ def test_every_sentence_says_what_to_do():
         # the bench box and the visibility keys moved in U22 (R, 3 before)
         "bench_missing:": "按 V", "shape_size_mismatch:": "重画",
         "zorder_cycle:": "Ctrl+Z", "zorder_missing:": "Ctrl+↑/↓",
-        "empty_visible:": "选中它按 Ctrl+3（完全遮挡）",
+        # task U24: nothing to set while annotating; Review audits it
+        "empty_visible:": "复查的「可见性审查」",
         "pose_segment_ambiguous:": "Ctrl+Shift+B",
         "missing_shape:": "画出来",
         # U2e: the refusals that are not compiler problems
@@ -427,12 +428,11 @@ def test_notes_alone_neither_point_the_status_line_nor_block_space(qapp, tmp_pat
         assert "见任务卡" not in win.status_message()
         assert win.guide_plan().phase == G.PHASE_CONFIRM   # a note blocks nothing
 
-        # the fix its sentence names: select it (a click on the line) and press 3
+        # a click on the line selects the part; since task U24 nothing has to be
+        # set -- the label is computed and audited at the end, in Review
         win.task_card._problems_list.itemClicked.emit(pane_item(win, covered))
         assert win.instances.selected_instance() == covered
-        press(win, "visibility_3")
-        assert f"empty_visible:{covered}" not in session.current_problems()
-        assert not win.task_card.problems_visible()
+        assert "可见性审查" in rows[0]["text"]
         assert win.act_confirm() is True
     finally:
         close_window(win)

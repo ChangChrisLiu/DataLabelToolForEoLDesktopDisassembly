@@ -514,8 +514,34 @@ def format_status(rows: list[dict]) -> str:
         # off: until it is zero the truth table of those views is not one to
         # export (spec 3.4). `cli check` holds the lock and drains them.
         lines.append(f"re-checks pending: {pending}")
+    lines.extend(format_vis_review(rows))
     lines.extend(format_gallery(rows))
     return "\n".join(lines)
+
+
+#: Review's 「可见性审查」 (task U24): ``reviewed/total`` of one view.
+VIS_REVIEW_HEAD = "可见性审查"
+
+
+def vis_review_cell(counts: dict) -> str:
+    """``可见性审查 5/17`` -- reviewed / to review, confirmed rows of one view."""
+    return f"{VIS_REVIEW_HEAD} {counts.get('vis_reviewed', 0)}/{counts.get('vis_total', 0)}"
+
+
+def format_vis_review(rows: list[dict]) -> list[str]:
+    """One line per desktop with labels to audit: 「可见性审查 n/m」 per view.
+
+    Nothing at all when no confirmed frame anywhere has one (a fresh database).
+    """
+    found = [r for r in rows if any(r["views"][v].get("vis_total") for v in VIEWS)]
+    if not found:
+        return []
+    lines = ["", "可见性审查 / visibility review (reviewed/total, Review mode)"]
+    for row in found:
+        lines.append(f"D{row['desktop']:02d}{'':<5} | " + " | ".join(
+            f"{view} {row['views'][view].get('vis_reviewed', 0)}/"
+            f"{row['views'][view].get('vis_total', 0)}" for view in VIEWS))
+    return lines
 
 
 GALLERY_CELL_HEAD = "shots   kf  done/work"
@@ -587,6 +613,8 @@ def format_desktop(db: Db, row: dict) -> str:
         lines.append(
             f"  {view:<6}{counts['frames']:>8}{counts['missing']:>9}"
             f"{counts['keyframes']:>11}{counts['done']:>7}/{counts['work']:<4}"
+            # Review's 「可见性审查」 (task U24): reviewed / to review
+            f"  {vis_review_cell(counts)}"
         )
     gallery = [v for v in COMPONENT_VIEWS if row["views"].get(v, {}).get("frames")]
     if gallery:

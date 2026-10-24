@@ -9,12 +9,21 @@ which steps carry an open conflict.
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Callable, Optional
 
 from tda.core.db import Db
-from tda.core.model import FrameKey
+from tda.core.model import FrameKey, is_component_view
 from tda.core.truth import NEEDS_REVIEW, VERIFIED
 from tda.core.truth_conflicts import label_text, payload_labels
+from tda.core.truth_inputs import InputCache
+from tda.core.vis_review import (
+    OCCLUDED_LABELS,
+    occluders_on_frame,
+    order_of,
+    review_rows,
+    runs_of,
+)
 from tda.ui import session_api as api
 
 __all__ = ["ReviewState"]
@@ -38,21 +47,32 @@ class ReviewState:
         self._conflict_counts: Optional[dict[int, int]] = None
         self._pending: Optional[set[int]] = None
         self._coverage: Optional[dict] = None
+        #: Is the 「可见性审查」 queue on screen (Review mode)? :meth:`queues`
+        #: lists it only then (task U24): it reads every confirmed row.
+        self.visibility_live = False
+        #: ``(write token, entries, (reviewed, total))`` of the last build.
+        self._vis_memo: Optional[tuple] = None
+        #: ``(step, part, input_hash, label) -> occluders``: what a confirmed row
+        #: is hidden by, kept across changes -- the row's hash moves when it does.
+        self._vis_names: dict[tuple, tuple[str, ...]] = {}
 
     def open(self, desktop: int, view: str, coverage: Callable[[], dict]) -> None:
         self.desktop, self.view = desktop, view
         self.coverage = coverage
+        self._vis_names.clear()
         self.clear()
 
     def close(self) -> None:
         """Let go of the view: nothing may be queried for a session that shut."""
         self.desktop, self.view = None, ""
         self.coverage = dict
+        self._vis_names.clear()
         self.clear()
 
     def clear(self) -> None:
         self.problems.clear()
         self.unexplained.clear()
+        self._vis_memo = None
         self.invalidate()
 
     def invalidate(self) -> None:
@@ -166,15 +186,83 @@ class ReviewState:
             else f"{row['sym_diff_px']} px differ",
         }
 
+    # -- 可见性审查 (task U24) ----------------------------------------------------
+    def _write_token(self) -> tuple:
+        """Changes when anything was written to the database, by anybody.
+
+        This connection's own writes move ``total_changes``; another
+        connection's (the truth sweeper's) move ``data_version``. A frame change
+        that wrote nothing -- most of them, in Review -- rebuilds nothing.
+        """
+        conn = self.db.conn
+        version = conn.execute("PRAGMA data_version").fetchone()[0]
+        return (self.desktop, self.view, conn.total_changes, int(version))
+
+    def visibility_queue(self) -> list[dict]:
+        """The 「可见性审查」 entries of the view: :func:`~tda.core.vis_review.runs_of`.
+
+        Built from one query (:meth:`~tda.core.db_visreview.VisReviewRowsMixin.vis_review_rows`);
+        the parts hiding a computed occlusion are worked out once per row and
+        kept (:attr:`_vis_names`), frame by frame, without compiling.
+        """
+        self._build_visibility()
+        return list((self._vis_memo or (None, [], (0, 0)))[1])
+
+    def visibility_progress(self) -> tuple[int, int]:
+        """``(reviewed, total)`` rows of the view, from the same build."""
+        self._build_visibility()
+        return tuple((self._vis_memo or (None, [], (0, 0)))[2])
+
+    def _build_visibility(self) -> None:
+        if self.desktop is None or is_component_view(self.view):
+            self._vis_memo = None
+            return
+        token = self._write_token()
+        if self._vis_memo is not None and self._vis_memo[0] == token:
+            return
+        pending, done = review_rows(self.db, self.desktop, self.view)
+        names: dict[tuple[int, str], tuple[str, ...]] = {}
+        misses: dict[int, dict[str, str]] = defaultdict(dict)
+        keys: dict[tuple[int, str], tuple] = {}
+        for row in pending:
+            if row.get("hand_visibility") is not None or row["visibility"] not in OCCLUDED_LABELS:
+                continue
+            step, part = int(row["step"]), str(row["instance"])
+            memo = (step, part, row.get("input_hash"), row["visibility"])
+            keys[(step, part)] = memo
+            if memo in self._vis_names:
+                names[(step, part)] = self._vis_names[memo]
+            else:
+                misses[step][part] = str(row.get("placement") or "")
+        cache = InputCache()
+        for step, wanted in sorted(misses.items()):
+            found = occluders_on_frame(self.db, FrameKey(self.desktop, step, self.view),
+                                       wanted, cache)
+            for part, who in found.items():
+                self._vis_names[keys[(step, part)]] = who
+                names[(step, part)] = who
+        runs = runs_of(pending, order_of(self.db, self.desktop, self.view), names)
+        self._vis_memo = (token, [run.entry() for run in runs],
+                          (len(done), len(done) + len(pending)))
+
     def queues(self) -> dict[str, list[dict]]:
-        """The four review queues of spec 4.4, keyed by :data:`QUEUE_NAMES`.
+        """The review queues of spec 4.4, keyed by :data:`QUEUE_NAMES`.
 
         ``missing_shape`` is derived from the state machine and the keyframe
         chains (:mod:`tda.ui.session_coverage`), never from the compiled rows:
         an unverified frame's rows are a cache a commit leaves stale on purpose,
         and compiling the view to fill the list would cost exactly what the lazy
         truth table exists to avoid.
+
+        The fifth, ``visibility`` (「可见性审查」, task U24), is listed only while
+        :attr:`visibility_live` -- while Review mode shows it.
         """
+        out = self._four_queues()
+        if self.visibility_live:
+            out[api.QUEUE_VISIBILITY] = self.visibility_queue()
+        return out
+
+    def _four_queues(self) -> dict[str, list[dict]]:
         return {
             api.QUEUE_CONFLICTS: [
                 self._conflict_row(row) for row in self.open_conflicts()

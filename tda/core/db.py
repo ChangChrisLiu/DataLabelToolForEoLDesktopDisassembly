@@ -35,6 +35,7 @@ from tda.core.db_status import StatusMixin
 from tda.core.dbconn import ConnectionMixin
 from tda.core.dbdelete import DeleteMixin
 from tda.core.db_digest import DigestMixin
+from tda.core.db_visreview import VisReviewRowsMixin
 from tda.core.model import (
     OCCLUDERS,
     ActionRec,
@@ -67,15 +68,16 @@ RESOLUTIONS = ("keep_old", "accept_new", "edited", "superseded")
 
 
 class Db(ConnectionMixin, PoseSegmentMixin, StatusMixin, DeleteMixin,
-         RecheckMixin, DigestMixin, BackupLockMixin):
+         RecheckMixin, DigestMixin, VisReviewRowsMixin, BackupLockMixin):
     """Repository over the TDA SQLite file. Every write commits immediately --
     unless it runs inside :meth:`~tda.core.dbconn.ConnectionMixin.transaction`;
     :mod:`tda.core.db_pose` and :mod:`tda.core.db_status` mix in more readers,
     :mod:`tda.core.dbdelete` the undo-side row removals,
     :mod:`tda.core.db_recheck` the queue of frames awaiting a truth re-check,
-    :mod:`tda.core.db_digest` the per-frame input digests and
-    :mod:`tda.core.db_backup` the verified safety copy and the single-user
-    lock."""
+    :mod:`tda.core.db_digest` the per-frame input digests,
+    :mod:`tda.core.db_visreview` the per-(frame, part) flags the visibility
+    review stamps (task U24) and :mod:`tda.core.db_backup` the verified safety
+    copy and the single-user lock."""
 
     def __init__(self, path: str):
         self.path = str(path)
