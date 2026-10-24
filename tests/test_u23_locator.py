@@ -47,7 +47,7 @@ from app_scene import (
 )
 from tda.core import masks
 from tda.core.cache import VIEW_EXT, cache_path
-from tda.core.model import FrameKey, ShapeKeyframe, ShapePart
+from tda.core.model import FrameKey, ShapeKeyframe, ShapePart, is_context_key
 from tda.core.truth import TruthService
 from tda.ui import app_actions as A
 from tda.ui.app import MainWindow
@@ -96,11 +96,34 @@ def write_view(db, cache_dir: Path, view: str, steps=range(1, LAST_STEP + 1)) ->
         db.upsert_frame(key, path, {"cache_path": path, "hw": list(OTHER_HW)}, None)
 
 
-def make_scene(tmp_path: Path, *, drawn: bool = True, skip=()):
+def seed_other_views(db, skip=()) -> None:
+    """Every part has a shape of its own on ``oak1`` / ``oak2`` / ``rs``.
+
+    Since U28 a part met for the first time in a view gets the 「拆前 / 拆后」
+    pair instead of the location; these tests are about the location, which
+    is what a part already drawn in the view gets (U28 rule (c)).
+    """
+    keys = sorted(k for k in db.instances(DESKTOP)
+                  if not is_context_key(k) and k not in skip)
+    for view in LOCATOR_VIEWS:
+        for index, key in enumerate(keys):
+            mask = np.zeros(OTHER_HW, dtype=bool)
+            row, col = divmod(index % 48, 8)
+            mask[row * 8 + 1:row * 8 + 7, col * 8 + 1:col * 8 + 7] = True
+            db.add_keyframe(ShapeKeyframe(
+                id=None, instance=key, desktop=DESKTOP, view=view, pose_segment=1,
+                anchor_step=LAST_STEP, placement="in_chassis", geom_type="mask",
+                parts=[ShapePart("main", masks.encode_rle(mask))]))
+
+
+def make_scene(tmp_path: Path, *, drawn: bool = True, skip=(), own: bool = True,
+               own_skip=()):
     """``(session on oak1, paths)``: the scanner view drawn, three other cameras."""
     db, paths, tax = make_db(tmp_path)
     for view in LOCATOR_VIEWS:
         write_view(db, Path(paths["cache_dir"]), view)
+    if own:
+        seed_other_views(db, skip=own_skip)
     session = AnnotationSession(db, tax, TruthService(db, tax), paths["cache_dir"], "tester")
     session.sweeper_enabled = False
     session.open(DESKTOP, "scan")
@@ -185,8 +208,11 @@ def test_it_is_down_on_the_scanner_view_and_back_on_oak1(window):
     window.act_set_view("scan")
     QApplication.processEvents()
     assert window.session.view == "scan"
+    select(window, CHASSIS)            # drawn there: no location, no pair (U28)
     assert not window.locator_shown()
-    assert not window.locator_button.isEnabled()      # nothing it could show here
+    # since U28 the scanner view shows the 「拆前 / 拆后」 of a part met for the
+    # first time, so the top bar's toggle is live there too
+    assert window.locator_button.isEnabled()
     window.act_set_view("oak1")
     QApplication.processEvents()
     assert window.locator_shown()
@@ -224,11 +250,24 @@ def test_it_is_down_on_a_gallery_shot(qapp, tmp_path):
 # --------------------------------------------------------------------------- #
 # what for
 # --------------------------------------------------------------------------- #
-def test_the_target_is_the_card_row_then_the_selection_then_the_edit(window):
+def test_the_target_is_the_card_row_then_the_selection_then_the_edit(qapp, tmp_path):
+    # the card asks for the part with no shape on oak1 yet: met for the first
+    # time, so since U28 it is shown as its 「拆前 / 拆后」 pair
+    session, paths = make_scene(tmp_path, own_skip=(COOLER,))
+    window = open_window(session, paths)
+    try:
+        goto(window, STEP)
+        _the_target_is_the_card_row_then_the_selection_then_the_edit(window)
+    finally:
+        close_window(window)
+
+
+def _the_target_is_the_card_row_then_the_selection_then_the_edit(window):
     select_nothing(window)
     card = card_target(window)
+    assert card == COOLER
     assert window.locator_target() == card
-    assert scene(window).instance == card
+    assert window.locator.pair().instance == card
 
     other = next(r["key"] for r in window.session.instance_rows()
                  if r["key"] not in (card, CHASSIS) and not r.get("context"))
@@ -246,6 +285,7 @@ def test_the_target_is_the_card_row_then_the_selection_then_the_edit(window):
     QApplication.processEvents()
     select_nothing(window)
     assert window.locator_target() == card
+    assert window.locator.pair().instance == card
 
 
 def test_the_caption_names_the_scanner_frame_the_part_and_its_state(window):
@@ -507,9 +547,18 @@ def test_no_refresh_while_it_is_closed_or_on_the_scanner_view(window):
     assert window.locator_shown()
     window.act_set_view("scan")
     QApplication.processEvents()
+    # on the scanner view it is down for a part drawn there (U28: a part met
+    # for the first time shows its 「拆前 / 拆后」 instead)
+    select(window, CHASSIS)
+    assert not window.locator_shown()
     count = window.locator_refreshes
-    goto(window, STEP - 3)
+    reads = dict(window.locator_source.stats)
+    select(window, part(window))
+    window.refresh_guidance()
+    QApplication.processEvents()
+    assert not window.locator_shown()
     assert window.locator_refreshes == count
+    assert window.locator_source.stats == reads
 
 
 def test_the_picture_of_a_step_is_read_once(window):
