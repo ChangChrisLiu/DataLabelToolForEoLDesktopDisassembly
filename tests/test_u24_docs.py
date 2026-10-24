@@ -83,7 +83,10 @@ def test_the_spec_has_the_fifth_queue_viewpoint_and_v1_24_on_top():
                    "not visible from this viewpoint", "从这个视角看不到"):
         assert needed in states, needed
     changes = body.split("## 14. 修订记录", 1)[1]
-    first = next(line for line in changes.splitlines() if line.startswith("- "))
+    entries = [line for line in changes.splitlines() if line.startswith("- ")]
+    # on top when it landed; U25's v1.25 and U26's v1.26 have gone above it since
+    assert entries[0].startswith(("- **v1.24", "- **v1.25", "- **v1.26"))
+    [first] = [e for e in entries[:3] if e.startswith("- **v1.24")]
     assert first.startswith("- **v1.24（2026-10-23）**：**可见性审查**（U24，§4.4、§6.2）")
     for needed in ("`QUEUE_VISIBILITY`", "`viewpoint`", "`review_visibility`",
                    "`attributes.visibility_reviewed`", "「可见性审查 n/m」", "无迁移"):

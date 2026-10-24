@@ -489,6 +489,10 @@ D:\Anaconda\envs\tda\python.exe -m tda.cli status --desktop 13
 D:\Anaconda\envs\tda\python.exe -m tda.cli check --desktop 13 --view scan
 ```
 
+`check` 里「n 个零件完全被挡住（正常）」只是一句说明：被上面的零件整个盖住的零件本来就看不见，不算问题，也不让
+`check` 失败；列在 `- ` 后面的才要处理（`empty_visible: … 形状在这一帧是空的` = 那一帧它的形状是空的，去补画）。
+导出的 COCO 每条标注都带完整形状（`amodal_segmentation`）；嫌文件大加 `--no-amodal`。
+
 ## 6. 这次改掉的几件事（和第二次试用时不一样）
 
 - **常按的键搬到了左手**（右手一直在鼠标 / 笔上）：提交 `Q`（只改这一帧 `Alt+Q`、改全部 `Ctrl+Q`）、
