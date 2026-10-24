@@ -15,9 +15,10 @@ can decide is here:
   closed panel stays closed in the next session.  Where it sits -- docked at
   the foot of the right column, floated, resized -- is the dock layout the
   window already saves.
-* **what for.**  The part being drawn; else the instance table's selection;
-  else the task card's current row -- the order every key that acts on "the
-  part" reads it in.
+* **what for.**  The part being drawn; else the instance table's selection
+  (a ``Removed`` row included); else the task card's current row, the first
+  one not done.  A card row that names no part (a dupli frame's) shows the
+  frame with nothing marked.
 * **when.**  :meth:`follow_locator` runs at the end of every
   :meth:`~tda.ui.app_guide.GuideMixin.refresh_guidance` -- the one place a
   frame change, a selection, a card row or an edit all end up -- and does
