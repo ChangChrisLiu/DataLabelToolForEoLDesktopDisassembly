@@ -9,7 +9,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tda.ui.locator_pair import NO_CHANGE, NO_DIFF, POSE_BREAK
+from tda.ui.locator_pair import (
+    DIFF_GUESS,
+    NO_AFTER,
+    NO_CHANGE,
+    NO_DIFF,
+    NO_DIFF_ROI,
+    POSE_BREAK,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 GUIDE = ROOT / "docs" / "annotation_guide.md"
@@ -29,8 +36,10 @@ def test_the_quickstart_says_it_in_two_sentences_of_the_dock_section():
     section = body.split(head, 1)[1].split("\n#", 1)[0].replace("\n", "")
     for needed in ("第一次标某个零件时", "扫描仪视角也一样", "「拆前 / 拆后」", "被拆走（或第一次变状态）",
                    "前后两步的扫描仪画面", "裁到同一处", "「第 8 帧：Heatsink · remove」",
-                   "「拆前/拆后」按钮随时切换"):
+                   "「拆前/拆后」按钮切换", "扫描仪视角上小窗收着时按顶部「主视角」",
+                   "灰色虚线框只是猜的位置", "别的候选"):
         assert needed in section, needed
+    assert "随时" not in section.split("第一次标某个零件时", 1)[1]     # round 2, N10
     assert len(section) < 420
 
 
@@ -41,15 +50,25 @@ def test_the_spec_has_the_paragraph_after_u23_and_v1_28_on_top():
     para = section.split("**拆前 / 拆后（v1.28，U28）**", 1)[1]
     for needed in ("**离开的那一步 r**", "「拆前 第 r−1 帧」/「拆后 第 r 帧」", "**r 取编译后的状态时间线**",
                    "级联已折进去", "`removed` 或 `displaced`", "第一次状态变化", NO_CHANGE,
-                   "**两帧裁到同一个窗口**", "r−1 帧上的外框", "最大连通区", "长边 512 px",
-                   "ROI 外扩 5 %", "2 % 的边框", POSE_BREAK, NO_DIFF, "0.02 %", "放大 1.6 倍",
+                   "**两帧裁到同一个窗口**", "r−1 帧上的外框", "最大的几个连通区", "长边 512 px",
+                   "ROI 外扩 5 %", "2 % 的边框", POSE_BREAK, NO_DIFF, NO_DIFF_ROI, "0.02 %",
+                   "模糊和开闭运算之前数", "放大 1.6 倍",
                    "帧长边的 1/6", "`crop_rect`", "整帧小图", "「第 8 帧：Heatsink · remove」",
                    "「随 散热片 一起拆走」", "(a)", "**当前视角**", "`shape_keyframe`",
                    "切分副本也算形状", "单帧像素", "**任何视角都一样，扫描仪视角也是**", "(b)",
                    "「拆前/拆后」按钮", "换了零件就忘", "不加快捷键", "(c)", "照旧是主视角画面",
                    "小窗照旧隐藏", "(d)", "`locator/open` 的意思不变", "什么都不读",
-                   "一次索引查询", "60–75 ms", "0.2 ms", "位姿段及其 ROI"):
+                   "一次索引查询", "60–75 ms", "0.2 ms", "位姿段及其 ROI",
+                   # round 2
+                   "**拆后那一步缺图或是 dupli 步时用 r 所在位姿段里更晚的最近一帧**",
+                   "「拆后 第 r′ 帧（第 r 帧扫描仪没有图）」", "绝不用更早的一帧", "「（没有图）」",
+                   NO_AFTER.format(step="r"), "**差出来的窗口只是猜**", "灰色虚线",
+                   DIFF_GUESS, "「候选 1/3」", "44 %（255/578）", "61 %（350/578）",
+                   "检测器辅助评估过、没有采用", "34 % 到 42 %", "76 %", "其余机器 69 %",
+                   "换视角也跟着这个零件", "按顶部「主视角」就是要这个零件的这一对",
+                   "（机器、两帧、ROI、扫描仪输入摘要）"):
         assert needed in para, needed
+    assert "随时" not in para                                          # round 2, N10
     changes = body.split("## 14. 修订记录", 1)[1]
     first = next(line for line in changes.splitlines() if line.startswith("- "))
     assert first.startswith("- **v1.28（2026-10-24）**：**拆前 / 拆后**（U28，§4.5）")
