@@ -325,3 +325,14 @@ Review: `D:\DataSet\.superpowers\sdd\2026-09-20-user-trial\L6-review.md`, verdic
 - **Configs** (live values unchanged; the ship commit flips them):
   - `configs/detector.yaml` step 1 now reads "conf >= `conf` or the class's own floor (`conf_by_class`, below)".
   - `configs/sam.yaml`'s header carries L6's numbers, the comment above `head:` describes the v3 head, and a commented `# head: …sam2.1_tda_head_f5_v2.pt` line is the fallback.
+- **C: again, and the fix** (commit 2083379).
+  - An empty `%APPDATA%\NVIDIA\ComputeCache` reappeared at 06:58:51. It was my own `pytest` run of the docs tests and `tests/test_detector.py`, started from a shell without `CUDA_CACHE_PATH`.
+  - Reproduced: `tests/test_detector.py` alone, without the variable, creates the folder.
+  - Fix: `tests/conftest.py` now sets `CUDA_CACHE_PATH` to start_tda.bat's `D:\DataSet\.cache\nv_compute` unless the caller set one.
+  - After the fix, `test_detector`, `test_sam_service` and `test_u19_weights`, and then the whole suite, were run without the variable; the folder was not recreated. The empty folder was removed (twice), and `%APPDATA%\NVIDIA\` is empty again.
+- **Full suite** (`tda` env, final tree 2083379): **5 054 passed, 1 failed, exit 1.**
+  - The failure is the 12 MP frame-change timing budget `tests/test_u3_perf.py::test_arrival_with_a_warm_detector_cache_is_inside_the_frame_change_budget[12mp]`: 0.122 s at best against 0.12 s.
+  - In the same test the detector-off frame changes also took 0.124–0.138 s, so the machine was slower, not the detector path. Other software was busy on the CPU (`sldBgDwld`, OMEN).
+  - The two other runs since round 4's changes each failed one or two of the same 12 MP budgets (`test_session_perf` window gesture 0.126–0.129 s, `test_u3_perf` 12 MP 0.128 s), and everything else passed.
+  - Alone, `test_session_perf.py` plus `test_u3_perf.py` pass 3 out of 3 runs.
+  - Round 3's second full run (06:30) passed whole, exit 0.
