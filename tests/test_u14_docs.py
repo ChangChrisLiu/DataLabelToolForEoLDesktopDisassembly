@@ -50,10 +50,10 @@ def test_the_spec_has_the_paragraph_and_the_entry():
     changelog = spec.split("## 14. 修订记录", 1)[1]
     # at the top of §14 when it landed; U18's v1.18, U19's v1.19, U20's v1.20,
     # U21's v1.21, U22's v1.22, U23's v1.23, U24's v1.24, U25's v1.25, U26's
-    # v1.26, U27's v1.27 and U28's v1.28 have gone on top since
+    # v1.26, U27's v1.27 and U28's v1.28 and U29's v1.29 have gone on top since
     assert changelog.lstrip().startswith(("- **v1.17", "- **v1.18", "- **v1.19",
                                           "- **v1.20", "- **v1.21", "- **v1.22",
                                           "- **v1.23", "- **v1.24", "- **v1.25",
                                           "- **v1.26", "- **v1.27",
-                                          "- **v1.28"))
+                                          "- **v1.28", "- **v1.29"))
     assert changelog.index("- **v1.17") < changelog.index("- **v1.16")
