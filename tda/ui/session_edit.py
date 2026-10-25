@@ -522,8 +522,9 @@ def plan_cuts(db: Db, tax, key: FrameKey, instance: str, chain: list[ShapeKeyfra
         if above[0] == key.step and scope == api.SCOPE_KEYFRAME:
             later = [s for s in walk if s > key.step]
             there = later[0] if later else None
+            # the run the named state holds over: up to the next boundary (N5)
             out["refuse"] = _across(db, tax, key, instance, there, there,
-                                    chosen.anchor_step, cache)
+                                    above[1] if len(above) > 1 else chosen.anchor_step, cache)
         else:
             out["top"] = above[0]
     return out
@@ -570,7 +571,9 @@ def _plan_forward(db: Db, tax, key: FrameKey, instance: str, chosen: ShapeKeyfra
     earlier = [s for s in walk if s < key.step]
     if scope == api.SCOPE_KEYFRAME and earlier and behind[-1] == earlier[-1]:
         # the boundary is right behind this frame: its forward card's ✂ row
+        # the run the named state holds over: from the boundary before it (N5)
         span = [s for s in earlier if (low is None or s >= low)
+                and (len(behind) < 2 or s > behind[-2])
                 and pose_segment_of(db, FrameKey(key.desktop, s, key.view), cache) == seg]
         first = span[0] if span else earlier[-1]
         out["refuse"] = _across(db, tax, key, instance, earlier[-1], first, earlier[-1],

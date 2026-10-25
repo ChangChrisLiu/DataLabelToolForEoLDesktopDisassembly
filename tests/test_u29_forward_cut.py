@@ -143,8 +143,9 @@ def test_the_retrace_on_a_forward_boundary_row_is_refused_with_the_same_sentence
     with pytest.raises(SessionRefusal) as refused:
         session.commit_edit(api.SCOPE_KEYFRAME)
     said = str(refused.value)
-    assert said == edit.ACROSS_BOUNDARY.format(first=1, last=19, what="（打开）")
-    assert said == "这一帧是状态边界（✂）：改全部会把第 1–19 步（打开）的形状一起改掉。用 Q（从这帧起新版本）"
+    # the run behind that state holds over (review N5): 14-19, not 1-19 (1-13 are closed)
+    assert said == edit.ACROSS_BOUNDARY.format(first=14, last=19, what="（打开）")
+    assert said == "这一帧是状态边界（✂）：改全部会把第 14–19 步（打开）的形状一起改掉。用 Q（从这帧起新版本）"
     assert anchors(session) == [(LAST, "manual")]
     # Q there is the split at the boundary, as in the reverse walk
     result = session.commit_edit(api.SCOPE_SPLIT)
@@ -172,6 +173,21 @@ def test_the_status_line_says_where_a_forward_commit_stopped():
     text = cut_note({"cut_ahead": 21, "cut_behind": 19, "edit_reach": [20, 21]},
                     lambda s: f"{s[0]}–{s[-1]}")
     assert text.startswith("已先在第 19 步切开旧版本（形状不变），新版本只到第 21 步")
+
+
+@pytest.mark.parametrize("step,said", [
+    (19, "第 20–21 步（关上）"),            # was 20-24: 22-24 are open again
+    (13, "第 14–19 步（打开）"),            # was 14-24
+])
+def test_the_reverse_sentence_names_the_run_its_state_holds_over(session, step, said):
+    """Review N5: the frames named are the ones in the state named, up to the next ✂."""
+    session.browse_reverse()
+    session.goto(step, force=True)
+    session.begin_edit(LATCH)
+    session.set_editing_mask(NEW)
+    with pytest.raises(SessionRefusal) as refused:
+        session.commit_edit(api.SCOPE_KEYFRAME)
+    assert f"改全部会把{said}的形状一起改掉" in str(refused.value)
 
 
 def test_a_shape_drawn_by_nobody_is_not_cut_going_forward(qapp, tmp_path):
