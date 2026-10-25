@@ -19,6 +19,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+# L6's caches and temp dirs on D: before the tests import torch (the plugin loads first)
+from experiments.l6_models import env  # noqa: F401,E402
+
 
 def pytest_collection_modifyitems(session, config, items):
     yaml_path = os.environ.get("L6_SAM_YAML")
