@@ -26,6 +26,12 @@ Costs, which are the point of most of this module:
   compile`, nothing written) and every part's outline of it kept, until the
   scanner view's inputs change (:func:`scan_digest`).
 
+The 「拆前 / 拆后」 pair of task U28 -- the scanner frames around the step a
+part leaves at -- is built from the same pictures, outlines and frame choice
+by :mod:`tda.ui.locator_pair` (:meth:`LocatorSource.pair`), and
+:meth:`LocatorSource.own_shapes` answers whether a part is met for the first
+time in a view.
+
 Nothing here writes to the database.
 """
 from __future__ import annotations
@@ -41,7 +47,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QImageReader
 
 from tda.core import masks
-from tda.core.model import FrameKey
+from tda.core.model import FrameKey, is_context_key, is_provisional
 from tda.core.truth_inputs import state_of
 from tda.ui.canvas.overlay import palette_color
 from tda.ui.class_names import instance_label, state_zh
@@ -245,8 +251,11 @@ class LocatorSource:
         #: list, the drawn set and the compiled fallbacks of that digest.
         self._facts: dict[int, tuple[tuple, dict]] = {}
         self._pinned: Optional[tuple[int, dict]] = None
-        #: Counters the tests and the report read.
-        self.stats = {"thumb_reads": 0, "row_reads": 0, "compiles": 0, "traces": 0}
+        #: Counters the tests and the report read.  ``pairs`` / ``diffs`` (task
+        #: U28): 「拆前 / 拆后」 scenes built, differences of two pictures taken.
+        self.stats = {"thumb_reads": 0, "row_reads": 0, "compiles": 0, "traces": 0,
+                      "pairs": 0, "diffs": 0}
+        self._pair_maker = None
 
     # -- caches ---------------------------------------------------------------
     def forget(self) -> None:
@@ -270,7 +279,7 @@ class LocatorSource:
         held = self._facts.get(desktop)
         if held is not None and held[0] == digest:
             return held[1]
-        facts: dict[str, Any] = {"compiled": {}}
+        facts: dict[str, Any] = {"compiled": {}, "digest": digest}
         rows = {int(r["step"]): r for r in self.db.frames_for(desktop, SCAN)}
         dupli = {int(s.step) for s in self.db.steps(desktop)
                  if s.dupli or str(s.step_type) == "dupli"}
@@ -419,6 +428,50 @@ class LocatorSource:
         if not instance:
             return False
         return str(instance) in self._desktop_facts(int(desktop))["instances"]
+
+    def own_shapes(self, desktop: int, view: str, instance: Optional[str]) -> tuple[bool, bool]:
+        """``(a part of this machine, it has shapes of its own in view)`` -- task U28.
+
+        A shape of its own is a ``shape_keyframe`` row of that view (a cut copy
+        made from another frame is one too) or a single frame's own pixels
+        (``frame_override``): either is the annotator having drawn it there.
+        One indexed query; a 框外零件 or a Label Studio draft key is not a part.
+        """
+        if not instance or is_context_key(instance) or is_provisional(instance):
+            return False, False
+        row = self.db.conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM instance WHERE desktop=? AND key=?), "
+            "EXISTS(SELECT 1 FROM shape_keyframe WHERE desktop=? AND view=? AND instance=?), "
+            "EXISTS(SELECT 1 FROM frame_override WHERE desktop=? AND view=? AND instance=? "
+            "AND visible_rle_json IS NOT NULL)",
+            (int(desktop), str(instance), int(desktop), str(view), str(instance),
+             int(desktop), str(view), str(instance))).fetchone()
+        return bool(row[0]), bool(row[1] or row[2])
+
+    def pair(self, desktop: int, instance: str):
+        """The part's 「拆前 / 拆后」 (:class:`tda.ui.locator_pair.PairScene`), task U28."""
+        if self._pair_maker is None:
+            from tda.ui.locator_pair import PairMaker
+
+            self._pair_maker = PairMaker(self)
+        desktop = int(desktop)
+        self._pinned = (desktop, self._desktop_facts(desktop))
+        try:
+            return self._pair_maker.pair(desktop, instance)
+        finally:
+            self._pinned = None
+
+    def scan_poses(self, desktop: int) -> tuple:
+        """The scanner's pose segments as stored -- ranges and ROIs, one query.
+
+        What a pair is compared and cropped by and the detections are asked
+        with; an ROI stored is no edit (U28 round 4, N13).
+        """
+        row = self.db.conn.execute(
+            "SELECT IFNULL(GROUP_CONCAT(seg || ':' || start_step || ':' || end_step || ':' "
+            "|| IFNULL(roi_json, ''), '|'), '') FROM pose_segment WHERE desktop=? AND view=?",
+            (int(desktop), SCAN)).fetchone()
+        return (str(row[0]),)
 
     def roi(self, desktop: int, step: int) -> Optional[tuple]:
         """The scanner pose segment's ROI at ``step``, or ``None``."""

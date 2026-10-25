@@ -1,0 +1,579 @@
+"""「拆前 / 拆后」: the scanner frames just before and just after a part leaves (task U28).
+
+The annotation walk runs backwards, so the first frame a part is met on is the
+one just before it was taken out -- and a log line like "CPU heatsink screw 3"
+does not say *which* screw that is.  The 「主视角」 dock (task U23) therefore
+has a second kind of scene: the two scanner frames around the step the part
+leaves at, cropped to the same window around what changed, with what the log
+says about that step underneath.  :class:`PairMaker` builds it as a
+:class:`PairScene`; :mod:`tda.ui.panels.locator_pair` draws it and
+:mod:`tda.ui.app_locator` decides when it is shown instead of the location.
+
+* **Which step.**  The part's compiled state timeline (the derived events of
+  the action table plus the hand-written ones, with the cascade -- a captive
+  screw leaves with its heatsink, a clip with its shroud -- folded in by
+  :func:`tda.core.states.state_at`): the first step its state becomes
+  ``removed`` or ``displaced``; when it never leaves, the first step its state
+  changes at all; when it never changes there is no pair
+  (:data:`NO_CHANGE`).  :func:`leaving_steps` answers it for every part of a
+  machine at once.
+* **Which frames.**  拆前 is the scanner frame of ``r - 1``, through the
+  locator's own :meth:`~tda.ui.locator_source.LocatorSource.scan_step_for`
+  (the nearest earlier frame when that step has none, said in the caption).
+  拆后 is the frame of ``r``, or -- when ``r`` has none -- the nearest *later*
+  one in ``r``'s pose segment, never an earlier one (that would be the 拆前
+  picture again); with no such frame the slot stays empty (:data:`NO_AFTER`).
+* **Which window.**  The part's own outline on the "before" frame when the
+  scanner view has one (the stored row, or the frame compiled once -- the
+  locator's :meth:`~tda.ui.locator_source.LocatorSource.geometry`), else the
+  regions that differ between the two pictures (:func:`change_windows`, up
+  to three candidates, largest first) -- a guess, and the panel says so
+  (:data:`DIFF_GUESS`) and draws it apart from an outline.  Only inside one
+  scanner pose segment: across a pose break the two frames are not
+  comparable and are shown whole (:data:`POSE_BREAK`), as they are when
+  nothing differs (:data:`NO_DIFF` / :data:`NO_DIFF_ROI`).
+
+Costs: the pictures are the locator's thumbnails (its LRU), the difference is
+taken on them at :data:`DIFF_SIDE` px (a few ms) and remembered by
+``(machine, the two frames, the ROI, the scanner digest)``; the timeline is one fold per step that
+has an event, remembered per machine until the scanner inputs or the action
+table move; a scene is remembered by part and rebuilt only when they do.
+Nothing here writes to the database.
+"""
+from __future__ import annotations
+
+import hashlib
+from collections import OrderedDict
+from dataclasses import dataclass, replace
+from typing import Iterable, Optional, Sequence
+
+import cv2
+import numpy as np
+from PySide6.QtGui import QImage
+
+from tda.core.model import FrameKey, is_context_key, is_provisional
+from tda.core.states import REMOVED, state_at
+from tda.core.truth_inputs import events_of, pose_segment_of
+from tda.ui.canvas.overlay import palette_color
+from tda.ui.class_names import class_zh, instance_label, state_zh
+from tda.ui.locator_source import (
+    EARLIER_DUPLI,
+    EARLIER_MISSING,
+    SCAN,
+    UNREADABLE,
+    Geometry,
+)
+
+__all__ = [
+    "AFTER", "BEFORE", "BEFORE_NONE", "CANDIDATE", "CANDIDATES", "DIFF_GUESS", "DIFF_SIDE",
+    "DISPLACED", "LEAVING_STATES", "LOG_LINE", "Leaving", "NO_AFTER", "NO_BEFORE",
+    "NO_CHANGE", "NO_DIFF", "NO_DIFF_ROI", "PAD", "PAIR_HEAD", "PAIR_HEAD_FIRST",
+    "POSE_BREAK", "PairMaker", "PairScene", "WITH_PARENT", "MIN_SIDE_FRAC", "change_window",
+    "change_windows", "leaving_steps", "qimage_rgb",
+]
+
+DISPLACED = "displaced"
+#: The states that take a part away: the first step one of them is reached is
+#: the step the pair is about.
+LEAVING_STATES = (REMOVED, DISPLACED)
+
+# --- what the panel says ----------------------------------------------------
+#: The panel's caption: the pair shown because the part is met for the first
+#: time in this view, or because the annotator asked for it.
+PAIR_HEAD_FIRST = "拆前 / 拆后 · 第一次标这个零件"
+PAIR_HEAD = "拆前 / 拆后"
+#: Above the two pictures (with U23's earlier-frame clause when it applies).
+BEFORE = "拆前 第 {step} 帧{earlier}"
+AFTER = "拆后 第 {step} 帧{earlier}"
+#: ... when the part changes on the first step: there is no frame before it.
+BEFORE_NONE = "拆前"
+#: What the log says at the step: its raw name, and the verb.
+LOG_LINE = "第 {step} 帧：{name}"
+#: A part that went out inside another one (the cascade).
+WITH_PARENT = "随 {parent} 一起拆走"
+#: The notes under the pictures.
+NO_CHANGE = "这个零件没有离开或改变状态的步骤"
+POSE_BREAK = "两帧不在同一机位，无法对比"
+NO_DIFF = "两帧看不出差别"
+#: ... when the search was held to the scanner ROI (round 2, N9): outside it
+#: something may well have changed.
+NO_DIFF_ROI = "ROI 里两帧看不出差别"
+NO_BEFORE = "第 {step} 帧之前扫描仪没有图"
+#: No scanner frame at or after ``r`` in its pose segment (round 2, B1): the
+#: 拆后 slot stays empty -- it is never the 拆前 picture again.
+NO_AFTER = "第 {step} 帧扫描仪没有图"
+#: The window is a guess from the difference, not the part's outline (round 2, B2).
+DIFF_GUESS = "框是两帧变化最大的地方，不一定是它"
+#: Which of the difference's candidate windows is shown.
+CANDIDATE = "候选 {k}/{n}"
+
+# --- the window ---------------------------------------------------------------
+#: The window is padded this much (each side grows by a fifth of it) ...
+PAD = 1.6
+#: ... and the crop is never smaller than this share of the frame's long side.
+MIN_SIDE_FRAC = 1.0 / 6.0
+#: The difference is taken at no more than this many pixels on the long side.
+DIFF_SIDE = 512
+#: The blur before the difference (sensor noise, a hair of misregistration).
+DIFF_BLUR = 5
+DIFF_SIGMA = 1.5
+#: A pixel differs when one channel moved by more than this (0-255).
+DIFF_LEVEL = 30
+#: A region counts when this share of the picture's pixels changed in it --
+#: counted *before* the opening and closing, which only shape the region (N4) --
+#: or "no difference".
+DIFF_FLOOR = 0.0002
+DIFF_FLOOR_PX = 4
+#: How many candidate windows the difference offers (largest first).
+CANDIDATES = 3
+#: With no ROI, a margin this wide (share of the long side) is ignored: the
+#: scanner's frame edge flickers with whatever is beside the table.
+BORDER = 0.02
+#: An ROI is widened by this share of the frame before it limits the difference.
+ROI_PAD = 0.05
+#: Remembered: scenes by part, differences by frame pair.
+PAIR_CACHE = 64
+DIFF_CACHE = 64
+
+
+# --------------------------------------------------------------------------- #
+# the step
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class Leaving:
+    """The step a part leaves (or first changes) at, and how."""
+
+    step: int
+    #: ``removed`` / ``displaced``, or ``changed`` for a part that never leaves.
+    kind: str
+    old: str
+    new: str
+    #: The parent it went out inside of (the cascade), else ``None``.
+    left_with: Optional[str] = None
+
+
+def leaving_steps(instances: dict, events: Iterable, tax) -> dict[str, Leaving]:
+    """``key -> Leaving`` for every part of a machine whose state ever changes.
+
+    The state at each step that has an event is :func:`~tda.core.states.
+    state_at`'s -- the folded log with the attached-child cascade closed over
+    it, so a captive screw that rides out with its heatsink leaves at the
+    heatsink's step, ``left_with`` the heatsink.  The first step a part reaches
+    one of :data:`LEAVING_STATES` wins over an earlier change (a screw loosened
+    at 4 and carried out at 8 leaves at 8); a part that never leaves has its
+    first change of state.  Placement alone is not a change.
+    """
+    ordered = sorted(events, key=lambda e: e.step)
+    steps = sorted({int(e.step) for e in ordered if int(e.step) >= 1})
+    previous = state_at(instances, ordered, 0, tax)
+    first: dict[str, Leaving] = {}
+    left: dict[str, Leaving] = {}
+    for step in steps:
+        now = state_at(instances, ordered, step, tax)
+        for key, inst in now.items():
+            if key in left or key not in instances:
+                continue
+            before = previous.get(key)
+            old = before.state if before is not None else ""
+            if old == inst.state:
+                continue
+            if inst.state in LEAVING_STATES:
+                left[key] = Leaving(step, inst.state, old, inst.state, inst.left_with)
+            elif key not in first:
+                first[key] = Leaving(step, "changed", old, inst.state, inst.left_with)
+        previous = now
+    out = dict(first)
+    out.update(left)
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# the window
+# --------------------------------------------------------------------------- #
+def qimage_rgb(image: Optional[QImage]) -> Optional[np.ndarray]:
+    """A view of an RGB888 :class:`QImage` as an ``(h, w, 3)`` array (no copy)."""
+    if image is None or image.isNull():
+        return None
+    if image.format() != QImage.Format.Format_RGB888:
+        image = image.convertToFormat(QImage.Format.Format_RGB888)
+    h, w, line = image.height(), image.width(), image.bytesPerLine()
+    flat = np.frombuffer(image.constBits(), np.uint8, image.sizeInBytes())
+    return flat.reshape(h, line)[:, :w * 3].reshape(h, w, 3)
+
+
+def change_window(before: np.ndarray, after: np.ndarray,
+                  keep: Optional[tuple] = None) -> Optional[tuple[float, float, float, float]]:
+    """The largest region that differs between two pictures, or ``None``."""
+    found = change_windows(before, after, keep, 1)
+    return found[0] if found else None
+
+
+def change_windows(before: np.ndarray, after: np.ndarray, keep: Optional[tuple] = None,
+                   count: int = CANDIDATES) -> list[tuple[float, float, float, float]]:
+    """The ``count`` largest regions that differ between two pictures, largest first.
+
+    Both are shrunk to :data:`DIFF_SIDE` (never enlarged), blurred a little,
+    and a pixel differs when a channel moved by more than :data:`DIFF_LEVEL`;
+    specks are opened away and nearby pieces closed together into regions,
+    ranked by their area.  A region counts only when at least
+    :data:`DIFF_FLOOR` of the picture's pixels (and :data:`DIFF_FLOOR_PX`)
+    changed inside it by more than :data:`DIFF_LEVEL` -- counted on the shrunk
+    pictures before the blur, the opening and the closing, which only find
+    and shape the regions (a 12 px change of a 1024 px frame does not count).
+    ``keep`` limits the search to
+    ``(x0, y0, x1, y1)`` given as fractions of the picture (the scanner ROI);
+    without it a :data:`BORDER` margin is left out.  The answers are in
+    fractions too, so they land on the frame at any resolution.
+
+    Measured on the 20 desktops whose scanner view is annotated (round 2): on
+    a step where only the one part changes, the largest region's crop holds
+    the part 44 % of the time and one of the first three 61 % -- a guess,
+    which the panel says it is.
+    """
+    if before is None or after is None or before.size == 0 or after.size == 0:
+        return []
+    h, w = before.shape[:2]
+    scale = min(1.0, DIFF_SIDE / float(max(h, w)))
+    size = (max(1, int(round(w * scale))), max(1, int(round(h * scale))))
+    a = cv2.resize(before, size, interpolation=cv2.INTER_AREA) if scale < 1.0 else before
+    b = cv2.resize(after, size, interpolation=cv2.INTER_AREA)
+    sharp = cv2.absdiff(a, b)          # what the floor is counted on: no blur yet
+    if sharp.ndim == 3:
+        sharp = sharp.max(axis=2)
+    a = cv2.GaussianBlur(a, (DIFF_BLUR, DIFF_BLUR), DIFF_SIGMA)
+    b = cv2.GaussianBlur(b, (DIFF_BLUR, DIFF_BLUR), DIFF_SIGMA)
+    diff = cv2.absdiff(a, b)
+    if diff.ndim == 3:
+        diff = diff.max(axis=2)
+    sh, sw = diff.shape
+    region = np.zeros((sh, sw), dtype=bool)
+    if keep is not None:
+        x0, y0, x1, y1 = keep
+        region[max(0, int(y0 * sh)):min(sh, int(np.ceil(y1 * sh))),
+               max(0, int(x0 * sw)):min(sw, int(np.ceil(x1 * sw)))] = True
+    else:
+        margin = int(round(BORDER * max(sh, sw)))
+        region[margin:sh - margin, margin:sw - margin] = True
+    changed = (diff > DIFF_LEVEL) & region
+    if not changed.any():
+        return []
+    binary = cv2.morphologyEx(changed.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+    labels_n, labels, stats, _centres = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    if labels_n <= 1:
+        return []
+    raw = np.bincount(labels[(sharp > DIFF_LEVEL) & region], minlength=labels_n)
+    floor = max(DIFF_FLOOR_PX, DIFF_FLOOR * sh * sw)
+    ranked = sorted((i for i in range(1, labels_n) if raw[i] >= floor),
+                    key=lambda i: -int(stats[i, cv2.CC_STAT_AREA]))
+    out = []
+    for i in ranked[:max(0, int(count))]:
+        x, y, bw, bh, _area = (int(v) for v in stats[i])
+        out.append((x / sw, y / sh, (x + bw) / sw, (y + bh) / sh))
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# the scene
+# --------------------------------------------------------------------------- #
+@dataclass
+class PairScene:
+    """Everything the panel draws for one part's 「拆前 / 拆后」."""
+
+    desktop: Optional[int] = None
+    instance: Optional[str] = None
+    label: str = ""
+    colour: tuple[int, int, int] = (255, 210, 0)
+    leaving: Optional[Leaving] = None
+    #: ``(r - 1, r)``: the steps asked for.
+    asked: tuple = (None, None)
+    #: The scanner frames shown for them (an earlier one when a step has none).
+    steps: tuple = (None, None)
+    #: The two pictures at the locator's thumbnail size, ``None`` when unread.
+    images: tuple = (None, None)
+    #: Each frame's own size, ``(h, w)``: what the window is in.
+    frame_hw: tuple = ((0, 0), (0, 0))
+    captions: tuple = ("", "")
+    #: The window, ``(x0, y0, x1, y1)`` in the before frame's pixels; ``None``
+    #: means the two frames are shown whole.
+    window: Optional[tuple] = None
+    #: ``part`` (the scanner outline) / ``diff`` (what changed) / ``""``.
+    window_source: str = ""
+    #: The candidate windows the panel offers, in order: the difference's
+    #: regions (``window`` is the first), and from round 3 the vanished
+    #: detections after the first (:func:`tda.ui.locator_dets.merge_candidates`).
+    candidates: tuple = ()
+    #: One per candidate: ``""`` for a region of the difference, the chip's
+    #: label for a detection (「检测到消失的 螺丝」).
+    candidate_labels: tuple = ()
+    #: The difference's own regions, largest first (what detections merge into).
+    diffs: tuple = ()
+    #: The two frames were compared (same pose segment, both read): a window
+    #: from them -- a region or a vanished detection -- means something.
+    compared: bool = False
+    #: The part's class (which the detector may know).
+    cls: str = ""
+    #: The part's own outline on the before frame, when the window is it.
+    geometry: Optional[Geometry] = None
+    #: The part, with its change of state: 「理线夹 cable_clip.01（关上 → 打开）」.
+    label_line: str = ""
+    #: What the log says at ``r``: 「第 8 帧：Heatsink · remove」.
+    log_line: str = ""
+    #: 「随 散热片 一起拆走」 for a part that went out inside another one.
+    with_line: str = ""
+    #: The sentence under the pictures: why they are whole, or ``""``.
+    note: str = ""
+    roi: Optional[tuple] = None
+
+    def lines(self) -> list[str]:
+        """The text under the pictures, top to bottom, without the note."""
+        return [line for line in (self.label_line, self.log_line, self.with_line) if line]
+
+    def with_detections(self, dets: Sequence, label: str) -> "PairScene":
+        """This pair with vanished detections among its candidates (round 3).
+
+        Diff #1 stays the window on screen; with no region of the difference
+        the window stays ``None`` (the frames whole) and the detections are
+        only offered -- a detection is never first.
+        """
+        from tda.ui.locator_dets import merge_candidates
+
+        # the part's own outline needs no guesses; two frames not compared offer none
+        if not dets or self.window_source == "part" or not self.compared:
+            return self
+        windows, labels = merge_candidates(self.diffs, dets, label)
+        return replace(self, candidates=windows, candidate_labels=labels,
+                       window=self.diffs[0] if self.diffs else None)
+
+
+def _earlier(asked: Optional[int], shown: Optional[int], why: str) -> str:
+    if asked is None or shown is None or shown == asked or not why:
+        return ""
+    return (EARLIER_DUPLI if why == "dupli" else EARLIER_MISSING).format(asked=int(asked))
+
+
+class PairMaker:
+    """The 「拆前 / 拆后」 half of :class:`~tda.ui.locator_source.LocatorSource`."""
+
+    def __init__(self, source) -> None:
+        self.source = source
+        #: desktop -> (digest, {"leaving", "names", "verbs"})
+        self._timelines: dict[int, tuple[tuple, dict]] = {}
+        #: (desktop, instance) -> (digest, PairScene without its pictures)
+        self._pairs: "OrderedDict[tuple, tuple]" = OrderedDict()
+        #: (desktop, before step, after step, keep) -> window as fractions | None
+        self._diffs: "OrderedDict[tuple, Optional[tuple]]" = OrderedDict()
+
+    # -- what moves a scene ---------------------------------------------------
+    def _digest(self, desktop: int, facts: dict) -> tuple:
+        """The scanner inputs' digest plus what else a pair is made of.
+
+        The action table (the timeline, the log's verbs) and the scanner's pose
+        segments (which two frames may be compared, and the ROI the difference
+        is looked for in).
+        """
+        row = self.source.db.conn.execute(
+            "SELECT (SELECT COUNT(*) FROM action WHERE desktop=?), "
+            "(SELECT IFNULL(GROUP_CONCAT(step || ':' || idx || ':' || target || ':' || verb "
+            "  || ':' || result, '|'), '') FROM action WHERE desktop=?), "
+            "(SELECT IFNULL(GROUP_CONCAT(seg || ':' || start_step || ':' || end_step || ':' "
+            "  || IFNULL(roi_json, ''), '|'), '') FROM pose_segment WHERE desktop=? AND view=?), "
+            "(SELECT IFNULL(SUM(IFNULL(pose_segment, 0) * step), 0) FROM frame "
+            "  WHERE desktop=? AND view=?)",
+            (int(desktop), int(desktop), int(desktop), SCAN, int(desktop), SCAN)).fetchone()
+        text = f"{row[1]}#{row[2]}#{row[3]}"
+        inputs = hashlib.blake2b(text.encode("utf-8"), digest_size=8).hexdigest()
+        return (facts.get("digest"), int(row[0]), inputs)
+
+    def timeline(self, desktop: int, digest: tuple) -> dict:
+        """The machine's leaving steps, step names and verbs (re-read when ``digest`` moves)."""
+        held = self._timelines.get(int(desktop))
+        if held is not None and held[0] == digest:
+            return held[1]
+        db, tax = self.source.db, self.source.tax
+        instances = db.instances(int(desktop))
+        try:
+            leaving = leaving_steps(instances, events_of(db, tax, int(desktop)), tax)
+        except Exception:  # noqa: BLE001 - a side panel is never worth a failure
+            leaving = {}
+        names = {int(s.step): str(s.raw_name or "").strip() for s in db.steps(int(desktop))}
+        verbs: dict[tuple[int, str], str] = {}
+        for action in sorted(db.actions(int(desktop)), key=lambda a: (a.step, a.idx)):
+            if action.result == "success":
+                verbs.setdefault((int(action.step), str(action.target)), str(action.verb))
+        found = {"leaving": leaving, "names": names, "verbs": verbs, "instances": instances}
+        self._timelines[int(desktop)] = (digest, found)
+        return found
+
+    # -- the scene ------------------------------------------------------------
+    def pair(self, desktop: int, instance: str) -> PairScene:
+        """The 「拆前 / 拆后」 of one part, built once per digest; pictures attached fresh."""
+        desktop = int(desktop)
+        source = self.source
+        facts = source._desktop_facts(desktop)
+        digest = self._digest(desktop, facts)
+        slot = (desktop, str(instance))
+        held = self._pairs.get(slot)
+        if held is not None and held[0] == digest:
+            self._pairs.move_to_end(slot)
+            scene = held[1]
+        else:
+            scene = self._build(desktop, str(instance), digest)
+            source.stats["pairs"] += 1
+            self._pairs[slot] = (digest, scene)
+            while len(self._pairs) > PAIR_CACHE:
+                self._pairs.popitem(last=False)
+        return self._with_pictures(scene)
+
+    def _with_pictures(self, scene: PairScene) -> PairScene:
+        """A copy of ``scene`` holding the two pictures, from the thumbnail cache."""
+        images, hws = [], []
+        for step in scene.steps:
+            if step is None:
+                images.append(None)
+                hws.append((0, 0))
+                continue
+            image, hw = self.source.thumbnail(scene.desktop, step)
+            images.append(image)
+            hws.append(hw if hw != (0, 0) else self._recorded_hw(scene.desktop, step))
+        return replace(scene, images=tuple(images), frame_hw=tuple(hws))
+
+    def _recorded_hw(self, desktop: int, step: int) -> tuple[int, int]:
+        row = self.source._desktop_facts(desktop)["frames"].get(int(step)) or {}
+        hw = (row.get("aux") or {}).get("hw")
+        return (int(hw[0]), int(hw[1])) if hw and len(hw) == 2 else (0, 0)
+
+    def _build(self, desktop: int, instance: str, digest: tuple) -> PairScene:
+        source = self.source
+        found = self.timeline(desktop, digest)
+        rec = found["instances"].get(instance)
+        scene = PairScene(desktop=desktop, instance=instance)
+        scene.label = instance_label(instance, getattr(rec, "cls", None),
+                                     getattr(rec, "attrs", None))
+        scene.colour = tuple(int(c) for c in palette_color(instance))
+        scene.label_line = scene.label
+        scene.cls = str(getattr(rec, "cls", "") or "")
+        leaving = found["leaving"].get(instance)
+        if rec is None or is_context_key(instance) or is_provisional(instance) or leaving is None:
+            scene.note = NO_CHANGE
+            return scene
+        scene.leaving = leaving
+        scene.label_line = (f"{scene.label}（{state_zh(leaving.old)} → "
+                            f"{state_zh(leaving.new)}）")
+        r = int(leaving.step)
+        scene.log_line = self._log_line(found, r, instance, leaving)
+        if leaving.left_with:
+            parent = found["instances"].get(leaving.left_with)
+            scene.with_line = WITH_PARENT.format(parent=class_zh(
+                getattr(parent, "cls", None), getattr(parent, "attrs", None),
+                leaving.left_with))
+        # the two scanner frames: 拆前 at or before r - 1, 拆后 at or *after* r
+        before, why_before = (source.scan_step_for(desktop, r - 1) if r - 1 >= 1
+                              else (None, ""))
+        after, why_after = self._after_frame(desktop, r)
+        scene.asked = (r - 1, r)
+        scene.steps = (before, after)
+        scene.captions = (
+            BEFORE.format(step=before, earlier=_earlier(r - 1, before, why_before))
+            if before is not None else (BEFORE.format(step=r - 1, earlier="") if r > 1
+                                        else BEFORE_NONE),
+            AFTER.format(step=after, earlier=_earlier(r, after, why_after))
+            if after is not None else AFTER.format(step=r, earlier=""),
+        )
+        notes = []
+        if before is None:
+            notes.append(NO_BEFORE.format(step=r))
+        if after is None:
+            notes.append(NO_AFTER.format(step=r))
+        if before is not None:
+            scene.roi = source.roi(desktop, before)
+            note = self._window(scene, desktop, instance, before, after)
+            if note:
+                notes.append(note)
+        scene.note = "；".join(notes)
+        return scene
+
+    def _after_frame(self, desktop: int, r: int) -> tuple[Optional[int], str]:
+        """``(the scanner frame shown as 拆后, why it is not r)`` -- round 2, B1.
+
+        The frame of ``r`` itself; when that one is missing or a dupli step,
+        the nearest **later** usable frame in ``r``'s pose segment (an earlier
+        one would be taken before the part left -- the 拆前 picture again); none
+        such, ``None``: the slot stays empty.
+        """
+        facts = self.source._desktop_facts(desktop)
+        usable = facts["usable"]
+        if r in usable:
+            return r, ""
+        why = "dupli" if r in facts["dupli"] else "missing"
+        later = [s for s in usable if s > r]
+        if not later:
+            return None, why
+        db = self.source.db
+        if (pose_segment_of(db, FrameKey(desktop, later[0], SCAN))
+                != pose_segment_of(db, FrameKey(desktop, r, SCAN))):
+            return None, why
+        return later[0], why
+
+    def _log_line(self, found: dict, r: int, instance: str, leaving: Leaving) -> str:
+        name = found["names"].get(r, "")
+        line = LOG_LINE.format(step=r, name=name) if name else f"第 {r} 帧"
+        verb = found["verbs"].get((r, instance))
+        if verb is None and leaving.left_with:
+            verb = found["verbs"].get((r, str(leaving.left_with)))
+        return f"{line} · {verb}" if verb else line
+
+    def _window(self, scene: PairScene, desktop: int, instance: str,
+                before: int, after: Optional[int]) -> str:
+        """Fill the window in; the note to add (why whole frames, or that it is a guess)."""
+        source = self.source
+        db = source.db
+        geometry, _why, _where = source.geometry(desktop, before, instance)
+        if after is not None and (pose_segment_of(db, FrameKey(desktop, before, SCAN))
+                                  != pose_segment_of(db, FrameKey(desktop, after, SCAN))):
+            scene.geometry = geometry
+            return POSE_BREAK
+        if geometry is not None:
+            scene.geometry = geometry
+            scene.window = tuple(float(v) for v in geometry.box)
+            scene.window_source = "part"
+            return ""
+        if after is None:            # nothing to compare with: no difference taken
+            return ""
+        a, hw_a = source.thumbnail(desktop, before)
+        b, _hw_b = source.thumbnail(desktop, after)
+        if a is None or b is None:
+            unread = [s for s, img in ((before, a), (after, b)) if img is None]
+            return "；".join(UNREADABLE.format(step=s) for s in unread)
+        keep = self._keep(scene.roi, hw_a)
+        # the scanner inputs' digest (the frame rows) is part of the key (N5)
+        slot = (desktop, before, after, keep, source._desktop_facts(desktop).get("digest"))
+        if slot in self._diffs:
+            self._diffs.move_to_end(slot)
+            fracs = self._diffs[slot]
+        else:
+            fracs = tuple(change_windows(qimage_rgb(a), qimage_rgb(b), keep))
+            source.stats["diffs"] += 1
+            self._diffs[slot] = fracs
+            while len(self._diffs) > DIFF_CACHE:
+                self._diffs.popitem(last=False)
+        scene.compared = True
+        if not fracs:
+            return NO_DIFF_ROI if keep is not None else NO_DIFF
+        h, w = hw_a
+        scene.candidates = tuple((f[0] * w, f[1] * h, f[2] * w, f[3] * h) for f in fracs)
+        scene.candidate_labels = ("",) * len(scene.candidates)
+        scene.diffs = scene.candidates
+        scene.window = scene.candidates[0]
+        scene.window_source = "diff"
+        return DIFF_GUESS
+
+    @staticmethod
+    def _keep(roi: Optional[tuple], hw: tuple[int, int]) -> Optional[tuple]:
+        """The scanner ROI as fractions of the frame, widened by :data:`ROI_PAD`."""
+        h, w = hw
+        if roi is None or not h or not w:
+            return None
+        x0, y0, x1, y1 = roi
+        return (round(max(0.0, x0 / w - ROI_PAD), 4), round(max(0.0, y0 / h - ROI_PAD), 4),
+                round(min(1.0, x1 / w + ROI_PAD), 4), round(min(1.0, y1 / h + ROI_PAD), 4))
