@@ -88,6 +88,9 @@ _ENV = {
     "TRANSFORMERS_OFFLINE": "1",
     "SAM2_BUILD_CUDA": "0",
     "SAM2_BUILD_ALLOW_ERRORS": "1",
+    # rfdetr's rich tables crash a cp1252 stdout redirected to a log file
+    "PYTHONIOENCODING": "utf-8",
+    "PYTHONUTF8": "1",
     "OMP_NUM_THREADS": str(MAX_THREADS),
     "MKL_NUM_THREADS": str(MAX_THREADS),
     "OPENBLAS_NUM_THREADS": str(MAX_THREADS),
@@ -95,6 +98,11 @@ _ENV = {
 }
 for _k, _v in _ENV.items():
     os.environ[_k] = _v
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001 - not a text stream; leave it
+        pass
 for _p in (ROOT, TMP, TMP / "mpl", CACHE / "torch", CACHE / "hf", CACHE / "xdg",
            ROOT / "logs"):
     _p.mkdir(parents=True, exist_ok=True)
