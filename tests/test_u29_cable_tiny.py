@@ -1,5 +1,9 @@
 """Task U29 (A): the undo of a 完全 cable label on a part under 20 visible pixels.
 
+(The rule, :func:`tda.core.truth_conflicts.seen_now`: something seen where the
+frozen row saw nothing is a label disagreement under the floor; the other way
+round stays the confirmed outline's noise.)
+
 The truth table's comparison has a floor (spec 3.4: a tolerant symmetric
 difference above ``max(2 % of the area, 20 px)``): a re-compilation that differs
 from a frozen row by fewer pixels is "the same annotation". A 完全 row has an
@@ -76,22 +80,25 @@ def _row(mask, visibility, ratio):
             "visibility": visibility, "occlusion_ratio": ratio, "placement": "in_chassis"}
 
 
-def test_nothing_seen_against_something_seen_is_a_label_change_under_the_floor():
+def test_something_seen_where_the_row_saw_nothing_is_a_label_change_under_the_floor():
     import numpy as np
 
-    from tda.core.truth_conflicts import disagreement, label_changes, seen_differs
+    from tda.core.truth_conflicts import disagreement, label_changes, seen_now
 
     empty = np.zeros((64, 64), dtype=bool)
     row = _row(empty, "occluded_full", 1.0)                 # a 完全 row (or fully hidden)
     shown = _inst(rect(*TINY), "too_small", 0.0)
     assert disagreement(row, shown) is None                 # 16 px: under the floor
-    assert seen_differs(row, shown)
+    assert seen_now(row, shown)
     assert label_changes(row, shown) == [
         {"field": "visibility", "old": "occluded_full", "new": "too_small"}]
-    # the other way round: a confirmed sliver now wholly covered
-    assert label_changes(_row(rect(*TINY), "too_small", 0.0),
-                         _inst(empty, "occluded_full", 1.0)) == [
-        {"field": "visibility", "old": "too_small", "new": "occluded_full"}]
+    # the other way round -- a confirmed sliver now wholly covered -- is the
+    # confirmed outline's own noise under the floor, as before
+    sliver = _row(rect(*TINY), "too_small", 0.0)
+    covered = _inst(empty, "occluded_full", 1.0)
+    assert not seen_now(sliver, covered) and label_changes(sliver, covered) == []
+    # a row that recorded no label is not a label to disagree with
+    assert label_changes(dict(row, visibility=None), shown) == []
 
 
 def test_a_sliver_under_the_same_label_and_a_retrace_are_still_noise():
