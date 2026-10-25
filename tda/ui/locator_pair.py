@@ -45,7 +45,7 @@ from __future__ import annotations
 import hashlib
 from collections import OrderedDict
 from dataclasses import dataclass, replace
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Sequence
 
 import cv2
 import numpy as np
@@ -299,9 +299,20 @@ class PairScene:
     window: Optional[tuple] = None
     #: ``part`` (the scanner outline) / ``diff`` (what changed) / ``""``.
     window_source: str = ""
-    #: The difference's candidate windows, largest first (``window`` is the
-    #: first); empty unless ``window_source == "diff"``.
+    #: The candidate windows the panel offers, in order: the difference's
+    #: regions (``window`` is the first), and from round 3 the vanished
+    #: detections after the first (:func:`tda.ui.locator_dets.merge_candidates`).
     candidates: tuple = ()
+    #: One per candidate: ``""`` for a region of the difference, the chip's
+    #: label for a detection (「检测到消失的 螺丝」).
+    candidate_labels: tuple = ()
+    #: The difference's own regions, largest first (what detections merge into).
+    diffs: tuple = ()
+    #: The two frames were compared (same pose segment, both read): a window
+    #: from them -- a region or a vanished detection -- means something.
+    compared: bool = False
+    #: The part's class (which the detector may know).
+    cls: str = ""
     #: The part's own outline on the before frame, when the window is it.
     geometry: Optional[Geometry] = None
     #: The part, with its change of state: 「理线夹 cable_clip.01（关上 → 打开）」.
@@ -317,6 +328,22 @@ class PairScene:
     def lines(self) -> list[str]:
         """The text under the pictures, top to bottom, without the note."""
         return [line for line in (self.label_line, self.log_line, self.with_line) if line]
+
+    def with_detections(self, dets: Sequence, label: str) -> "PairScene":
+        """This pair with vanished detections among its candidates (round 3).
+
+        Diff #1 stays the window on screen; with no region of the difference
+        the window stays ``None`` (the frames whole) and the detections are
+        only offered -- a detection is never first.
+        """
+        from tda.ui.locator_dets import merge_candidates
+
+        # the part's own outline needs no guesses; two frames not compared offer none
+        if not dets or self.window_source == "part" or not self.compared:
+            return self
+        windows, labels = merge_candidates(self.diffs, dets, label)
+        return replace(self, candidates=windows, candidate_labels=labels,
+                       window=self.diffs[0] if self.diffs else None)
 
 
 def _earlier(asked: Optional[int], shown: Optional[int], why: str) -> str:
@@ -425,6 +452,7 @@ class PairMaker:
                                      getattr(rec, "attrs", None))
         scene.colour = tuple(int(c) for c in palette_color(instance))
         scene.label_line = scene.label
+        scene.cls = str(getattr(rec, "cls", "") or "")
         leaving = found["leaving"].get(instance)
         if rec is None or is_context_key(instance) or is_provisional(instance) or leaving is None:
             scene.note = NO_CHANGE
@@ -529,10 +557,13 @@ class PairMaker:
             self._diffs[slot] = fracs
             while len(self._diffs) > DIFF_CACHE:
                 self._diffs.popitem(last=False)
+        scene.compared = True
         if not fracs:
             return NO_DIFF_ROI if keep is not None else NO_DIFF
         h, w = hw_a
         scene.candidates = tuple((f[0] * w, f[1] * h, f[2] * w, f[3] * h) for f in fracs)
+        scene.candidate_labels = ("",) * len(scene.candidates)
+        scene.diffs = scene.candidates
         scene.window = scene.candidates[0]
         scene.window_source = "diff"
         return DIFF_GUESS

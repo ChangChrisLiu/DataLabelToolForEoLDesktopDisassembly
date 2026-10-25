@@ -333,22 +333,22 @@ class LocatorPanel(QWidget):
         self.info.setWordWrap(True)
         self.info.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.info.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
-        # under the pair: the small whole frame, the other candidates (a
-        # guessed window), and the log's words -- beside the frame when there
-        # are no candidates, under the row when there are (the room they need)
+        # under the pair: the other candidates (a guessed window) on a row of
+        # their own, then the small whole frame with the log's words beside it
         self.below = QWidget()
         below = QVBoxLayout(self.below)
         below.setContentsMargins(0, 0, 0, 0)
         below.setSpacing(2)
+        below.addWidget(self.candidates)
         self._row = QHBoxLayout()
         self._row.setContentsMargins(0, 0, 0, 0)
         self._row.setSpacing(4)
         self._row.addWidget(self.inset, 0, Qt.AlignmentFlag.AlignTop)
-        self._row.addWidget(self.candidates, 0, Qt.AlignmentFlag.AlignTop)
         self._row.addWidget(self.info, 1)
         below.addLayout(self._row)
-        self._below_layout = below
         self.below.setVisible(False)
+        # the note follows the candidate on screen: a vanished detection has its own
+        self.pair_view.sigChanged.connect(self._pair_note)
         self.note = QLabel("")
         self.note.setWordWrap(True)
         self.note.setStyleSheet("color: #8a5a00;")
@@ -393,22 +393,28 @@ class LocatorPanel(QWidget):
         self._showing_pair(True)
         self.caption.setText(head)
         self.info.setText("" if pair is None else "\n".join(pair.lines()))
-        self._set_note("" if pair is None else pair.note)
-        self._place_info(self.pair_view.candidate_count() > 1)
+        self.candidates.setVisible(self.pair_view.has_choice())
+        self._pair_note()
         self.layout().activate()
         self.inset.update()
         self.shown += 1
 
-    def _place_info(self, candidates: bool) -> None:
-        """The log's words beside the small frame, or under it with the candidates."""
-        self.candidates.setVisible(candidates)
-        in_row = self._row.indexOf(self.info) >= 0
-        if candidates and in_row:
-            self._row.removeWidget(self.info)
-            self._below_layout.addWidget(self.info)
-        elif not candidates and not in_row:
-            self._below_layout.removeWidget(self.info)
-            self._row.addWidget(self.info, 1)
+    def _pair_note(self) -> None:
+        """The pair's note -- or, with a vanished detection on screen, what it is."""
+        from tda.ui.locator_dets import DET_NOTE
+
+        if not self.showing_pair():
+            return
+        pair = self.pair_view.pair()
+        if pair is None:
+            self._set_note("")
+            return
+        label = self.pair_view.candidate_label()
+        if label:
+            name = label.split(" ", 1)[-1]
+            self._set_note(DET_NOTE.format(cls=name, step=pair.asked[1]))
+        else:
+            self._set_note(pair.note)
 
     def candidate_text(self) -> str:
         """「候选 k/n」 while a guessed window has others to choose from, else ``""``."""

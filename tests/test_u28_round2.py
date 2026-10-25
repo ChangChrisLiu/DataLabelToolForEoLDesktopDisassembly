@@ -114,8 +114,11 @@ def test_the_other_candidates_are_chips_and_a_click_swaps_one_in(panel):
     assert view.window() == candidates[0]
     first = view.source_rect(0)
     assert view.source_rect(1) == first             # both cells: one crop
-    # the log's words go under the row of chips (the room they need)
-    assert panel._row.indexOf(panel.info) < 0
+    # the chips have a row of their own (round 3), above the small frame and
+    # the log's words beside it
+    assert panel._row.indexOf(panel.info) >= 0 and panel._row.indexOf(bar) < 0
+    assert bar.mapTo(panel, bar.rect().topLeft()).y() < panel.inset.mapTo(
+        panel, panel.inset.rect().topLeft()).y()
     index, rect = bar.chips()[1]
     QTest.mouseClick(bar, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
                      rect.center().toPoint())

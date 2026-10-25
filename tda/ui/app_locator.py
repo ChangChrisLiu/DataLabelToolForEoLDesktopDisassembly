@@ -41,19 +41,32 @@ can decide is here:
   has a shape in the view is one indexed lookup per part and edit epoch, and
   the dock is shown or hidden for it in that same settled refresh, not on the
   way there.  Nothing else is read while the dock is down.
+* **detection chips** (round 3).  When the pair's window is a guess and the
+  window's small-part detector knows the part's class, the vanished
+  detections between the two frames are asked of
+  :class:`~tda.ui.locator_dets.LocatorDetections` (the detector's disk cache,
+  read only, else its model on a worker thread) and added as chips when they
+  arrive -- unless the dock has moved on to other frames or another class by
+  then.  Answers are kept by ``(machine, frames, class, crops)``.
 """
 from __future__ import annotations
 
+import weakref
 from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QToolButton
 
-from tda.core.model import VIEWS, is_component_view
+from tda.core.model import VIEWS, FrameKey, is_component_view
+from tda.models.det_engine import PlanItem
+from tda.models.detector import frame_crop, make_detector
 from tda.ui import app_actions as A
 from tda.ui import app_compat as compat
 from tda.ui import app_support as S
+from tda.ui.class_names import class_zh
+from tda.ui.locator_dets import DET_LABEL, LocatorDetections, ReadOnlyEngine
 from tda.ui.locator_pair import PAIR_HEAD, PAIR_HEAD_FIRST, PairScene
+from tda.ui.session_images import frame_candidates
 from tda.ui.locator_source import SCAN, LocatorScene, LocatorSource
 from tda.ui.panels.locator import TITLE, LocatorDock, LocatorPanel
 from tda.ui.panels.locator_pair import PAIR_TIP
@@ -143,6 +156,13 @@ class LocatorMixin:
         self._pair_choice: Optional[tuple] = None
         #: What the pair on screen was drawn for: ``(desktop, view, part, epoch, asked)``.
         self._locator_pair_shown: Optional[tuple] = None
+        #: Round 3: the detection chips' worker, its answers by key, the keys
+        #: asked and not answered, and counts for the tests and the report.
+        self._locator_det: Optional[LocatorDetections] = None
+        self._locator_det_answers: dict = {}
+        self._locator_det_asked: set = set()
+        self.locator_det_requests = 0
+        self.locator_det_dropped = 0
         self._locator_timer = QTimer(self)
         self._locator_timer.setSingleShot(True)
         self._locator_timer.setInterval(0)
@@ -312,11 +332,108 @@ class LocatorMixin:
         self.locator_refreshes += 1
         try:
             pair = self.locator_source.pair(desktop, target)
+            pair = self._locator_detected(pair)
         except Exception as exc:  # noqa: BLE001 - a side panel never stops the window
             self.logger.warning("locator pair: D%s %s: %s", desktop, target, exc)
             pair = PairScene(desktop=desktop, instance=target,
                              note=f"拆前 / 拆后读不出来：{exc}")
         self.locator.show_pair(pair, PAIR_HEAD if self._pair_forced(target) else PAIR_HEAD_FIRST)
+
+    # ------------------------------------------- vanished detections (round 3)
+    def locator_detector(self) -> Optional[LocatorDetections]:
+        """The worker for the pair's detection chips, built on first need; ``None`` when off.
+
+        It goes with the window's small-part detector: same configuration,
+        same model, same on-disk cache (read only), its own engine and thread
+        -- so the reverse walk's background pass is never interrupted.  No
+        detector in the window (switched off, failed) means no chips.
+        """
+        worker = getattr(self, "det_worker", None)
+        config = getattr(self, "det_config", None)
+        if worker is None or config is None or SCAN not in tuple(config.views):
+            return None
+        held = self._locator_det
+        if held is not None and held.engine.config is config:
+            return held
+        if held is not None:
+            held.shutdown()
+        base = worker.engine
+        engine = ReadOnlyEngine(config, base.cache_root,
+                                factory=None if base.factory is make_detector else base.factory,
+                                identity=base.identity)
+        me = weakref.ref(self)
+        held = LocatorDetections(engine, config.conf, parent=self,
+                                 after=getattr(self, "_sam_turn", None),
+                                 stop_when=lambda: me() is None or bool(me().closed))
+        held.sigDone.connect(self._on_locator_dets)
+        self._locator_det = held
+        self._locator_det_answers.clear()
+        return held
+
+    def _locator_det_key(self, pair: PairScene) -> Optional[tuple]:
+        """What a pair's detection chips are asked by, or ``None`` when it takes none."""
+        if (pair.leaving is None or not pair.compared or pair.window_source == "part"
+                or None in tuple(pair.steps) or not pair.cls):
+            return None
+        config = getattr(self, "det_config", None)
+        if config is None or pair.cls not in tuple(config.classes):
+            return None
+        before, after = (int(s) for s in pair.steps)
+        crops = tuple(frame_crop(config, self.locator_source.roi(pair.desktop, s))
+                      for s in (before, after))
+        return (int(pair.desktop), before, after, pair.cls, crops)
+
+    def _locator_detected(self, pair: PairScene) -> PairScene:
+        """``pair`` with the chips of its vanished detections when they are on hand.
+
+        Otherwise they are asked for -- off the GUI thread -- and this pair goes
+        up as it is; :meth:`_on_locator_dets` adds them when they arrive.
+        """
+        key = self._locator_det_key(pair)
+        if key is None:
+            return pair
+        found = self._locator_det_answers.get(key)
+        if found is not None:
+            return pair.with_detections(found, DET_LABEL.format(cls=class_zh(pair.cls)))
+        detector = self.locator_detector()
+        if detector is None or key in self._locator_det_asked:
+            return pair
+        items = tuple(self._locator_det_item(pair.desktop, step, crop)
+                      for step, crop in zip(key[1:3], key[4]))
+        self._locator_det_asked.add(key)
+        self.locator_det_requests += 1
+        detector.request((key, pair.instance), pair.desktop, items[0], items[1], pair.cls)
+        return pair
+
+    def _locator_det_item(self, desktop: int, step: int, crop) -> PlanItem:
+        """A scanner frame as the detector engine wants it (where its pixels are)."""
+        key = FrameKey(int(desktop), int(step), SCAN)
+        cache_dir = getattr(self.session, "cache_dir", "") or self.paths.get("cache_dir", "")
+        return PlanItem(step=int(step), crop=crop,
+                        candidates=tuple(frame_candidates(cache_dir, key, self.db.get_frame(key))))
+
+    @S.guard
+    def _on_locator_dets(self, token: object, found: object) -> None:
+        """An answer: kept, and drawn only if the pair it is for is still up."""
+        key, instance = token  # type: ignore[misc]
+        self._locator_det_asked.discard(key)
+        if found is None:               # the detector failed: no chips, nothing said
+            return
+        self._locator_det_answers[key] = list(found)
+        while len(self._locator_det_answers) > 64:
+            self._locator_det_answers.pop(next(iter(self._locator_det_answers)))
+        if self.closed or not self.locator_shown() or not self.locator.showing_pair():
+            return
+        current = self.locator.pair()
+        # the dock moved on to a pair of other frames or another class: not its
+        # answer (another of the screws that leave on the same step, with the
+        # same two frames, has the very same vanished detections)
+        if current is None or self._locator_det_key(current) != key:
+            self.locator_det_dropped += 1
+            return
+        self.locator.show_pair(
+            current.with_detections(found, DET_LABEL.format(cls=class_zh(current.cls))),
+            self.locator.caption_text())
 
     def _pair_forced(self, target: Optional[str]) -> bool:
         """Is the pair up because the annotator asked, not because it is a first time?"""

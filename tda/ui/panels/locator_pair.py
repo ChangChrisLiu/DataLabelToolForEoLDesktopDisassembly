@@ -11,9 +11,12 @@ drawn on both.  Two kinds of window, drawn apart (round 2, B2):
   "before" frame and a dashed box in that colour on both;
 * a guess from the difference of the two pictures -- a grey dashed box, no
   part colour, no outline, and the panel's note says it is a guess.  Up to
-  three such candidates: :class:`CandidateBar` shows the ones not on screen
-  as small crops of the "before" frame, a click puts one on screen, and it
-  says which one is up (「候选 1/3」).
+  three such candidates, and (round 3) up to two vanished detections after
+  the first (:mod:`tda.ui.locator_dets`): :class:`CandidateBar` shows the
+  ones not on screen as small crops of the "before" frame -- a detection's
+  dotted and labelled 「检测到消失的 <类名>」 -- a click puts one on screen, and
+  it says which one is up (「候选 1/3」).  With no region of the difference
+  the frames stay whole and the detections are only offered (「候选 n 处」).
 
 :class:`InsetView` is the small whole frame that shows where the crop sits.
 As on the location scene (:class:`~tda.ui.panels.locator.LocatorView`): a
@@ -24,11 +27,26 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import QSizePolicy, QWidget
+from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QFont,
+    QFontMetrics,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
+from PySide6.QtWidgets import QSizePolicy, QToolTip, QWidget
 
 from tda.ui.locator_pair import CANDIDATE, MIN_SIDE_FRAC, PAD, PairScene
+
+#: The chips' row while the frames are shown whole (no region of the
+#: difference) and only detections are offered.
+CANDIDATE_NONE = "候选 {n} 处"
+#: The first line of a detection chip's label (the class name is the second).
+DET_HEAD = "检测到消失的"
 from tda.ui.panels.locator import (
     BACKGROUND,
     CROP,
@@ -39,8 +57,8 @@ from tda.ui.panels.locator import (
     crop_rect,
 )
 
-__all__ = ["CELL_GAP", "CandidateBar", "GUESS_COLOUR", "InsetView", "PAIR_HINT", "PAIR_TIP",
-           "PairView", "TOGGLE_TEXT"]
+__all__ = ["CANDIDATE_NONE", "CELL_GAP", "CandidateBar", "GUESS_COLOUR", "InsetView",
+           "PAIR_HINT", "PAIR_TIP", "PairView", "TOGGLE_TEXT"]
 
 #: The toggle next to the dock's caption, and what it says it does.
 TOGGLE_TEXT = "拆前/拆后"
@@ -108,11 +126,14 @@ class PairView(QWidget):
             old = None if before is None else before.images[i]
             if new is not old:
                 self._pixmaps[i] = self._pixmap_of(new)
-        same_windows = (before is not None and pair is not None
-                        and before.candidates == pair.candidates)
+        shown = None if reset_zoom else self.window()
         self._pair = pair
-        if reset_zoom or not same_windows:
-            self._index = 0
+        candidates = tuple(pair.candidates) if pair is not None else ()
+        if shown is not None and shown in candidates:
+            self._index = candidates.index(shown)     # new chips arrived: keep what is up
+        else:
+            # never a detection first: no region of the difference, the frames whole
+            self._index = 0 if (pair is not None and pair.window is not None) else -1
         if reset_zoom:
             self._zoom = 1.0
         self.update()
@@ -144,7 +165,7 @@ class PairView(QWidget):
         return self._index
 
     def set_candidate(self, index: int) -> None:
-        """Put the difference's candidate ``index`` on screen (the zoom starts over)."""
+        """Put candidate ``index`` on screen (the zoom starts over)."""
         index = int(index)
         if not 0 <= index < self.candidate_count() or index == self._index:
             return
@@ -153,10 +174,27 @@ class PairView(QWidget):
         self.update()
         self.sigChanged.emit()
 
-    def candidate_text(self) -> str:
-        """「候选 k/n」, or ``""`` when there is nothing to choose from."""
+    def has_choice(self) -> bool:
+        """Is there a candidate other than the one on screen (the chips' row)?"""
         n = self.candidate_count()
-        return CANDIDATE.format(k=self._index + 1, n=n) if n > 1 else ""
+        return n > 1 or (n == 1 and self._index < 0)
+
+    def candidate_text(self) -> str:
+        """「候选 k/n」 (「候选 n 处」 with the frames whole), ``""`` with no choice."""
+        if not self.has_choice():
+            return ""
+        n = self.candidate_count()
+        if self._index < 0:
+            return CANDIDATE_NONE.format(n=n)
+        return CANDIDATE.format(k=self._index + 1, n=n)
+
+    def candidate_label(self, index: Optional[int] = None) -> str:
+        """``""`` for a region of the difference, the chip's label for a detection."""
+        pair = self._pair
+        index = self._index if index is None else int(index)
+        if pair is None or index < 0 or index >= len(pair.candidate_labels):
+            return ""
+        return str(pair.candidate_labels[index])
 
     def window(self) -> Optional[tuple]:
         """The window on screen, in the before frame's pixels, or ``None``."""
@@ -164,12 +202,18 @@ class PairView(QWidget):
         if pair is None:
             return None
         if pair.candidates:
+            if self._index < 0:
+                return None
             return tuple(pair.candidates[min(self._index, len(pair.candidates) - 1)])
         return pair.window
 
     def is_guess(self) -> bool:
-        """Is the window a guess from the difference (not the part's outline)?"""
-        return _guess(self._pair)
+        """Is the window a guess (the difference, a detection), not the part's outline?"""
+        return _guess(self._pair) or bool(self.candidate_label())
+
+    def is_detection(self) -> bool:
+        """Is the window on screen a vanished detection?"""
+        return bool(self.candidate_label())
 
     def window_colour(self) -> QColor:
         """The window's pen: the part's colour for its outline, grey for a guess."""
@@ -368,7 +412,8 @@ class PairView(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(QPen(QColor(0, 0, 0, 160), 3.0))
             painter.drawRect(rect)
-            painter.setPen(QPen(colour, 1.5, Qt.PenStyle.DashLine))
+            style = Qt.PenStyle.DotLine if self.is_detection() else Qt.PenStyle.DashLine
+            painter.setPen(QPen(colour, 1.5, style))
             painter.drawRect(rect)
         painter.setClipping(False)
 
@@ -435,12 +480,18 @@ class InsetView(QWidget):
 class CandidateBar(QWidget):
     """「候选 k/n」 and the other candidates as small crops of the before frame.
 
-    Shown only for a window guessed from the difference with more than one
-    candidate; a click on a chip puts that candidate on screen.
+    Its own row under the pair, shown when there is a candidate other than
+    the one on screen; a click on a chip puts that candidate on screen.  A
+    region of the difference is a dashed chip; a vanished detection (round 3)
+    a dotted one labelled 「检测到消失的 <类名>」.
     """
 
     CHIP = 48
+    MIN_CHIP = 30
     GAP = 4
+    #: The label under a detection chip: two lines of this many pixels.
+    LABEL_PX = 10
+    LABEL_H = 26
 
     def __init__(self, view: PairView, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -453,29 +504,80 @@ class CandidateBar(QWidget):
         view.sigChanged.connect(self._follow)
 
     def sizeHint(self) -> QSize:  # noqa: D102 - Qt override
-        return QSize(self._label_width() + 2 * (self.CHIP + self.GAP), self.CHIP)
+        return QSize(self._label_width() + 4 * (self.CHIP + self.GAP), self.CHIP)
+
+    def minimumSizeHint(self) -> QSize:  # noqa: D102 - Qt override
+        return QSize(self._label_width() + self.MIN_CHIP, self.CHIP)
 
     def _follow(self) -> None:
-        self.setVisible(self._view.candidate_count() > 1)
+        height = self.CHIP + (self.LABEL_H if self._any_detection() else 0)
+        if self.height() != height:
+            self.setFixedHeight(height)
+        self.setVisible(self._view.has_choice())
         self.update()
 
     def _label_width(self) -> int:
-        return self.fontMetrics().horizontalAdvance(CANDIDATE.format(k=3, n=3)) + 8
+        metrics = self.fontMetrics()
+        return max(metrics.horizontalAdvance(CANDIDATE.format(k=5, n=5)),
+                   metrics.horizontalAdvance(CANDIDATE_NONE.format(n=5))) + 8
 
     def text(self) -> str:
         return self._view.candidate_text()
 
-    def chips(self) -> list[tuple[int, QRectF]]:
-        """``(candidate index, where its chip is)`` for every candidate not on screen."""
+    def _small(self) -> QFont:
+        font = QFont(self.font())
+        font.setPixelSize(self.LABEL_PX)
+        return font
+
+    def _det_width(self) -> int:
+        """A detection chip is as wide as 「检测到消失的」 in the label's font."""
+        return QFontMetrics(self._small()).horizontalAdvance(DET_HEAD) + 4
+
+    def _any_detection(self) -> bool:
         view = self._view
+        return any(view.candidate_label(i) for i in range(view.candidate_count()))
+
+    def chips(self) -> list[tuple[int, QRectF]]:
+        """``(candidate index, its chip)`` for every candidate not on screen.
+
+        The rectangle is the whole chip: the crop, and under a detection's
+        crop its label (「检测到消失的」 over the class name).
+        """
+        view = self._view
+        indices = [i for i in range(view.candidate_count()) if i != view.candidate_index()]
+        if not indices:
+            return []
+        labelled = [bool(view.candidate_label(i)) for i in indices]
+        det_w = self._det_width()
+        room = max(1, self.width() - self._label_width() - self.GAP * (len(indices) - 1)
+                   - det_w * sum(labelled))
+        plain = max(1, len(indices) - sum(labelled))
+        side = float(min(self.CHIP, max(self.MIN_CHIP, int(room / plain))))
         x = float(self._label_width())
         out = []
-        for index in range(view.candidate_count()):
-            if index == view.candidate_index():
-                continue
-            out.append((index, QRectF(x, 0.0, self.CHIP, self.CHIP)))
-            x += self.CHIP + self.GAP
+        for index, det in zip(indices, labelled):
+            width = max(side, float(det_w)) if det else side
+            out.append((index, QRectF(x, 0.0, width, side + (self.LABEL_H if det else 0))))
+            x += width + self.GAP
         return out
+
+    def image_rect(self, rect: QRectF, labelled: bool) -> QRectF:
+        """The crop's part of a chip (a detection's label is under it)."""
+        return QRectF(rect.x(), rect.y(), rect.width(),
+                      rect.height() - (self.LABEL_H if labelled else 0))
+
+    def label_at(self, pos) -> str:
+        """What the chip under ``pos`` is (its tooltip)."""
+        for index, rect in self.chips():
+            if rect.contains(QPointF(pos)):
+                return self._view.candidate_label(index) or CHIP_TIP
+        return CHIP_TIP
+
+    def event(self, event) -> bool:  # noqa: D102 - Qt override
+        if event.type() == QEvent.Type.ToolTip:
+            QToolTip.showText(event.globalPos(), self.label_at(event.pos()), self)
+            return True
+        return super().event(event)
 
     def mousePressEvent(self, event) -> None:  # noqa: D102 - Qt override
         event.accept()
@@ -505,15 +607,30 @@ class CandidateBar(QWidget):
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         h_img, w_img = pair.frame_hw[0]
         sx, sy = pixmap.width() / float(w_img), pixmap.height() / float(h_img)
+        small = self._small()
         for index, rect in self.chips():
+            label = view.candidate_label(index)
+            image = self.image_rect(rect, bool(label))
             window = pair.candidates[index]
-            src = view.crop_of(window, 1.0, aspect=1.0)
-            painter.fillRect(rect, BACKGROUND)
-            target = _fit(src, rect)
+            src = view.crop_of(window, 1.0, aspect=image.width() / max(1.0, image.height()))
+            painter.fillRect(image, BACKGROUND)
+            target = _fit(src, image)
             painter.drawPixmap(target, pixmap,
                                QRectF(src[0] * sx, src[1] * sy,
                                       (src[2] - src[0]) * sx, (src[3] - src[1]) * sy))
-            painter.setPen(QPen(GUESS_COLOUR, 1.0, Qt.PenStyle.DotLine))
+            # a region of the difference is dashed, a vanished detection dotted
+            style = Qt.PenStyle.DotLine if label else Qt.PenStyle.DashLine
+            painter.setPen(QPen(GUESS_COLOUR, 1.0, style))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(rect.adjusted(0.5, 0.5, -0.5, -0.5))
+            painter.drawRect(image.adjusted(0.5, 0.5, -0.5, -0.5))
+            if label:
+                # 「检测到消失的」 over the class name, under the crop
+                head, _space, name = label.partition(" ")
+                painter.setFont(small)
+                painter.setPen(self.palette().windowText().color())
+                painter.drawText(QRectF(rect.x() - 2, image.bottom() + 1, rect.width() + 4,
+                                        rect.bottom() - image.bottom() - 1),
+                                 int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop),
+                                 f"{head}\n{name}" if name else head)
+                painter.setFont(self.font())
         painter.end()
