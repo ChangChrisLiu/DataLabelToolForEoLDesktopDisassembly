@@ -1,0 +1,67 @@
+{
+ "fold": "F",
+ "desktops": [
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9,
+  10,
+  11,
+  12,
+  13,
+  14,
+  15,
+  16,
+  17,
+  20,
+  21
+ ],
+ "masks": 21872,
+ "steps": 21872,
+ "steps_per_epoch": 5468,
+ "epochs": 4,
+ "lr": 2e-05,
+ "epoch_mean_loss": [
+  0.7357039948885861,
+  0.6346833898407225,
+  0.6091789864194419,
+  0.59842432902386
+ ],
+ "train_s": 8853.7,
+ "chunks": 88,
+ "peak_alloc_gb_this_process": 13.07,
+ "checkpoint": "D:\\DataSet\\models\\weights\\sam2.1_hiera_large_tda_l6_F.pt",
+ "init": "D:\\DataSet\\models\\weights\\sam2.1_hiera_large.pt",
+ "config": "configs/sam2.1/sam2.1_hiera_l.yaml",
+ "gt": "D:\\DataSet\\.cache\\tmp\\l6\\gt\\gt_sam.pkl",
+ "recipe": {
+  "name": "v2",
+  "loose_frac": 0.5,
+  "loose_max": 0.25,
+  "wd": 0.01,
+  "warmup": 200,
+  "lr_floor": 0.1,
+  "clip": 0.1,
+  "crops_per_step": 4,
+  "max_targets": 8,
+  "rounds": 3,
+  "loss": [
+   20.0,
+   1.0,
+   1.0
+  ],
+  "ctx": [
+   1.2,
+   3.0
+  ],
+  "shift": 0.25,
+  "seed": 0,
+  "chunk_steps": 250,
+  "rng": "epoch order default_rng((seed, epoch)); sampler re-seeded default_rng((seed, 1000 + chunk)) per chunk"
+ },
+ "finished": "2026-10-25 00:31:48"
+}

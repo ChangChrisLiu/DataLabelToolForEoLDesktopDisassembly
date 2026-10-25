@@ -1,0 +1,37 @@
+{
+ "model": "rfdetr_small",
+ "set": "v2h",
+ "init": "D:\\DataSet\\.cache\\tmp\\l6\\runs\\v1h\\last_ema.pth",
+ "resolution": 640,
+ "recipe": {
+  "epochs": 30,
+  "batch_size": 8,
+  "grad_accum_steps": 2,
+  "lr": 0.0001,
+  "lr_encoder": 0.00015,
+  "weight_decay": 0.0001,
+  "use_ema": true,
+  "multi_scale": true,
+  "expanded_scales": true,
+  "num_workers": 4,
+  "seed": 0,
+  "tensorboard": false,
+  "wandb": false,
+  "mlflow": false,
+  "progress_bar": null,
+  "checkpoint_interval": 1000,
+  "run_test": false
+ },
+ "seconds": 7190.5,
+ "data": {
+  "init": "v1h",
+  "rule": "L4's all fold (L2 LS minus D13 scan, + L4's 920 verified tiles) minus D19's LS tiles",
+  "tiles": 5327,
+  "verified_tiles": 920,
+  "ls_tiles": 4407,
+  "sha256": "fc510750367eff2a5c40b1e1e1bb69f5ddfff808612a8465526b2241f1d1edf6",
+  "held_out_in_train": []
+ },
+ "finished": "2026-10-25 01:49:32",
+ "published": "D:\\DataSet\\models\\weights\\tda_det_rfdetr_small_l6_v2h.pth"
+}

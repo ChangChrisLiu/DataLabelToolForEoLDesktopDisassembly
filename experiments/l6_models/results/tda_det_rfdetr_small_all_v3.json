@@ -1,0 +1,174 @@
+{
+ "model": "rfdetr_small",
+ "file": "D:\\DataSet\\models\\weights\\tda_det_rfdetr_small_all_v3.pt",
+ "sha256": "e5162e5f52c0b92fc325d3b5d163420ff3be20af71dc2687f4bb28d89d41d736",
+ "bytes": 128438553,
+ "source_run": "D:\\DataSet\\.cache\\tmp\\l6\\runs\\v3",
+ "published_by": "experiments/l6_models/publish.py (a candidate; configs/detector.yaml is the controller's to change)",
+ "init_weights": {
+  "file": "D:\\DataSet\\models\\weights\\tda_det_rfdetr_small_all_v2.pt",
+  "sha256": "33d4c733f4b86f979f80b10f30f4bc38e64ac74f809dd7877240273ba216fb01",
+  "what": "the shipped v2 (L4), itself v1 (L3, COCO + L2's LS tiles) fine-tuned on L4's all fold"
+ },
+ "training": {
+  "desktops": "L2's LS tiles minus the LS scan tiles of D8/D10/D13/D19 (their verified frames replace the drafts) + the annotator's verified scan frames of all 20 verified desktops (D2-D17, D19-D21 Dell; D27 HP ProDesk 400 G1 SFF): boxes of the compiled visible masks, in_chassis, visible / occluded_partial / visible_tiny / too_small; each frame once",
+  "frames": {
+   "D2": 48,
+   "D3": 48,
+   "D4": 46,
+   "D5": 46,
+   "D6": 49,
+   "D7": 56,
+   "D8": 46,
+   "D9": 46,
+   "D10": 42,
+   "D11": 47,
+   "D12": 46,
+   "D13": 42,
+   "D14": 48,
+   "D15": 42,
+   "D16": 45,
+   "D17": 46,
+   "D19": 55,
+   "D20": 46,
+   "D21": 43,
+   "D27": 36
+  },
+  "ls_tiles": 4191,
+  "verified_tiles": 3764,
+  "tiles": 7955,
+  "tiles_sha256": "6df4df6ae0e887d6b81918104b8abd72efadfc8cd641fbe30f9c4325deaa0a32",
+  "verified_tiles_sha256": "c9e8b3f9bae3c350f1a975d94d005f52e87db916cc3dc4fbd56800d7f55153a7",
+  "tiles_hash_rule": "sha256 over tiles sorted by name of (name, sha256(image), sha256(label))",
+  "data_digest": {
+   "coco_export": "D:\\DataSet\\.cache\\tmp\\l6\\coco\\coco_scan_verified.json",
+   "coco_sha256": "6ed4fd007aa141674f4421b494d655af5ac365d281ceb9c9baa6d0df9a26810e",
+   "coco_command": "tda.cli export-coco --db D:\\DataSet\\.cache\\tmp\\l6\\export_work.sqlite --desktops 2-17,19-21,27 --view scan --no-hidden --out D:\\DataSet\\.cache\\tmp\\l6\\coco\\coco_scan_verified.json",
+   "ground_truth": "D:\\DataSet\\.cache\\tmp\\l6\\gt\\gt_det.json",
+   "ground_truth_sha256": "a63386f512315354d3c78ea71bbf5c131f32757acb7f807b46e96a84646b72eb",
+   "db_snapshot": "D:\\DataSet\\.cache\\tmp\\l6\\live_copy.sqlite (backup-API copy of annotations/tda.sqlite, 2026-10-24 21:33)"
+  },
+  "tile_manifest": "D:\\DataSet\\.cache\\tmp\\l6\\dataset\\manifest.json",
+  "recipe": {
+   "epochs": 30,
+   "batch_size": 8,
+   "grad_accum_steps": 2,
+   "lr": 0.0001,
+   "lr_encoder": 0.00015,
+   "weight_decay": 0.0001,
+   "use_ema": true,
+   "multi_scale": true,
+   "expanded_scales": true,
+   "num_workers": 4,
+   "seed": 0,
+   "tensorboard": false,
+   "wandb": false,
+   "mlflow": false,
+   "progress_bar": null,
+   "checkpoint_interval": 1000,
+   "run_test": false
+  },
+  "resolution": 640,
+  "seconds": 5376.1
+ },
+ "classes": [
+  "screw",
+  "connector",
+  "ram_latch",
+  "psu_latch",
+  "cpu_socket_lever",
+  "drive_latch",
+  "ram_module",
+  "cpu"
+ ],
+ "inference": {
+  "tile": 640,
+  "stride": 512,
+  "pad_value": 114,
+  "work_scale": {
+   "scan": 1.0,
+   "oak1": 1.0,
+   "oak2": 1.0,
+   "rs": 2.0
+  },
+  "roi": "the pose segment's stored ROI (D27 was tiled at the app's proposed ROI: it has none stored)",
+  "merge": "drop cut-off boxes contained >= 60 % in a whole one, class-wise NMS 0.5",
+  "conf": 0.05,
+  "merge_floor": 0.05,
+  "guess_classes_recommended": [
+   "screw",
+   "connector",
+   "ram_module",
+   "psu_latch",
+   "cpu"
+  ],
+  "precision": "fp16"
+ },
+ "evaluation": {
+  "report": "experiments/l6_models/REPORT.md",
+  "gate": "decision_rule.txt gate D, fold F (v2h -> 18 desktops) held out on D19 and D27; this all-desktop model has no held-out score of its own",
+  "verdict": "FAIL",
+  "D1": {
+   "pass": false,
+   "worse_on_D19": [
+    "screw"
+   ]
+  },
+  "D2": {
+   "pass": true,
+   "better_overall": [
+    "connector",
+    "ram_module"
+   ]
+  },
+  "D3_pass": false,
+  "extra_classes": {
+   "ram_latch": {
+    "D19": {
+     "n_gt": 326,
+     "recall": 90.8
+    },
+    "D27": {
+     "n_gt": 140,
+     "recall": 99.3
+    },
+    "events": {
+     "n": 0
+    },
+    "arm": false
+   },
+   "drive_latch": {
+    "D19": {
+     "n_gt": 13,
+     "recall": 100.0
+    },
+    "D27": {
+     "n_gt": 0,
+     "recall": null
+    },
+    "events": {
+     "n": 0
+    },
+    "arm": false
+   },
+   "cpu_socket_lever": {
+    "D19": {
+     "n_gt": 41,
+     "recall": 82.9
+    },
+    "D27": {
+     "n_gt": 35,
+     "recall": 94.3
+    },
+    "events": {
+     "n": 0
+    },
+    "arm": false
+   }
+  }
+ },
+ "source_commit": "65f6ef7e0a2426c12734638e569b4c48f28d9d66",
+ "source_dirty": false,
+ "date": "2026-10-25 05:41:02",
+ "licence": "Apache-2.0 (Roboflow RF-DETR)"
+}

@@ -1,0 +1,133 @@
+{
+ "detector": {
+  "v2": {
+   "model": "D:\\DataSet\\models\\weights\\tda_det_rfdetr_small_all_v2.pt",
+   "config": "D:\\DataSet\\.cache\\tmp\\l6\\configs\\detector_v2.yaml",
+   "described": "rfdetr model D:\\DataSet\\models\\weights\\tda_det_rfdetr_small_all_v2.pt (sha1 5bbee8459dce, RFDETRSmall at 640 px, classes ['screw', 'connector', 'ram_latch', 'psu_latch', 'cpu_socket_lever', 'drive_latch', 'ram_module', 'cpu'], manifest tda_det_rfdetr_small_all_v2.json agrees), cuda:0 fp16, merge floor 0.05, loaded in 11.6 s",
+   "load_s": 11.7,
+   "frames": 91,
+   "detect_ms": {
+    "median": 25.3,
+    "p90": 28.3
+   },
+   "process_cold_ms": {
+    "median": 70.1,
+    "p90": 124.6
+   },
+   "cache_warm_ms": {
+    "median": 0.1,
+    "p90": 0.1,
+    "n": 91
+   },
+   "stored_dets_per_frame": 26.1,
+   "cache_bytes": {
+    "D19": 90588,
+    "D27": 63737
+   },
+   "peak_cuda_mb": 436,
+   "model_bytes": 128438745
+  },
+  "v3": {
+   "model": "D:\\DataSet\\models\\weights\\tda_det_rfdetr_small_all_v3.pt",
+   "config": "D:\\DataSet\\.cache\\tmp\\l6\\configs\\detector_v3.yaml",
+   "described": "rfdetr model D:\\DataSet\\models\\weights\\tda_det_rfdetr_small_all_v3.pt (sha1 9e4a99c619cf, RFDETRSmall at 640 px, classes ['screw', 'connector', 'ram_latch', 'psu_latch', 'cpu_socket_lever', 'drive_latch', 'ram_module', 'cpu'], manifest tda_det_rfdetr_small_all_v3.json agrees), cuda:0 fp16, merge floor 0.05, loaded in 0.7 s",
+   "load_s": 0.8,
+   "frames": 91,
+   "detect_ms": {
+    "median": 24.1,
+    "p90": 27.6
+   },
+   "process_cold_ms": {
+    "median": 68.5,
+    "p90": 122.0
+   },
+   "cache_warm_ms": {
+    "median": 0.1,
+    "p90": 0.1,
+    "n": 91
+   },
+   "stored_dets_per_frame": 23.9,
+   "cache_bytes": {
+    "D19": 96236,
+    "D27": 46669
+   },
+   "peak_cuda_mb": 437,
+   "model_bytes": 128438553
+  },
+  "F": {
+   "model": "D:\\DataSet\\models\\weights\\tda_det_rfdetr_small_l6_F.pth",
+   "config": "D:\\DataSet\\.cache\\tmp\\l6\\configs\\detector_F.yaml",
+   "described": "rfdetr model D:\\DataSet\\models\\weights\\tda_det_rfdetr_small_l6_F.pth (sha1 f6b28f0ff5fa, RFDETRSmall at 640 px, classes ['screw', 'connector', 'ram_latch', 'psu_latch', 'cpu_socket_lever', 'drive_latch', 'ram_module', 'cpu'], no manifest), cuda:0 fp16, merge floor 0.05, loaded in 0.5 s",
+   "load_s": 0.6,
+   "frames": 91,
+   "detect_ms": {
+    "median": 24.2,
+    "p90": 28.0
+   },
+   "process_cold_ms": {
+    "median": 75.0,
+    "p90": 112.9
+   },
+   "cache_warm_ms": {
+    "median": 0.1,
+    "p90": 0.2,
+    "n": 91
+   },
+   "stored_dets_per_frame": 39.0,
+   "cache_bytes": {
+    "D19": 157588,
+    "D27": 58375
+   },
+   "peak_cuda_mb": 499,
+   "model_bytes": 128438553
+  }
+ },
+ "sam": {
+  "shipped": {
+   "head": "D:\\DataSet\\models\\weights\\sam2.1_tda_head_f5_v2.pt",
+   "head_bytes": 16410024,
+   "set_image_ms": {
+    "median": 30.2,
+    "p90": 32.9
+   },
+   "decode_box_ms": {
+    "median": 8.9,
+    "p90": 10.4
+   },
+   "decode_point_ms": {
+    "median": 8.4,
+    "p90": 10.0
+   },
+   "answered_by": {
+    "box:tuned": 200,
+    "point:tuned": 150,
+    "point:stock": 50
+   },
+   "masks": 200
+  },
+  "v3": {
+   "head": "D:\\DataSet\\models\\weights\\sam2.1_tda_head_v3.pt",
+   "head_bytes": 16409519,
+   "set_image_ms": {
+    "median": 30.0,
+    "p90": 32.7
+   },
+   "decode_box_ms": {
+    "median": 9.0,
+    "p90": 11.5
+   },
+   "decode_point_ms": {
+    "median": 8.4,
+    "p90": 10.7
+   },
+   "answered_by": {
+    "box:tuned": 200,
+    "point:tuned": 150,
+    "point:stock": 50
+   },
+   "masks": 200
+  },
+  "peak_cuda_gb_both_services": 2.3
+ },
+ "date": "2026-10-25 05:43:01"
+}

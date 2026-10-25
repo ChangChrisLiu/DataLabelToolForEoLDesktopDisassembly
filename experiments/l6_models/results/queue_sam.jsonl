@@ -1,0 +1,14 @@
+{"event": "start", "job": "SAM train F", "attempt": 1, "cmd": ["experiments.l6_models.train_sam", "--fold", "F"], "time": "2026-10-24 22:03:25"}
+{"event": "end", "job": "SAM train F", "attempt": 1, "rc": 0, "seconds": 8905, "time": "2026-10-25 00:31:50"}
+{"event": "start", "job": "SAM eval F", "attempt": 1, "cmd": ["experiments.l6_models.eval_sam", "--out", "heldout"], "time": "2026-10-25 00:31:50"}
+{"event": "end", "job": "SAM eval F", "attempt": 1, "rc": 1, "seconds": 3, "time": "2026-10-25 00:31:53"}
+{"event": "failed", "job": "SAM eval F", "rc": 1, "log": "D:\\DataSet\\.cache\\tmp\\l6\\logs\\SAM_eval_F_1.log", "time": "2026-10-25 00:31:53"}
+{"event": "start", "job": "SAM train F", "attempt": 1, "cmd": ["experiments.l6_models.train_sam", "--fold", "F"], "time": "2026-10-25 00:32:10"}
+{"event": "end", "job": "SAM train F", "attempt": 1, "rc": 0, "seconds": 0, "time": "2026-10-25 00:32:11"}
+{"event": "start", "job": "SAM eval F", "attempt": 1, "cmd": ["experiments.l6_models.eval_sam", "--out", "heldout"], "time": "2026-10-25 00:32:11"}
+{"event": "end", "job": "SAM eval F", "attempt": 1, "rc": 0, "seconds": 1189, "time": "2026-10-25 00:52:00"}
+{"event": "start", "job": "SAM gate", "attempt": 1, "cmd": ["experiments.l6_models.gate_sam"], "time": "2026-10-25 00:52:00"}
+{"event": "end", "job": "SAM gate", "attempt": 1, "rc": 0, "seconds": 2, "time": "2026-10-25 00:52:02"}
+{"event": "start", "job": "SAM train v3", "attempt": 1, "cmd": ["experiments.l6_models.train_sam", "--fold", "v3"], "time": "2026-10-25 00:52:02"}
+{"event": "end", "job": "SAM train v3", "attempt": 1, "rc": 0, "seconds": 9560, "time": "2026-10-25 03:31:22"}
+{"event": "done", "time": "2026-10-25 03:31:22"}
