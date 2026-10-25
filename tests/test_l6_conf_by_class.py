@@ -302,3 +302,18 @@ def test_a_vanished_screw_is_a_chip_only_at_its_floor(locator, tmp_path, conf, o
     assert locator._locator_det.conf_for("screw") == pytest.approx(0.15)
     assert locator.locator_det_requests == 1
     assert (GONE in locator.locator.pair().candidates) is offered
+
+
+def test_a_screw_still_seen_in_r_under_its_floor_has_not_vanished(locator, tmp_path):
+    """Round 4 (N1): frame r - 1 is read at the class's floor, frame r at the base conf.
+
+    A screw at 0.20 in r - 1 that the detector still sees at 0.10 in r is in
+    its hole: no chip.  Judged at the floor in both frames it looked gone --
+    the reviewer's count on D19 / D27 was 4 wrong chips against 1.
+    """
+    _arm_locator(locator, tmp_path, {12: [Det(GONE, "screw", 0.20)],
+                                     13: [Det((5.5, 5.0, 9.5, 9.0), "screw", 0.10)]}, FLOORS)
+    select(locator, SCREW)
+    _settle(locator)
+    assert locator.locator_det_requests == 1
+    assert GONE not in locator.locator.pair().candidates

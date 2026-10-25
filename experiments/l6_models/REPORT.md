@@ -3,15 +3,17 @@
 **中文摘要**：按事先写好的门槛，检测器 v3 和 SAM 头 v3 **都不通过**，`configs/` 没改。
 
 - **检测器**：留出评估的模型 F 在接口（D19 召回 34.7→57.1 %，D27 28.0→50.0 %）和内存条上大幅变好。但螺丝在 conf 0.05 下误检暴增：D19 精度 47.4→31.5 %，多出的低分框落在电源线束上。D19 上螺丝的「拆下猜测」rank-1 也从 6/7 掉到 4/7。所以不通过（D1、D3）。
-- **SAM**：新头在 D19 上没有一组变差，四组整体变好（全体 IoU：框 +0.021、单点 +0.032、宽框 +0.041）。唯一的失败是 HP（D27）接口只给单点：−0.034（13 个实例，CI 含 0），因此 S3 不通过。
+- **SAM**（以下留出数字都是折模型 S_F 的；上线的 S_v3 用全部 20 台训练，含 D19、D27）：新头在 D19 上没有一格超出 −0.01 的容差（最差：螺丝/框 −0.0065），四组整体变好（全体 IoU：框 +0.021、单点 +0.032、宽框 +0.041）。唯一的失败是 HP（D27）接口只给单点：−0.034（13 个实例，CI 含 0），因此 S3 不通过。
 - 两个候选都已训练好、带 manifest，app 的加载器接受它们。推理耗时与现役完全相同。整个过程用户没有打开过 app，零等待。
 
 (Report text written by the controller from the worker's hand-back of 2026-10-25; the worker's harness refused `.md` writes. Section 0a below holds the controller's rulings.)
 
 ## 0a. Controller rulings (2026-10-25)
 
-- **SAM head v3**: gate S failed only on S3 (D27 connector single clicks, −0.034 with a CI that includes 0, 13 instances) while every D19 cell and four of five groups overall improved. The controller overrules S3 as in L5 and ships the head after round 2's check (below).
-- **Detector v3**: not shipped as measured. Round 2 measures a per-class confidence floor for screws (the low-score boxes on cable bundles are the only loss) and the guess rank-1 per class under it; ship only if screws recover their comparator's rank-1 on both held-out desktops while connectors keep their gain.
+- **SAM head v3**: gate S failed only on S3 (D27 connector single clicks, −0.034 with a CI that includes 0, 13 instances). On D19 no cell is beyond the −0.01 tolerance (the worst is screw/box, −0.0065), and four of five groups improved overall. The controller overrules S3 as in L5 and ships the head.
+- **Detector v3**: not shipped as measured. Round 2 measures a per-class confidence floor for screws (the low-score boxes on cable bundles are the only loss) and the guess rank-1 per class under it. Round 3 ships v3 with screws at 0.15 (see Round 3).
+- **Whose numbers these are.** Every held-out number in this report belongs to the fold models: F (detector: v2h fine-tuned on the 18 other desktops) and S_F (SAM: 18 desktops). The shipped v3 and S_v3 were trained on all 20 desktops, D19 and D27 included, and have no held-out score of their own. Carrying F's 0.15 screw floor over to v3 is an assumption, not a measurement.
+- **The comparison frame.** What the annotator gets is v3 with screws at 0.15 in place of the shipped v2 at 0.05; round 2's comparators (v2h on D19, the shipped v2 on D27) are at 0.05. At an equal 0.15 floor the comparators' screws are 15/15 against F's 14/15, so the whole held-out gain of the guess is connectors (+7: 11 vs 4) and ram_module (+3: 4 vs 1); all 48 events 32 vs 23.
 - **C:** the NVIDIA JIT cache written under `%APPDATA%\NVIDIA\ComputeCache` during the first L6 processes (317 MB new) was removed by the controller together with the folder (driver cache, no CUDA process running); every later L6 process wrote to `D:\DataSet\.cache\nv_compute`.
 
 ## 0. Gate and verdict
@@ -206,12 +208,15 @@ Per frame (stored = the detection cache, which holds every box ≥ 0.05 whatever
 
 ## Round 3 (2026-10-25): shipping v3 with screws at 0.15 — `conf_by_class`
 
-**Ruling (controller).** Detector v3 ships with a screw floor of 0.15, overruling gate D:
+**Ruling (controller).** Detector v3 ships with a screw floor of 0.15, overruling gate D. The numbers behind it are F's at 0.15 against the comparators at 0.05:
 - pooled screw rank-1 14/15, equal to the comparators';
 - all 48 removal events 32 vs 22; connectors 11 vs 4; ram_module 4 vs 1;
 - the one D27 event lost is a screw scored 0.078.
 
-SAM head v3 ships too (S3 overruled, as L5's gate was).
+Three qualifications, recorded with the ruling:
+- **Whose numbers.** They are the fold model F's (held out D19 and D27). The shipped v3 was trained on all 20 desktops, D19 and D27 included; that its screws behave like F's at 0.15 is an assumption carried over, not measured.
+- **The comparison frame.** The change the annotator sees is v3 at 0.15 in place of v2 at 0.05, and the comparators above are at 0.05. At an equal 0.15 floor the comparators' screws are 15/15 (v2h 7/7 on D19, v2 8/8 on D27) against F's 14/15, and all 48 events are 32 vs 23. So the whole held-out gain of the guess is connectors (+7) and ram_module (+3); screws are one event behind.
+- **SAM.** S_v3 ships too (S3 overruled, as L5's gate was). Its held-out numbers are S_F's (18 desktops); S_v3 was trained on all 20. On D19 no cell of S_F is beyond the −0.01 tolerance (worst: screw/box, −0.0065).
 
 ### The change (commit 22b0ff9)
 
@@ -299,3 +304,24 @@ head: D:/DataSet/models/weights/sam2.1_tda_head_v3.pt
 ### C: (round 3)
 
 `%APPDATA%\NVIDIA\` is still empty after round 3's GPU runs (`perf_app`, the perf tests, the full suite). Every run wrote to `D:\DataSet\.cache\nv_compute`.
+
+## Round 4 (2026-10-25): the review's notes
+
+Review: `D:\DataSet\.superpowers\sdd\2026-09-20-user-trial\L6-review.md`, verdict MERGE, both models ship.
+
+- **N1, the U28 chips.** A vanished detection is now one present in frame r−1 at or above the class's floor and absent from frame r **judged at the base `conf`** (0.05), not at the floor.
+  - Code: `tda/ui/locator_dets.vanished(..., after_conf=)`; `LocatorDetections` passes its base `conf` for frame r. The default stays one threshold for both frames, as U28 had it.
+  - Why: judged at the floor in both frames, a screw that only dipped under 0.15 in r looked gone. The reviewer counted on D19 / D27: first chip right 12/15 with 4 wrong chips that way, against 13/15 with 1 wrong chip the asymmetric way.
+  - Tests: U28's rule test (`tests/test_u28_round3.py`) now pins both forms. A new window test (`tests/test_l6_conf_by_class.py::test_a_screw_still_seen_in_r_under_its_floor_has_not_vanished`): a 0.20 screw in r−1, still seen at 0.10 in r, gives no chip.
+- **Wording.** Section 0a and the round-3 ruling now say:
+  - the held-out numbers belong to F / S_F; v3 and S_v3 were trained on all 20 desktops, D19 and D27 included;
+  - carrying the 0.15 floor over to v3 is an assumption;
+  - on D19 no SAM cell is beyond the −0.01 tolerance (worst: screw/box, −0.0065), rather than "every D19 cell improved";
+  - the comparison frame: v3 at 0.15 against the shipped v2 at 0.05. At an equal 0.15 the comparators' screws are 15/15 (v2h 7/7, v2 8/8) against F's 14/15, all 48 events 32 vs 23, so the whole gain is connectors +7 and ram_module +3. I re-measured the 15/15 here with `round2_floor.floored` on the comparators' cached detections.
+- **Spec.**
+  - §4.5 gains the paragraph 「小件检测器 v3 与按类下限（v1.30，L6）」: the data, `conf_by_class`, the shipped file, F's numbers with their frame, the asymmetric chip rule, and D27's missing ROI.
+  - §5.1 gains the bullet 「解码头 v3（v1.30，L6）」: the data, the shipped head, S_F's numbers, the D27 connector exception.
+  - v1.30 goes on top of §14. The docs tests pinning the newest entries (U14, U19–U28) now accept v1.30 above them, and each slice is one longer. `tests/test_l6_docs.py` pins the new text.
+- **Configs** (live values unchanged; the ship commit flips them):
+  - `configs/detector.yaml` step 1 now reads "conf >= `conf` or the class's own floor (`conf_by_class`, below)".
+  - `configs/sam.yaml`'s header carries L6's numbers, the comment above `head:` describes the v3 head, and a commented `# head: …sam2.1_tda_head_f5_v2.pt` line is the fallback.

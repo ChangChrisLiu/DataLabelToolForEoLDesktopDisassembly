@@ -18,7 +18,26 @@
 # -0.021 IoU on D5 (-0.012 ... -0.021 over L5's models), in a cell where
 # neither head is usable (IoU 0.12-0.25).  The controller's ruling (REPORT.md
 # section 0) keeps both heads -- one image encoder, one embedding -- and routes
-# each prompt so that cell cannot get worse:
+# each prompt so that cell cannot get worse (below).
+#
+# L6 (experiments/l6_models/REPORT.md) retrained the head with L5's recipe v2 on
+# every verified scanner frame: 24 359 visible masks of 923 frames, 20 desktops
+# (D2-D17, D19-D21 Dell, D27 HP).  Held out on D19 and D27 -- these numbers are
+# the fold model's, trained on the other 18 (the shipped v3 head saw all 20) --
+# with the routing below, f5_v2 -> L6, IoU of the candidate the app shows, all
+# 2 487 masks:
+#
+#   box 0.742 -> 0.763   single click 0.471 -> 0.504   point+box 0.753 -> 0.775
+#   loose (diff-map) box 0.664 -> 0.705   one corrective click 0.791 -> 0.816
+#   point/box averaged, both desktops: small +0.017, screws +0.018, latches
+#   +0.014, large parts +0.061 (each CI above 0); connectors +0.015 (CI from
+#   -0.008)
+#   set_image 30.2 -> 30.0 ms, decode 8.9 -> 9.0 ms
+#
+# No D19 cell is beyond the -0.01 tolerance (the worst: screws, box, -0.0065).
+# The one loss is the HP's connectors on a single click, -0.034 (13 instances,
+# a CI that includes 0); the controller shipped it over that, as over L5's.
+# The routing is unchanged:
 #
 #   a box (detector, difference map, a drag, point+box)    -> box_prompts
 #   no box, the part is of a `stock_point_classes` class   -> point_only.stock_point_classes
@@ -36,16 +55,19 @@
 
 enabled: true
 
-# The tuned head: the 141 tensors of sam2.1_hiera_large_tda_f5_v2.pt that
-# differ from sam2.1_hiera_large.pt (4.09 M parameters, 16 MB), exported by
-# experiments/l5_sam/export_head.py with its manifest (.json) beside it.  It is
-# a delta on the stock checkpoint SAM loads -- the one in the weights_dir of the
-# paths the app was started with (paths.yaml / --paths) -- and refuses any
-# other one by its fingerprint.  An absolute path, as here, is used as it is; a
-# bare file name (or any relative path) is looked for in that same weights_dir,
-# so the head follows a --paths that moves the weights.  The weights are not
-# in git.
+# The tuned head: L6's v3 (sam2.1_tda_head_v3.pt), the 141 tensors of
+# sam2.1_hiera_large_tda_l6_v3.pt that differ from sam2.1_hiera_large.pt
+# (4.09 M parameters, 16 MB), exported by experiments/l6_models/publish.py with
+# its manifest (.json) beside it.  L5's f5_v2 head (the 141 tensors of
+# sam2.1_hiera_large_tda_f5_v2.pt, experiments/l5_sam/export_head.py) is the
+# commented line below: one swap away.  A head is a delta on the stock
+# checkpoint SAM loads -- the one in the weights_dir of the paths the app was
+# started with (paths.yaml / --paths) -- and refuses any other one by its
+# fingerprint.  An absolute path, as here, is used as it is; a bare file name
+# (or any relative path) is looked for in that same weights_dir, so the head
+# follows a --paths that moves the weights.  The weights are not in git.
 head: D:/DataSet/models/weights/sam2.1_tda_head_f5_v2.pt
+# head: D:/DataSet/models/weights/sam2.1_tda_head_f5_v2.pt
 
 route:
   box_prompts: tuned

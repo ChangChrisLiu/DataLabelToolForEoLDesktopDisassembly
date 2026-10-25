@@ -80,9 +80,9 @@ def test_the_spec_has_the_paragraph_after_u23_and_v1_28_on_top():
     assert "随时" not in para                                          # round 2, N10
     changes = body.split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
-    # on top when it landed; U29's v1.29 has gone above it since
-    assert entries[0].startswith(("- **v1.28", "- **v1.29"))
-    [first] = [e for e in entries[:2] if e.startswith("- **v1.28")]
+    # on top when it landed; U29's v1.29 and L6's v1.30 has gone above it since
+    assert entries[0].startswith(("- **v1.28", "- **v1.29", "- **v1.30"))
+    [first] = [e for e in entries[:3] if e.startswith("- **v1.28")]
     assert first.startswith("- **v1.28（2026-10-24）**：**拆前 / 拆后**（U28，§4.5）")
     for needed in ("第一次标", "`removed` / `displaced`", "级联", "1.6 倍", "1/6", "随 … 一起拆走",
                    "扫描仪视角", "「拆前/拆后」按钮", "无快捷键", "`locator/open` 不变",

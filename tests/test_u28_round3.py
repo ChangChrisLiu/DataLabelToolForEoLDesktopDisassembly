@@ -2,7 +2,9 @@
 
 * the rule: a detection of the part's class in frame r-1 with no detection of
   that class overlapping it in r; best first, at most two; a class the
-  detector does not know gets none;
+  detector does not know gets none; with a class floor (L6, ``conf_by_class``)
+  r-1 is read at the floor and r at the base conf
+  (``tests/test_l6_conf_by_class.py`` has the window);
 * the order: diff #1, the detections, diff #2 / #3 -- never a detection first
   (with no region of the difference the frames stay whole and the detections
   are only offered);
@@ -75,6 +77,12 @@ def test_a_detection_that_went_and_one_that_stayed():
     assert vanished(before, after, "cpu", 0.05) == []
     many = [det((i * 10, 0, i * 10 + 4, 4), conf=0.5 + i / 100) for i in range(5)]
     assert len(vanished(many, [], "screw", 0.05)) == 2
+    # one threshold for both frames unless r is given its own (L6 round 4)
+    assert vanished(before, after, "screw", 0.05, after_conf=0.05) == found
+    dipped = [det((20.5, 20, 24.5, 24), conf=0.10)]                   # still seen in r
+    assert det((20, 20, 24, 24), conf=0.7) in vanished(before, dipped, "screw", 0.15)
+    assert det((20, 20, 24, 24), conf=0.7) not in vanished(before, dipped, "screw", 0.15,
+                                                            after_conf=0.05)
 
 
 def test_the_order_is_diff_first_then_the_detections():
