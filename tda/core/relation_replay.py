@@ -78,9 +78,10 @@ from tda.core.model import InstanceRec, is_cage_latch, is_context, is_extra, is_
 from tda.core.reclass_replay import CLEARED_COLUMNS, POINTER_COLUMNS, RECLASS_TO, follow
 
 __all__ = [
-    "FIELDS", "OP_RELATION_FIX", "OP_REPLAY_RELATIONS", "OP_VIEW", "RelationInputs",
-    "RelationReplay", "fix_rows", "locate_part", "record_relation_fixes", "relation_changes",
-    "relation_inputs", "replay_relations", "value_of", "with_value",
+    "FIELDS", "OP_RELATION_FIX", "OP_REPLAY_RELATIONS", "OP_VIEW", "RETIRES", "RelationInputs",
+    "RelationReplay", "fix_rows", "locate_part", "record_captive_turns",
+    "record_relation_fixes", "relation_changes", "relation_inputs", "replay_relations",
+    "value_of", "with_value",
 ]
 
 #: ``op_log.kind`` of one field set in Steps (or adopted, ``adopt-relations``).
@@ -218,7 +219,9 @@ def record_relation_fixes(db: Db, desktop: int, before: Mapping[str, InstanceRec
                           ) -> list[tuple[str, str, object, object]]:
     """Log one :data:`OP_RELATION_FIX` row per change; joins the caller's transaction.
 
-    Returns :func:`relation_changes` -- what was logged.
+    A screw whose ``captive`` this write flips also gets
+    :func:`record_captive_turns` for the captive-bound fields it leaves alone.
+    Returns :func:`relation_changes` -- the changes logged.
     """
     changes = relation_changes(before, after)
     at = now_iso()
@@ -226,7 +229,86 @@ def record_relation_fixes(db: Db, desktop: int, before: Mapping[str, InstanceRec
     for key, name, old, new in changes:
         payload, inverse = fix_rows(desktop, after[key], name, old, new, by, at, parts)
         db.log_op(int(desktop), OP_VIEW, OP_RELATION_FIX, payload, inverse, str(by))
+    record_captive_turns(db, desktop, before, after, by, at, parts)
     return changes
+
+
+#: A :data:`OP_RELATION_FIX` row's list of the earlier rows of the same part
+#: and field it retires (task U29, U27 R3-N1).
+RETIRES = "retires"
+
+
+def _captive(rec: InstanceRec) -> bool:
+    return bool((rec.attrs or {}).get("captive"))
+
+
+def _same_part(payload: dict, key: str, rec: InstanceRec) -> bool:
+    """Is a fix row about this part -- under its key, or by its raw name?"""
+    if str(payload.get("key") or "") == key:
+        return True
+    name = _norm(payload.get("raw_name"))
+    return bool(name) and payload.get("cls") == rec.cls and _carries(rec, name)
+
+
+def record_captive_turns(db: Db, desktop: int, before: Mapping[str, InstanceRec],
+                         after: Mapping[str, InstanceRec], by: str,
+                         at: Optional[str] = None,
+                         parts: Optional[Mapping[str, InstanceRec]] = None) -> list[tuple]:
+    """A screw's ``captive`` flipped: settle its captive-bound fixes the flip did not rewrite.
+
+    U27 R3-N1. ``parent`` / ``attached`` fixes record the ``captive`` they were
+    set under (round 2, B1) and are "captive differs" when the screw is the
+    other kind at a re-import. A flip writes whichever of the two it changes,
+    under the new ``captive`` -- but 「其实拧下来了」 keeps ``parent`` (inert, U14),
+    so the ``parent`` fix made while it was captive stayed the latest word and
+    every forced re-import printed it as not matched, for ever, over the right
+    result. So, for each :data:`CAPTIVE_BOUND` field the write leaves as it was
+    whose latest fix (by key, or by the screw's raw name) was set under the
+    other ``captive``:
+
+    * flipped **out of** captive -- a row that **retires** it (``retires`` =
+      the ids of the part's fixes of that field so far): the field's value
+      only meant "rides out with" on a captive screw, so no fix of it is in
+      force any more and the importer's value stands; the replay lists it
+      under ``retired`` and prints nothing;
+    * flipped **into** captive -- a row that restates the value the screw kept
+      under the new ``captive``, so the part it rides out with is replayed.
+
+    Joins the caller's transaction (the Apply's, or ``Shift+T``'s and its
+    undo / redo, which write through the same Apply). One query when a screw
+    flipped; none otherwise. Returns ``(key, field, retired ids)``, ``[]`` for
+    a restatement.
+    """
+    flipped = [key for key in sorted(set(before) & set(after))
+               if after[key].cls == SCREW and before[key].cls == SCREW
+               and _captive(before[key]) != _captive(after[key])]
+    if not flipped:
+        return []
+    at = at or now_iso()
+    parts = parts or {**before, **after}
+    rows = sorted(db.ops_of_kind(int(desktop), OP_RELATION_FIX), key=lambda op: int(op["id"]))
+    out: list[tuple] = []
+    for key in flipped:
+        rec, now = after[key], _captive(after[key])
+        for name in CAPTIVE_BOUND:
+            if value_of(before[key], name) != value_of(rec, name):
+                continue                        # written just now, under the new captive
+            mine = [op for op in rows if (op.get("payload") or {}).get("field") == name
+                    and _same_part(op.get("payload") or {}, key, rec)]
+            if not mine:
+                continue
+            last = mine[-1].get("payload") or {}
+            if "captive" not in last or bool(last["captive"]) == now:
+                continue
+            value = value_of(rec, name)
+            payload, inverse = fix_rows(desktop, rec, name, value, value, by, at, parts)
+            retired: list[int] = []
+            if not now:
+                retired = [int(op["id"]) for op in mine]
+                payload[RETIRES] = retired
+            db.log_op(int(desktop), OP_VIEW, OP_RELATION_FIX, payload, inverse, str(by))
+            out.append((key, name, retired))
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -253,13 +335,17 @@ class RelationReplay:
     unmatched: list[dict] = field(default_factory=list)
     inverse: list[dict] = field(default_factory=list)
     superseded: list[dict] = field(default_factory=list)
+    #: Fields whose latest fix is a retirement (task U29): a screw's flip out of
+    #: captive retired the ``parent`` set while it was captive. Not printed.
+    retired: list[dict] = field(default_factory=list)
 
     def __bool__(self) -> bool:
-        return bool(self.kept or self.agrees or self.unmatched or self.superseded)
+        return bool(self.kept or self.agrees or self.unmatched or self.superseded
+                    or self.retired)
 
     def payload(self) -> dict:
         return {"kept": self.kept, "agrees": self.agrees, "unmatched": self.unmatched,
-                "superseded": self.superseded}
+                "superseded": self.superseded, "retired": self.retired}
 
     def changed(self) -> set[tuple[str, str]]:
         """``(key, field)`` of every field the replay wrote over the importer's value."""
@@ -572,6 +658,11 @@ def replay_relations(ops: list[dict], fresh: Mapping[str, InstanceRec],
                 older.setdefault(k, []).append(int(op["id"]))
         report.superseded.extend({"key": k, "field": name, "ops": ids, "by": int(last["id"])}
                                  for k, ids in sorted(older.items()))
+        if payload.get(RETIRES) is not None:
+            # a flip out of captive retired the field's fixes (U29, U27 R3-N1):
+            # none is in force, the importer's value stands, nothing to say
+            report.retired.append(entry)
+            continue
         if kind == "merged":
             # 合并到… keeps the record of the part merged into: a field set on
             # the merged-away one went with it (the value's pointers follow)
