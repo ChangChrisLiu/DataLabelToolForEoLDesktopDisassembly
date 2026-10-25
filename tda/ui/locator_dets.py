@@ -24,11 +24,20 @@ difference finds nothing).  So:
   one; the answer comes back on the GUI thread with the request's token, and
   the window drops it if the dock has moved on.  Any failure is an empty
   answer, said nowhere but the log.
+
+Task U29 (U28 review N14 / N18): the cache file is read again whenever the
+window's own pass rewrote it, before anything is computed; with nothing
+queued the worker lets go of its decoded frames and the model's GPU cache;
+and its own model is built only once the window's detector has gone idle for
+the first time -- before that the build held the ``heavy`` lock in the way of
+SAM's import and the window's own detector.
 """
 from __future__ import annotations
 
 import logging
+import os
 import threading
+import time
 from typing import Any, Callable, Optional, Sequence
 
 from PySide6.QtCore import QObject, Qt, Signal
@@ -53,6 +62,12 @@ DET_NOTE = "检测到一个 {cls} 消失了"
 VIEW = "scan"
 #: How often an idle worker asks whether its window has closed.
 IDLE_CHECK_S = 1.0
+#: How often a job waiting for its turn to build the model asks again (U29, N18).
+TURN_POLL_S = 0.1
+
+
+class _Abandoned(Exception):
+    """The job in hand waited for its turn and a newer request came in meanwhile."""
 
 
 def overlaps(p, q) -> bool:
@@ -88,15 +103,53 @@ def merge_candidates(diffs: Sequence[tuple], dets: Sequence[Any], label: str
     return tuple(windows[:MAX_CANDIDATES]), tuple(labels[:MAX_CANDIDATES])
 
 
+def _file_key(path) -> Optional[tuple]:
+    """``(size, mtime_ns)`` of a file, ``None`` when there is none."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return int(st.st_size), int(st.st_mtime_ns)
+
+
 class ReadOnlyEngine(DetectionEngine):
     """The suggestions' engine that never writes the shared on-disk cache.
 
     What it computes stays in its memory for the session (keyed by frame and
-    file stamp, like the file); the background pass of the window owns the file.
+    file stamp, like the file); the background pass of the window owns the file
+    -- and keeps writing it after the dock first read it, so :meth:`reread`
+    reads it again when it changed (task U29, U28 N14).
     """
+
+    #: ``(size, mtime_ns)`` of the cache file as last read; ``None``: there was none.
+    _read_as: Optional[tuple] = None
 
     def flush(self):  # noqa: D102 - nothing is written
         return None
+
+    def open_view(self, desktop: int, view: str) -> None:  # noqa: D102 - remembers the stamp
+        super().open_view(desktop, view)
+        self._read_as = _file_key(self.cache.path_for(desktop, view))
+
+    def reread(self) -> bool:
+        """Read the cache file again when the window's pass rewrote it since; ``True`` if so.
+
+        One ``stat`` when nothing changed. What this engine computed itself
+        stays for the steps the file still lacks; the file wins where it has
+        the step. The decoded frames are kept (they are the same pictures).
+        """
+        if self.cache is None or self.view is None:
+            return False
+        stamp = _file_key(self.cache.path_for(*self.view))
+        if stamp is None or stamp == self._read_as:
+            return False
+        mine = dict(self.cache.steps)
+        self.cache.open(*self.view)
+        for step, entry in mine.items():
+            self.cache.steps.setdefault(step, entry)
+        self.cache.dirty = False
+        self._read_as = stamp
+        return True
 
 
 class _Bridge(QObject):
@@ -118,21 +171,30 @@ class LocatorDetections(QObject):
 
     def __init__(self, engine: DetectionEngine, conf: float, parent: Optional[QObject] = None,
                  after: Optional[Turn] = None,
-                 stop_when: Optional[Callable[[], bool]] = None) -> None:
+                 stop_when: Optional[Callable[[], bool]] = None,
+                 ready: Optional[Callable[[], bool]] = None) -> None:
         super().__init__(parent)
         self.engine = engine
         self.conf = float(conf)
         self._after = after
         #: Asked about once a second while idle: the window closed, so stop.
         self._stop_when = stop_when
+        #: May this worker build its own model yet? (U29, N18): ``True`` once
+        #: the window's own detector has finished its first pass; asked off
+        #: the GUI thread, only when a frame is in no cache, until it says yes.
+        self._ready = ready
+        self._turn_taken = ready is None
         self._lock = threading.Condition()
         self._job: Optional[tuple] = None
         self._busy = False
         self._stopped = False
         self._prepared = False
         self._opened: Optional[int] = None
-        #: Jobs run, frames the model was run on (tests, the report).
-        self.stats = {"jobs": 0, "detected": 0, "cached": 0, "failed": 0}
+        #: Jobs run, frames the model was run on, cache files read again,
+        #: seconds waited for the turn, jobs given up for a newer one (tests,
+        #: the report).
+        self.stats = {"jobs": 0, "detected": 0, "cached": 0, "failed": 0, "reread": 0,
+                      "waited": 0.0, "abandoned": 0, "released": 0}
         self._bridge = _Bridge(self)
         self._bridge.sigDone.connect(self.sigDone, Qt.ConnectionType.QueuedConnection)
         self._thread = threading.Thread(target=self._run, name="tda-locator-detect",
@@ -204,6 +266,11 @@ class LocatorDetections(QObject):
             token = job[0]
             try:
                 found = self._answer(*job[1:])
+            except _Abandoned:
+                # waited for the turn while the dock moved on: no answer, so the
+                # window forgets it asked and asks again when it is back (B3)
+                self.stats["abandoned"] += 1
+                found = None
             except BaseException as exc:  # noqa: BLE001 - silent: no chips
                 log.info("locator detector: no answer for %s: %s: %s", token,
                          type(exc).__name__, exc)
@@ -211,6 +278,7 @@ class LocatorDetections(QObject):
                 found = None
             with self._lock:
                 stopped = self._stopped or self._closing()
+                idle = self._job is None
             if not stopped:
                 try:
                     # posted before the job counts as done: a wait() that returns
@@ -218,6 +286,8 @@ class LocatorDetections(QObject):
                     self._bridge.sigDone.emit(token, found)
                 except RuntimeError:        # the window (and the bridge) went away
                     stopped = True
+            if idle or stopped:
+                self._release()
             with self._lock:
                 self._busy = False
                 self._lock.notify_all()
@@ -235,7 +305,12 @@ class LocatorDetections(QObject):
             self._opened = desktop
         frames = []
         for item in (before, after):
-            frame = engine.answer_from_cache(item)
+            frame = self._from_cache(item)
+            if frame is None and not self._turn_taken:
+                # the model waits for the window's first pass (N18), which may
+                # well write this very frame into the file meanwhile (N14)
+                self._wait_turn()
+                frame = self._from_cache(item)
             if frame is None:
                 self._load()
                 frame = engine.process(item)
@@ -246,6 +321,57 @@ class LocatorDetections(QObject):
                 self.stats["cached"] += 1
             frames.append(frame)
         return vanished(frames[0].dets, frames[1].dets, cls, self.conf)
+
+    def _from_cache(self, item: PlanItem):
+        """The disk cache's answer for ``item``, read again if the window rewrote it (N14).
+
+        Before U29 the file was read once per desktop, and every frame the
+        window's own pass wrote afterwards was computed a second time here,
+        with a second model.
+        """
+        frame = self.engine.answer_from_cache(item)
+        reread = getattr(self.engine, "reread", None)
+        if frame is None and callable(reread) and reread():
+            self.stats["reread"] += 1
+            frame = self.engine.answer_from_cache(item)
+        return frame
+
+    def _wait_turn(self) -> None:
+        """Wait until this worker may build its model: the window's detector is first idle.
+
+        U29, N18: built while the window's own detector was still loading or on
+        its first pass, the dock's second model held the ``heavy`` lock and
+        every other heavy load (SAM's import, the window's detector) queued
+        behind it -- 2.7 s in the round-4 probe. Raises :class:`_Abandoned`
+        when a newer request comes in meanwhile (the dock moved on) or the
+        worker stops; the turn, once given, is never asked for again.
+        """
+        started = time.perf_counter()
+        while True:
+            try:
+                ready = self._ready is None or bool(self._ready())
+            except Exception:  # noqa: BLE001 - a window half torn down: do not wait on it
+                ready = True
+            if ready:
+                self._turn_taken = True
+                waited = time.perf_counter() - started
+                self.stats["waited"] += waited
+                if waited > 0.05:
+                    log.info("locator detector: waited %.1f s for the window's detector "
+                             "to finish its first pass", waited)
+                return
+            with self._lock:
+                if self._job is not None or self._stopped or self._closing():
+                    raise _Abandoned()
+                self._lock.wait(TURN_POLL_S)
+
+    def _release(self) -> None:
+        """Nothing queued: the decoded frames and the model's GPU cache go (N14)."""
+        try:
+            self.engine.release()
+            self.stats["released"] += 1
+        except Exception as exc:  # noqa: BLE001 - housekeeping
+            log.info("locator detector: release failed: %s: %s", type(exc).__name__, exc)
 
     def _load(self) -> None:
         """The model, built once -- after SAM's import phase, under the heavy lock."""
