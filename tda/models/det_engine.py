@@ -288,10 +288,15 @@ class DetectionEngine:
         return rgb
 
     def candidates_of(self, dets: Sequence[Det]) -> list[int]:
-        """Indices of the detections that may arm a box: class and confidence."""
+        """Indices of the detections that may arm a box: class and confidence.
+
+        The confidence is the class's own floor where ``conf_by_class`` sets one
+        (L6 round 3), else ``conf``.  It is applied here, on what is read, never
+        on what is stored: the cache keeps every box above ``store_conf``.
+        """
         wanted = set(self.config.classes)
         return [i for i, d in enumerate(dets)
-                if d.cls in wanted and d.conf >= self.config.conf]
+                if d.cls in wanted and d.conf >= self.config.conf_for(d.cls)]
 
     # -- one frame ----------------------------------------------------------
     def answer_from_cache(self, item: PlanItem) -> Optional[FrameDets]:

@@ -10,6 +10,13 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+# The NVIDIA driver's JIT cache on D:, as start_tda.bat sets it for the app.
+# Without it the first CUDA call of a test (the detector's, SAM's) creates
+# %APPDATA%\NVIDIA\ComputeCache on C: -- nothing may land there (L6 round 4:
+# a pytest started from a shell without the variable did).  A value the
+# caller set wins.
+os.environ.setdefault("CUDA_CACHE_PATH", r"D:\DataSet\.cache\nv_compute")
+
 # Every windowed encode checks its own promise for the whole test session.
 #
 # ``masks.encode_rle(mask, window)`` trusts the caller that the mask is empty

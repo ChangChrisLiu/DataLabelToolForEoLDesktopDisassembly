@@ -59,10 +59,10 @@ def test_the_spec_has_the_paragraph_in_3_2_and_v1_20_on_top():
     changes = body.split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
     # on top when it landed; U21's v1.21, U22's v1.22, U23's v1.23, U24's
-    # v1.24, U25's v1.25, U26's v1.26, U27's v1.27 and U28's v1.28 and U29's v1.29 have gone above it since
+    # v1.24, U25's v1.25, U26's v1.26, U27's v1.27 and U28's v1.28 and U29's v1.29 and L6's v1.30 have gone above it since
     assert entries[0].startswith(("- **v1.20", "- **v1.21", "- **v1.22", "- **v1.23",
                                   "- **v1.24", "- **v1.25", "- **v1.26", "- **v1.27",
-                                  "- **v1.28", "- **v1.29"))
+                                  "- **v1.28", "- **v1.29", "- **v1.30"))
     assert any(e.startswith("- **v1.20（2026-10-22）**：**机架自带卡扣**（U20，§3.2）")
-               for e in entries[:10])
+               for e in entries[:11])
     assert changes.index("- **v1.20") < changes.index("- **v1.19")

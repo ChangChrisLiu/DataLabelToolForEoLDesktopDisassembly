@@ -9,7 +9,8 @@
 # oak2 18.6 -> 62.7 % -- and no slower with the merge floor below.  The guess
 # it wires (tda/ui/app_detect.py):
 #
-#   1. the detections of `classes` in frame j, conf >= `conf`, inside the ROI;
+#   1. the detections of `classes` in frame j, conf >= `conf` or the class's
+#      own floor (`conf_by_class`, below), inside the ROI;
 #   2. minus those already drawn: a same-class instance on frame j whose box
 #      is within 2 px of the candidate's centre, or overlaps it at IoU >= 0.3;
 #   3. ranked by the mean native-resolution dE between j and the neighbour
@@ -76,6 +77,18 @@ conf: 0.05
 # (all 300 queries a tile into the merge) to 0.025 s.  Never above `conf`;
 # left out it is 0.10 (or `conf`, if that is lower).
 merge_floor: 0.05
+
+# A class's own minimum confidence, in place of `conf` for the classes named
+# (L6 round 3, experiments/l6_models/REPORT.md).  The cache keeps every box the
+# merge keeps; a class's floor is applied where the detections are read -- the
+# guess's candidates and their dE ranking, the 「拆前 / 拆后」 chips (U28) -- so
+# changing it needs no new pass.  Only classes in `classes`, each floor at or
+# above `merge_floor`; absent, every class is at `conf`.  L6's v3 model
+# (tda_det_rfdetr_small_all_v3.pt, whose manifest says the same; the loader
+# warns when the two differ) was ruled with screws at 0.15: below it,
+# low-score boxes on cable bundles out-rank the removed screw.
+# conf_by_class:
+#   screw: 0.15
 
 # L2's tiles.py, for inference exactly as for training: crop the frame to the
 # stored ROI, bring it to the view's work scale, cut 640 x 640 tiles at a

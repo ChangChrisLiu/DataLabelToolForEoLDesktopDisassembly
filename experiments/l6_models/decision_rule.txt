@@ -1,0 +1,176 @@
+L6 decision rule -- written 2026-10-24 before any L6 training, inference or
+evaluation result.  Only the ground-truth counts of export_gt.py had been
+looked at (gt/manifest.json): 923 verified scan frames of 20 desktops, 24 359
+kept boxes / visible masks; held out D19 (Dell, 55 frames, 1 569 masks, 53
+instances) and D27 (HP ProDesk 400 G1 SFF, 36 frames, 918 masks, 39
+instances); the export and a direct read of the same rows agree on all 923
+frames.  Committed before the first training run.
+
+QUESTION
+Do the small-part detector (RF-DETR small) and SAM 2.1's tuned decoder head,
+retrained on every verified scanner frame (~4x L4/L5's data, the first
+non-Dell desktop), do better on desktops they have never seen than what the
+app ships today (detector v2, tda_det_rfdetr_small_all_v2.pt; SAM's two heads,
+stock + sam2.1_tda_head_f5_v2.pt, routed by configs/sam.yaml)?
+
+DATA (export_gt.py)
+- `python -m tda.cli export-coco --db <copy> --desktops 2-17,19-21,27 --view
+  scan --no-hidden` on a copy of the L6 snapshot (backup API, 2026-10-24
+  21:33).  Kept: image entries with extra.review_status == verified (923; D27
+  s7 has confirmed rows but is not a confirmed frame and is left out); of their
+  annotations those with iscrowd 0, not a context object, placement
+  in_chassis, visibility in {visible, visible_tiny, occluded_partial,
+  too_small}, a non-empty segmentation.
+- Detector box = bbox of the visible mask (exclusive x1/y1); ROI = the pose
+  segment's stored ROI.  D27 has no stored ROI: its ROI is the box the app
+  proposes for the segment (tda.core.cache.suggest_roi_over on steps 1, 22,
+  43, as tda.ui.app_roi samples them) = [393, 97, 1510, 1356]; every D27 box
+  centre lies inside it.  In the app the guess stays off on D27 until a ROI
+  is stored.
+- SAM target = the visible mask (L5's rule).
+
+=====================================================================
+DETECTOR
+=====================================================================
+Recipe: L3/L4's, unchanged -- RF-DETR small, 30 epochs, effective batch 16 =
+8 x 2, lr 1e-4, encoder lr 1.5e-4, wd 1e-4, EMA, AMP, resolution 640,
+rfdetr 1.10.1's default augmentation, seed 0, valid = 150 random training
+tiles (selects nothing), the model = last_ema.pth.  Tiles: L2's tiling (work
+scale 1.0, 640 tiles, stride 512, grey 114), labels by L2's tile_labels (a box
+is kept in a tile when >= 50 % of it lies inside), JPEG 95, as L4.  Classes:
+the head's 8 (screw, connector, ram_latch, psu_latch, cpu_socket_lever,
+drive_latch, ram_module, cpu).  LS tiles stay in the mix (L4 kept them; L4
+did not test without them): L2's 4 873 LS draft tiles, minus the LS scan
+tiles of every desktop whose verified scan frames now replace them (D8 48,
+D10 168, D13 246, D19 220 -- L4's rule "the verified labels replace the
+drafts", applied per desktop-view), minus every tile of a held-out desktop.
+
+Why two extra runs: the shipped v2 is not held out on D19.  v1 was trained on
+all of L2's LS tiles, D19's 220 scan tiles included, and v2 was fine-tuned
+from v1 on them again; those are drafts of the same D19 scan frames.  (L4
+had the same problem with D13 and used L3's hold13 as the comparator.)  So
+the v2 chain is replayed without D19:
+- v1h: init rf-detr-small.pth (COCO); data = L2's 4 873 LS tiles minus D19's
+  220 = 4 653 tiles.  (v1 = COCO + all 4 873, L3's recipe.)
+- v2h: init v1h; data = L4's `all` fold minus D19's 220 LS tiles = 4 407 LS
+  + L4's 920 verified tiles of D2/3/4/5/13 (cut by L4 from its 2026-10-16
+  snapshot) = 5 327 tiles.  (v2 = v1 + L4's `all`, 5 547 tiles.)
+- F (the L6 fold): init v2h; data = the 4 191 LS tiles above (no D19, no
+  D27, no replaced scan) + the verified tiles of the 18 training desktops
+  (L6 export).
+- v3 (the candidate, trained whatever the gate says -- the controller ruled
+  over the gate in L4 and L5 -- its manifest carries the verdict): init the
+  shipped v2; data = the 4 191 LS tiles + the verified tiles of all 20
+  desktops.
+
+Comparators: on D19, F vs v2h (neither saw D19 in any form); on D27, F vs the
+shipped v2 (v2 never saw D27).  The shipped v2 on D19 and v2h on D27 are
+reported beside them.
+
+Inference and metrics: L3's RFDetector (the app's tiles and merge, fp16),
+every box >= 0.001 into the merge, as L4 evaluated; every number read at
+conf 0.05 (the shipped `conf`).  Per class c and desktop d (L4's
+evaluate.curves): n_gt; hits = GT boxes with a same-class detection of conf
+>= 0.05 whose box centre lies inside them; recall = hits / n_gt; n_det =
+same-class detections >= 0.05; FP = those whose centre is in no same-class
+GT box and whose IoU with each is < 0.3; precision = 1 - FP / n_det.
+
+Definitions (in counts, so that one box of a class with 14 boxes is not a
+verdict):
+- tolR = max(1, 0.02 x n_gt) boxes.
+- recall WORSE: hits_cmp - hits_new > tolR;  recall BETTER: hits_new -
+  hits_cmp > tolR.
+- precision WORSE: precision_cmp - precision_new > 5.0 points AND FP_new -
+  FP_cmp >= 2;  precision BETTER: precision_new - precision_cmp > 5.0 points
+  AND FP_cmp - FP_new >= 2.
+- class WORSE on a desktop: recall WORSE or precision WORSE.
+- class BETTER on a set of desktops (counts pooled over the set; each
+  desktop's model pair as above): (recall BETTER and not precision WORSE) or
+  (precision BETTER and not recall WORSE).
+The armed classes (configs/detector.yaml `classes`): screw, connector,
+ram_module, psu_latch, cpu.  (Held-out GT boxes, D19 / D27: screw 440 / 244,
+connector 352 / 118, ram_module 70 / 23, psu_latch 44 / 0, cpu 14 / 25.)
+
+GATE D -- v3 is recommended for shipping only when ALL hold:
+- D1  no armed class WORSE on D19 (F vs v2h);
+- D2  at least two armed classes BETTER overall (D19 and D27 pooled: D19 F vs
+      v2h, D27 F vs v2);
+- D3  on D27 (F vs v2): screw and connector boxes pooled BETTER, and neither
+      screw nor connector WORSE.
+Reported, not gated: D1 and D2 again with the shipped v2 as D19's comparator;
+the guess (L4's evaluate.guess: the app's already_drawn and box_change
+ranking, conf 0.05 / 0.10 / 0.25) on the removal events of D19 (screw 7,
+connector 12, ram_module 4, psu_latch 1, cpu 1) and D27 (screw 8, connector
+13, ram_module 1, cpu 1) against the difference map's rank 1; AP50; every
+other conf.
+
+EXTRA CLASSES.  ram_latch, drive_latch and cpu_socket_lever are already in
+the 8-class head (trained, not armed).  The report recommends arming one only
+when gate D passes AND F's recall@0.05 >= 60 % on each held-out desktop
+where the class has >= 10 GT boxes (L4's bar) AND, where it has removal
+events on D19/D27, F's rank-1 >= the difference map's (L4's safeguard).
+cable_clip: 132 boxes, all on D27 (4 instances, one desktop): no training
+desktop has one, so nothing can be measured held out; no 9-class head is
+trained in L6 and it stays out of every manifest.  The v3 manifest lists the
+8 head classes; its recommended guess classes are the five armed ones plus
+any extra class that passes the rule above.
+
+=====================================================================
+SAM HEAD
+=====================================================================
+Recipe: L5's v2, unchanged (decision_rule.txt of L5 + amendment 1): stock SAM
+2.1 Hiera-L init, prompt encoder + mask decoder trained, image encoder frozen;
+an epoch = every training mask once as the primary target; 4 epochs; batch 4
+crops x <= 8 targets; prompts box / point / point+box in turn, half the box
+prompts pushed out by up to 25 %; 3 rounds (multimask first, 2 corrective
+clicks); 20 focal + dice + L1 IoU; AdamW 2e-5, wd 0.01, 200 warm-up steps,
+cosine to 0.1x, clip 0.1, bf16, seed 0.  Only change: a checkpoint every 250
+steps (the GPU rule: wait while the app is open, resume), with the crop
+sampler re-seeded per 250-step chunk from (seed, chunk) and each epoch's order
+from (seed, epoch), so an interrupted run is the same run as an uninterrupted
+one (L5's single sampler stream is replaced; the distribution is the same).
+- S_F: trained on the 18 training desktops' masks (21 872).
+- S_v3 (the candidate, trained whatever the gate says): all 20 (24 359);
+  exported as a head delta like L5's (export_head.py) to
+  sam2.1_tda_head_v3.pt + manifest.
+
+Evaluation: L5's harness unchanged (experiments/l5_sam/evaluate.py: the
+app's SamService, bf16, sam_compare's window, prompts box with +-2 px
+jitter, point = distance-transform maximum, point_box, box_loose, refine;
+the candidate the app shows), on every D19 and D27 mask, models stock, f5_v2
+(the full checkpoint the shipped head was cut from) and S_F, in one process.
+The two-head setups are composed per mask and prompt (exact: one image
+encoder, one embedding): shipped = route(stock, f5_v2), new = route(stock,
+S_F); route = the tuned head for every prompt except `point` on a mask whose
+class is in configs/sam.yaml stock_point_classes (11 classes), which the
+stock head answers; refine follows point_box (a box), so the tuned head.
+Groups: L5's -- small (< 400 px), screw, connector, latch (ram/psu/drive
+latch), large (> 20 000 px).  Gated prompts: point and box (the brief's
+"single-point and box prompts").  Delta = new - shipped IoU of the shown
+candidate, paired per mask; 95 % CI by cluster bootstrap over instances
+(2 000 resamples, seed 0, L5's Boot); prompt-averaged = the mean of the point
+and box cells.
+- group WORSE on a desktop: the point cell's or the box cell's dIoU < -0.01
+  (L5's no-harm tolerance).
+- group BETTER on a set of desktops: prompt-averaged dIoU >= +0.01 with its
+  CI lower bound > 0 (masks of the set pooled, bootstrap over its instances).
+
+GATE S -- head v3 is recommended for shipping only when ALL hold:
+- S1  no group WORSE on D19;
+- S2  at least two groups BETTER overall (D19 and D27 pooled);
+- S3  on D27: screw and connector masks pooled BETTER, and neither the screw
+      nor the connector group WORSE on D27.
+Reported, not gated: point_box, box_loose, refine, boundary F, oracle, per
+class, per desktop, stock alone, latency (set_image / decode ms, same
+process), the routing as configured vs. "tuned everywhere".
+
+=====================================================================
+OPERATIONS
+=====================================================================
+- GPU work (training, inference, evaluation) only while no `python* ...
+  tda.cli ... app` process exists; checked before every epoch (detector),
+  every 250 steps (SAM), every inference/evaluation batch; a wait polls every
+  5 minutes and is logged (logs/gpu_waits.jsonl); training resumes from its
+  last checkpoint.  The detector and SAM queues may share the GPU.
+- Nothing in configs/ or tda/ changes; the controller ships.  Fold weights:
+  D:/DataSet/models/weights/*_l6_*.

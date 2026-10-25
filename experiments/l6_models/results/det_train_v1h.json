@@ -1,0 +1,37 @@
+{
+ "model": "rfdetr_small",
+ "set": "v1h",
+ "init": "D:\\DataSet\\models\\weights\\rf-detr-small.pth",
+ "resolution": 640,
+ "recipe": {
+  "epochs": 30,
+  "batch_size": 8,
+  "grad_accum_steps": 2,
+  "lr": 0.0001,
+  "lr_encoder": 0.00015,
+  "weight_decay": 0.0001,
+  "use_ema": true,
+  "multi_scale": true,
+  "expanded_scales": true,
+  "num_workers": 4,
+  "seed": 0,
+  "tensorboard": false,
+  "wandb": false,
+  "mlflow": false,
+  "progress_bar": null,
+  "checkpoint_interval": 1000,
+  "run_test": false
+ },
+ "seconds": 6690.2,
+ "data": {
+  "init": "COCO rf-detr-small.pth",
+  "rule": "L2's 4 873 LS tiles minus D19 (v1's data without D19)",
+  "tiles": 4653,
+  "verified_tiles": 0,
+  "ls_tiles": 4653,
+  "sha256": "16afc85f0559f4e53f4c8b3011b903ced2662e5999c4c56ef788dfcf97186a10",
+  "held_out_in_train": []
+ },
+ "finished": "2026-10-24 23:49:31",
+ "published": "D:\\DataSet\\models\\weights\\tda_det_rfdetr_small_l6_v1h.pth"
+}

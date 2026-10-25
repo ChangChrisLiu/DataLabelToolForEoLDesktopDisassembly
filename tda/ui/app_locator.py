@@ -371,7 +371,8 @@ class LocatorMixin:
         held = LocatorDetections(engine, config.conf, parent=self,
                                  after=getattr(self, "_sam_turn", None),
                                  stop_when=lambda: me() is None or bool(me().closed),
-                                 ready=lambda: me() is None or me().window_detector_idle())
+                                 ready=lambda: me() is None or me().window_detector_idle(),
+                                 conf_by_class=dict(config.conf_by_class))
         held.sigDone.connect(self._on_locator_dets)
         self._locator_det = held
         self._locator_det_answers.clear()

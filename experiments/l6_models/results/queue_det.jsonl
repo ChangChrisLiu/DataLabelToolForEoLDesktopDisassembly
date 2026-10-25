@@ -1,0 +1,17 @@
+{"event": "start", "job": "train v1h", "attempt": 1, "cmd": ["experiments.l6_models.train_det", "--set", "v1h"], "time": "2026-10-24 22:00:39"}
+{"event": "end", "job": "train v1h", "attempt": 1, "rc": 0, "seconds": 6534, "time": "2026-10-24 23:49:32"}
+{"event": "start", "job": "train v2h", "attempt": 1, "cmd": ["experiments.l6_models.train_det", "--set", "v2h"], "time": "2026-10-24 23:49:32"}
+{"event": "end", "job": "train v2h", "attempt": 1, "rc": 0, "seconds": 7201, "time": "2026-10-25 01:49:33"}
+{"event": "start", "job": "train F", "attempt": 1, "cmd": ["experiments.l6_models.train_det", "--set", "F"], "time": "2026-10-25 01:49:33"}
+{"event": "end", "job": "train F", "attempt": 1, "rc": 0, "seconds": 8428, "time": "2026-10-25 04:10:01"}
+{"event": "start", "job": "infer v2", "attempt": 1, "cmd": ["experiments.l6_models.infer_det", "--model", "v2"], "time": "2026-10-25 04:10:01"}
+{"event": "end", "job": "infer v2", "attempt": 1, "rc": 0, "seconds": 21, "time": "2026-10-25 04:10:22"}
+{"event": "start", "job": "infer v2h", "attempt": 1, "cmd": ["experiments.l6_models.infer_det", "--model", "v2h"], "time": "2026-10-25 04:10:22"}
+{"event": "end", "job": "infer v2h", "attempt": 1, "rc": 0, "seconds": 17, "time": "2026-10-25 04:10:39"}
+{"event": "start", "job": "infer F", "attempt": 1, "cmd": ["experiments.l6_models.infer_det", "--model", "F"], "time": "2026-10-25 04:10:39"}
+{"event": "end", "job": "infer F", "attempt": 1, "rc": 0, "seconds": 15, "time": "2026-10-25 04:10:54"}
+{"event": "start", "job": "eval det", "attempt": 1, "cmd": ["experiments.l6_models.eval_det"], "time": "2026-10-25 04:10:54"}
+{"event": "end", "job": "eval det", "attempt": 1, "rc": 0, "seconds": 16, "time": "2026-10-25 04:11:10"}
+{"event": "start", "job": "train v3", "attempt": 1, "cmd": ["experiments.l6_models.train_det", "--set", "v3"], "time": "2026-10-25 04:11:10"}
+{"event": "end", "job": "train v3", "attempt": 1, "rc": 0, "seconds": 5382, "time": "2026-10-25 05:40:52"}
+{"event": "done", "time": "2026-10-25 05:40:52"}

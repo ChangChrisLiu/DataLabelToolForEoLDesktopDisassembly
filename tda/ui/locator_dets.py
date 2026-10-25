@@ -12,7 +12,9 @@ difference finds nothing).  So:
 
 * :func:`vanished` -- which detections went (class, confidence, no
   overlapping detection of the class in ``r``), best first, at most
-  :data:`MAX_DET_CHIPS`;
+  :data:`MAX_DET_CHIPS`; for a class with its own floor (``conf_by_class``,
+  L6) a chip comes from a box at that floor in ``r - 1`` and is gone only
+  when ``r`` has nothing of the class over it at the base ``conf``;
 * :func:`merge_candidates` -- the order the panel offers them in: the
   difference's largest region first, then the detections, then the
   difference's second and third; never a detection first;
@@ -76,15 +78,22 @@ def overlaps(p, q) -> bool:
 
 
 def vanished(before: Sequence[Any], after: Sequence[Any], cls: str, conf: float,
-             limit: int = MAX_DET_CHIPS) -> list:
+             limit: int = MAX_DET_CHIPS, after_conf: Optional[float] = None) -> list:
     """The detections of ``cls`` in ``before`` that ``after`` no longer has.
 
-    Only detections at ``conf`` or above count, on both sides; one in
-    ``before`` has gone when no detection of the class in ``after`` overlaps
-    it.  Best first (by confidence), at most ``limit``.
+    A detection in ``before`` counts at ``conf`` or above; it has gone when no
+    detection of the class in ``after`` at ``after_conf`` or above overlaps it
+    (``after_conf`` defaults to ``conf``).  The two differ for a class with its
+    own floor (``conf_by_class``, L6 round 4): the chip is offered from a box
+    at the class's floor, but the part is still there if the detector sees it
+    at the base ``conf`` in ``r`` -- judged at the floor on both sides a screw
+    that only dipped under it looked gone (D19 / D27: 4 wrong chips against
+    1, first chip right 12/15 against 13/15).  Best first (by confidence), at
+    most ``limit``.
     """
+    seen = conf if after_conf is None else after_conf
     mine = [d for d in before if d.cls == cls and d.conf >= conf]
-    theirs = [d for d in after if d.cls == cls and d.conf >= conf]
+    theirs = [d for d in after if d.cls == cls and d.conf >= seen]
     gone = [d for d in mine if not any(overlaps(d.box, t.box) for t in theirs)]
     return sorted(gone, key=lambda d: -d.conf)[:max(0, int(limit))]
 
@@ -186,10 +195,14 @@ class LocatorDetections(QObject):
     def __init__(self, engine: DetectionEngine, conf: float, parent: Optional[QObject] = None,
                  after: Optional[Turn] = None,
                  stop_when: Optional[Callable[[], bool]] = None,
-                 ready: Optional[Callable[[], bool]] = None) -> None:
+                 ready: Optional[Callable[[], bool]] = None,
+                 conf_by_class: Optional[dict] = None) -> None:
         super().__init__(parent)
         self.engine = engine
         self.conf = float(conf)
+        #: A class's own floor (the detector file's ``conf_by_class``, L6 round 3)
+        #: in place of ``conf``: a screw chip only from a screw box at its floor.
+        self.conf_by_class = {str(k): float(v) for k, v in (conf_by_class or {}).items()}
         self._after = after
         #: Asked about once a second while idle: the window closed, so stop.
         self._stop_when = stop_when
@@ -232,6 +245,10 @@ class LocatorDetections(QObject):
             self._job = (token, int(desktop), before, after, str(cls))
             self._lock.notify_all()
             return displaced
+
+    def conf_for(self, cls: str) -> float:
+        """The minimum confidence of a ``cls`` detection on either frame."""
+        return self.conf_by_class.get(str(cls), self.conf)
 
     def pending(self) -> bool:
         with self._lock:
@@ -333,7 +350,9 @@ class LocatorDetections(QObject):
                 self.stats["detected"] += 1
             else:
                 self.stats["cached"] += 1
-        return vanished(frames[0].dets, frames[1].dets, cls, self.conf)
+        # present in r - 1 at the class's floor, gone from r at the base conf (round 4, N1)
+        return vanished(frames[0].dets, frames[1].dets, cls, self.conf_for(cls),
+                        after_conf=self.conf)
 
     def _fill(self, frames: list, items) -> bool:
         """Answer from the cache the frames still missing; ``True`` once none is."""

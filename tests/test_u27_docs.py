@@ -49,9 +49,9 @@ def test_the_spec_has_the_paragraph_in_3_2_and_v1_27_on_top():
     assert "D63…" not in body
     changes = body.split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
-    # on top when it landed; U28's v1.28 and U29's v1.29 have gone above it since
-    assert entries[0].startswith(("- **v1.27", "- **v1.28", "- **v1.29"))
-    [entry] = [e for e in entries[:3] if e.startswith("- **v1.27")]
+    # on top when it landed; U28's v1.28 and U29's v1.29 and L6's v1.30 have gone above it since
+    assert entries[0].startswith(("- **v1.27", "- **v1.28", "- **v1.29", "- **v1.30"))
+    [entry] = [e for e in entries[:4] if e.startswith("- **v1.27")]
     assert entry.startswith("- **v1.27（2026-10-24）**：**关系字段重导保留**（U27，§3.2）")
     for needed in ("`relation_fix`", "`replay_relations`", "`adopt-relations",
                    "`tda/core/relation_replay.py`", "手设的螺丝头", "无迁移",
