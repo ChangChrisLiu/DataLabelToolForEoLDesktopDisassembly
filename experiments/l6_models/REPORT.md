@@ -203,3 +203,99 @@ Per frame (stored = the detection cache, which holds every box ≥ 0.05 whatever
 **Not done, by the instruction "if a floor works".** `conf_by_class` was not added to `tda/`, and there are no new tests or manifest field. If the controller wants 0.15 anyway (screws pooled 14/15 = the comparators', all events 32 vs 22, at the cost of D27 s37), that is the change to make. I can implement it on request.
 
 **C: (round 2).** The controller removed `%APPDATA%\NVIDIA\ComputeCache`. Three GPU processes then ran here: `infer_det` launched directly, a `SamService` load plus predict, and earlier the queue-launched ones. All wrote to `D:\DataSet\.cache\nv_compute` (rewritten at 05:55–05:56), and `%APPDATA%\NVIDIA\` stays empty. No launcher needed fixing. The 22:06–23:52 writes of round 1 remain unexplained.
+
+## Round 3 (2026-10-25): shipping v3 with screws at 0.15 — `conf_by_class`
+
+**Ruling (controller).** Detector v3 ships with a screw floor of 0.15, overruling gate D:
+- pooled screw rank-1 14/15, equal to the comparators';
+- all 48 removal events 32 vs 22; connectors 11 vs 4; ram_module 4 vs 1;
+- the one D27 event lost is a screw scored 0.078.
+
+SAM head v3 ships too (S3 overruled, as L5's gate was).
+
+### The change (commit 22b0ff9)
+
+- **`tda/models/detector.py`**
+  - `DetectorConfig.conf_by_class` holds `(class, floor)` pairs; `conf_for(cls)` returns the class's floor, else `conf`.
+  - `_class_floors` checks the file. It must be a mapping, of armed classes only, each floor in (0, 1] and at or above `merge_floor` (the merge drops anything lower before it is stored). Anything else is the loader's usual single WARNING, and the detector is off.
+  - The floors are **not** part of `recipe()`, so the cache written without them is still valid.
+  - `check_manifest_floors(manifest, config)` runs where the model is built (both the YOLO and the RF-DETR backend). When the manifest's `conf_by_class` and the file's differ for an armed class, it logs one WARNING naming both; the detector stays on, using the file's floors. A manifest without the key (v1, v2) is not compared.
+- **`tda/models/det_engine.py`**: `candidates_of` reads each class at its floor. dE is measured, cached and served for candidates only. What is stored (every box ≥ `store_conf`) is unchanged.
+- **`tda/ui/app_detect.py`**: the guess's ranking (rank 1, Shift+C, the already-drawn skip) filters by `conf_for`. The "detector on" INFO line names the floors.
+- **`tda/ui/locator_dets.py` and `app_locator.py`**: U28's vanished-detection chips (「拆前 / 拆后」) read each class at its floor.
+- **`cli check` and the exports** never read detections, so nothing changed there.
+- **`configs/detector.yaml`**: a commented description of `conf_by_class` only; every setting is unchanged.
+- **The v3 manifest** (`tda_det_rfdetr_small_all_v3.json`, republished from 22b0ff9, clean) now carries `conf_by_class: {screw: 0.15}` (top level and `inference`), round 2's numbers at 0.15, and the ruling.
+
+### Tests
+
+`tests/test_l6_conf_by_class.py`, 18 tests:
+- **The file**: `conf_for` falls back to `conf`; the floors are not part of the recipe; six malformed forms each give one WARNING and a detector that is off (a list, an unknown class, below the merge floor, above one, a word, a bool).
+- **The engine**: the floor removes the 0.10 screw from the candidates; a 0.06 connector stays; the 0.10 box stays in the cache file; a file without the floor reads the same cache with no model call and gets the box back; a cache-only answer applies the floor again.
+- **The manifest**: agree, differ, absent and unreadable cases; and through the fake `rfdetr` of U4, the model loads either way, with exactly one WARNING when the file lacks the floor.
+- **The window, end to end**: on a frame where a 0.10 screw box has the largest dE (round 2's D19 failure in miniature), rank 1 is that box without the floor and the 0.5 screw with it. The 0.10 box is still in the frame's answer and on disk.
+- **U28**: a vanished screw at 0.10 gets no chip; at 0.20 it does. The request is made in both cases.
+
+### Cost
+
+Measured with `perf_app.py` on an idle GPU, through the app's loaders with `TDA_DETECTOR`. v3 has seen D19 and D27, so these are cost figures, not quality figures.
+
+| D19 + D27, 91 frames | v3 | v3, screws at 0.15 |
+|---|---|---|
+| detect, median ms per 1600² scan frame | 23.6 | 23.6 |
+| cold process (read + detect + dE), median ms | 66.8 | 66.5 |
+| warm cache, ms | 0.1 | 0.1 |
+| stored detections per frame | 23.9 | 23.9 (unchanged) |
+| armed candidates per frame | 16.78 | 16.22 |
+| screw candidates per frame | 8.20 | 7.64 |
+| cache file, D19 / D27 | 96.2 / 46.7 KB | 95.9 / 46.5 KB (fewer dE slots) |
+
+The held-out fold F at 0.15 is round 2's table. Armed candidates per frame fall from 38.25 to 25.29 on D19 and from 15.69 to 12.11 on D27. Screw false positives per frame fall from 14.56 to 2.58 and from 3.56 to 0.28.
+
+### Perf tests with the override files
+
+Settings:
+- `TDA_DETECTOR=D:\DataSet\.cache\tmp\l6\configs\detector_v3_screw0.15.yaml`
+- `TDA_SAM_HEAD=D:\DataSet\.cache\tmp\l6\configs\sam_v3.yaml`
+- the `pytest_heads_override` plugin, so that `test_u19_weights` checks the v3 head file against the whole v3 model.
+
+Files run: `test_session_perf`, `test_u3_perf`, `test_session_bench`, `test_sam_service`, `test_u19_weights`, `test_l6_conf_by_class`. Result: **90 passed in 82.8 s**.
+
+### Full suite (`tda` env)
+
+The first run ended **5 048 passed, 1 failed (exit 1)**. The failure is `test_session_perf.py::test_gui_thread_budgets_on_a_12mp_frame_with_forty_instances`: the session commit took 0.468 s at best against a 0.45 s budget, under the suite's own load. That path does not touch the detector. Alone, the same test passed 3 out of 3 runs (9.5 s each); it also passed in both perf runs above. The second full run, on the same tree: **5 049 passed in 680 s, exit 0**.
+
+### Lines for the controller
+
+`configs/detector.yaml`:
+
+```yaml
+backend: rfdetr
+model: D:/DataSet/models/weights/tda_det_rfdetr_small_all_v3.pt
+classes: [screw, connector, ram_module, psu_latch, cpu]
+conf: 0.05
+merge_floor: 0.05
+conf_by_class:
+  screw: 0.15
+```
+
+Keep the commented fallbacks the tests look for: `# model: D:/DataSet/models/weights/tda_det_rfdetr_small_all.pt`, `# backend: yolo`, and the YOLO model line. Add `# model: D:/DataSet/models/weights/tda_det_rfdetr_small_all_v2.pt` as the one-swap fallback. The comment above `model:` should get L6's numbers, and the commented `conf_by_class` block becomes the live one.
+
+`configs/sam.yaml`:
+
+```yaml
+head: D:/DataSet/models/weights/sam2.1_tda_head_v3.pt
+```
+
+`route` and `stock_point_classes` are unchanged. The header comment's L5 numbers should become L6's: shipped → v3 on D19 and D27, all masks, box 0.742 → 0.763, single click 0.471 → 0.504, loose box 0.664 → 0.705, one corrective click 0.791 → 0.816; 141 tensors, 16.4 MB.
+
+### Test pins to update with that switch
+
+- `tests/test_detector.py::test_the_shipped_file_is_rfdetr_on_scan_oak1_and_oak2_screws_with_l2s_tiles`: the model name becomes `tda_det_rfdetr_small_all_v3.pt`; add `assert parsed.conf_by_class == (("screw", 0.15),)`; the docstring should say L6's v3.
+- `tests/test_u19_heads.py::test_the_shipped_file_is_the_ruling`: the head path becomes `sam2.1_tda_head_v3.pt`.
+- `tests/test_u19_weights.py`: `FULL_F5_V2` becomes `D:/DataSet/models/weights/sam2.1_hiera_large_tda_l6_v3.pt` (the whole v3 model; keep that file, or the test skips). Rename `test_the_tuned_head_is_the_whole_f5_v2_model` and update the docstring. The plugin run above already shows these three tests pass with v3.
+- `tests/test_detector.py::test_the_shipped_models_manifest_has_its_tiles_and_classes` passes with the v3 manifest unchanged; `tests/test_l6_conf_by_class.py::test_the_v3_manifest_carries_the_ruled_floor` pins the floor in it.
+
+### C: (round 3)
+
+`%APPDATA%\NVIDIA\` is still empty after round 3's GPU runs (`perf_app`, the perf tests, the full suite). Every run wrote to `D:\DataSet\.cache\nv_compute`.

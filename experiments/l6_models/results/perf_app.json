@@ -30,16 +30,16 @@
   "v3": {
    "model": "D:\\DataSet\\models\\weights\\tda_det_rfdetr_small_all_v3.pt",
    "config": "D:\\DataSet\\.cache\\tmp\\l6\\configs\\detector_v3.yaml",
-   "described": "rfdetr model D:\\DataSet\\models\\weights\\tda_det_rfdetr_small_all_v3.pt (sha1 9e4a99c619cf, RFDETRSmall at 640 px, classes ['screw', 'connector', 'ram_latch', 'psu_latch', 'cpu_socket_lever', 'drive_latch', 'ram_module', 'cpu'], manifest tda_det_rfdetr_small_all_v3.json agrees), cuda:0 fp16, merge floor 0.05, loaded in 0.7 s",
-   "load_s": 0.8,
+   "described": "rfdetr model D:\\DataSet\\models\\weights\\tda_det_rfdetr_small_all_v3.pt (sha1 9e4a99c619cf, RFDETRSmall at 640 px, classes ['screw', 'connector', 'ram_latch', 'psu_latch', 'cpu_socket_lever', 'drive_latch', 'ram_module', 'cpu'], manifest tda_det_rfdetr_small_all_v3.json agrees), cuda:0 fp16, merge floor 0.05, loaded in 19.8 s",
+   "load_s": 19.9,
    "frames": 91,
    "detect_ms": {
-    "median": 24.1,
-    "p90": 27.6
+    "median": 23.6,
+    "p90": 29.4
    },
    "process_cold_ms": {
-    "median": 68.5,
-    "p90": 122.0
+    "median": 66.8,
+    "p90": 119.3
    },
    "cache_warm_ms": {
     "median": 0.1,
@@ -47,11 +47,14 @@
     "n": 91
    },
    "stored_dets_per_frame": 23.9,
+   "candidates_per_frame": 16.78,
+   "screw_candidates_per_frame": 8.2,
+   "conf_by_class": {},
    "cache_bytes": {
     "D19": 96236,
     "D27": 46669
    },
-   "peak_cuda_mb": 437,
+   "peak_cuda_mb": 436,
    "model_bytes": 128438553
   },
   "F": {
@@ -79,6 +82,38 @@
     "D27": 58375
    },
    "peak_cuda_mb": 499,
+   "model_bytes": 128438553
+  },
+  "v3_screw0.15": {
+   "model": "D:\\DataSet\\models\\weights\\tda_det_rfdetr_small_all_v3.pt",
+   "config": "D:\\DataSet\\.cache\\tmp\\l6\\configs\\detector_v3_screw0.15.yaml",
+   "described": "rfdetr model D:\\DataSet\\models\\weights\\tda_det_rfdetr_small_all_v3.pt (sha1 9e4a99c619cf, RFDETRSmall at 640 px, classes ['screw', 'connector', 'ram_latch', 'psu_latch', 'cpu_socket_lever', 'drive_latch', 'ram_module', 'cpu'], manifest tda_det_rfdetr_small_all_v3.json agrees), cuda:0 fp16, merge floor 0.05, loaded in 0.6 s",
+   "load_s": 0.7,
+   "frames": 91,
+   "detect_ms": {
+    "median": 23.6,
+    "p90": 26.9
+   },
+   "process_cold_ms": {
+    "median": 66.5,
+    "p90": 114.7
+   },
+   "cache_warm_ms": {
+    "median": 0.1,
+    "p90": 0.1,
+    "n": 91
+   },
+   "stored_dets_per_frame": 23.9,
+   "candidates_per_frame": 16.22,
+   "screw_candidates_per_frame": 7.64,
+   "conf_by_class": {
+    "screw": 0.15
+   },
+   "cache_bytes": {
+    "D19": 95856,
+    "D27": 46479
+   },
+   "peak_cuda_mb": 437,
    "model_bytes": 128438553
   }
  },
@@ -129,5 +164,5 @@
   },
   "peak_cuda_gb_both_services": 2.3
  },
- "date": "2026-10-25 05:43:01"
+ "date": "2026-10-25 06:04:36"
 }

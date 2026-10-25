@@ -81,6 +81,9 @@
   "ram_module",
   "cpu"
  ],
+ "conf_by_class": {
+  "screw": 0.15
+ },
  "inference": {
   "tile": 640,
   "stride": 512,
@@ -95,6 +98,10 @@
   "merge": "drop cut-off boxes contained >= 60 % in a whole one, class-wise NMS 0.5",
   "conf": 0.05,
   "merge_floor": 0.05,
+  "conf_by_class": {
+   "screw": 0.15
+  },
+  "conf_by_class_note": "applied where detections are read (the guess, the U28 chips); the cache keeps every box >= merge_floor",
   "guess_classes_recommended": [
    "screw",
    "connector",
@@ -165,10 +172,101 @@
     },
     "arm": false
    }
-  }
+  },
+  "round2_screw_floor": {
+   "floor": 0.15,
+   "fold_model": "F (held out D19, D27)",
+   "rank1_pooled": {
+    "screw": [
+     14,
+     15
+    ],
+    "connector": [
+     11,
+     25
+    ],
+    "ram_module": [
+     4,
+     5
+    ],
+    "psu_latch": [
+     1,
+     1
+    ],
+    "cpu": [
+     2,
+     2
+    ]
+   },
+   "screw": {
+    "D19:screw": {
+     "recall": 71.1,
+     "precision": 68.9
+    },
+    "D27:screw": {
+     "recall": 91.0,
+     "precision": 95.7
+    }
+   },
+   "per_frame": {
+    "D19": {
+     "frames": 55,
+     "stored_per_frame": 46.95,
+     "armed_candidates_per_frame": 25.29,
+     "screw_candidates_per_frame": 8.29,
+     "screw_fp_per_frame": 2.58
+    },
+    "D27": {
+     "frames": 36,
+     "stored_per_frame": 23.19,
+     "armed_candidates_per_frame": 12.11,
+     "screw_candidates_per_frame": 6.44,
+     "screw_fp_per_frame": 0.28
+    }
+   },
+   "comparators_rank1": {
+    "D19:connector": [
+     1,
+     12
+    ],
+    "D19:ram_module": [
+     0,
+     4
+    ],
+    "D19:cpu": [
+     1,
+     1
+    ],
+    "D19:psu_latch": [
+     1,
+     1
+    ],
+    "D19:screw": [
+     6,
+     7
+    ],
+    "D27:connector": [
+     3,
+     13
+    ],
+    "D27:ram_module": [
+     1,
+     1
+    ],
+    "D27:cpu": [
+     1,
+     1
+    ],
+    "D27:screw": [
+     8,
+     8
+    ]
+   }
+  },
+  "ruling": "controller, round 3: shipped with conf_by_class {screw: 0.15} over gate D (pooled screw rank-1 14/15 = the comparators', all 48 removal events 32 vs 22, connectors 11 vs 4, ram_module 4 vs 1)"
  },
- "source_commit": "65f6ef7e0a2426c12734638e569b4c48f28d9d66",
+ "source_commit": "22b0ff94a021fd7093bf2e2a25ebcb6cf41a65b2",
  "source_dirty": false,
- "date": "2026-10-25 05:41:02",
+ "date": "2026-10-25 06:07:15",
  "licence": "Apache-2.0 (Roboflow RF-DETR)"
 }
