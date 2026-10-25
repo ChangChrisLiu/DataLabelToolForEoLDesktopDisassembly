@@ -491,7 +491,6 @@ class CandidateBar(QWidget):
     GAP = 4
     #: The label under a detection chip: two lines of this many pixels.
     LABEL_PX = 10
-    LABEL_H = 26
 
     def __init__(self, view: PairView, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -510,7 +509,7 @@ class CandidateBar(QWidget):
         return QSize(self._label_width() + self.MIN_CHIP, self.CHIP)
 
     def _follow(self) -> None:
-        height = self.CHIP + (self.LABEL_H if self._any_detection() else 0)
+        height = self.CHIP + (self.label_height() if self._any_detection() else 0)
         if self.height() != height:
             self.setFixedHeight(height)
         self.setVisible(self._view.has_choice())
@@ -528,6 +527,10 @@ class CandidateBar(QWidget):
         font = QFont(self.font())
         font.setPixelSize(self.LABEL_PX)
         return font
+
+    def label_height(self) -> int:
+        """Two lines of the label's font, as tall as the font really is (N16)."""
+        return 2 * QFontMetrics(self._small()).height() + 3
 
     def _det_width(self) -> int:
         """A detection chip is as wide as 「检测到消失的」 in the label's font."""
@@ -557,14 +560,15 @@ class CandidateBar(QWidget):
         out = []
         for index, det in zip(indices, labelled):
             width = max(side, float(det_w)) if det else side
-            out.append((index, QRectF(x, 0.0, width, side + (self.LABEL_H if det else 0))))
+            extra = self.label_height() if det else 0
+            out.append((index, QRectF(x, 0.0, width, side + extra)))
             x += width + self.GAP
         return out
 
     def image_rect(self, rect: QRectF, labelled: bool) -> QRectF:
         """The crop's part of a chip (a detection's label is under it)."""
         return QRectF(rect.x(), rect.y(), rect.width(),
-                      rect.height() - (self.LABEL_H if labelled else 0))
+                      rect.height() - (self.label_height() if labelled else 0))
 
     def label_at(self, pos) -> str:
         """What the chip under ``pos`` is (its tooltip)."""
@@ -628,9 +632,13 @@ class CandidateBar(QWidget):
                 head, _space, name = label.partition(" ")
                 painter.setFont(small)
                 painter.setPen(self.palette().windowText().color())
-                painter.drawText(QRectF(rect.x() - 2, image.bottom() + 1, rect.width() + 4,
-                                        rect.bottom() - image.bottom() - 1),
-                                 int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop),
-                                 f"{head}\n{name}" if name else head)
+                line = float(QFontMetrics(small).height())
+                for row, text in enumerate((head, name)):   # one line each, never overlapping
+                    if text:
+                        painter.drawText(
+                            QRectF(rect.x() - 4, image.bottom() + 1 + row * (line + 1),
+                                   rect.width() + 8, line),
+                            int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter),
+                            text)
                 painter.setFont(self.font())
         painter.end()

@@ -304,8 +304,10 @@ class LocatorMixin:
             self.locator_dock.setVisible(True)
         if kind == KIND_PAIR:
             # the pair does not depend on the step: walking frames with the
-            # same part, view and edit epoch leaves it as it is (no query)
-            shown = (stamp[0], stamp[1], stamp[3], stamp[4], self._pair_forced(stamp[3]))
+            # same part, view, edit epoch and scanner pose segments (an ROI
+            # stored is no edit, N13) leaves it as it is -- one small query
+            shown = (stamp[0], stamp[1], stamp[3], stamp[4], self._pair_forced(stamp[3]),
+                     self.locator_source.scan_poses(stamp[0]))
             if not (fresh or shown != self._locator_pair_shown
                     or not self.locator.showing_pair()):
                 self._sync_pair_button(kind, target)
@@ -356,7 +358,11 @@ class LocatorMixin:
         if held is not None and held.engine.config is config:
             return held
         if held is not None:
-            held.shutdown()
+            # never a join on the GUI thread (N17): a job in hand finishes on
+            # its own and its answer is not sent
+            held.sigDone.disconnect(self._on_locator_dets)
+            held.shutdown(wait=False)
+            self._locator_det_asked.clear()
         base = worker.engine
         engine = ReadOnlyEngine(config, base.cache_root,
                                 factory=None if base.factory is make_detector else base.factory,
@@ -402,7 +408,12 @@ class LocatorMixin:
                       for step, crop in zip(key[1:3], key[4]))
         self._locator_det_asked.add(key)
         self.locator_det_requests += 1
-        detector.request((key, pair.instance), pair.desktop, items[0], items[1], pair.cls)
+        displaced = detector.request((key, pair.instance), pair.desktop, items[0], items[1],
+                                     pair.cls)
+        if displaced is not None:
+            # a queued request this one replaced gets no answer: forget it was
+            # asked, so its pair asks again when it is back (B3)
+            self._locator_det_asked.discard(displaced[0])
         return pair
 
     def _locator_det_item(self, desktop: int, step: int, crop) -> PlanItem:

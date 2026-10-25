@@ -118,7 +118,7 @@ def test_with_no_region_of_the_difference_the_detections_are_only_offered(qapp):
         assert view.candidate_index() == index == 0
         assert view.window() == (100.0, 100.0, 120.0, 120.0) and view.is_detection()
         assert panel.note_text() == DET_NOTE.format(cls="螺丝", step=13)
-        assert panel.note_text() == "这里有一个 螺丝 在第 13 帧消失了"
+        assert panel.note_text() == "检测到一个 螺丝 消失了"      # a finding, not a step
         assert panel.candidate_text() == "候选 1/2"
         assert not panel.grab().isNull()
     finally:
@@ -225,7 +225,7 @@ def test_a_vanished_detection_becomes_chip_2(window, tmp_path):
     QTest.mouseClick(bar, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
                      rect.center().toPoint())
     assert view.window() == GONE and view.is_detection()
-    assert window.locator.note_text() == "这里有一个 螺丝 在第 13 帧消失了"
+    assert window.locator.note_text() == "检测到一个 螺丝 消失了"
     # the same pair again: from the answers kept, no second request
     select(window, "chassis")
     select(window, SCREW)

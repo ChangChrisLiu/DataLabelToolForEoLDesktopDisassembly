@@ -461,6 +461,18 @@ class LocatorSource:
         finally:
             self._pinned = None
 
+    def scan_poses(self, desktop: int) -> tuple:
+        """The scanner's pose segments as stored -- ranges and ROIs, one query.
+
+        What a pair is compared and cropped by and the detections are asked
+        with; an ROI stored is no edit (U28 round 4, N13).
+        """
+        row = self.db.conn.execute(
+            "SELECT IFNULL(GROUP_CONCAT(seg || ':' || start_step || ':' || end_step || ':' "
+            "|| IFNULL(roi_json, ''), '|'), '') FROM pose_segment WHERE desktop=? AND view=?",
+            (int(desktop), SCAN)).fetchone()
+        return (str(row[0]),)
+
     def roi(self, desktop: int, step: int) -> Optional[tuple]:
         """The scanner pose segment's ROI at ``step``, or ``None``."""
         row = self.db.pose_segment_for(FrameKey(int(desktop), int(step), SCAN)) or {}

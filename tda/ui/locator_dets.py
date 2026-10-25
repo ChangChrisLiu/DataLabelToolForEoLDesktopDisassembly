@@ -45,9 +45,11 @@ log = logging.getLogger(__name__)
 MAX_DET_CHIPS = 2
 #: ... and at most this many candidates in all (one on screen, four chips).
 MAX_CANDIDATES = 5
-#: A detection chip's label, and the note while it is the window on screen.
+#: A detection chip's label, and the note while it is the window on screen --
+#: the detector's finding, not a fact about the step (round 4, N15: a captive
+#: screw it stops finding at r may well still be in its hole until r + 2).
 DET_LABEL = "检测到消失的 {cls}"
-DET_NOTE = "这里有一个 {cls} 在第 {step} 帧消失了"
+DET_NOTE = "检测到一个 {cls} 消失了"
 VIEW = "scan"
 #: How often an idle worker asks whether its window has closed.
 IDLE_CHECK_S = 1.0
@@ -139,13 +141,21 @@ class LocatorDetections(QObject):
 
     # -- requests (GUI thread) ------------------------------------------------
     def request(self, token: Any, desktop: int, before: PlanItem, after: PlanItem,
-                cls: str) -> None:
-        """Ask for the vanished ``cls`` detections between two scanner frames."""
+                cls: str) -> Optional[Any]:
+        """Ask for the vanished ``cls`` detections between two scanner frames.
+
+        Returns the token of a request that will get **no** answer: the one
+        still queued that this one replaces, or this one when the worker has
+        stopped -- the caller forgets it was asked, so it is asked again the
+        next time it is wanted (round 4, B3).
+        """
         with self._lock:
             if self._stopped:
-                return
+                return token
+            displaced = self._job[0] if self._job is not None else None
             self._job = (token, int(desktop), before, after, str(cls))
             self._lock.notify_all()
+            return displaced
 
     def pending(self) -> bool:
         with self._lock:
@@ -164,12 +174,13 @@ class LocatorDetections(QObject):
                 self._lock.wait(left)
         return True
 
-    def shutdown(self, timeout: float = 10.0) -> None:
+    def shutdown(self, timeout: float = 10.0, wait: bool = True) -> None:
+        """Stop; ``wait=False`` lets a job in hand finish on its own (no answer is sent)."""
         with self._lock:
             self._stopped = True
             self._job = None
             self._lock.notify_all()
-        if self._thread.is_alive():
+        if wait and self._thread.is_alive():
             self._thread.join(timeout)
 
     # -- the worker -------------------------------------------------------------
