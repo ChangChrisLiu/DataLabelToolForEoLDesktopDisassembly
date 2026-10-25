@@ -66,7 +66,14 @@ def test_the_spec_has_the_paragraph_after_u23_and_v1_28_on_top():
                    DIFF_GUESS, "「候选 1/3」", "44 %（255/578）", "61 %（350/578）",
                    "检测器辅助评估过、没有采用", "34 % 到 42 %", "76 %", "其余机器 69 %",
                    "换视角也跟着这个零件", "按顶部「主视角」就是要这个零件的这一对",
-                   "（机器、两帧、ROI、扫描仪输入摘要）"):
+                   "（机器、两帧、ROI、扫描仪输入摘要）",
+                   # round 3
+                   "**消失的检测只作额外候选**", "`configs/detector.yaml` 的 `classes`",
+                   "最多 2 个", "差的第一处之后、第二三处之前", "最多四个小图", "画点线",
+                   "「检测到消失的 <类名>」", "「这里有一个 <类名> 在第 r 帧消失了」",
+                   "「候选 n 处」", "检测从不是第一个", "磁盘缓存（只读，不写）", "后台线程",
+                   "`DetectionEngine`", "就丢掉", "小窗隐藏时不算", "也不提示",
+                   "54 % 到 91 %（374/412）", "61 % 到 92 %（531/578）", "多变化步不变"):
         assert needed in para, needed
     assert "随时" not in para                                          # round 2, N10
     changes = body.split("## 14. 修订记录", 1)[1]
@@ -74,6 +81,7 @@ def test_the_spec_has_the_paragraph_after_u23_and_v1_28_on_top():
     assert first.startswith("- **v1.28（2026-10-24）**：**拆前 / 拆后**（U28，§4.5）")
     for needed in ("第一次标", "`removed` / `displaced`", "级联", "1.6 倍", "1/6", "随 … 一起拆走",
                    "扫描仪视角", "「拆前/拆后」按钮", "无快捷键", "`locator/open` 不变",
-                   "`pairs` / `diffs`"):
+                   "`pairs` / `diffs`", "第三轮", "消失检测作候选小图", "从不当第一个",
+                   "54 % 到 91 %"):
         assert needed in first, needed
     assert changes.index("- **v1.28") < changes.index("- **v1.24")
