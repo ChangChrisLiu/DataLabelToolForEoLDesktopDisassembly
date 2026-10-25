@@ -35,6 +35,7 @@ from tda.core.db_status import StatusMixin
 from tda.core.dbconn import ConnectionMixin
 from tda.core.dbdelete import DeleteMixin
 from tda.core.db_digest import DigestMixin
+from tda.core.db_moves import PhotoMoveMixin
 from tda.core.db_visreview import VisReviewRowsMixin
 from tda.core.model import (
     OCCLUDERS,
@@ -68,7 +69,7 @@ RESOLUTIONS = ("keep_old", "accept_new", "edited", "superseded")
 
 
 class Db(ConnectionMixin, PoseSegmentMixin, StatusMixin, DeleteMixin,
-         RecheckMixin, DigestMixin, VisReviewRowsMixin, BackupLockMixin):
+         RecheckMixin, DigestMixin, VisReviewRowsMixin, PhotoMoveMixin, BackupLockMixin):
     """Repository over the TDA SQLite file. Every write commits immediately --
     unless it runs inside :meth:`~tda.core.dbconn.ConnectionMixin.transaction`;
     :mod:`tda.core.db_pose` and :mod:`tda.core.db_status` mix in more readers,

@@ -411,7 +411,11 @@ def test_a_re_pointed_shot_is_copied_again():
     frame = FrameFile(FrameKey(1, 1, "cmp_oak1"), "F:/new.jpg")
     assert _source_moved({"src": "F:/old.jpg"}, frame, "cmp_oak1")
     assert not _source_moved({"src": "F:/new.jpg"}, frame, "cmp_oak1")
-    assert not _source_moved({"src": "F:/P_3.png"}, frame, "scan")   # a burst choice
+    scan = FrameFile(FrameKey(1, 1, "scan"), "F:/RGB11/P_0.png",
+                     {"burst": ["F:/RGB11/P_0.png", "F:/RGB11/P_3.png"]})
+    assert not _source_moved({"src": "F:/RGB11/P_3.png"}, scan, "scan")   # a burst choice
+    # U25: a renumbered scanner step keeps its name but not its burst
+    assert _source_moved({"src": "F:/RGB21/P_0.png"}, scan, "scan")
     assert not _source_moved(None, frame, "cmp_oak1")
 
 

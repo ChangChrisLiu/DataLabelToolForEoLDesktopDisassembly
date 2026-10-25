@@ -99,9 +99,11 @@ def _report(imports: list[LogImport], expected: dict[int, int], directory: Path)
     ]
     for li in imports:
         want = expected.get(li.desktop)
-        mark = "-" if want is None else ("ok" if want == len(li.steps) else "MISMATCH")
+        # n_logged_steps counts the sheet's rows, dupli rows included (U25 N2)
+        mark = "-" if want is None else ("ok" if want == li.sheet_rows else "MISMATCH")
+        rows = f" ({li.sheet_rows} rows)" if li.sheet_rows != len(li.steps) else ""
         lines.append(
-            f"| D{li.desktop:02d} | {li.meta.get('brand_model_raw', '')} | {len(li.steps)} "
+            f"| D{li.desktop:02d} | {li.meta.get('brand_model_raw', '')} | {len(li.steps)}{rows} "
             f"| {'' if want is None else want} | {mark} | {len(li.issues)} |"
         )
     lines.append("")
@@ -137,9 +139,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     out_path.write_text(_report(imports, expected, directory), encoding="utf-8")
 
     mismatched = [
-        (li.desktop, len(li.steps), expected[li.desktop])
+        (li.desktop, li.sheet_rows, expected[li.desktop])
         for li in imports
-        if li.desktop in expected and expected[li.desktop] != len(li.steps)
+        if li.desktop in expected and expected[li.desktop] != li.sheet_rows
     ]
     multi, repeat = operation_counts(imports)
     print(

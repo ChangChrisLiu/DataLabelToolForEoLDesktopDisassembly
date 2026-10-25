@@ -6,6 +6,8 @@ it, so no test ever touches the read-only F: drive.
 """
 from __future__ import annotations
 
+import copy
+
 import os
 from datetime import datetime
 from pathlib import Path
@@ -217,7 +219,9 @@ def test_save_load_roundtrip(roots99, fixes, tmp_path):
 # --------------------------------------------------------------------------
 def test_fixes_file_matches_spec(fixes):
     assert fixes["general"]["step_order_source"] == "oak1_timestamp"
-    assert fixes["oak"][60]["cam1_reorder_by_ts"] is True
+    # U25 round 2: the rows follow the folder numbers (003 = the dupli row)
+    assert fixes["oak"][60]["cam1_order"] == "folder"
+    assert "cam1_reorder_by_ts" not in fixes["oak"][60]
     assert fixes["oak"][60]["cam2_shift"]["from_dir"] == "004"
     # a Camera_1 *folder* name, not a logical step number
     assert fixes["oak"][60]["cam2_shift"]["to_cam1_dir"] == "003"
@@ -225,7 +229,10 @@ def test_fixes_file_matches_spec(fixes):
     assert fixes["oak"][24]["cam2_extra_from"] == "Components/C2/043"
     assert fixes["oak"][24]["as_step"] == 43
     assert fixes["oak"][10]["step1_keep"] == "latest"
-    assert fixes["scan"][1]["missing_steps"] == [2, 3, 4, 28, 29, 30, 31, 32, 34, 35]
+    # U25: logical steps are collapsed (D1's dupli rows 15 and 33 are not steps),
+    # and since round 2 Camera_1's 40th capture is a gallery shot, not step 38
+    assert fixes["scan"][1]["missing_steps"] == [2, 3, 4, 27, 28, 29, 30, 32, 33]
+    assert fixes["scan"][1]["duplicate_folders"] == [15, 33]
     assert fixes["rs"][42]["missing_steps_range"] == [1, 12]
     assert fixes["rs"]["folder_aliases"] == ["Disassemble", "Disassembly"]
     for view in ("oak", "scan", "rs"):
@@ -234,8 +241,9 @@ def test_fixes_file_matches_spec(fixes):
                 assert entry.get("reason"), f"{view}/{desktop} has no reason string"
 
 
-def test_d60_cam1_reordered_and_cam2_split(tmp_path, fixes):
-    """cam1 003/004 timestamps are swapped; cam2 lacks 003 and 005 holds two captures."""
+def test_d60_cam1_in_folder_order_and_cam2_split(tmp_path, fixes):
+    """cam1 003/004 carry swapped times but the rows follow the folders (U25 round 2);
+    cam2 lacks 003 and 005 holds two captures, paired by timestamp."""
     roots = build_tree(
         tmp_path,
         60,
@@ -255,24 +263,40 @@ def test_d60_cam1_reordered_and_cam2_split(tmp_path, fixes):
     )
     idx = scan_desktop(60, roots, fixes)
     assert idx.n_steps == 5
-    # logical order follows cam1 timestamps, so folder 004 is step 3.
-    assert idx.frames[FrameKey(60, 3, "oak1")].src_step_dir == "004"
-    assert idx.frames[FrameKey(60, 4, "oak1")].src_step_dir == "003"
-    # cam2 folder 004 pairs with cam1 folder 003 == logical step 4.
-    assert idx.frames[FrameKey(60, 4, "oak2")].src_step_dir == "004"
-    # cam2 folder 005 is split by timestamp across logical steps 3 and 5.
-    assert idx.frames[FrameKey(60, 3, "oak2")].src_step_dir == "005"
+    # folder order: 003 is row 3 (the fan still lifted), 004 row 4 (the fan gone)
+    assert idx.frames[FrameKey(60, 3, "oak1")].src_step_dir == "003"
+    assert idx.frames[FrameKey(60, 4, "oak1")].src_step_dir == "004"
+    # cam2 folder 004 pairs with cam1 folder 003 == logical step 3.
+    assert idx.frames[FrameKey(60, 3, "oak2")].src_step_dir == "004"
+    # cam2 folder 005 is split by timestamp across logical steps 4 and 5.
+    assert idx.frames[FrameKey(60, 4, "oak2")].src_step_dir == "005"
     assert idx.frames[FrameKey(60, 5, "oak2")].src_step_dir == "005"
     for step in range(1, 6):
         assert (
             idx.frames[FrameKey(60, step, "oak2")].ts
             == idx.frames[FrameKey(60, step, "oak1")].ts
         )
-    assert any("cam1_reorder_by_ts" in i for i in idx.issues)
+    assert any("cam1_order=folder applied" in i and "004->row 3" in i for i in idx.issues)
     # the confirmation names the resolved logical step, not just the folder
     assert any(
-        "cam2_shift: cam2 004 -> cam1 dir 003 = logical step 4" in i for i in idx.issues
+        "cam2_shift: cam2 004 -> cam1 dir 003 = logical step 3" in i for i in idx.issues
     )
+
+
+def test_cam1_reorder_by_ts_still_orders_by_time(tmp_path, fixes):
+    """The time-order fix itself still works for a desktop that declares it."""
+    fx = copy.deepcopy(fixes)
+    fx["oak"][60] = {"cam1_reorder_by_ts": True, "reason": "test"}
+    roots = build_tree(
+        tmp_path, 60,
+        oak1={"001": ["20250609_101820_447"], "002": ["20250609_101857_869"],
+              "003": ["20250609_102048_178"], "004": ["20250609_101931_616"]},
+        oak2={},
+    )
+    idx = scan_desktop(60, roots, fx)
+    assert idx.frames[FrameKey(60, 3, "oak1")].src_step_dir == "004"
+    assert idx.frames[FrameKey(60, 4, "oak1")].src_step_dir == "003"
+    assert any("cam1_reorder_by_ts applied" in i for i in idx.issues)
 
 
 def test_d42_cam2_swap(tmp_path, fixes):
@@ -350,12 +374,14 @@ def test_declared_missing_scan_steps_confirmed(tmp_path, fixes):
     idx = scan_desktop(1, roots, fixes)
     for step in (2, 3, 4):
         assert FrameKey(1, step, "scan") in idx.missing
-    confirmed = [i for i in idx.issues if i.startswith("fix:scan[1]")]
+    confirmed = [i for i in idx.issues if i.startswith("fix:scan[1] declared missing")]
     assert len(confirmed) == 1, idx.issues
     assert "confirmed absent" in confirmed[0]
     assert "[2, 3, 4]" in confirmed[0]
-    # the declared steps 28..35 have no cam1 folder in this 6-step tree
-    assert "have no cam1 folder" in confirmed[0]
+    # the declared steps 27..38 are beyond this 6-step tree
+    assert "beyond the 6 steps" in confirmed[0]
+    # and the scanner rule of a desktop that declares one is asserted too (U25)
+    assert any(i.startswith("fix:scan[1] duplicate_folders [15, 33]:") for i in idx.issues)
 
 
 def test_declared_missing_scan_step_present_is_mismatch(tmp_path, fixes):
@@ -481,7 +507,12 @@ def test_scan_and_rs_nominal_steps_map_through_cam1_folders(tmp_path, fixes):
         scan_steps={1: 10, 2: 10, 3: 10, 4: 10},
         rs_steps=[1, 2, 3, 4],
     )
-    idx = scan_desktop(60, roots, fixes)
+    # a time-reordered desktop without a scanner declaration (D60 before U25
+    # round 2): the scanner's folder numbers go through Camera_1's folders
+    fx = copy.deepcopy(fixes)
+    fx["oak"][60] = {"cam1_reorder_by_ts": True, "reason": "test"}
+    fx["scan"].pop(60, None)
+    idx = scan_desktop(60, roots, fx)
     # nominal scanner step 3 (RGB31) belongs to cam1 folder 003 == logical step 4.
     assert idx.frames[FrameKey(60, 4, "scan")].src_step_dir == "RGB31"
     assert idx.frames[FrameKey(60, 3, "scan")].src_step_dir == "RGB41"

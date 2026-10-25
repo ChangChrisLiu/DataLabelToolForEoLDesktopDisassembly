@@ -27,6 +27,12 @@ from typing import Callable, Iterable, Optional
 
 from tda.core import db_pose, rawroot
 from tda.core.db import Db
+from tda.core.db_moves import (
+    LOADED_DUPLI_KEY,
+    PhotoMoveConflict,
+    describe_blockers,
+    describe_left,
+)
 from tda.core.pose_breaks import describe_discard, describe_uncarried
 from tda.core.db_backup import DEFAULT_KEEP
 from tda.core.db_status import VIEW_COUNTERS
@@ -263,20 +269,23 @@ def add_desktop_issues(db: Db, desktop: int, key: str, lines: Iterable[str]) -> 
 # --------------------------------------------------------------------------- #
 # load-index
 # --------------------------------------------------------------------------- #
-#: Why ``load-index`` refuses an index file older than the gallery (task U10).
-STALE_INDEX = ("is a version-1 index, written before the components gallery and the "
-               "RealSense fixes (rs_extra_from: D1 step 40, D24 step 43): loading it would "
-               "mark frames the current index has as missing again. Nothing was loaded. "
-               "Run build-index first, then load-index again.")
+#: Why ``load-index`` refuses an index file older than the gallery (task U10)
+#: or older than the collapsed steps (task U25).
+STALE_INDEX = ("is an old index -- a version-1 index, written before the components "
+               "gallery and the RealSense fixes, or a version-2 index, written before the "
+               "sheet's dupli rows were collapsed into steps (U25): loading it would mark "
+               "frames the current index has as missing again or put photos on the wrong "
+               "steps. Nothing was loaded. Run build-index first, then load-index again.")
 
 
 class StaleIndex(ValueError):
-    """An index file written before the components gallery (version 1, task U10)."""
+    """An index file written before the gallery (v1, U10) or the collapse (v2, U25)."""
 
 
 def stale_index(index: dict[int, DesktopIndex]) -> list[int]:
-    """The desktops of ``index`` read from a version-1 file (``gallery`` unset)."""
-    return sorted(d for d, di in index.items() if not getattr(di, "gallery", True))
+    """The desktops of ``index`` read from a version-1 or version-2 file."""
+    return sorted(d for d, di in index.items()
+                  if not getattr(di, "gallery", True) or not getattr(di, "collapsed", True))
 
 
 def load_index_into_db(
@@ -378,6 +387,12 @@ def _load_one(
     The components gallery (task U10) is checked first: a shot whose photo the
     new index changes or no longer has, while somebody's work sits on it, fails
     the desktop (:class:`GalleryConflict`) before anything is written.
+
+    Then the sequence views (task U25): a photo the new index puts on another
+    step -- the collapsed ``dupli`` rows, the scanner's duplicate folders --
+    takes its keyframes, flags and keyed inputs along
+    (:mod:`tda.core.db_moves`); a verified frame among them fails the desktop
+    (:class:`~tda.core.db_moves.PhotoMoveConflict`) before anything is written.
     """
     with db.transaction():
         refused = gallery_refusals(db, desktop, di)
@@ -386,8 +401,21 @@ def _load_one(
                 "the new index would move annotated components-gallery shots: "
                 + "; ".join(refused) + " -- re-check the Components folders, or move the "
                 "work off those shots first")
+        # a photo the new index puts on another step takes its work along (U25);
+        # work on a photo the index no longer has in that view cannot follow it
+        left = db.photos_left(desktop, di)
+        if left:
+            raise PhotoMoveConflict(describe_left(desktop, left))
+        moves = db.plan_photo_moves(desktop, di)
+        blockers = db.photo_move_blockers(desktop, moves) if moves else []
+        if blockers:
+            raise PhotoMoveConflict(describe_blockers(desktop, blockers))
+        moved_work = db.apply_photo_moves(desktop, moves) if moves else {}
         merge_desktop_meta(
-            db, desktop, {"index_issues": list(di.issues), "index_n_steps": di.n_steps}
+            db, desktop, {"index_issues": list(di.issues), "index_n_steps": di.n_steps,
+                          # import-logs checks the frames carry this sheet's
+                          # collapse before it renumbers the step table (U25 B2)
+                          LOADED_DUPLI_KEY: list(getattr(di, "dupli_rows", []) or [])}
         )
         frames = di.frames
         # a sheet row of the laid-out parts the gallery already holds is not
@@ -409,6 +437,8 @@ def _load_one(
                 # it was); a measured one goes with the photo it was read off
                 db.upsert_frame(key, None, _missing_aux(db.get_frame(key)), None,
                                 {"missing": True})
+        if moved_work:
+            db.restore_frame_work(desktop, moved_work)
         dropped = _drop_stale_shots(db, desktop, di) if di.gallery else []
         if di.n_steps < 1:
             counts["frames"] += len(frames)
@@ -435,6 +465,8 @@ def _load_one(
             f"[load-index] D{desktop:02d}: {di.n_steps} steps, "
             f"{len(frames)} frames{extra}{cut}{shots}"
         )
+        for vm in moves.values():
+            log(f"[load-index] D{desktop:02d}: {vm.line(desktop)}")
         for line in gallery["moved"]:
             log(f"[load-index] D{desktop:02d}: {line}")
         if repointed:

@@ -121,6 +121,12 @@ class LogImport:
     actions: list[ActionRec] = field(default_factory=list)
     instances: dict[str, InstanceRec] = field(default_factory=dict)
     issues: list[str] = field(default_factory=list)
+    #: The sheet's ``dupli`` rows (sheet row numbers, 1-based) that were dropped
+    #: (task U25): a ``dupli`` row is a second photograph of the state before it,
+    #: not a step, so the rows after it are numbered on without it.
+    dupli_rows: list[int] = field(default_factory=list)
+    #: How many step rows the sheet has, ``dupli`` rows included.
+    sheet_rows: int = 0
 
 
 # --------------------------------------------------------------------------- #
@@ -246,18 +252,47 @@ class _Importer:
         self._prev_seq: Optional[int] = None
 
     # -- issues ----------------------------------------------------------- #
-    def issue(self, step: Optional[int], text: str) -> None:
-        where = f" step {step}:" if step is not None else ""
+    def issue(self, step: Optional[int | str], text: str) -> None:
+        if step is None:
+            where = ""
+        elif isinstance(step, str):
+            where = f" {step}:"
+        else:
+            where = f" step {step}:"
         self.out.issues.append(f"D{self.desktop:02d}{where} {text}")
 
     # -- run -------------------------------------------------------------- #
     def run(self, rows: list[dict]) -> LogImport:
+        """One step per sheet row, except the ``dupli`` rows (task U25).
+
+        A ``dupli`` row is the cameras photographing the state of the row
+        before it a second time: no operation, no new state, so it is not a
+        step. It is dropped and the rows after it are numbered on without it
+        (the scanner's own numbering never counted it either); its notes, if
+        any, are kept on the step it repeats.
+        """
         self._chassis()
-        for step, row in enumerate(rows, start=1):
+        step = 0
+        for row_no, row in enumerate(rows, start=1):
+            if row_no > 1 and is_dupli_row(row):
+                self._dupli(row_no, row)
+                continue
+            step += 1
             self._row(step, row)
+        self.out.sheet_rows = len(rows)
         self._resolve_socket_hosts()
         self._check_operations()
         return self.out
+
+    def _dupli(self, row_no: int, row: dict) -> None:
+        """Drop a ``dupli`` row; its sequence number still counts, its notes stay."""
+        self._check_sequence_number(f"sheet row {row_no} (dupli)", row)
+        self.out.dupli_rows.append(row_no)
+        text = (row.get(NOTES_COLUMN) or "").strip()
+        if text and self.out.steps:
+            held = self.out.steps[-1]
+            line = f"(dupli row {row_no}) {text}"
+            held.notes = f"{held.notes}\n{line}" if held.notes else line
 
     def _chassis(self) -> None:
         self.out.instances[CHASSIS_KEY] = InstanceRec(
@@ -549,7 +584,7 @@ class _Importer:
             inst.socket_host = host
 
     # -- sequence numbers ------------------------------------------------- #
-    def _check_sequence_number(self, step: int, row: dict) -> None:
+    def _check_sequence_number(self, step: int | str, row: dict) -> None:
         raw = (row.get(HEADER_CELL) or "").strip()
         if not raw:
             self.issue(step, "blank Sequence Number in the sheet")
@@ -560,10 +595,9 @@ class _Importer:
             self.issue(step, f"Sequence Number {raw!r} is not a number")
             return
         if seq in self._seen_seq:
-            self.issue(
-                step,
-                f"Sequence Number {seq} duplicated (first seen at step {self._seen_seq[seq]})",
-            )
+            first = self._seen_seq[seq]
+            where = first if isinstance(first, str) else f"step {first}"
+            self.issue(step, f"Sequence Number {seq} duplicated (first seen at {where})")
         elif self._prev_seq is not None and seq > self._prev_seq + 1:
             first, last = self._prev_seq + 1, seq - 1
             span = f"{first}" if first == last else f"{first}-{last}"
@@ -576,6 +610,59 @@ class _Importer:
 def import_log(desktop: int, rows: list[dict], meta: dict, taxonomy: Taxonomy) -> LogImport:
     """Turn one desktop's step rows into step/action/instance drafts."""
     return _Importer(desktop, meta, taxonomy).run(rows)
+
+
+# --------------------------------------------------------------------------- #
+# the dupli rows, for the frame index (task U25)
+# --------------------------------------------------------------------------- #
+def is_dupli_row(row: dict) -> bool:
+    """Does this sheet row only mark a second capture of the previous state?"""
+    raw = (row.get(NAME_COLUMN) or "").strip()
+    nest = (row.get(NEST_COLUMN) or "").strip()
+    return parse_raw_name(raw, nest).step_type_hint == "dupli"
+
+
+def dupli_rows_of(rows: list[dict]) -> list[int]:
+    """The 1-based sheet rows :meth:`_Importer.run` drops (row 1 never is one)."""
+    return [r for r, row in enumerate(rows, start=1) if r > 1 and is_dupli_row(row)]
+
+
+@dataclass(frozen=True)
+class SheetRows:
+    """What the frame index and the scanner check need from one sheet."""
+
+    n_rows: int
+    dupli_rows: tuple[int, ...]
+    notes: tuple[str, ...]          # the Notes cell of every row, in sheet order
+    names: tuple[str, ...]          # the Sequence Name of every row
+
+
+def read_sheet_rows(path: str | Path) -> SheetRows:
+    """Row count, ``dupli`` rows, names and notes of one exported sheet."""
+    rows, _meta = read_desktop_csv(path)
+    return SheetRows(
+        n_rows=len(rows),
+        dupli_rows=tuple(dupli_rows_of(rows)),
+        notes=tuple((row.get(NOTES_COLUMN) or "").strip() for row in rows),
+        names=tuple((row.get(NAME_COLUMN) or "").strip() for row in rows),
+    )
+
+
+def sheet_rows_by_desktop(directory: str | Path) -> dict[int, SheetRows]:
+    """:func:`read_sheet_rows` of every desktop's canonical export in ``directory``.
+
+    A sheet that cannot be read is left out (the index then says the desktop
+    has no sheet); an absent directory gives ``{}``.
+    """
+    out: dict[int, SheetRows] = {}
+    if not Path(directory).is_dir():
+        return out
+    for desktop, path in iter_desktop_csvs(directory):
+        try:
+            out[desktop] = read_sheet_rows(path)
+        except (OSError, ValueError, UnicodeDecodeError):
+            continue
+    return out
 
 
 # --------------------------------------------------------------------------- #

@@ -9,6 +9,7 @@
     python -m tda.cli infer-relations [--dry-run]     # fill empty relational fields
     python -m tda.cli constraints [--validate]        # spec-7 edges -> relation rows
     python -m tda.cli pose-breaks list|import|...     # per-view pose breaks (2.5)
+    python -m tda.cli scan-align  --desktop N         # scanner folders vs OAK steps (2.2)
     python -m tda.cli backup                          # SQLite backup API -> backup_dir
     python -m tda.cli status      [--desktop N]       # what the database holds
 
@@ -63,12 +64,20 @@ from tda.cli_common import (
 from tda.cli_graph import _add_constraints
 from tda.cli_pose import _add_pose_breaks
 from tda.cli_relations import _add_infer_relations
+from tda.cli_scan_align import _add_scan_align
 from tda.core import rawroot
 from tda.core.db import Db
 from tda.core.extra import extra_keys
 from tda.core.implied import implied_keys
-from tda.core.index import build_index, load_index, respell_paths, save_index
+from tda.core.index import (
+    build_index,
+    keep_previous,
+    load_index,
+    respell_paths,
+    save_index,
+)
 from tda.core.index_report import write_report
+from tda.core.logs import sheet_rows_by_desktop
 from tda.core.model import ALL_VIEWS, COMPONENT_VIEWS, VIEWS, is_cage_latch, is_context
 from tda.core.taxonomy import load_taxonomy
 
@@ -89,6 +98,10 @@ def cmd_build_index(args: argparse.Namespace) -> int:
     every ``F:/...`` into today's ``G:/...``. With the drive unplugged nothing
     is scanned and nothing is written: an index of zero frames would be loaded
     as "every frame missing".
+
+    The Drive sheets (``--logs``, default ``<raw_logs_dir>/drive``) say which
+    rows are ``dupli`` captures: those are collapsed out of the steps (task U25,
+    spec 2.2), so ``import-logs`` and the index number the steps alike.
     """
     paths = load_paths(args.paths)
     wanted = _desktops(args) or set(P.ALL_DESKTOPS)
@@ -103,10 +116,22 @@ def cmd_build_index(args: argparse.Namespace) -> int:
         print(f"[build-index] {raw.log_line}")
     out = args.out or P.index_path(paths)
     report = args.report or P.cache_file(paths, P.INDEX_REPORT_NAME)
+    sheet_dir = args.logs or P.drive_dir(paths)
+    sheets = sheet_rows_by_desktop(sheet_dir)
+    if not sheets:
+        print(f"[build-index] no Drive sheets under {sheet_dir}: the dupli rows are "
+              f"unknown, so no desktop's steps are collapsed (spec 2.2)")
+    else:
+        unsheeted = sorted(set(wanted) - set(sheets))
+        if unsheeted:
+            print(f"[build-index] no sheet for D{', D'.join(str(d) for d in unsheeted)}: "
+                  f"indexed without collapsing dupli rows")
 
-    index = build_index(sorted(wanted), roots, args.fixes, progress=True)
+    index = build_index(sorted(wanted), roots, args.fixes, progress=True, sheets=sheets)
     if raw is not None:
         respell_paths(index, raw.to_recorded, raw.respell)
+    for kept in keep_previous(out, report):
+        print(f"[build-index] kept the previous {kept}")
     save_index(index, out)
     write_report(index, report)
     print(f"[build-index] {len(index)} desktops, "
@@ -125,6 +150,9 @@ def _add_build_index(sub) -> None:
     p.add_argument("--out", default=None, help="index JSON (default <cache_dir>/index.json)")
     p.add_argument("--report", default=None, help="index report Markdown")
     p.add_argument("--fixes", default="configs/index_fixes.yaml")
+    p.add_argument("--logs", default=None,
+                   help="Drive sheets whose dupli rows are collapsed "
+                        "(default <raw_logs_dir>/drive)")
     p.set_defaults(func=cmd_build_index)
 
 
@@ -161,8 +189,21 @@ def cmd_load_index(args: argparse.Namespace) -> int:
         if failed:
             for text in failed:
                 print(f"[load-index] FAILED {text}")
+            conflicts = [t for t in failed if "PhotoMoveConflict" in t
+                         or "GalleryConflict" in t]
+            others = len(failed) - len(conflicts)
             print(f"[load-index] {len(failed)} desktops failed; every other desktop "
-                  f"was loaded. Re-run build-index for them, then load-index again.")
+                  f"was loaded, and nothing was written for these.")
+            if conflicts:
+                # a rebuilt index does not help here: the work is in the way (U25 N8)
+                print(f"[load-index] {len(conflicts)} of them were refused because work "
+                      f"sits on photos the new index moves or no longer has (listed "
+                      f"above): re-check those frames (or move the work off them), then "
+                      f"load-index again. Their step tables are left alone -- import-logs "
+                      f"refuses them until load-index has gone through.")
+            if others:
+                print(f"[load-index] for the other {others}: re-run build-index, then "
+                      f"load-index again.")
             return EXIT_ERROR
         return EXIT_OK
 
@@ -218,9 +259,11 @@ def logs_report(run: L.LogsRun, expected: Optional[dict[int, int]] = None) -> st
             lines.append(f"| D{r.desktop:02d} | | | | {r.status} | | | | | |")
             continue
         want = expected.get(r.desktop)
-        mark = "-" if want is None else ("ok" if want == r.steps else "MISMATCH")
+        # n_logged_steps counts the sheet's rows, dupli rows included (U25 N2)
+        mark = "-" if want is None else ("ok" if want == r.sheet_rows else "MISMATCH")
+        rows = f" ({r.sheet_rows} rows)" if r.sheet_rows and r.sheet_rows != r.steps else ""
         lines.append(
-            f"| D{r.desktop:02d} | {r.brand} | {r.steps} | {'' if want is None else want} "
+            f"| D{r.desktop:02d} | {r.brand} | {r.steps}{rows} | {'' if want is None else want} "
             f"| {mark} | {r.actions} | {r.instances} | {r.events} | {r.durations} "
             f"| {len(r.issues)} |"
         )
@@ -267,6 +310,12 @@ REFUSAL_ADVICE = {
         "would take over instances an annotator added in S1 (the sheet now names "
         "their keys; the report lists them). Nothing was written. Re-run with "
         "--adopt-extras to hand them to the sheet, or delete them in S1 first."
+    ),
+    L.REFUSED_NOT_LOADED: (
+        "have frames that are not loaded under the step numbering this sheet "
+        "collapses to (load-index was refused, failed or not run with a U25 "
+        "index). Nothing was written. Run load-index for them first, then "
+        "import-logs again."
     ),
 }
 
@@ -388,6 +437,9 @@ def cmd_import_ls(args: argparse.Namespace) -> int:
         except OSError as exc:
             print(f"[import-ls] cannot read {export}: {exc}")
             return EXIT_ERROR
+        only = _desktops(args)
+        if only is not None:
+            covered &= only
         blocked = P.desktops_without_steps(db, covered)
         if blocked and not args.allow_missing_steps:
             listed = ", ".join(f"D{d:02d}" for d in blocked)
@@ -402,6 +454,7 @@ def cmd_import_ls(args: argparse.Namespace) -> int:
         summary = import_ls_export(
             export, db, load_taxonomy(), P.read_index(paths, args.index),
             progress=args.progress, purge_all=args.purge_all,
+            desktops=_desktops(args),
         )
         out = args.summary or P.cache_file(paths, P.LS_SUMMARY_NAME)
         with open(out, "w", encoding="utf-8") as fh:
@@ -410,6 +463,12 @@ def cmd_import_ls(args: argparse.Namespace) -> int:
               f"{summary['instance_rows']} provisional instances, "
               f"{summary['relation_edges']} relations, "
               f"{summary['steps_with_notes']} steps with notes")
+        if summary.get("frames_renumbered") or summary.get("extra_shot_drafts_skipped") \
+                or summary.get("extra_shot_drafts_kept"):
+            print(f"[import-ls] {summary.get('frames_renumbered', 0)} image(s) landed on "
+                  f"another step number (U25); drafts on an extra shot of a step: "
+                  f"{summary.get('extra_shot_drafts_skipped', 0)} skipped (the step's own "
+                  f"photo has that part), {summary.get('extra_shot_drafts_kept', 0)} kept")
         print(f"[import-ls] wrote {out}")
         return EXIT_OK
 
@@ -425,6 +484,9 @@ def _add_import_ls(sub) -> None:
                         "desktops this export covers")
     p.add_argument("--allow-missing-steps", action="store_true",
                    help="import even though some desktops have no step table yet")
+    p.add_argument("--desktops", default=None,
+                   help="re-import only these desktops of the export (e.g. 18,24); "
+                        "the others' drafts are not touched")
     p.add_argument("--progress", action="store_true", help="print each project as it is read")
     p.set_defaults(func=cmd_import_ls)
 
@@ -680,6 +742,7 @@ SUBCOMMANDS: tuple[Callable[[argparse._SubParsersAction], None], ...] = (
     _add_infer_relations,
     _add_constraints,
     _add_pose_breaks,
+    _add_scan_align,
     _add_backup,
     _add_status,
     *_APP_SUBCOMMANDS,

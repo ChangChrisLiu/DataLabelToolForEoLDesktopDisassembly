@@ -174,10 +174,15 @@ def test_import_d63_duplicate_seq_numbers_reported(tax):
 def test_import_d01_dupli_and_connectors(tax):
     rows, meta = read_desktop_csv(FIXTURES / "desktop_01.csv")
     li = import_log(1, rows, meta, tax)
-    dupli = [s for s in li.steps if s.step_type == "dupli"]
-    assert len(dupli) == 2 and all(not actions_of(li, s.step) for s in dupli)
-    c = actions_of(li, 14)[0]  # "Connector 1" nest=PSU
+    # U25: the two dupli rows (15, 33) are dropped and the rows after them renumbered
+    assert li.dupli_rows == [15, 33] and li.sheet_rows == len(rows)
+    assert len(li.steps) == len(rows) - 2
+    assert not [s for s in li.steps if s.step_type == "dupli"]
+    assert [s.step for s in li.steps] == list(range(1, len(rows) - 1))
+    c = actions_of(li, 14)[0]  # "Connector 1" nest=PSU (row 14, before any dupli)
     assert li.instances[c.target].cls == "connector" and li.instances[c.target].cable == "cable:psu"
+    # row 16 "Connector 2" is step 15 now
+    assert li.steps[14].raw_name == rows[15]["Sequence Name"].strip()
 
 
 # --------------------------------------------------------------------------- #
@@ -223,9 +228,9 @@ def test_step_types(tax):
         ],
         tax=tax,
     )
+    # the dupli row is not a step any more (U25): dropped, the rest renumbered
     assert [s.step_type for s in li.steps] == [
         "initial",
-        "dupli",
         "reorient",
         "ignore",
         "auxiliary",
@@ -233,12 +238,14 @@ def test_step_types(tax):
         "compound",
         "normal",
     ]
-    assert li.steps[1].dupli is True and li.steps[0].dupli is False
-    # initial / dupli / ignore draft no actions at all.
-    for step in (1, 2, 4):
+    assert li.dupli_rows == [2]
+    assert [s.step for s in li.steps] == list(range(1, 8))
+    assert not any(s.dupli for s in li.steps)
+    # initial / ignore draft no actions at all.
+    for step in (1, 3):
         assert actions_of(li, step) == []
-    assert actions_of(li, 3)[0].target == "chassis"
-    assert actions_of(li, 3)[0].verb == "reorient"
+    assert actions_of(li, 2)[0].target == "chassis"
+    assert actions_of(li, 2)[0].verb == "reorient"
 
 
 def test_compound_from_and_in_name(tax):
