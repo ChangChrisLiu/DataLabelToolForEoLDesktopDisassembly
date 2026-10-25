@@ -25,10 +25,13 @@ extra shot), the one whose photo is the new step's own frame keeps its rows; a
 keyed row of the other is dropped and counted, its keyframes are kept unless
 they would duplicate a non-draft shape of the same part -- or, for a Label
 Studio draft, a draft of the same label from the step's own photo (U25 round 2:
-D24's oak1 step 36 would otherwise show the part twice). Its frame row's human
-columns are carried onto the new step where that one has none, and counted as
-dropped where it has its own; a pose break that lands on one already there is
-counted too.
+D24's oak1 step 36 would otherwise show the part twice). Of its frame row's
+human columns only ``review_status`` -- what was done on the step -- is carried
+onto the new step where that one has none (counted as dropped where it has its
+own); the photo-specific ones (:data:`PHOTO_COLUMNS`: a hand in the frame, the
+image quality, an operation in progress, the bench) describe that photo, which
+is now an extra shot, so they are left behind and reported (U25 round 3). A
+pose break that lands on one already there is counted too.
 
 The hand-written state events (``state_event.auto = 0``) follow the step table,
 and the step table follows the OAK1 rows: they move with ``oak1``'s
@@ -49,13 +52,17 @@ from typing import Iterable, Optional
 
 from tda.core.model import LS_PREFIX, VIEWS, FrameKey
 
-__all__ = ["FRAME_WORK_COLUMNS", "LOADED_DUPLI_KEY", "PhotoMoveConflict", "PhotoMoveMixin",
+__all__ = ["FRAME_WORK_COLUMNS", "LOADED_DUPLI_KEY", "PHOTO_COLUMNS", "PhotoMoveConflict",
+           "PhotoMoveMixin",
            "ViewMove", "describe_blockers", "describe_left", "loaded_collapse_refusal",
            "plan_view_moves"]
 
 #: Frame columns that hold what a human said about the photo.
 FRAME_WORK_COLUMNS = ("review_status", "hand_or_tool_in_frame", "in_progress",
                       "image_quality", "bench_annotated")
+#: Of those, the ones that describe the photo itself rather than the step: they
+#: never move from a photo that became an extra shot onto the step's own photo.
+PHOTO_COLUMNS = ("hand_or_tool_in_frame", "in_progress", "image_quality", "bench_annotated")
 #: Inputs keyed by ``(desktop, step, view, ...)``: they move with the photo.
 _KEYED_INPUTS = ("frame_override", "instance_frame_flags", "occluder_mask",
                  "frame_transform")
@@ -122,10 +129,13 @@ class ViewMove:
     #: Label Studio drafts of an extra shot's photo dropped because the step's
     #: own photo has a draft of the same label (N5).
     dropped_drafts: int = 0
-    #: Human frame columns carried from an extra shot's old step onto its new
+    #: ``review_status`` carried from an extra shot's old step onto its new
     #: step, and the ones dropped because the new step had its own (N4).
     carried_columns: int = 0
     dropped_columns: list[str] = field(default_factory=list)
+    #: Photo-specific columns of an old step whose photo became an extra shot:
+    #: they stay with that photo, not with the step (N16).
+    left_columns: list[str] = field(default_factory=list)
     #: Pose breaks that landed on a step that already had one (N4).
     dropped_breaks: int = 0
     #: Hand-written state events renumbered with the step table (oak1 only, B3).
@@ -151,11 +161,14 @@ class ViewMove:
             extra.append(f"dropped {self.dropped_drafts} Label Studio draft(s) of an extra "
                          f"shot whose label the step's own photo already has")
         if self.carried_columns:
-            extra.append(f"{self.carried_columns} frame column(s) carried from an extra "
+            extra.append(f"{self.carried_columns} review status(es) carried from an extra "
                          f"shot's old step")
         if self.dropped_columns:
-            extra.append(f"dropped frame column(s) the new step has its own of: "
+            extra.append(f"dropped review status(es) the new step has its own of: "
                          f"{', '.join(self.dropped_columns)}")
+        if self.left_columns:
+            extra.append(f"{len(self.left_columns)} photo column(s) left behind on an extra "
+                         f"shot: {', '.join(self.left_columns)}")
         if self.dropped_breaks:
             extra.append(f"{self.dropped_breaks} pose break(s) landed on one already there")
         if self.derived_rows:
@@ -331,8 +344,9 @@ class PhotoMoveMixin:
         olds = sorted(moves, key=lambda s: self._source_order(vm, s))
         # the frame rows' human columns: kept aside, the rows themselves deleted.
         # A new step whose own photo does not move keeps its row as it is. The
-        # row of an old step whose photo became an extra shot gives its columns
-        # to the new step where that has none, and counts the rest as dropped.
+        # row of an old step whose photo became an extra shot gives its review
+        # status to the new step where that has none (else counted as dropped);
+        # its photo columns describe the extra shot and are left behind.
         work: dict[int, dict] = {}
         held: dict[int, dict] = {}     # what the new step's row will hold
         cols = ", ".join(FRAME_WORK_COLUMNS)
@@ -354,6 +368,9 @@ class PhotoMoveMixin:
                     held[new], work[new] = {}, {}
                     continue
             for c, v in _written_columns(row).items():
+                if c in PHOTO_COLUMNS:
+                    vm.left_columns.append(f"step {old}->{new} {c}={v}")
+                    continue
                 if c not in held[new]:
                     held[new][c] = work[new][c] = v
                     vm.carried_columns += 1
