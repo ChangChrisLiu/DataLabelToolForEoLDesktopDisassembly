@@ -43,10 +43,10 @@ DEFAULT_MODELS = {
 }
 
 
-def done_keys(path) -> set:
-    """``(desktop, step, instance)`` of masks with a full set of rows for every model."""
+def done_keys(path) -> dict:
+    """``(desktop, step, instance) -> {(model, prompt)}`` of the rows already written."""
     if not path.exists():
-        return set()
+        return {}
     rows = defaultdict(set)
     with open(path, newline="", encoding="utf-8") as fh:
         for r in csv.DictReader(fh):
