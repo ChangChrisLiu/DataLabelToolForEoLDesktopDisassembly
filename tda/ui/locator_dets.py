@@ -128,8 +128,15 @@ class ReadOnlyEngine(DetectionEngine):
         return None
 
     def open_view(self, desktop: int, view: str) -> None:  # noqa: D102 - remembers the stamp
+        stamp = _file_key(self.cache.path_for(desktop, view)) if self.cache else None
         super().open_view(desktop, view)
-        self._read_as = _file_key(self.cache.path_for(desktop, view))
+        # a read that failed is not a read: the next look tries again (round 2, N8)
+        self._read_as = None if self._unreadable() else stamp
+
+    def _unreadable(self) -> bool:
+        """Did the last read of the file fail (rather than find another model's file)?"""
+        return bool(self.cache is not None
+                    and str(self.cache.discarded or "").startswith("unreadable"))
 
     def reread(self) -> bool:
         """Read the cache file again when the window's pass rewrote it since; ``True`` if so.
@@ -137,6 +144,10 @@ class ReadOnlyEngine(DetectionEngine):
         One ``stat`` when nothing changed. What this engine computed itself
         stays for the steps the file still lacks; the file wins where it has
         the step. The decoded frames are kept (they are the same pictures).
+        A read that fails -- the window replacing the file at that moment --
+        keeps what was held and leaves the stamp alone, so the next call reads
+        again (round 2, N8). The stamp is taken before the read: a file
+        rewritten in between is read once more next time, never skipped.
         """
         if self.cache is None or self.view is None:
             return False
@@ -145,9 +156,12 @@ class ReadOnlyEngine(DetectionEngine):
             return False
         mine = dict(self.cache.steps)
         self.cache.open(*self.view)
+        failed = self._unreadable()
         for step, entry in mine.items():
             self.cache.steps.setdefault(step, entry)
         self.cache.dirty = False
+        if failed:
+            return False
         self._read_as = stamp
         return True
 
@@ -303,24 +317,30 @@ class LocatorDetections(QObject):
         if self._opened != desktop:
             engine.open_view(desktop, VIEW)
             self._opened = desktop
-        frames = []
-        for item in (before, after):
-            frame = self._from_cache(item)
-            if frame is None and not self._turn_taken:
-                # the model waits for the window's first pass (N18), which may
-                # well write this very frame into the file meanwhile (N14)
-                self._wait_turn()
-                frame = self._from_cache(item)
-            if frame is None:
+        items = (before, after)
+        frames = [self._from_cache(item) for item in items]
+        if None in frames and not self._turn_taken:
+            # the model waits for the window's first pass (N18) -- which writes
+            # its file every few frames, so each look also asks the file, and
+            # the two frames are answered the moment they are both in it (N2)
+            self._wait_turn(lambda: self._fill(frames, items))
+        for index, item in enumerate(items):
+            if frames[index] is None:
                 self._load()
-                frame = engine.process(item)
-                if frame is None:
+                frames[index] = engine.process(item)
+                if frames[index] is None:
                     raise RuntimeError(f"scanner frame {item.step} has no pixels")
                 self.stats["detected"] += 1
             else:
                 self.stats["cached"] += 1
-            frames.append(frame)
         return vanished(frames[0].dets, frames[1].dets, cls, self.conf)
+
+    def _fill(self, frames: list, items) -> bool:
+        """Answer from the cache the frames still missing; ``True`` once none is."""
+        for index, item in enumerate(items):
+            if frames[index] is None:
+                frames[index] = self._from_cache(item)
+        return None not in frames
 
     def _from_cache(self, item: PlanItem):
         """The disk cache's answer for ``item``, read again if the window rewrote it (N14).
@@ -336,15 +356,20 @@ class LocatorDetections(QObject):
             frame = self.engine.answer_from_cache(item)
         return frame
 
-    def _wait_turn(self) -> None:
+    def _wait_turn(self, filled: Optional[Callable[[], bool]] = None) -> None:
         """Wait until this worker may build its model: the window's detector is first idle.
 
         U29, N18: built while the window's own detector was still loading or on
         its first pass, the dock's second model held the ``heavy`` lock and
         every other heavy load (SAM's import, the window's detector) queued
-        behind it -- 2.7 s in the round-4 probe. Raises :class:`_Abandoned`
-        when a newer request comes in meanwhile (the dock moved on) or the
-        worker stops; the turn, once given, is never asked for again.
+        behind it -- 2.7 s in the round-4 probe. Returns early, the turn not
+        taken, as soon as ``filled()`` says the job's frames are all in the
+        cache now (round 2, N2: the window's pass writes its file every eight
+        frames, and waiting for the whole pass made the chips of a view with
+        no file 0.6 s -> 4.3 s in the reviewer's probe). Raises
+        :class:`_Abandoned` when a newer request comes in meanwhile (the dock
+        moved on) or the worker stops; the turn, once given, is never asked
+        for again.
         """
         started = time.perf_counter()
         while True:
@@ -354,11 +379,15 @@ class LocatorDetections(QObject):
                 ready = True
             if ready:
                 self._turn_taken = True
+            # asked on the turn too: the pass that just ended wrote the file last
+            have = filled is not None and filled()
+            if ready or have:
                 waited = time.perf_counter() - started
                 self.stats["waited"] += waited
                 if waited > 0.05:
                     log.info("locator detector: waited %.1f s for the window's detector "
-                             "to finish its first pass", waited)
+                             "(%s)", waited, "its first pass is over" if ready
+                             else "it wrote the two frames")
                 return
             with self._lock:
                 if self._job is not None or self._stopped or self._closing():

@@ -199,14 +199,76 @@ def test_the_model_waits_for_the_window_and_is_not_built_when_the_pass_fills_the
         assert worker.built == [] and dock_model.calls == []       # answered from the file
         assert worker.stats["cached"] == 2 and worker.stats["waited"] > 0.3
         assert [d.box for d in answers[0][1]] == [GONE]
-        # the turn is taken once: later frames the file lacks are computed at once
-        idle.clear()
+        # with the window idle, later frames the file lacks are computed at once
         more = frames(tmp_path, (3, 4))
         worker.request("b", DESKTOP, more[3], more[4], "screw")
         drain(worker)
         assert worker.built == [1] and dock_model.calls == [3, 4]
     finally:
         worker.shutdown()
+
+
+def test_the_turn_once_taken_is_never_asked_for_again(qapp, tmp_path):
+    items = frames(tmp_path, (1, 2, 3, 4))
+    model = StubModel(TABLE)
+    idle = threading.Event()
+    idle.set()
+    worker, _answers = dock(tmp_path, model, ready=idle.is_set)
+    try:
+        worker.request("a", DESKTOP, items[1], items[2], "screw")
+        drain(worker)
+        idle.clear()                              # the window busy again (a re-plan)
+        worker.request("b", DESKTOP, items[3], items[4], "screw")
+        drain(worker)
+        assert model.calls == [1, 2, 3, 4] and worker.stats["waited"] < 0.3
+    finally:
+        worker.shutdown()
+
+
+def test_the_pair_is_answered_as_soon_as_the_pass_has_written_both_frames(qapp, tmp_path):
+    """Round 2, N2: the window writes its file every eight frames during the pass;
+    the dock looks at it on every poll and answers without waiting for the end."""
+    items = frames(tmp_path, (1, 2))
+    window_model, dock_model = StubModel(TABLE), StubModel(TABLE)
+    idle = threading.Event()                      # the pass never ends in this test
+    worker, answers = dock(tmp_path, dock_model, ready=idle.is_set)
+    try:
+        worker.request("a", DESKTOP, items[1], items[2], "screw")
+        time.sleep(0.3)
+        assert answers == []
+        window_pass(tmp_path, window_model, [items[1]])          # one frame written ...
+        time.sleep(0.3)
+        assert answers == [] and worker.pending()
+        started = time.perf_counter()
+        window_pass(tmp_path, window_model, [items[1], items[2]])  # ... then both
+        drain(worker)
+        assert time.perf_counter() - started < 1.0
+        assert [d.box for d in answers[0][1]] == [GONE]
+        assert worker.built == [] and dock_model.calls == []
+        assert worker.stats["cached"] == 2 and not idle.is_set()
+    finally:
+        worker.shutdown()
+
+
+def test_a_reread_that_fails_is_tried_again(qapp, tmp_path, monkeypatch):
+    """Round 2, N8: an unreadable file (the window replacing it that moment) is
+    not stamped as read; the next look reads it."""
+    items = frames(tmp_path, (1, 2))
+    window_pass(tmp_path, StubModel(TABLE), [items[1], items[2]])
+    engine = ReadOnlyEngine(config(tmp_path), tmp_path / "det",
+                            factory=lambda _c: StubModel(TABLE), identity="u29-stub")
+    engine.prepare()
+    engine.open_view(DESKTOP, "scan")
+    path = engine.cache.path_for(DESKTOP, "scan")
+    window_pass(tmp_path, StubModel({**TABLE, 3: [det(GONE)]}), frames(tmp_path, (3,)).values())
+    from pathlib import Path as _P
+
+    real = _P.read_text
+    monkeypatch.setattr(_P, "read_text", lambda self, *a, **k: (_ for _ in ()).throw(
+        PermissionError("in use")) if self == path else real(self, *a, **k))
+    assert engine.reread() is False and engine.cache.get(1) is not None   # kept what it had
+    monkeypatch.setattr(_P, "read_text", real)
+    assert engine.reread() is True and engine.cache.get(3) is not None    # tried again
 
 
 def test_a_job_waiting_for_its_turn_gives_way_to_a_newer_request(qapp, tmp_path):
