@@ -119,6 +119,7 @@ __all__ = [
     "CompiledInstance",
     "above",
     "compile_frame",
+    "keyframe_amodal",
     "marked_absent",
     "warp_slack",
     "derive_visibility",
@@ -481,6 +482,51 @@ def _part_mask(
     return None
 
 
+def _shape_parts(kf: ShapeKeyframe, transform: Similarity, canvas: tuple[int, int]):
+    """``(part, window, mask)`` of every part of a mask keyframe that lands on the frame.
+
+    The one walk over a keyframe's parts: :func:`compile_frame` composites
+    them and :func:`keyframe_amodal` unions them, so the two cannot disagree
+    about a shape. A part whose RLE is not the frame's size comes back with
+    ``mask`` ``None`` (the compiler reports it); a part with no geometry, or
+    none on this frame, is skipped.
+    """
+    for part in kf.parts:
+        if _wrong_size(part.rle, canvas):
+            yield part, None, None
+            continue
+        here = _part_window(part, transform, canvas)
+        if here is None:
+            continue
+        mask = _part_mask(part, transform, canvas, here)
+        if mask is None:
+            continue
+        yield part, here, mask
+
+
+def keyframe_amodal(kf: ShapeKeyframe, transform: Similarity, hw: tuple[int, int]
+                    ) -> tuple[np.ndarray, Optional[Window]]:
+    """``(amodal, window)``: what :func:`compile_frame` gives a mask instance shaped by ``kf``.
+
+    Step 4 of spec 3.3 alone -- the union of the parts, transformed onto the
+    frame -- with none of the painting, the occluders or the labels: an
+    instance's whole shape depends on its own keyframe and the frame's
+    transform and on nothing else in the frame (the pairwise overrides only
+    move *visible* pixels). The COCO export's ``amodal_segmentation`` is this
+    (task U29: it used to compile every exported frame for it).
+    """
+    canvas = (int(hw[0]), int(hw[1]))
+    amodal = np.zeros(canvas, dtype=bool, order="F")
+    window: Optional[Window] = None
+    for _part, here, mask in _shape_parts(kf, transform, canvas):
+        if mask is None:
+            continue
+        _view(amodal, here)[...] |= mask
+        window = _union_window(window, here)
+    _publish(amodal)
+    return amodal, window
+
+
 def _keyframe_box(
     kf: ShapeKeyframe, transform: Similarity, hw: tuple[int, int]
 ) -> Optional[tuple]:
@@ -815,15 +861,9 @@ def compile_frame(
         kinds[inst] = GEOM_MASK
         amodal = np.zeros(canvas, dtype=bool, order="F")
         window: Optional[Window] = None
-        for part in kf.parts:
-            if _wrong_size(part.rle, canvas):
-                problems.append(f"shape_size_mismatch:{inst}/{part.name}")
-                continue
-            here = _part_window(part, transform, canvas)
-            if here is None:
-                continue
-            mask = _part_mask(part, transform, canvas, here)
+        for part, here, mask in _shape_parts(kf, transform, canvas):
             if mask is None:
+                problems.append(f"shape_size_mismatch:{inst}/{part.name}")
                 continue
             layer = (inst, part.name)
             if layer in layer_masks:  # a repeated part name is one layer

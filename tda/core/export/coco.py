@@ -100,7 +100,7 @@ from typing import Any, Optional, Sequence
 import numpy as np
 
 from tda.core import masks
-from tda.core.compiler import select_keyframe
+from tda.core.compiler import keyframe_amodal, select_keyframe
 from tda.core.db import Db
 from tda.core.implied import is_implied
 from tda.core.model import (
@@ -126,7 +126,8 @@ from tda.core.model import (
 from tda.core.states import GALLERY_EXPORT_STATE, FrameState, state_at
 from tda.core.taxonomy import Taxonomy
 from tda.core.truth import TruthService
-from tda.core.truth_inputs import InputCache, events_of, infer_hw, pose_segment_of
+from tda.core.truth_fresh import selected_keyframes
+from tda.core.truth_inputs import InputCache, events_of, gather, infer_hw, pose_segment_of
 from tda.core.vis_review import stamp_covers
 
 __all__ = [
@@ -753,23 +754,43 @@ def _occluders_of(db: Db, key: FrameKey) -> dict[str, str]:
 
 
 def _amodal_rles(service: TruthService, key: FrameKey, wanted,
-                 cache: Optional[InputCache] = None) -> dict[str, dict]:
+                 cache: Optional[InputCache] = None,
+                 shapes: Optional[dict] = None) -> dict[str, dict]:
     """The whole shape of each ``wanted`` instance on this frame, as full-frame RLE.
 
-    The truth table stores the visible mask alone (spec 3.4), so the frame is
-    compiled once -- through the export's :class:`InputCache`, which reads the
-    instance table, the log and the keyframes once per desktop -- and only
-    when something is wanted. An instance with no amodal shape on the frame is
-    left out.
+    The truth table stores the visible mask alone (spec 3.4). The whole shape
+    of a part is its keyframe's parts on the frame and nothing else
+    (:func:`tda.core.compiler.keyframe_amodal`), so it is derived from the
+    keyframe the compiler would select here (:func:`selected_keyframes`, read
+    off the frame's gathered inputs) -- not by compiling the frame, which is
+    what U26 did, once per exported frame: 1.6 s of D3/scan's 1.7, 34 s of
+    D2-D21's 36 (task U29, U26 N6). One keyframe usually shapes a part over
+    dozens of frames, so the encoded shape is kept in ``shapes`` by keyframe
+    (id, version), transform and frame size, for the export's whole run.
+    Byte for byte what ``compile(...).instances[name].amodal`` encodes to: the
+    same walk over the parts, the same window, the same encoder. An instance
+    the frame does not shape -- not needed here, no keyframe, a box -- is left
+    out, as before.
     """
     if not wanted:
         return {}
-    compiled = service.compile(key, cache)
+    inputs = gather(service.db, service.tax, key, cache, service.cache_dir)
+    chosen = selected_keyframes(inputs)
+    shapes = shapes if shapes is not None else {}
+    transform = inputs.transform
+    turn = (float(transform.scale), float(transform.theta), float(transform.tx),
+            float(transform.ty))
     out: dict[str, dict] = {}
     for name in wanted:
-        found = compiled.instances.get(name)
-        if found is not None and found.amodal is not None:
-            out[name] = masks.encode_rle(found.amodal, getattr(found, "amodal_window", None))
+        kf = chosen.get(name)
+        if kf is None or kf.geom_type == GEOM_BOX:
+            continue
+        memo = (kf.id, kf.version, id(kf) if kf.id is None else None, turn, inputs.hw)
+        rle = shapes.get(memo)
+        if rle is None:
+            amodal, window = keyframe_amodal(kf, transform, inputs.hw)
+            rle = shapes[memo] = masks.encode_rle(amodal, window)
+        out[name] = dict(rle)            # an annotation's own object, as before
     return out
 
 
@@ -915,10 +936,12 @@ def export_coco(
     service = truth or TruthService(db, tax)
 
     tier = view_tier(view, tax)  # the view's, so it is read once for the file
+    #: the encoded whole shapes by keyframe, transform and size (U29)
+    shapes: dict = {}
     for desktop in desktops:
         ctx = load_ctx(db, tax, desktop, view)
-        # the amodal shapes compile each frame once more; the step-independent
-        # reads are shared by the desktop's frames (written before the loop)
+        # the amodal shapes read each frame's inputs once more; the
+        # step-independent reads are shared by the desktop's frames
         inputs = InputCache()
         # the compiled rows of an unverified frame are a cache the
         # annotator's commits leave stale (spec 3.4): fill it before
@@ -972,7 +995,7 @@ def export_coco(
                 name for name, row in rows.items() if row.get("visible_rle")
                 and (amodal or name in occluders
                      or (hidden and row.get("visibility") == Visibility.OCCLUDED_FULL.value)))
-            amodals = _amodal_rles(service, key, shaped, inputs)
+            amodals = _amodal_rles(service, key, shaped, inputs, shapes)
             # 「可见性审查」 (task U24): the rows stamped for the label they have
             flags = db.instance_flags_at(key)
             for instance in sorted(rows):
