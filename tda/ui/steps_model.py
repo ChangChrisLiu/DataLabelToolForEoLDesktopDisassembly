@@ -34,6 +34,8 @@ from tda.core.model import (
     is_context,
     machine_only,
 )
+from tda.core.captive_replay import record_captive_fixes
+from tda.core.relation_replay import record_relation_fixes
 from tda.core.states import (
     CABLE_CLASS,
     CABLE_PREFIX,
@@ -659,8 +661,31 @@ class StepTableData:
             else:
                 inst.attrs.pop("head", None)
         else:
-            inst.attrs["captive"] = as_bool(value)
-            inst.attrs["captive_source"] = "manual"
+            self._set_captive(inst, as_bool(value))
+
+    def _set_captive(self, inst: InstanceRec, new: bool) -> None:
+        """The ``Captive`` cell, as ``Shift+T`` flips it (task U27 round 3, R2-N4).
+
+        Ticked: the screw stays in its part -- ``parent`` is the one it has,
+        or else what it ``fastens`` (the importer's own rule), and ``attached``
+        is ticked, so it rides out with that part instead of standing
+        ``loosened`` in the chassis until the next re-import fills it. When
+        neither names a part of this desktop nothing is filled and the open
+        questions say so (``captive but has no parent``). Unticked:
+        ``attached`` is unticked, ``parent`` kept, as 「其实拧下来了」 does.
+        """
+        from tda.core.graph_infer import resolve_ref
+
+        was = bool(inst.attrs.get("captive"))
+        inst.attrs["captive"] = new
+        inst.attrs["captive_source"] = "manual"
+        if new and not was:
+            parent = inst.parent or resolve_ref(self.instances, inst.fastens)
+            if (parent and parent != inst.key and parent in self.instances
+                    and not self._would_cycle(inst.key, parent)):
+                inst.parent, inst.attached = parent, True
+        elif was and not new:
+            inst.attached = False
 
     def _would_cycle(self, key: str, parent: str) -> bool:
         """Would setting ``parent`` on ``key`` close a parent loop?"""
@@ -763,7 +788,7 @@ class StepTableData:
         self.relabelled.pop(key, None)
         return record
 
-    def save(self, db: Db, *, graph: bool = True) -> list[str]:
+    def save(self, db: Db, *, graph: bool = True, captive_ops: bool = True) -> list[str]:
         """Write the session back and recompile the automatic state events.
 
         ``graph=False`` leaves the constraint graph alone (no re-derivation,
@@ -797,6 +822,20 @@ class StepTableData:
         derived log starts from those initial states. A frozen frame now asks
         for a part it was not confirmed with, so every verified frame of the
         desktop is queued for a re-check, as ``infer-relations`` does.
+
+        Every relational field (``parent``, ``attached``, ``mounted_on``,
+        ``fastens``, ``socket_host``, ``cable``, ``slot_id``, ``group_id``,
+        ``group_order``, ``removal_direction``, a latch's ``of``) the save
+        changes on a part the database already holds is logged as one
+        ``relation_fix`` row with its inverse -- set back to the importer's
+        value included -- so ``import-logs --force`` replays it
+        (:mod:`tda.core.relation_replay`, task U27). The parts staged in this
+        session (added, split off a compound row) have no stored value to
+        differ from and are not. A screw whose ``Captive`` cell the save flips
+        is logged as a ``captive_fix`` row, the op ``Shift+T`` writes, so the
+        re-import keeps it too (U27 round 2, B1); ``captive_ops=False`` is for
+        the caller that logs that row itself -- ``Shift+T``'s own write
+        (:func:`tda.ui.session_captive.write_captive`).
         """
         from tda.pipeline import split_pose_segments    # late: tda.pipeline is heavy
 
@@ -804,6 +843,14 @@ class StepTableData:
         self.recut = {}
         with db.transaction():
             moved = _reorients_moved(db.steps(self.desktop), self.steps)
+            # every relational field this Apply changes on a stored part is
+            # one op, so a forced re-import replays it (task U27); a flipped
+            # Captive cell is the op Shift+T writes (round 2)
+            stored = db.instances(self.desktop)
+            record_relation_fixes(db, self.desktop, stored, self.instances, self.annotator)
+            if captive_ops:
+                record_captive_fixes(db, self.desktop, stored, self.instances, actions,
+                                     self.annotator)
             db.replace_steps(self.desktop, self.steps, actions)
             for inst in self.instances.values():
                 db.upsert_instance(inst)

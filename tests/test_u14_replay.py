@@ -104,7 +104,7 @@ def test_a_flip_survives_a_forced_re_import(imported, tmp_path, tax):
                                            "captive_source": "heuristic"}]
     text = "\n".join(printed)
     assert "the captive flags flipped with Shift+T" in text           # the --force warning
-    line = "captive fixes (Shift+T) kept 1: screw.cpu_cooler.01 not captive (sheet: captive)"
+    line = "captive fixes (Shift+T / Steps) kept 1: screw.cpu_cooler.01 not captive (sheet: captive)"
     assert line in text and line in run.runs[0].corrections
     # the other fan screws keep the guess
     assert rec(db, "screw.cpu_cooler.02").attrs["captive"] is True

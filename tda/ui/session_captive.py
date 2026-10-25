@@ -92,7 +92,9 @@ def write_captive(db: Db, tax, rows: dict, annotator: Optional[str] = None,
         fresh = [issue for issue in data.issues if issue not in before]
         if fresh:
             raise SessionRefusal(NEW_ISSUE.format(issue=fresh[0]))
-    messages = data.save(db, graph=False)
+    # the captive_fix row is the caller's (commit_captive_fix logs it with
+    # its reach); the parent / attached the flip moves are relation fixes
+    messages = data.save(db, graph=False, captive_ops=False)
     restamp_graph(db, desktop, tax)
     return messages
 
@@ -206,10 +208,13 @@ def commit_captive_fix(db: Db, truth: TruthService, key: FrameKey, instance: str
     signed = _signed(db, key.desktop, instance)
     conflicted = _conflicted(db, key.desktop, instance)
     before = _held(db, truth.tax, key.desktop, instance, frozen)
-    payload = fix.rows(fix.after) | {"view": key.view, "reach": reach,
-                                     "annotator": annotator}
-    inverse = fix.rows(fix.before) | {"view": key.view, "reach": reach,
-                                      "annotator": annotator}
+    # the screw's raw name: a forced re-import finds the flipped screw by it
+    # when the sheet is renumbered (task U27 round 2, B1)
+    held = db.instances(key.desktop).get(instance)
+    common = {"view": key.view, "reach": reach, "annotator": annotator,
+              "raw_name": (list(held.raw_names or ()) or [None])[0] if held else None}
+    payload = fix.rows(fix.after) | common
+    inverse = fix.rows(fix.before) | common
     try:
         with db.transaction():
             messages = write_captive(db, truth.tax, payload, annotator, check=True)
