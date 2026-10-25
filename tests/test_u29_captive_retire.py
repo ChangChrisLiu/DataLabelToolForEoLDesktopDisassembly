@@ -119,6 +119,41 @@ def test_the_undo_of_the_flip_out_takes_the_retirement_back(d2, tmp_path, tax):
     assert record(d2) == (True, FAN, True)
 
 
+def test_a_parent_set_by_hand_on_a_plain_screw_survives_a_flip_in_and_out(d2, tmp_path, tax):
+    """Round 2, N1 (the reviewer's scene): only what was set while captive is retired.
+
+    A plain screw given ``parent = motherboard.01`` by hand in Steps keeps it
+    through a re-import (main's behaviour); ticking and unticking ``Captive``
+    retires the restatement made while it was captive, not the hand-set fix,
+    so the next re-imports still keep ``motherboard.01`` -- and say nothing.
+    """
+    board = "screw.motherboard.01"
+    apply_steps(d2, tax, D2, (board, "captive", False))     # plain to begin with
+    reimport(d2, tmp_path, tax, D2)
+    rec = d2.instances(D2)[board]
+    assert (rec.attrs.get("captive"), rec.parent, rec.attached) == (False, None, False)
+    apply_steps(d2, tax, D2, (board, "parent", "motherboard.01"))
+    reimport(d2, tmp_path, tax, D2)
+    rec = d2.instances(D2)[board]
+    assert (rec.attrs.get("captive"), rec.parent) == (False, "motherboard.01")
+    apply_steps(d2, tax, D2, (board, "captive", True))      # in: parent kept, attached
+    apply_steps(d2, tax, D2, (board, "captive", False))     # out again
+    rows = [op["payload"] for op in d2.ops_of_kind(D2, OP_RELATION_FIX)
+            if op["payload"]["key"] == board and op["payload"]["field"] == "parent"]
+    hand = [r for r in rows if r.get("captive") is False and "retires" not in r][0]
+    assert hand["new"] == "motherboard.01"
+    for _ in range(2):
+        run = reimport(d2, tmp_path, tax, D2)
+        assert not_matched(run) == [], not_matched(run)
+        rec = d2.instances(D2)[board]
+        assert (rec.attrs.get("captive"), rec.parent, rec.attached) == (
+            False, "motherboard.01", False)
+        done = replayed(d2, D2)
+        kept = [e for e in done["kept"] + done["agrees"]
+                if (e["key"], e["field"]) == (board, "parent")]
+        assert kept and kept[0]["value"] == "motherboard.01" and kept[0]["after_retired"]
+
+
 def test_a_steps_untick_retires_it_too(d2, tmp_path, tax):
     """The Captive cell (U27 round 2) is the same flip: unticked, parent kept."""
     board = "screw.motherboard.01"

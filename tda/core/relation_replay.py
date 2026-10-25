@@ -267,10 +267,12 @@ def record_captive_turns(db: Db, desktop: int, before: Mapping[str, InstanceRec]
     other ``captive``:
 
     * flipped **out of** captive -- a row that **retires** it (``retires`` =
-      the ids of the part's fixes of that field so far): the field's value
-      only meant "rides out with" on a captive screw, so no fix of it is in
-      force any more and the importer's value stands; the replay lists it
-      under ``retired`` and prints nothing;
+      the ids of the part's fixes of that field set while it was captive):
+      those values only meant "rides out with" on a captive screw. The
+      replay falls back to the latest fix left standing -- a ``parent`` an
+      annotator gave the plain screw by hand (round 2, N1) -- and with none,
+      the importer's value stands; it lists the retirement under ``retired``
+      and prints nothing;
     * flipped **into** captive -- a row that restates the value the screw kept
       under the new ``captive``, so the part it rides out with is replayed.
 
@@ -304,7 +306,10 @@ def record_captive_turns(db: Db, desktop: int, before: Mapping[str, InstanceRec]
             payload, inverse = fix_rows(desktop, rec, name, value, value, by, at, parts)
             retired: list[int] = []
             if not now:
-                retired = [int(op["id"]) for op in mine]
+                # only what was set while it was captive (round 2, N1): a parent
+                # an annotator gave the plain screw by hand stays in force
+                retired = [int(op["id"]) for op in mine
+                           if (op.get("payload") or {}).get("captive") is True]
                 payload[RETIRES] = retired
             db.log_op(int(desktop), OP_VIEW, OP_RELATION_FIX, payload, inverse, str(by))
             out.append((key, name, retired))
@@ -646,6 +651,20 @@ def replay_relations(ops: list[dict], fresh: Mapping[str, InstanceRec],
     for (kind, target, name), rows in sorted(
             groups.items(), key=lambda item: (item[0][1], FIELDS.index(item[0][2]), item[0][0])):
         last, key, missing = rows[-1]
+        retired_by: list[int] = []
+        if (last.get("payload") or {}).get(RETIRES) is not None:
+            # a flip out of captive retired the fixes set while it was captive
+            # (U29): the latest fix it left standing -- one set by hand while
+            # the screw was not captive -- is the word; with none, the
+            # importer's value stands (round 2, N1)
+            gone = {int(i) for op, _k, _w in rows
+                    for i in ((op.get("payload") or {}).get(RETIRES) or ())}
+            live = [row for row in rows if (row[0].get("payload") or {}).get(RETIRES) is None
+                    and int(row[0]["id"]) not in gone]
+            if live:
+                retired_by = [int(op["id"]) for op, _k, _w in rows
+                              if (op.get("payload") or {}).get(RETIRES) is not None]
+                last, key, missing = live[-1]
         payload = last.get("payload") or {}
         value = payload.get("new")
         if _names_a_part(name, value):
@@ -658,6 +677,8 @@ def replay_relations(ops: list[dict], fresh: Mapping[str, InstanceRec],
                 older.setdefault(k, []).append(int(op["id"]))
         report.superseded.extend({"key": k, "field": name, "ops": ids, "by": int(last["id"])}
                                  for k, ids in sorted(older.items()))
+        if retired_by:
+            entry["after_retired"] = retired_by
         if payload.get(RETIRES) is not None:
             # a flip out of captive retired the field's fixes (U29, U27 R3-N1):
             # none is in force, the importer's value stands, nothing to say
