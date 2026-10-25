@@ -466,18 +466,51 @@ def label_changes(row: dict, compiled_inst: CompiledInstance,
 
     ``placement`` needs no such gate: it comes from the state machine.
 
+    **Something seen where the frozen row saw nothing** is compared too (task
+    U29, :func:`seen_now`): a frozen row with no visible pixel says the part
+    cannot be seen at all, and a compilation that shows some of it under
+    another label is another statement, however few the pixels. The 20 px
+    floor of :func:`disagreement` is there for re-tracing noise around the
+    confirmed outline, and an empty row has no outline to re-trace: without
+    this, a 16 px part 被线挡住（完全）on a confirmed frame stayed
+    ``occluded_full`` after ``Ctrl+Z`` -- 16 differing pixels are under the
+    floor, and the empty row's label is the one its (emptied) geometry gives,
+    so it was not "forced" either. The other way round -- a few confirmed
+    pixels gone under the floor -- is that outline's own noise and stays
+    what it was (a sliver of 31 px the 2 px band swallows, D3/scan 10).
+
     A stored ``NULL`` is "not recorded" rather than a value to disagree with.
     """
     stated = override is not None and bool(override.visibility)
     out: list[dict] = []
     for field in LABEL_FIELDS:
-        if field == "visibility" and not (stated or was_forced(row)):
-            continue
         old = row.get(field)
         new = getattr(compiled_inst, field)
-        if (old or None) != (new or None):
-            out.append({"field": field, "old": old, "new": new})
+        if (old or None) == (new or None):
+            continue
+        if field == "visibility" and not (stated or was_forced(row)
+                                          or (old and seen_now(row, compiled_inst))):
+            continue
+        out.append({"field": field, "old": old, "new": new})
     return out
+
+
+def seen_now(row: dict, compiled_inst: CompiledInstance) -> bool:
+    """Is a mask row empty where the compilation shows pixels? (task U29)
+
+    Box rows (a bench part) have no visible mask to be empty and are left to
+    :func:`_box_disagreement`; a row with no RLE at all is already a
+    disagreement there ("geometry appearing always counts"). Measured on the
+    run lengths and inside the compiler's window, so it costs the part's
+    size, not the frame's -- and it is only asked when the two labels
+    already differ.
+    """
+    if row.get("geom_type") == GEOM_BOX or is_box(compiled_inst):
+        return False
+    stored = row.get("visible_rle")
+    if stored is None or masks.RunLengths(stored).area() != 0:
+        return False
+    return compiled_inst.visible is not None and _Compiled(compiled_inst).area() > 0
 
 
 def labels_still_hold(labels: list[dict], compiled_inst: CompiledInstance) -> bool:

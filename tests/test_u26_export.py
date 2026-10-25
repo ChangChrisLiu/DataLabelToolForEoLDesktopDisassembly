@@ -270,12 +270,14 @@ def test_pycocotools_reads_the_amodal_fields(scene, tmp_path):
         assert int(coco.annToMask(coco.anns[a["id"]]).sum()) == a["area"]
 
 
-def test_the_amodal_shapes_cost_one_compilation_per_exported_frame(scene, tmp_path,
-                                                                   monkeypatch):
-    """Not stored, so derived on every export -- once per frame, and only with them.
+def test_the_amodal_shapes_cost_no_compilation(scene, tmp_path, monkeypatch):
+    """Not stored, so derived on every export -- from the keyframes, not by compiling.
 
-    Without them the U2 property holds: an export over an untouched view
-    compiles nothing (``tests/test_session_fresh.py``).
+    U26 compiled every exported frame for them (N6); task U29 takes each
+    part's whole shape from its keyframe (:func:`tda.core.compiler.keyframe_amodal`),
+    so the U2 property holds with them too: an export over an untouched view
+    compiles nothing, whatever the flags (``tests/test_u29_export_amodal.py``
+    pins the bytes against the compiling exporter).
     """
     import tda.core.truth as truth_mod
 
@@ -284,17 +286,10 @@ def test_the_amodal_shapes_cost_one_compilation_per_exported_frame(scene, tmp_pa
     steps: list[int] = []
     monkeypatch.setattr(truth_mod, "compile_frame",
                         lambda key, *a, **k: (steps.append(key.step), original(key, *a, **k))[1])
-    doc, _ = export(scene, tmp_path, "again.json")
-    assert sorted(steps) == sorted(i["extra"]["step"] for i in doc["images"])
-    steps.clear()
-    slim, _ = export(scene, tmp_path, "slim.json", amodal=False)
-    # the parts hidden completely still need their boxes: ram_latch.03 is
-    # under a screw on every frame
-    assert sorted(steps) == sorted(i["extra"]["step"] for i in slim["images"])
-    steps.clear()
+    export(scene, tmp_path, "again.json")
+    export(scene, tmp_path, "slim.json", amodal=False)
     export(scene, tmp_path, "slimmer.json", amodal=False, hidden=False)
-    # ... and without it only the 被线挡住（完全） part does: its frame only
-    assert steps == [V.CABLE_STEP]
+    assert steps == []
 
 
 def test_the_cli_flags(scene, tmp_path, capsys):

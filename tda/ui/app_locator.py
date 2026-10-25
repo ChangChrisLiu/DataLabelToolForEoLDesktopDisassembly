@@ -370,11 +370,27 @@ class LocatorMixin:
         me = weakref.ref(self)
         held = LocatorDetections(engine, config.conf, parent=self,
                                  after=getattr(self, "_sam_turn", None),
-                                 stop_when=lambda: me() is None or bool(me().closed))
+                                 stop_when=lambda: me() is None or bool(me().closed),
+                                 ready=lambda: me() is None or me().window_detector_idle())
         held.sigDone.connect(self._on_locator_dets)
         self._locator_det = held
         self._locator_det_answers.clear()
         return held
+
+    def window_detector_idle(self) -> bool:
+        """Has the window's own detector nothing left to do? (U29, N18; any thread)
+
+        The model loaded (or failed) and the pass over the view on screen run
+        out -- or no detector at all. The dock's worker builds its own model
+        only once this has been true (it asks until it is, then never again):
+        the window's build and its first pass go first, and the frames that
+        pass writes to the disk cache are read from there, not computed twice.
+        """
+        worker = getattr(self, "det_worker", None)
+        try:
+            return worker is None or not worker.pending()
+        except Exception:  # noqa: BLE001 - a worker torn down is an idle one
+            return True
 
     def _locator_det_key(self, pair: PairScene) -> Optional[tuple]:
         """What a pair's detection chips are asked by, or ``None`` when it takes none."""
