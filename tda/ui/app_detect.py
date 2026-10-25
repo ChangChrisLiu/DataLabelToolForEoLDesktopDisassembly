@@ -593,9 +593,11 @@ class DetectMixin:
         config = self.det_config
         if kind == "on" and config is not None:
             self.det_state = "on"
-            log.info("small-part detector on for %s, classes %s at conf >= %g; %s; "
+            log.info("small-part detector on for %s, classes %s at conf >= %g%s; %s; "
                      "config %s, cache %s", list(config.views), list(config.classes),
-                     config.conf, text, config.source,
+                     config.conf,
+                     "".join(f", {c} >= {v:g}" for c, v in config.conf_by_class),
+                     text, config.source,
                      self.det_worker.engine.cache_root if self.det_worker else "")
             return
         self.det_state = "off"
@@ -846,7 +848,8 @@ class DetectMixin:
         drawn = self._det_drawn(set(wanted))
         ranking = DetRanking(key=key, neighbour=frame.neighbour)
         for index, det in enumerate(frame.dets):
-            if det.cls not in wanted or det.conf < config.conf or index not in frame.change:
+            if (det.cls not in wanted or det.conf < config.conf_for(det.cls)
+                    or index not in frame.change):
                 continue
             cx, cy = det.centre
             if not (roi[0] <= cx < roi[2] and roi[1] <= cy < roi[3]):

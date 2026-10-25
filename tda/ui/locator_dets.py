@@ -186,10 +186,14 @@ class LocatorDetections(QObject):
     def __init__(self, engine: DetectionEngine, conf: float, parent: Optional[QObject] = None,
                  after: Optional[Turn] = None,
                  stop_when: Optional[Callable[[], bool]] = None,
-                 ready: Optional[Callable[[], bool]] = None) -> None:
+                 ready: Optional[Callable[[], bool]] = None,
+                 conf_by_class: Optional[dict] = None) -> None:
         super().__init__(parent)
         self.engine = engine
         self.conf = float(conf)
+        #: A class's own floor (the detector file's ``conf_by_class``, L6 round 3)
+        #: in place of ``conf``: a screw chip only from a screw box at its floor.
+        self.conf_by_class = {str(k): float(v) for k, v in (conf_by_class or {}).items()}
         self._after = after
         #: Asked about once a second while idle: the window closed, so stop.
         self._stop_when = stop_when
@@ -232,6 +236,10 @@ class LocatorDetections(QObject):
             self._job = (token, int(desktop), before, after, str(cls))
             self._lock.notify_all()
             return displaced
+
+    def conf_for(self, cls: str) -> float:
+        """The minimum confidence of a ``cls`` detection on either frame."""
+        return self.conf_by_class.get(str(cls), self.conf)
 
     def pending(self) -> bool:
         with self._lock:
@@ -333,7 +341,7 @@ class LocatorDetections(QObject):
                 self.stats["detected"] += 1
             else:
                 self.stats["cached"] += 1
-        return vanished(frames[0].dets, frames[1].dets, cls, self.conf)
+        return vanished(frames[0].dets, frames[1].dets, cls, self.conf_for(cls))
 
     def _fill(self, frames: list, items) -> bool:
         """Answer from the cache the frames still missing; ``True`` once none is."""

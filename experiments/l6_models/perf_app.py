@@ -58,9 +58,11 @@ SAM_HEADS = {
 }
 
 
-def det_config_file(name: str, model: Path) -> Path:
+def det_config_file(name: str, model: Path, conf_by_class: dict | None = None) -> Path:
     data = yaml.safe_load((env.REPO / "configs" / "detector.yaml").read_text(encoding="utf-8"))
     data["model"] = str(model).replace("\\", "/")
+    if conf_by_class:
+        data["conf_by_class"] = dict(conf_by_class)
     data["cache_root"] = str(env.ROOT / "det_cache").replace("\\", "/")
     CFG.mkdir(parents=True, exist_ok=True)
     out = CFG / f"detector_{name}.yaml"
@@ -81,7 +83,7 @@ def q(vals, p):
     return round(float(np.percentile(vals, p)), 1) if vals else None
 
 
-def det_perf(name: str, model: Path) -> dict:
+def det_perf(name: str, model: Path, conf_by_class: dict | None = None) -> dict:
     import shutil
 
     import cv2
@@ -90,7 +92,7 @@ def det_perf(name: str, model: Path) -> dict:
     from tda.models.det_engine import DetectionEngine, PlanItem
     from tda.models.detector import load_detector_config
 
-    cfg_path = det_config_file(name, model)
+    cfg_path = det_config_file(name, model, conf_by_class)
     os.environ["TDA_DETECTOR"] = str(cfg_path)
     config = load_detector_config()
     if config is None:
@@ -107,6 +109,7 @@ def det_perf(name: str, model: Path) -> dict:
     frames = [f for f in G4.load(GT_DET) if f.desktop in HELD_OUT]
     by = {(f.desktop, f.step): f for f in frames}
     detect_ms, cold_ms, warm_ms, stored, sizes = [], [], [], [], {}
+    cands, screws = [], []
     for d in HELD_OUT:
         engine.open_view(d, "scan")
         steps = sorted(s for (dd, s) in by if dd == d)
@@ -127,6 +130,8 @@ def det_perf(name: str, model: Path) -> dict:
             r = engine.process(item)
             cold_ms.append(1000 * r.seconds)
             stored.append(len(r.dets))
+            cands.append(len(engine.candidates_of(r.dets)))
+            screws.append(sum(1 for i in engine.candidates_of(r.dets) if r.dets[i].cls == "screw"))
         p = engine.flush()
         sizes[f"D{d}"] = p.stat().st_size if p else 0
         engine.open_view(d, "scan")
@@ -147,6 +152,9 @@ def det_perf(name: str, model: Path) -> dict:
            "process_cold_ms": {"median": q(cold_ms, 50), "p90": q(cold_ms, 90)},
            "cache_warm_ms": {"median": q(warm_ms, 50), "p90": q(warm_ms, 90), "n": len(warm_ms)},
            "stored_dets_per_frame": round(statistics.mean(stored), 1) if stored else None,
+           "candidates_per_frame": round(statistics.mean(cands), 2) if cands else None,
+           "screw_candidates_per_frame": round(statistics.mean(screws), 2) if screws else None,
+           "conf_by_class": dict(config.conf_by_class),
            "cache_bytes": sizes, "peak_cuda_mb": round(peak),
            "model_bytes": model.stat().st_size}
     del engine
@@ -226,6 +234,8 @@ def sam_perf(n: int = 200) -> dict:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--det", default="v2,v3")
+    ap.add_argument("--screw-floor", type=float, default=0.0,
+                    help="also v3 with conf_by_class {screw: <floor>} (round 3)")
     ap.add_argument("--sam", action="store_true")
     args = ap.parse_args(argv)
     if env.app_running():
@@ -236,6 +246,11 @@ def main(argv=None) -> int:
     result = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     for name in [n for n in args.det.split(",") if n]:
         result.setdefault("detector", {})[name] = det_perf(name, DET_MODELS[name])
+        print(f"[l6] detector {name}: {json.dumps(result['detector'][name])}", flush=True)
+    if args.screw_floor:
+        name = f"v3_screw{args.screw_floor:g}"
+        result.setdefault("detector", {})[name] = det_perf(
+            name, DET_MODELS["v3"], {"screw": float(args.screw_floor)})
         print(f"[l6] detector {name}: {json.dumps(result['detector'][name])}", flush=True)
     if args.sam:
         result["sam"] = sam_perf()

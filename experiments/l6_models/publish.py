@@ -38,6 +38,9 @@ from experiments.l5_sam.export_head import compare, same_bytes, sha256_file
 from experiments.l6_models.export_gt import COCO, GT_DET, GT_SAM, MANIFEST as GT_MANIFEST
 
 DET_NAME = "tda_det_rfdetr_small_all_v3"
+#: The controller's round-3 ruling (REPORT.md, round 2 / 3): screws at 0.15, every
+#: other class at ``conf``; read by ``tda.models.detector.check_manifest_floors``.
+CONF_BY_CLASS = {"screw": 0.15}
 HEAD_NAME = "sam2.1_tda_head_v3"
 SAM_FULL = env.WEIGHTS / "sam2.1_hiera_large_tda_l6_v3.pt"
 STOCK = env.WEIGHTS / "sam2.1_hiera_large.pt"
@@ -53,6 +56,20 @@ def _json(path: Path):
         return json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+
+
+def _round2_summary() -> dict:
+    """F at the shipped screw floor (``round2_floor.py``): rank-1 and screw recall / precision."""
+    r = _json(env.ROOT / "eval" / "round2_floor.json") or {}
+    f = (r.get("floors") or {}).get(f"{CONF_BY_CLASS['screw']:.2f}")
+    if not f:
+        return {}
+    return {"floor": CONF_BY_CLASS["screw"], "fold_model": "F (held out D19, D27)",
+            "rank1_pooled": f["rank1_pooled"],
+            "screw": {k: {"recall": v["recall"], "precision": v["precision"]}
+                      for k, v in f["counts"].items() if k.endswith(":screw")},
+            "per_frame": f["per_frame"],
+            "comparators_rank1": r.get("comparator", {}).get("rank1")}
 
 
 def publish_det() -> int:
@@ -103,13 +120,16 @@ def publish_det() -> int:
         },
         "classes": ["screw", "connector", "ram_latch", "psu_latch", "cpu_socket_lever",
                     "drive_latch", "ram_module", "cpu"],
+        "conf_by_class": dict(CONF_BY_CLASS),
         "inference": {
             "tile": 640, "stride": 512, "pad_value": 114,
             "work_scale": {"scan": 1.0, "oak1": 1.0, "oak2": 1.0, "rs": 2.0},
             "roi": "the pose segment's stored ROI (D27 was tiled at the app's proposed ROI: it "
                    "has none stored)",
             "merge": "drop cut-off boxes contained >= 60 % in a whole one, class-wise NMS 0.5",
-            "conf": 0.05, "merge_floor": 0.05,
+            "conf": 0.05, "merge_floor": 0.05, "conf_by_class": dict(CONF_BY_CLASS),
+            "conf_by_class_note": "applied where detections are read (the guess, the U28 "
+                                  "chips); the cache keeps every box >= merge_floor",
             "guess_classes_recommended": guess,
             "precision": "fp16",
         },
@@ -121,6 +141,10 @@ def publish_det() -> int:
             "D1": (gate.get("gate") or {}).get("D1"), "D2": (gate.get("gate") or {}).get("D2"),
             "D3_pass": ((gate.get("gate") or {}).get("D3") or {}).get("pass"),
             "extra_classes": gate.get("extra_classes"),
+            "round2_screw_floor": _round2_summary(),
+            "ruling": "controller, round 3: shipped with conf_by_class {screw: 0.15} over "
+                      "gate D (pooled screw rank-1 14/15 = the comparators', all 48 removal "
+                      "events 32 vs 22, connectors 11 vs 4, ram_module 4 vs 1)",
         },
         "source_commit": git("rev-parse", "HEAD"),
         "source_dirty": bool(git("status", "--porcelain", "--", "experiments/l6_models")),

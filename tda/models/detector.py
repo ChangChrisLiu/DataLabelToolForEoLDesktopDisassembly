@@ -106,7 +106,8 @@ __all__ = [
     "ULTRALYTICS_PATCHES", "Det",
     "DetectorConfig", "DetectorConfigError", "DetectorUnavailable", "ProcessPatches",
     "RFDetrTileDetector", "Tile",
-    "YoloTileDetector", "box_change", "check_manifest", "file_sha1",
+    "YoloTileDetector", "box_change", "check_manifest", "check_manifest_floors",
+    "file_sha1",
     "keep_process_state", "load_detector_config", "make_detector",
     "make_tiles", "merge", "prepare_environment", "read_manifest", "tiles_to_dets",
     "to_native", "work_crop",
@@ -177,10 +178,20 @@ class DetectorConfig:
     backend: str = DEFAULT_BACKEND
     #: A box under this is dropped before the merge (L3 §5); never above ``conf``.
     merge_floor: float = MERGE_FLOOR
+    #: ``(class, floor)`` pairs: a class's own minimum confidence, in place of
+    #: ``conf`` (L6 round 3: screws at 0.15).  Applied where detections are read
+    #: -- the guess's candidates, the 「拆前 / 拆后」 chips -- never where they are
+    #: stored: the cache keeps every box the merge keeps, so a floor can change
+    #: without a new pass, and it is not part of :meth:`recipe`.
+    conf_by_class: tuple[tuple[str, float], ...] = ()
 
     def applies(self, view: Optional[str]) -> bool:
         """Is the detector on for ``view``?"""
         return str(view) in self.views
+
+    def conf_for(self, cls: str) -> float:
+        """The minimum confidence of a ``cls`` detection: its own floor, else ``conf``."""
+        return dict(self.conf_by_class).get(str(cls), self.conf)
 
     def scale(self, view: str) -> float:
         """The view's work scale (1.0 = native pixels)."""
@@ -284,6 +295,7 @@ def _parse(data: dict, source: Path) -> DetectorConfig:
             raise DetectorConfigError(f"merge_floor = {raw_floor!r} is above conf = "
                                       f"{conf:g}: the merge would drop candidates the "
                                       f"guess asks for")
+    conf_by_class = _class_floors(data.get("conf_by_class"), classes, merge_floor)
     tiling = data.get("tiling")
     if not isinstance(tiling, dict):
         raise DetectorConfigError(f"tiling must be a mapping (tiling: {tiling!r})")
@@ -319,7 +331,36 @@ def _parse(data: dict, source: Path) -> DetectorConfig:
         roi_crop=roi_crop, work_scale=work_scale, tile=tile, stride=stride,
         device=device, half=half, yield_ms=yield_ms, cache_root=cache_root,
         yolo_config_dir=yolo_dir, enabled=enabled, backend=backend,
-        merge_floor=merge_floor)
+        merge_floor=merge_floor, conf_by_class=conf_by_class)
+
+
+def _class_floors(raw: Any, classes: Sequence[str],
+                  merge_floor: float) -> tuple[tuple[str, float], ...]:
+    """``conf_by_class``, checked: a mapping of armed classes to floors at or above the merge's.
+
+    Absent or empty is no per-class floor.  A class that is not in ``classes``
+    is an error (a typo would otherwise be a floor that never applies), and so
+    is a floor under ``merge_floor``: the merge drops those boxes before
+    anything is stored, so the floor could not be honoured.
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict):
+        raise DetectorConfigError(f"conf_by_class must map classes to confidences "
+                                  f"(conf_by_class: {raw!r})")
+    out = []
+    for cls, value in raw.items():
+        name = str(cls).strip()
+        if name not in classes:
+            raise DetectorConfigError(f"conf_by_class names {name!r}, which is not one of "
+                                      f"classes ({', '.join(classes)})")
+        floor = _number(value, f"conf_by_class.{name}", 0.0, 1.0, low_open=True)
+        if floor < merge_floor:
+            raise DetectorConfigError(f"conf_by_class.{name} = {value!r} is below "
+                                      f"merge_floor = {merge_floor:g}: the merge drops those "
+                                      f"boxes before they are stored")
+        out.append((name, floor))
+    return tuple(sorted(out))
 
 
 def _load(target: Path) -> DetectorConfig:
@@ -746,6 +787,42 @@ def check_manifest(manifest: Optional[dict], model: Path, sha1: str,
                 f"{[names[k] for k in sorted(names)]}")
 
 
+def check_manifest_floors(manifest: Optional[dict], config: DetectorConfig) -> str:
+    """One WARNING when the configuration's per-class floors are not the manifest's.
+
+    A manifest that says ``conf_by_class`` (L6's v3: ``{screw: 0.15}``) records
+    the floors the model was measured and ruled with.  For each class the
+    configuration arms, its floor here (``conf_by_class``, else none) is
+    compared with the manifest's; a difference is a WARNING naming both, and
+    the detector stays on -- the floors are a reading of the detections, not
+    a property of the file, and the annotator may have meant it.  No manifest,
+    or one without the key, is nothing to compare.  Returns the sentence
+    logged, or ``""``.
+    """
+    if manifest is None or "conf_by_class" not in manifest:
+        return ""
+    where = Path(str(manifest.get("__path__"))).name
+    raw = manifest.get("conf_by_class") or {}
+    try:
+        shipped = {str(k): round(float(v), 6) for k, v in dict(raw).items()}
+    except (TypeError, ValueError):
+        text = (f"small-part detector: the manifest {where} has a conf_by_class that "
+                f"cannot be read ({raw!r}); the configuration's floors are used")
+        log.warning(text)
+        return text
+    mine = {k: round(float(v), 6) for k, v in config.conf_by_class}
+    differ = sorted(c for c in config.classes if shipped.get(c) != mine.get(c))
+    if not differ:
+        return ""
+    text = (f"small-part detector: conf_by_class differs from the manifest {where} for "
+            f"{differ}: the configuration says "
+            f"{ {c: mine[c] for c in differ if c in mine} or 'none'}, the manifest "
+            f"{ {c: shipped[c] for c in differ if c in shipped} or 'none'} (the model was "
+            f"measured with the manifest's); the configuration's are used")
+    log.warning(text)
+    return text
+
+
 # --------------------------------------------------------------------------- #
 # detections
 # --------------------------------------------------------------------------- #
@@ -1036,6 +1113,7 @@ class YoloTileDetector:
                 raise DetectorUnavailable(f"the model has no class {missing} "
                                           f"(it knows {sorted(self.names.values())})")
             check_manifest(self.manifest, config.model, self.sha1, self.names)
+            check_manifest_floors(self.manifest, config)
             # cudnn autotune and lazy CUDA init, before the first real frame
             dummy = [np.full((config.tile, config.tile, 3), PAD_VALUE, np.uint8)] * 2
             for _ in range(2):
@@ -1144,6 +1222,7 @@ class RFDetrTileDetector:
                 raise DetectorUnavailable(f"the model has no class {missing} "
                                           f"(it knows {sorted(self.names.values())})")
             check_manifest(self.manifest, config.model, self.sha1, self.names)
+            check_manifest_floors(self.manifest, config)
             self.model.inference(compile=False, dtype=(torch.float16 if config.half
                                                        else torch.float32))
             # lazy CUDA init and the kernels' first launch, before the first real frame
