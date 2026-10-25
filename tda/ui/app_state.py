@@ -98,8 +98,16 @@ def redraw_text(state: str, run: tuple[int, int], redraw) -> str:
 
 
 def cut_note(result: dict, steps_text) -> str:
-    """What a commit that stopped at a state boundary did (U8 round 3), or ``""``."""
+    """What a commit that stopped at a state boundary did (U8 round 3), or ``""``.
+
+    The forward walk's two (U29) read the same: ``cut_behind`` is where the
+    old version was cut, ``cut_ahead`` where the new one stops.
+    """
     below, top = result.get("cut_below"), result.get("cut_top")
+    if below is None:
+        below = result.get("cut_behind")
+    if top is None:
+        top = result.get("cut_ahead")
     if below is None and top is None:
         return ""
     parts = []

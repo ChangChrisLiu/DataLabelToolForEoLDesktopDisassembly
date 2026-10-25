@@ -29,6 +29,7 @@ stack.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Optional, Sequence
 
 import numpy as np
@@ -302,7 +303,31 @@ def _commit_shape(db: Db, truth: TruthService, key: FrameKey, instance: str,
             before.append(keyframe_state(None, cut_ref, template=cut_kf))
             cut_ref["keyframe_id"] = db.add_keyframe(cut_kf)
             after.append(keyframe_state(cut_kf, cut_ref))
-        if cuts["top"] is not None:
+        # the forward walk's two (U29): ``ahead`` is where the edit stops, the
+        # frames of the next state keeping the shape in force through a cut copy
+        # at its anchor -- the reverse walk's cut below, mirrored; ``behind``
+        # (a re-trace) is where the version in force is pulled back to, so the
+        # frames of the state behind keep it -- the reverse walk's ``top``
+        stop = cuts["ahead"]
+        if stop is not None:
+            ahead_ref: dict = {"keyframe_id": None}
+            cut_kf = _copy_keyframe(chosen, key, int(chosen.anchor_step))
+            before.append(keyframe_state(None, ahead_ref, template=cut_kf))
+            ahead_ref["keyframe_id"] = db.add_keyframe(cut_kf)
+            after.append(keyframe_state(cut_kf, ahead_ref))
+        if cuts["behind"] is not None:
+            before.append(keyframe_state(chosen, old_ref))
+            anchor = int(chosen.anchor_step) if stop is None else stop
+            chosen.anchor_step = cuts["behind"]
+            db.update_keyframe(chosen)
+            after.append(keyframe_state(chosen, old_ref))
+            kf = new_keyframe(key, instance, seg, anchor, placement, parts, geom_type)
+            _stamp_source(kf, source, draft_id)
+            kf.version = int(chosen.version) + 1
+            before.append(keyframe_state(None, ref, template=kf))
+            ref["keyframe_id"] = db.add_keyframe(kf)
+            after.append(keyframe_state(kf, ref))
+        elif cuts["top"] is not None:
             # Enter inside a state run whose top is an open boundary: the edit
             # is the run's own version, the frames above keep the one in force
             kf = new_keyframe(key, instance, seg, cuts["top"], placement, parts, geom_type)
@@ -315,7 +340,7 @@ def _commit_shape(db: Db, truth: TruthService, key: FrameKey, instance: str,
             anchor = key.step
             if direction == FORWARD and chosen is not None:
                 before.append(keyframe_state(chosen, old_ref))
-                anchor = chosen.anchor_step
+                anchor = chosen.anchor_step if stop is None else stop
                 chosen.anchor_step = key.step - 1
                 db.update_keyframe(chosen)
                 after.append(keyframe_state(chosen, old_ref))
@@ -333,6 +358,8 @@ def _commit_shape(db: Db, truth: TruthService, key: FrameKey, instance: str,
             # a cut copy stays one only while its pixels are the copy (U11)
             still_copy = is_cut(chosen) and same_parts(chosen.parts, parts)
             chosen.parts = parts
+            if stop is not None:
+                chosen.anchor_step = stop        # the copy holds the frames ahead
             if not still_copy:
                 _stamp_source(chosen, source, draft_id)
             db.update_keyframe(chosen)
@@ -388,6 +415,7 @@ def _commit_shape(db: Db, truth: TruthService, key: FrameKey, instance: str,
                    {"keyframe_id": kf.id, "anchor_step": kf.anchor_step, "scope": scope,
                     "changed": True, "no_split": bool(no_split),
                     "cut_below": cuts["below"], "cut_top": cuts["top"],
+                    "cut_ahead": cuts["ahead"], "cut_behind": cuts["behind"],
                     "cleared_absent": bool(absent),
                     "edit_reach": annotatable_steps(db, key.desktop, key.view,
                                                     edit_reach | {key.step})})
@@ -444,12 +472,29 @@ def plan_cuts(db: Db, tax, key: FrameKey, instance: str, chain: list[ShapeKeyfra
       would rewrite the other state's frames, and ``Enter`` there is the split
       (task U16).
 
+    **The forward walk mirrors it** (task U29; ``below`` and ``top`` stay
+    ``None`` there). Going forward a commit writes from this frame towards the
+    *later* steps, so:
+
+    * ``ahead`` -- the lowest open ✂ at or above the current frame inside the
+      reach (the boundary between it and the next frame of the walk): the edit
+      stops there, and the frames of the next state keep the shape in force
+      through a cut copy at its anchor (either scope) -- what ``below`` is in
+      the reverse walk, a placeholder on the side the walk has not reached;
+    * ``behind`` -- the re-trace only: the highest such boundary under the
+      current frame. The version in force is pulled back to it, so the frames
+      of the state behind keep their shape, and the edit is a new version from
+      the boundary on -- what ``top`` is in the reverse walk;
+    * ``refuse`` -- the re-trace on a frame whose own (forward) card has the
+      open ✂ row, the boundary right behind it: the same sentence, naming the
+      frames behind it would rewrite.
+
     Nothing is cut when no non-empty mask is in force (the part is drawn here
-    for the first time, or by a box), and in the forward walk, which is for
-    repairs and keeps today's rules. Returns ``{"below", "top", "refuse"}``.
+    for the first time, or by a box). Returns ``{"below", "top", "ahead",
+    "behind", "refuse"}``.
     """
-    out: dict = {"below": None, "top": None, "refuse": ""}
-    if scope not in (api.SCOPE_KEYFRAME, api.SCOPE_SPLIT) or direction != REVERSE:
+    out: dict = {"below": None, "top": None, "ahead": None, "behind": None, "refuse": ""}
+    if scope not in (api.SCOPE_KEYFRAME, api.SCOPE_SPLIT) or direction not in DIRECTIONS:
         return out
     if geom_type != GEOM_MASK or chosen is None or chosen.geom_type != GEOM_MASK \
             or not _has_pixels(chosen):
@@ -458,8 +503,11 @@ def plan_cuts(db: Db, tax, key: FrameKey, instance: str, chain: list[ShapeKeyfra
     low = max(lower) + 1 if lower else None
     re_trace = scope == api.SCOPE_KEYFRAME or _cannot_split(chosen, key.step, direction,
                                                             chain)
-    high = int(chosen.anchor_step) if re_trace else int(key.step)
     walk = reverse_walk(db, key.desktop, key.view)
+    if direction == FORWARD:
+        return _plan_forward(db, tax, key, instance, chosen, low, re_trace, scope, walk,
+                             cache, out)
+    high = int(chosen.anchor_step) if re_trace else int(key.step)
     # only boundaries of this chain's pose segment: a cut anchored in another
     # segment is a version no frame of this one ever selects
     opened = [f for f in open_split_steps(db, tax, key.desktop, key.view, instance, low,
@@ -474,14 +522,62 @@ def plan_cuts(db: Db, tax, key: FrameKey, instance: str, chain: list[ShapeKeyfra
         if above[0] == key.step and scope == api.SCOPE_KEYFRAME:
             later = [s for s in walk if s > key.step]
             there = later[0] if later else None
-            held = (None if there is None else
-                    state_of(db, tax, key.desktop, there, cache).get(instance))
-            what = "" if held is None else f"（{state_zh(held.state)}）"
-            out["refuse"] = (
-                f"这一帧是状态边界（✂）：改全部会把第 {there}–{chosen.anchor_step} 步{what}"
-                f"的形状一起改掉。用 Q（从这帧起新版本）")
+            out["refuse"] = _across(db, tax, key, instance, there, there,
+                                    chosen.anchor_step, cache)
         else:
             out["top"] = above[0]
+    return out
+
+
+#: 改全部 on a frame that is itself a state boundary of the version in force.
+ACROSS_BOUNDARY = ("这一帧是状态边界（✂）：改全部会把第 {first}–{last} 步{what}"
+                   "的形状一起改掉。用 Q（从这帧起新版本）")
+
+
+def _across(db: Db, tax, key: FrameKey, instance: str, there: Optional[int], first,
+            last, cache: Optional[InputCache]) -> str:
+    """:data:`ACROSS_BOUNDARY` for the frames from ``first`` to ``last``, in ``there``'s state."""
+    held = (None if there is None else
+            state_of(db, tax, key.desktop, there, cache).get(instance))
+    what = "" if held is None else f"（{state_zh(held.state)}）"
+    return ACROSS_BOUNDARY.format(first=first, last=last, what=what)
+
+
+def _plan_forward(db: Db, tax, key: FrameKey, instance: str, chosen: ShapeKeyframe,
+                  low: Optional[int], re_trace: bool, scope: str, walk: list[int],
+                  cache: Optional[InputCache], out: dict) -> dict:
+    """:func:`plan_cuts` for the forward walk (task U29): ``ahead``, ``behind``, ``refuse``.
+
+    The reach of the written shape is ``key.step``..anchor for a split (the
+    version in force is pulled back to the frame before), the version's whole
+    span for a re-trace; the boundaries inside it are the frames ``f`` whose
+    reverse card has an open ✂ row -- the state changes between ``f`` and the
+    next frame of the walk with one version on both sides -- which is the
+    question the reverse walk asks too, so the two walks cut at the same
+    places.
+    """
+    seg = chosen.pose_segment
+    opened = [f for f in open_split_steps(db, tax, key.desktop, key.view, instance,
+                                          low if re_trace else key.step,
+                                          int(chosen.anchor_step), cache, walk)
+              if pose_segment_of(db, FrameKey(key.desktop, f, key.view), cache) == seg]
+    ahead = [f for f in opened if f >= key.step]
+    behind = [f for f in opened if f < key.step]
+    if ahead:
+        out["ahead"] = ahead[0]
+    if not (re_trace and behind):
+        return out
+    earlier = [s for s in walk if s < key.step]
+    if scope == api.SCOPE_KEYFRAME and earlier and behind[-1] == earlier[-1]:
+        # the boundary is right behind this frame: its forward card's ✂ row
+        span = [s for s in earlier if (low is None or s >= low)
+                and pose_segment_of(db, FrameKey(key.desktop, s, key.view), cache) == seg]
+        first = span[0] if span else earlier[-1]
+        out["refuse"] = _across(db, tax, key, instance, earlier[-1], first, earlier[-1],
+                                cache)
+        out["ahead"] = None
+        return out
+    out["behind"] = behind[-1]
     return out
 
 
@@ -572,17 +668,41 @@ def preview(db: Db, truth: TruthService, key: FrameKey, instance: str, scope: st
                          geom_type, cache)
         if cuts["below"] is not None:
             chain = chain + [_copy_keyframe(chosen, key, cuts["below"])]
-        if cuts["top"] is not None:
+        stop = cuts["ahead"]
+        if stop is not None:
+            chain = chain + [_copy_keyframe(chosen, key, int(chosen.anchor_step))]
+        others = [kf for kf in chain if kf is not chosen]
+        if cuts["behind"] is not None:
+            # forward re-trace (U29): the version in force pulled back, a new one on
+            target = new_keyframe(key, instance, seg,
+                                  int(chosen.anchor_step) if stop is None else stop,
+                                  placement, [], geom_type)
+            target.version = int(chosen.version) + 1
+            simulated = others + [replace(chosen, anchor_step=cuts["behind"]), target]
+        elif cuts["top"] is not None:
             target = new_keyframe(key, instance, seg, cuts["top"], placement, [], geom_type)
             target.version = int(chosen.version) + 1
             simulated = chain + [target]
         elif scope == api.SCOPE_SPLIT and not _cannot_split(chosen, key.step, direction,
                                                             chain):
-            target = new_keyframe(key, instance, seg, key.step, placement, [], geom_type)
-            target.version = 1 if chosen is None else int(chosen.version) + 1
-            simulated = chain + [target]
+            if direction == FORWARD and chosen is not None:
+                # what the commit writes: the old version pulled back to k-1,
+                # the new one from here to its anchor (or to the boundary ahead)
+                target = new_keyframe(key, instance, seg,
+                                      int(chosen.anchor_step) if stop is None else stop,
+                                      placement, [], geom_type)
+                target.version = int(chosen.version) + 1
+                simulated = others + [replace(chosen, anchor_step=key.step - 1), target]
+            else:
+                target = new_keyframe(key, instance, seg, key.step, placement, [], geom_type)
+                target.version = 1 if chosen is None else int(chosen.version) + 1
+                simulated = chain + [target]
         elif chosen is not None and chosen.geom_type == geom_type:
-            target, simulated = chosen, chain
+            if stop is not None:
+                target = replace(chosen, anchor_step=stop)
+                simulated = others + [target]
+            else:
+                target, simulated = chosen, chain
         else:
             anchor = default_anchor(db, truth.tax, key, instance, seg, placement, cache)
             target = new_keyframe(key, instance, seg, anchor, placement, [], geom_type)
