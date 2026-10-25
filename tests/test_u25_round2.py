@@ -151,14 +151,18 @@ def test_hand_written_events_follow_the_step_table(env, tmp_path, capsys):
     assert "state event" not in capsys.readouterr().out
 
 
-def test_extra_shot_columns_are_carried_or_counted(env, tmp_path, capsys):
+def test_extra_shot_review_status_is_carried_photo_columns_stay(env, tmp_path, capsys):
+    """N4 / N16: of an old step whose photo became an extra shot, only the review
+    status moves to the new step (where that has none); the photo columns stay
+    with the photo and are reported. Colliding pose breaks are counted."""
     old, new = _old_and_new(tmp_path)
     assert run(env, "load-index", "--index", old) == 0
     db = open_db(env)
     try:
-        # row 3 (dupli of row 2) has a column step 2's own row lacks: carried
-        db.set_frame_flags(FrameKey(95, 3, "oak2"), in_progress=1)
-        # row 6 (dupli of row 5, which moves to 4) disagrees with row 5: dropped
+        # row 3 (dupli of row 2): a review status step 2's own row lacks -> carried;
+        # a photo column -> left behind
+        db.set_frame_flags(FrameKey(95, 3, "oak2"), review_status="ls_draft", in_progress=1)
+        # row 6 (dupli of row 5, which moves to 4): its photo column stays with it
         db.set_frame_flags(FrameKey(95, 5, "oak2"), image_quality="good")
         db.set_frame_flags(FrameKey(95, 6, "oak2"), image_quality="blurred")
         for step in (5, 6):
@@ -170,12 +174,14 @@ def test_extra_shot_columns_are_carried_or_counted(env, tmp_path, capsys):
     capsys.readouterr()
     assert run(env, "load-index", "--index", new) == 0
     out = capsys.readouterr().out
-    assert "1 frame column(s) carried from an extra shot's old step" in out
-    assert "step 6->4 image_quality=blurred" in out
+    assert "1 review status(es) carried from an extra shot's old step" in out
+    assert ("2 photo column(s) left behind on an extra shot: step 3->2 in_progress=1, "
+            "step 6->4 image_quality=blurred") in out
     assert "1 pose break(s) landed on one already there" in out
     db = open_db(env)
     try:
-        assert db.get_frame(FrameKey(95, 2, "oak2"))["in_progress"] == 1
+        two = db.get_frame(FrameKey(95, 2, "oak2"))
+        assert two["review_status"] == "ls_draft" and two["in_progress"] is None
         assert db.get_frame(FrameKey(95, 4, "oak2"))["image_quality"] == "good"
     finally:
         db.close()
@@ -336,3 +342,56 @@ def test_scan_align_declares_a_skipped_real_step():
     # a dupli row the scanner skipped is not a skipped *step* (the collapse has it)
     p = declaration([1, 2, 4, 5], [1, 2, 3, 4], 5, [3])
     assert p.skipped_steps == [] and p.skipped_dupli == [3]
+
+
+# --------------------------------------------------------------------------- #
+# round 3: N17 and the pre-check script
+# --------------------------------------------------------------------------- #
+def test_the_force_line_comes_only_after_the_frames_check(env, tmp_path, capsys):
+    """N17: a desktop refused for its frames never says '--force, replacing ...'."""
+    drive = _sheet_dir(tmp_path)
+    old, new = _old_and_new(tmp_path)
+    assert run(env, "load-index", "--index", old) == 0
+    db = open_db(env)
+    try:
+        db.replace_steps(95, [StepRec(95, k, StepType.NORMAL.value, f"row {k}")
+                              for k in range(1, 8)], [])
+    finally:
+        db.close()
+    capsys.readouterr()
+    assert run(env, "import-logs", "--force", "--desktops", "95", "--dir", drive,
+               "--index", new) == 1
+    out = capsys.readouterr().out
+    assert "refused: D95" in out and "--force, replacing" not in out
+    assert run(env, "load-index", "--index", new) == 0
+    capsys.readouterr()
+    assert run(env, "import-logs", "--force", "--desktops", "95", "--dir", drive,
+               "--index", new) == 0
+    out = capsys.readouterr().out
+    assert "--force, replacing 7 steps" in out
+
+
+def test_precheck_index_moves(env, tmp_path, capsys):
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import precheck_index_moves as PC
+
+    _old, new = _old_and_new(tmp_path)
+    assert run(env, "load-index", "--index", new) == 0
+    capsys.readouterr()
+    assert PC.main(["--db", env["db_path"], "--desktops", "95"]) == 0
+    out = capsys.readouterr().out
+    assert out.strip().splitlines()[-1] == "OK" and "[blocks] verified frames: none" in out
+    db = open_db(env)
+    try:
+        db.set_frame_flags(FrameKey(95, 2, "scan"), review_status="verified")
+        db.conn.execute("INSERT INTO state_event(desktop, step, target, attr, old, new, auto) "
+                        "VALUES(95, 2, 'x', 'state', 'a', 'b', 0)")
+        db.conn.commit()
+    finally:
+        db.close()
+    assert PC.main(["--db", env["db_path"], "--desktops", "95"]) == 1
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert lines[-1] == "NOT OK: verified frames on D95"
+    assert any("[note] hand-written state events" in ln and "D95: 1" in ln for ln in lines)
+    assert PC.main(["--db", str(tmp_path / "nowhere.sqlite")]) == 2

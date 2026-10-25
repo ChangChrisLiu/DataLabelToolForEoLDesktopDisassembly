@@ -1147,8 +1147,8 @@ def import_logs_into_db(
         if frozen and log:
             log(f"[import-logs] D{desktop:02d} has {frozen} verified frames; "
                 f"--force-verified was given, so they are re-imported over")
-        if previous and log:
-            log(_force_warning(db, desktop, previous))
+        # the "--force, replacing ..." line comes from _import_one, once the
+        # frames are known to carry this sheet's numbering (U25 round 3, N17)
         try:
             run.runs.append(_import_one(db, desktop, path, tax, index, previous, log,
                                         force=force, force_drop=force_drop,
@@ -1177,6 +1177,8 @@ def _import_one(
             log(f"[import-logs] refused: {refusal}")
         return DesktopRun(desktop, str(path), "refused", reason=REFUSED_NOT_LOADED,
                           issues=[refusal])
+    if previous and log:
+        log(_force_warning(db, desktop, previous))
     clash = extra_clash(db, li, tax)
     if clash and not adopt_extras:
         refusal = _extras_refusal(desktop, clash)

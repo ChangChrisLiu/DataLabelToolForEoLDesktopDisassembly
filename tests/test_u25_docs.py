@@ -60,3 +60,13 @@ def test_spec_states_the_round_2_rules():
     first = next(line for line in body.split("## 14. 修订记录", 1)[1].splitlines()
                  if line.startswith("- **v1.25"))
     assert "**第二轮**" in first and "D41 `[32]`" in first and "D61 `[26]`" in first
+
+
+def test_spec_states_the_round_3_rules():
+    body = _body()
+    section = body.split("### 2.2 统一索引", 1)[1].split("### 2.3", 1)[0]
+    assert "只有 `review_status`" in section and "photo column(s) left behind" in section
+    assert "`python scripts/precheck_index_moves.py`" in section
+    entry = next(line for line in body.split("## 14. 修订记录", 1)[1].splitlines()
+                 if line.startswith("- **v1.25"))
+    assert "**第三轮**" in entry
