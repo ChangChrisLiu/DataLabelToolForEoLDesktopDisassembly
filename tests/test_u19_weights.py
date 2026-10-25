@@ -33,7 +33,9 @@ from tda.models.sam_service import (
 )
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "images" / "scanner_crop_native.png"
-FULL_F5_V2 = Path("D:/DataSet/models/weights/sam2.1_hiera_large_tda_f5_v2.pt")
+#: The whole fine-tuned model the shipped head was extracted from (L6's v3; L5's
+#: was sam2.1_hiera_large_tda_f5_v2.pt).
+FULL_F5_V2 = Path("D:/DataSet/models/weights/sam2.1_hiera_large_tda_l6_v3.pt")
 FAN_POINT = (760.0, 270.0)            # tests/test_sam_service.py: a CPU cooler fan blade
 FAN_BOX = (660.0, 95.0, 899.0, 335.0)
 #: Logits are compared to this (the ruling's bf16 tolerance); measured: 0.0.
@@ -147,7 +149,7 @@ def _max_diff(a: dict, b: dict) -> dict:
 
 
 @pytest.mark.parametrize("precision", ["bf16", "fp32"])
-def test_the_tuned_head_is_the_whole_f5_v2_model(measured, precision):
+def test_the_tuned_head_is_the_whole_tuned_model(measured, precision):
     assert measured["heads"] == (STOCK, TUNED)
     diff = _max_diff(measured[TUNED][precision], measured["whole"][precision])
     assert all(v <= ATOL for v in diff.values()), diff

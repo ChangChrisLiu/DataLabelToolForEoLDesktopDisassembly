@@ -66,7 +66,7 @@ enabled: true
 # fingerprint.  An absolute path, as here, is used as it is; a bare file name
 # (or any relative path) is looked for in that same weights_dir, so the head
 # follows a --paths that moves the weights.  The weights are not in git.
-head: D:/DataSet/models/weights/sam2.1_tda_head_f5_v2.pt
+head: D:/DataSet/models/weights/sam2.1_tda_head_v3.pt
 # head: D:/DataSet/models/weights/sam2.1_tda_head_f5_v2.pt
 
 route:

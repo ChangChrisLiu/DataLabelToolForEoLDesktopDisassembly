@@ -101,7 +101,7 @@ def _shipped() -> dict:
 def test_the_shipped_file_is_the_ruling():
     config = parse_sam_head_config(_shipped(), SHIPPED)
     assert config.off == ""
-    assert config.head == Path("D:/DataSet/models/weights/sam2.1_tda_head_f5_v2.pt")
+    assert config.head == Path("D:/DataSet/models/weights/sam2.1_tda_head_v3.pt")
     assert config.routing == Routing(box_prompts=TUNED, point_listed=STOCK, point_other=TUNED,
                                      stock_point_classes=STOCK_POINT)
 

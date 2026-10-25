@@ -46,10 +46,16 @@ enabled: true
 # (experiments/l4_detector/REPORT.md; recipe, tiles hashes and the evaluation
 # in the manifest beside it).  Held out: screw hit@0.10 D13 79.4 -> 81.1,
 # D5 74.8 -> 80.1; oak1 36.2 -> 45.0, oak2 52.5 -> 70.3 with no OAK training
-# data.  L3's model stays one swap away:
+# data.  L6's v3 (experiments/l6_models/REPORT.md): the same recipe on L2's
+# tiles plus the 923 verified scan frames of 20 desktops (D27 is the first HP);
+# held out (fold F, screws at the 0.15 floor below): guess rank-1 32 of 48
+# removal events against 22 for the shipped v2, connectors 11/25 vs 4/25,
+# ram_module 4/5 vs 1/5, screws 14/15 both.  L3's model and v2 stay one swap
+# away:
 # model: D:/DataSet/models/weights/tda_det_rfdetr_small_all.pt
+# model: D:/DataSet/models/weights/tda_det_rfdetr_small_all_v2.pt
 backend: rfdetr
-model: D:/DataSet/models/weights/tda_det_rfdetr_small_all_v2.pt
+model: D:/DataSet/models/weights/tda_det_rfdetr_small_all_v3.pt
 
 # The fallback, U3's YOLO26n (hold13 never saw D13) -- swap these two lines in:
 # backend: yolo
@@ -87,8 +93,8 @@ merge_floor: 0.05
 # (tda_det_rfdetr_small_all_v3.pt, whose manifest says the same; the loader
 # warns when the two differ) was ruled with screws at 0.15: below it,
 # low-score boxes on cable bundles out-rank the removed screw.
-# conf_by_class:
-#   screw: 0.15
+conf_by_class:
+  screw: 0.15
 
 # L2's tiles.py, for inference exactly as for training: crop the frame to the
 # stored ROI, bring it to the view's work scale, cut 640 x 640 tiles at a
