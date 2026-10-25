@@ -4,6 +4,7 @@
 
     python scripts/export_scanpack.py --db <copy of tda.sqlite> \
         [--out D:/DataSet/exports/scanpack_2026-10-26] [--desktops 2,3,4,13,19,23,24,28,30,31] \
+        [--exclude "D2:1,D4:1=why"] [--note "text"] \
         [--paths configs/paths.yaml] [--cache-dir <dir>] [--work <dir>] [--force]
 
 The collaborators hold 3D reconstructions from the same structured-light
@@ -34,27 +35,35 @@ it by the app's own rule (:func:`tda.core.truth_refusals.frozen_disagreements`,
 the comparison Space and the re-check queue use; same instance set both
 ways). Pixel-exact agreement is not required -- a confirmed row may differ from
 today's compilation inside the re-tracing tolerance -- and is counted
-(``manifest.json`` ``truth_check``).
+(``manifest.json`` ``truth_check``). The amodal shapes are today's (the export
+derives them from the keyframes), and so is everything this script measures on
+top; the README says which field is which.
 
 **The label map.** Confirmed rows confirmed at different times, and a frame's
 「只改这一帧」 mask, can claim the same pixel (the compiler never subtracts a
 per-frame mask from the others). The map gives such a pixel to the part higher
 in the frame's layer order: the compiler's painting order (``in_chassis``,
 then ``on_bench``, then ``context``, each bottom-up), its pairwise overrides,
-then the parts with a per-frame mask on top. Each annotation says how many of
-its visible pixels another one also claims (``shared_px``) and how many the map
-gives it (``label_px``).
+then the parts with a per-frame mask on top (by key among themselves). Each
+annotation says how many of its visible pixels another one also claims
+(``shared_px``) and how many the map gives it (``label_px``).
 
 ``clean`` is the set to start with: ``visible == amodal`` to the pixel, label
 ``visible``, the amodal box inside the pose segment's ROI, the amodal shape the
-compiler's own (not widened by a visible mask reaching outside it), and every
-visible pixel the label map's.
+compiler's own (not widened by a visible mask reaching outside it), every
+visible pixel the label map's, and no pixel shared with another confirmed mask
+(round 2: three such rows were over-drawn latches).
+
+``--exclude D2:1,D4:1=<reason>`` leaves listed frames out of the package (no
+picture, label map or annotation; out of every count) and lists them under the
+README's Known issues with the reason; ``--note`` adds a line there. Both are
+recorded in ``manifest.json``.
 
 Read-only on the database it is given (a ``mode=ro`` backup-API copy is made
 into ``--work`` and only that copy is opened -- the export's re-check pass
 writes to it), on the raw drive and on the frame cache. Deterministic: two runs
 over the same inputs write the same bytes (no wall clock, no machine path in
-any file but the recorded raw paths).
+any shipped file).
 """
 from __future__ import annotations
 
@@ -62,6 +71,7 @@ import argparse
 import csv
 import hashlib
 import json
+import re
 import shutil
 import sqlite3
 import struct
@@ -78,6 +88,12 @@ import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
 from tda.core import masks  # noqa: E402
+from tda.core.compiler_visibility import (  # noqa: E402
+    OCCLUDED_FULL_RATIO,
+    OCCLUDED_PARTIAL_RATIO,
+    TOO_SMALL_PX,
+    VISIBLE_TINY_PX,
+)
 from tda.core.db import Db  # noqa: E402
 from tda.core.export.coco import (  # noqa: E402
     EXPORT_VERSION,
@@ -99,7 +115,8 @@ from tda.core.truth import TruthService  # noqa: E402
 from tda.core.truth_refusals import frozen_disagreements  # noqa: E402
 from tda.ui.locator_pair import leaving_steps  # noqa: E402
 
-__all__ = ["CLASS_EN", "DEFAULT_DESKTOPS", "PACK_VERSION", "PackError", "build_pack", "main"]
+__all__ = ["CLASS_EN", "DEFAULT_DESKTOPS", "MODEL_NAMES", "PACK_VERSION", "PackError",
+           "build_pack", "main", "model_names", "parse_exclusions"]
 
 #: The ten desktops of the first package: five Dell, five HP.
 DEFAULT_DESKTOPS = (2, 3, 4, 13, 19, 23, 24, 28, 30, 31)
@@ -108,6 +125,7 @@ VIEW = "scan"
 PACK_VERSION = "1"
 VERIFIED = "verified"
 VISIBLE = "visible"
+OCCLUDED_FULL = "occluded_full"
 #: Paint order of the compiler's placement groups in the label map (bottom first).
 GROUP_RANK = {"in_chassis": 0, "on_bench": 1, "context": 2}
 #: What the package adds to every COCO annotation, at its top level.
@@ -116,6 +134,30 @@ ANN_FIELDS = ("instance_id", "visibility", "occlusion_ratio", "occluders",
 #: A crowd row whose amodal shape the label map leaves mostly empty: nothing
 #: labelled covers it, yet nothing of it is seen (a QA note, not a rule).
 UNLABELLED_SHARE = 0.5
+#: A class whose share of clean annotations is below this is "rarely clean".
+RARELY_CLEAN = 0.15
+#: Instance attrs that are our bookkeeping (who added a part, when, how a flag
+#: was guessed, a note to ourselves) rather than facts about the part.
+DROP_ATTRS = ("added_by", "added_at", "captive_source", "reason", "note",
+              "implied", IMPLIED_RULE_ATTR)
+#: Reason given to an ``--exclude`` that names none.
+DEFAULT_EXCLUDE_REASON = "left out of this package on request"
+
+#: ``(brand, model as the teardown sheet spells it) -> the model's real name``.
+#: The sheet's text is kept beside it (``model_sheet``), as written.
+MODEL_NAMES: dict[tuple[str, str], str] = {
+    ("Dell", "Optiplex 7020"): "Dell OptiPlex 7020",
+    ("Dell", "Optiplex 7010"): "Dell OptiPlex 7010",
+    ("Dell", "Optiplex 3020"): "Dell OptiPlex 3020",
+    ("Dell", "Optiplex 990"): "Dell OptiPlex 990",
+    ("HP", "Compoq 8100 Elite Small Form Fador"): "HP Compaq 8100 Elite SFF",
+    ("HP", "Compoq 8300 Elite Small Form Fador"): "HP Compaq 8300 Elite SFF",
+    ("HP", "EliteDesk 800 GI SFF"): "HP EliteDesk 800 G1 SFF",
+    ("HP", "ProDesk 4300 GI SFF"):
+        "HP Pro 4300 SFF (sheet: ProDesk 4300 GI SFF; to be verified on the nameplate)",
+    ("HP", "ProDesk 4300"):
+        "HP Pro 4300 SFF (sheet: ProDesk 4300; to be verified on the nameplate)",
+}
 
 #: One line of English per taxonomy class. ``configs/taxonomy.yaml`` carries
 #: no prose, so the words are written here; the class names are the taxonomy's.
@@ -141,7 +183,8 @@ CLASS_EN: dict[str, str] = {
     "psu_latch": "A latch or bracket holding the power supply.",
     "drive_latch": "A latch holding a drive or a drive cage.",
     "card_latch": "A latch holding an expansion card.",
-    "cooler_latch": "A latch or clip holding the CPU cooler.",
+    "cooler_latch": "What holds the CPU cooler in place: a latch, a clip, or (on some Dell "
+                    "machines) a frame around the fan.",
     "cable_clip": "A clip holding a cable.",
     "connector": "A cable plug in its socket (tracked only while plugged in).",
     "other": "An object outside the machine (context), named by its label.",
@@ -185,6 +228,31 @@ def frame_name(step: int) -> str:
 
 def desktop_dir(desktop: int) -> str:
     return f"D{int(desktop):02d}"
+
+
+def model_names(meta: dict) -> tuple[str, str]:
+    """``(model, model_sheet)``: the real name, and the teardown sheet's text as is."""
+    brand = str(meta.get("brand") or "").strip()
+    family = str(meta.get("model_family") or "").strip()
+    sheet = str(meta.get("brand_model_raw") or f"{brand} {family}").strip()
+    return MODEL_NAMES.get((brand, family), f"{brand} {family}".strip()), sheet
+
+
+def parse_exclusions(specs: Sequence[str]) -> dict[tuple[int, int], str]:
+    """``["D2:1,D4:1=why", ...]`` -> ``{(2, 1): "why", (4, 1): "why"}``."""
+    out: dict[tuple[int, int], str] = {}
+    for spec in specs or ():
+        frames, _, reason = str(spec).partition("=")
+        reason = reason.strip() or DEFAULT_EXCLUDE_REASON
+        for item in frames.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            found = re.fullmatch(r"[Dd]?(\d+)\s*:\s*[Ss]?(\d+)", item)
+            if found is None:
+                raise PackError(f"--exclude: {item!r} is not D<desktop>:<step>")
+            out[(int(found.group(1)), int(found.group(2)))] = reason
+    return out
 
 
 def _decode(rle: Optional[dict], hw: tuple[int, int]) -> np.ndarray:
@@ -232,18 +300,16 @@ def _source_record(frame: dict, chosen: Optional[dict]) -> dict:
         src = str(chosen["src"])
         metrics = chosen.get("metrics") or []
         index = chosen.get("chosen")
-        if isinstance(index, int) and 0 <= index < len(metrics):
-            listed = metrics[index].get("path")
-            if listed and listed != src:
-                raise PackError(f"cache manifest names {src} but its metrics[{index}] "
-                                f"is {listed}")
-        choice = {"by": "cache_manifest", "index": index,
-                  "p_index": (metrics[index].get("p_index")
-                              if isinstance(index, int) and 0 <= index < len(metrics) else None),
+        listed_ok = isinstance(index, int) and 0 <= index < len(metrics)
+        if listed_ok and metrics[index].get("path") and metrics[index]["path"] != src:
+            raise PackError(f"cache manifest names {src} but its metrics[{index}] "
+                            f"is {metrics[index]['path']}")
+        choice = {"by": "annotation_tool", "index": index,
+                  "p_index": metrics[index].get("p_index") if listed_ok else None,
                   "reason": chosen.get("reason"), "burst_size": len(metrics) or None}
     else:
         src = row_path
-        choice = {"by": "frame_row", "index": None, "p_index": None, "reason": None,
+        choice = {"by": "frame_record", "index": None, "p_index": None, "reason": None,
                   "burst_size": len(((frame.get("aux") or {}).get("burst")) or []) or None}
     return {"recorded": src, "choice": choice,
             "frame_row_path": row_path if row_path != src else None}
@@ -306,12 +372,26 @@ def frame_label_map(anns: list[dict], hw: tuple[int, int], key_to_id: dict[str, 
     return label, visible
 
 
+def masks_ratio(area: int, amodal_area: int) -> float:
+    """``1 - area / amodal_area`` of the masks in the file, in ``[0, 1]``."""
+    if amodal_area <= 0:
+        return 0.0
+    return float(min(1.0, max(0.0, 1.0 - area / amodal_area)))
+
+
 def annotate_frame(anns: list[dict], label: np.ndarray, visible: dict[str, np.ndarray],
-                   hw: tuple[int, int], key_to_id: dict[str, int], roi, compiled) -> None:
-    """Add :data:`ANN_FIELDS` to each annotation of one frame, in place."""
+                   hw: tuple[int, int], key_to_id: dict[str, int], roi, compiled) -> Counter:
+    """Add :data:`ANN_FIELDS` to each annotation of one frame, in place; frame counts.
+
+    ``occlusion_ratio`` is measured on the masks the file carries; the
+    confirmed value stays in ``attributes.occlusion_ratio`` (it is what the
+    ``visibility`` label was decided from).
+    """
+    stats: Counter = Counter()
     claims = np.zeros(hw, dtype=np.uint8)
     for mask in visible.values():
         claims += mask
+    stats["overlap_px"] = int(np.count_nonzero(claims > 1))
     for ann in anns:
         attrs = ann["attributes"]
         key = attrs["instance_key"]
@@ -326,23 +406,37 @@ def annotate_frame(anns: list[dict], label: np.ndarray, visible: dict[str, np.nd
         shape = None if inst is None else inst.amodal
         is_shape = bool(shape is not None and np.array_equal(np.asarray(shape, bool), amodal))
         label_px = int(np.count_nonzero(label[seen] == iid))
+        shared = int(np.count_nonzero(claims[seen] > 1))
         area = int(np.count_nonzero(seen))
-        clean = bool(area > 0 and not ann.get("iscrowd")
-                     and area == int(np.count_nonzero(amodal))
-                     and attrs.get("visibility") == VISIBLE
-                     and _bbox_inside(ann.get("amodal_bbox"), roi)
-                     and is_shape and label_px == area)
+        whole = int(np.count_nonzero(amodal))
+        ratio = masks_ratio(area, whole)
+        confirmed = attrs.get("occlusion_ratio")
+        rules = {
+            "equal": area > 0 and not ann.get("iscrowd") and area == whole,
+            "visible": attrs.get("visibility") == VISIBLE,
+            "roi": _bbox_inside(ann.get("amodal_bbox"), roi),
+            "shape": is_shape,
+            "label": label_px == area,
+            "shared": shared == 0,
+        }
+        clean = all(rules.values())
+        for rule, held in rules.items():
+            if not held and all(v for r, v in rules.items() if r != rule):
+                stats[f"only_{rule}"] += 1          # clean but for this one rule
+        stats["roi_outside"] += int(not rules["roi"])
+        stats["ratio_differs"] += int(confirmed is None or abs(float(confirmed) - ratio) > 1e-9)
         ann.update({
             "instance_id": iid,
             "visibility": attrs.get("visibility"),
-            "occlusion_ratio": attrs.get("occlusion_ratio"),
+            "occlusion_ratio": ratio,
             "occluders": [{"id": i, "px": n} for i, n in occluders],
             "occluded_unlabelled_px": int(found[0]) if len(found) else 0,
-            "shared_px": int(np.count_nonzero(claims[seen] > 1)),
+            "shared_px": shared,
             "label_px": label_px,
             "amodal_is_shape": is_shape,
             "clean": clean,
         })
+    return stats
 
 
 def write_label_png(path: Path, label: np.ndarray) -> None:
@@ -373,11 +467,11 @@ def _class_line(rec) -> str:
 
 def _runs(steps: list[int], states: dict[int, Optional[tuple[str, str]]]) -> list[dict]:
     out: list[dict] = []
-    for step in steps:
+    for index, step in enumerate(steps):
         value = states.get(step)
         if value is None:
             continue
-        if out and out[-1]["to"] == steps[steps.index(step) - 1] \
+        if out and index and out[-1]["to"] == steps[index - 1] \
                 and (out[-1]["state"], out[-1]["placement"]) == value:
             out[-1]["to"] = step
         else:
@@ -386,7 +480,11 @@ def _runs(steps: list[int], states: dict[int, Optional[tuple[str, str]]]) -> lis
 
 
 def _leaving(desktop_actions, leaving, frame_steps: list[int], seg_of) -> dict[str, dict]:
-    """``key -> {step r, kind, verb, left_with, before/after frame}`` (U28's timeline)."""
+    """``key -> {step r, kind, verb, left_with, before/after frame}`` (U28's timeline).
+
+    ``frame_steps`` are the frames in the package: an excluded frame is never
+    a part's before or after picture.
+    """
     verbs: dict[tuple[int, str], str] = {}
     for action in sorted(desktop_actions, key=lambda a: (a.step, a.idx)):
         if action.result == "success":
@@ -410,8 +508,11 @@ def _leaving(desktop_actions, leaving, frame_steps: list[int], seg_of) -> dict[s
 
 def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out: Path,
                   work: Path, cache_dir: Optional[str], resolve: Callable, tail: Callable,
-                  qa: dict) -> dict:
-    """Write ``out/D<nn>/`` for one desktop; returns its counts."""
+                  qa: dict, excluded: dict[int, str]) -> dict:
+    """Write ``out/D<nn>/`` for one desktop; returns its counts.
+
+    ``excluded`` is ``step -> reason`` of the frames left out of the package.
+    """
     ddir = out / desktop_dir(desktop)
     ctx = load_ctx(db, tax, desktop, VIEW)
     key_to_id = instance_ids(db, desktop)
@@ -428,14 +529,22 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
         raise PackError(f"D{desktop:02d}: {exc}") from None
     if doc["info"]["version"] != EXPORT_VERSION:
         raise PackError(f"export version {doc['info']['version']} != {EXPORT_VERSION}")
+    # the excluded frames leave here: nothing below sees them
+    dropped = {img["id"] for img in doc["images"] if int(img["extra"]["step"]) in excluded}
+    doc["images"] = [img for img in doc["images"] if img["id"] not in dropped]
+    doc["annotations"] = [a for a in doc["annotations"] if a["image_id"] not in dropped]
+    step_of = {img["id"]: int(img["extra"]["step"]) for img in doc["images"]}
     by_image: dict[int, list[dict]] = defaultdict(list)
     for ann in doc["annotations"]:
         by_image[ann["image_id"]].append(ann)
-    images = {img["extra"]["step"]: img for img in doc["images"]}
+    images = {step_of[img["id"]]: img for img in doc["images"]}
 
     chosen = load_cache_manifest(cache_dir, desktop)
     frames = db.frames_for(desktop, VIEW)
     frame_steps = [int(f["step"]) for f in frames]
+    missing = sorted(s for s in excluded if s not in set(frame_steps))
+    if missing:
+        raise PackError(f"--exclude: D{desktop:02d} has no frame {missing}")
     stale = sorted(int(s) for s in chosen if int(s) not in set(frame_steps))
     if stale:
         qa["manifest_steps_without_frame"].append({"desktop": desktop, "steps": stale})
@@ -456,8 +565,9 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
     truth_rows = truth_identical = 0
     truth_max_px = 0
     frames_out: dict[str, dict] = {}
-    counts = Counter()
+    stats: Counter = Counter()
     per_inst = defaultdict(Counter)
+    other_image: list[dict] = []
     for frame in frames:
         step = int(frame["step"])
         key = FrameKey(desktop, step, VIEW)
@@ -466,15 +576,17 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
         img = images.get(step)
         source = _source_record(frame, chosen.get(str(step)))
         folder, file_name = _source_folder(source["recorded"], tail)
+        row_file = (None if source["frame_row_path"] is None
+                    else _source_folder(source["frame_row_path"], tail)[1])
         entry = {
             "step": step, "exported": img is not None,
+            "excluded": excluded.get(step),
             "image": None, "label": None,
             "source_folder": folder, "file_name": file_name,
-            "source_recorded_path": source["recorded"],
             "burst_choice": source["choice"],
-            "frame_row_path": source["frame_row_path"],
+            "frame_record_file": row_file,
             "sha256": None, "bytes": None, "width": None, "height": None,
-            "cache_identical": None, "cache_pixels_identical": None,
+            "identical_to_annotated_copy": None, "annotated_copy_same_pixels": None,
             "roi": None if roi is None else list(roi),
             "pose_segment": seg_of(step),
             "step_name": (steps_tab[step].raw_name if step in steps_tab else None),
@@ -487,9 +599,13 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
             qa["frame_row_names_other_image"].append(
                 {"desktop": desktop, "step": step, "frame_row": source["frame_row_path"],
                  "chosen": source["recorded"], "reason": source["choice"]["reason"]})
+            if img is not None:
+                other_image.append({"step": step, "frame_record_file": row_file,
+                                    "file_name": file_name})
         frames_out[str(step)] = entry
         if img is None:
             continue
+        stats[f"burst_{int(source['choice']['burst_size'] or 0)}"] += 1
         # -- the picture: copied from the raw drive, compared with the cache's
         raw = resolve(source["recorded"])
         if not raw or not Path(raw).is_file():
@@ -511,13 +627,14 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
         cached = (Path(cache_dir) / VIEW / desktop_dir(desktop) / f"s{step:03d}.png"
                   if cache_dir else None)
         if cached is not None and cached.is_file():
-            entry["cache_identical"] = sha256_of(cached) == digest
-            entry["cache_pixels_identical"] = (True if entry["cache_identical"]
-                                               else _pixels_equal(str(cached), str(dest)))
-            if not entry["cache_identical"]:
+            same = sha256_of(cached) == digest
+            entry["identical_to_annotated_copy"] = same
+            entry["annotated_copy_same_pixels"] = (True if same
+                                                   else _pixels_equal(str(cached), str(dest)))
+            if not same:
                 qa["cache_differs_from_raw"].append(
                     {"desktop": desktop, "step": step,
-                     "pixels_identical": entry["cache_pixels_identical"]})
+                     "pixels_identical": entry["annotated_copy_same_pixels"]})
         entry.update({"image": f"images/{name}.png", "sha256": digest,
                       "bytes": dest.stat().st_size, "width": size[0], "height": size[1]})
 
@@ -565,12 +682,14 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
                      "placement": row.get("placement")})
         patched = {k for k, fo in db.frame_overrides(key).items() if fo.visible_rle}
         label, visible = frame_label_map(anns, hw, key_to_id, compiled, patched)
-        annotate_frame(anns, label, visible, hw, key_to_id, roi, compiled)
+        frame_stats = annotate_frame(anns, label, visible, hw, key_to_id, roi, compiled)
+        stats.update(frame_stats)
+        stats["overlap_frames"] += int(frame_stats["overlap_px"] > 0)
         lpath = ddir / "labels" / f"{name}.png"
         write_label_png(lpath, label)
         entry.update({"label": f"labels/{name}.png", "label_sha256": sha256_of(lpath)})
-        img["extra"]["cache_file_name"] = img["file_name"]
-        img["extra"]["roi"] = entry["roi"]
+        img["extra"] = {"desktop": desktop, "step": step, "view": VIEW,
+                        "review_status": frame.get("review_status"), "roi": entry["roi"]}
         img["file_name"] = entry["image"]
         img["label_file"] = entry["label"]
         for ann in anns:
@@ -583,6 +702,11 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
             per_inst[k]["seen"] += int(ann["area"] > 0)
             per_inst[k]["crowd"] += int(bool(ann["iscrowd"]))
             per_inst[k]["clean"] += int(ann["clean"])
+            stats[f"visibility:{attrs.get('visibility')}"] += 1
+            stats[f"placement:{attrs.get('placement')}"] += 1
+            if not _bbox_inside(ann.get("amodal_bbox"), roi):
+                stats[f"roi_outside:{all_insts[k].cls}"] += 1
+            stats["shared_px"] += ann["shared_px"]
             amodal_area = int(ann.get("amodal_area") or 0)
             if ann["iscrowd"] and amodal_area and \
                     ann["occluded_unlabelled_px"] >= UNLABELLED_SHARE * amodal_area:
@@ -592,15 +716,15 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
                      "unlabelled_px": ann["occluded_unlabelled_px"],
                      # 「被线挡住」/「角度看不到」: the annotator said why
                      "stated_reason": attrs.get("occluder")})
-            if attrs.get("visibility") == "occluded_full" and ann["area"] > 0:
+            if attrs.get("visibility") == OCCLUDED_FULL and ann["area"] > 0:
+                stats["occluded_full_with_pixels"] += 1
                 qa["occluded_full_label_with_pixels"].append(
                     {"desktop": desktop, "step": step, "instance": k, "area": ann["area"]})
             if not ann["amodal_is_shape"] and ann["area"] > 0:
+                stats["amodal_widened"] += 1
                 qa["amodal_widened_by_visible"].append(
                     {"desktop": desktop, "step": step, "instance": k})
-            if ann["shared_px"]:
-                counts["shared_px"] += ann["shared_px"]
-        if any(a["shared_px"] for a in anns):
+        if frame_stats["overlap_px"]:
             pairs = []
             keys = [a["attributes"]["instance_key"] for a in anns if a["shared_px"]]
             for i, a in enumerate(keys):
@@ -610,26 +734,32 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
                         pairs.append({"a": a, "b": b, "px": n})
             qa["overlapping_confirmed_masks"].append(
                 {"desktop": desktop, "step": step, "pairs": pairs})
-        counts["frames"] += 1
 
     # -- the timeline: states per step, the leaving step, flicker
     steps_all = sorted(set(steps_tab) | set(frame_steps))
     states = {s: ctx.state_at(s) for s in steps_all}
     leaving = _leaving(actions, leaving_steps(ctx.instances, ctx.events, tax),
-                       sorted(int(s) for s in images), seg_of)
-    _flicker(doc, desktop, states, qa)
-    _hidden_before_leaving(doc, desktop, leaving, qa)
+                       sorted(images), seg_of)
+    _flicker(doc, step_of, desktop, states, qa)
+    _hidden_before_leaving(doc, step_of, desktop, leaving, qa)
 
     instances_out: dict[str, dict] = {}
     timeline: dict[str, dict] = {}
+    values = {"state": set(), "placement": set()}
     for k, iid in sorted(key_to_id.items(), key=lambda t: t[1]):
         rec = all_insts[k]
-        attrs = dict(rec.attrs or {})
+        attrs = {a: v for a, v in (rec.attrs or {}).items() if a not in DROP_ATTRS}
         context = is_context(rec)
-        per_step = None if context else {
-            str(s): (None if states[s].get(k) is None else
-                     {"state": states[s][k].state, "placement": states[s][k].placement})
-            for s in steps_all}
+        per_step = None
+        if not context:
+            per_step = {}
+            for s in steps_all:
+                here = states[s].get(k)
+                per_step[str(s)] = (None if here is None else
+                                    {"state": here.state, "placement": here.placement})
+                if here is not None:
+                    values["state"].add(here.state)
+                    values["placement"].add(here.placement)
         lv = leaving.get(k)
         if lv is not None:
             lv = dict(lv, left_with_id=key_to_id.get(lv["left_with"]) if lv["left_with"] else None)
@@ -643,9 +773,8 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
             "attached": bool(rec.attached),
             "mounted_on": rec.mounted_on, "fastens": rec.fastens,
             "socket_host": rec.socket_host, "cable": rec.cable,
-            "captive": attrs.get("captive"),
+            "captive": (rec.attrs or {}).get("captive"),
             "context": context, "extra": is_extra(rec), "implied": is_implied(rec),
-            "implied_rule": attrs.get(IMPLIED_RULE_ATTR),
             "raw_names": list(rec.raw_names or []),
             "leaving": lv,
             "frames": {f: int(per_inst[k][f]) for f in ("annotations", "seen", "crowd", "clean")},
@@ -664,6 +793,7 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
             "step": s, "name": steps_tab[s].raw_name if s in steps_tab else None,
             "step_type": ctx.step_type(s),
             "frame": frame_name(s) if s in images else None,
+            "excluded": excluded.get(s),
             "verbs": sorted({r["verb"] for r in ok}),
             "targets": [r["target"] for r in ok],
             "target_ids": [r["target_id"] for r in ok],
@@ -675,51 +805,71 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
         key=lambda r: (r["step"], r["key"]))
 
     meta = db.get_desktop(desktop) or {}
-    head = {"desktop": desktop, "brand": meta.get("brand"), "model": meta.get("model_family"),
-            "view": VIEW}
-    doc["info"]["scanpack"] = dict(head, pack_version=PACK_VERSION,
-                                   fields=list(ANN_FIELDS),
-                                   label_maps="labels/S<nn>.png, uint16, 0 = background")
+    model, sheet = model_names(meta)
+    head = {"desktop": desktop, "brand": meta.get("brand"), "model": model,
+            "model_sheet": sheet, "view": VIEW}
+    doc["info"] = {
+        "description": f"Scanner-view segmentation package v{PACK_VERSION}, desktop "
+                       f"{desktop_dir(desktop)}: confirmed visible masks, amodal shapes "
+                       f"and occlusion, one annotation per (frame, part)",
+        "version": doc["info"]["version"],
+        "desktop": desktop, "brand": head["brand"], "model": model, "model_sheet": sheet,
+        "view": VIEW,
+        "confirmed_rows_only": True, "full_frame_coordinates": True,
+        "fully_covered_parts_as_crowd": True,
+        "amodal_widened_rows": int(stats["amodal_widened"]),
+        "excluded_frames": [{"step": s, "reason": r} for s, r in sorted(excluded.items())],
+        "fields": list(ANN_FIELDS),
+        "label_maps": "labels/S<nn>.png, uint16, 0 = background",
+    }
     write_json(ddir / "annotations.json", doc)
     write_json(ddir / "frames.json", dict(head, frames=frames_out))
     write_json(ddir / "instances.json", dict(head, steps=steps_all, instances=instances_out))
     write_json(ddir / "sequence.json", dict(head, steps=steps_out, leaving=leaving_order,
                                             timeline=timeline))
 
-    clean_rows = [
-        {"desktop": desktop, "step": img_step(a), "instance_id": a["instance_id"],
-         "class": instances_out[str(a["instance_id"])]["class"], "area": int(a["area"]),
-         "instance_key": a["attributes"]["instance_key"]}
-        for a in doc["annotations"] if a.get("clean")]
+    by_class = defaultdict(Counter)
+    clean_rows = []
+    for a in doc["annotations"]:
+        cls = instances_out[str(a["instance_id"])]["class"]
+        by_class[cls]["annotations"] += 1
+        if a.get("clean"):
+            by_class[cls]["clean"] += 1
+            clean_rows.append({"desktop": desktop, "step": step_of[a["image_id"]],
+                               "instance_id": a["instance_id"], "class": cls,
+                               "area": int(a["area"]),
+                               "instance_key": a["attributes"]["instance_key"]})
     return {
-        "desktop": desktop, "brand": head["brand"], "model": head["model"],
+        "desktop": desktop, "brand": head["brand"], "model": model, "model_sheet": sheet,
         "frames": len(images), "frames_in_view": len(frames),
+        "excluded": [{"step": s, "reason": r} for s, r in sorted(excluded.items())],
         "instances": len(key_to_id),
         "instances_annotated": sum(1 for k in key_to_id if per_inst[k]["annotations"]),
         "annotations": len(doc["annotations"]),
         "crowd": sum(1 for a in doc["annotations"] if a["iscrowd"]),
         "clean": len(clean_rows),
         "clean_instances": len({r["instance_id"] for r in clean_rows}),
-        "amodal_union_rows": int(doc["info"].get("amodal_union_rows") or 0),
-        "shared_px": int(counts["shared_px"]),
+        "amodal_widened_rows": int(stats["amodal_widened"]),
+        "overlap_frames": int(stats["overlap_frames"]),
+        "overlap_px": int(stats["overlap_px"]),
+        "shared_px": int(stats["shared_px"]),
         "truth_check": {"rows": truth_rows, "identical_to_fresh_compile": truth_identical,
                         "within_app_tolerance": truth_rows - truth_identical,
                         "max_px_diff": truth_max_px},
         "_clean_rows": clean_rows,
+        "_stats": stats,
+        "_by_class": by_class,
+        "_values": values,
+        "_other_image": other_image,
     }
 
 
-def img_step(ann: dict) -> int:
-    """The step of an annotation, read off its stable image id (see coco.image_id)."""
-    return (int(ann["image_id"]) % 100_000) // 10
-
-
-def _flicker(doc: dict, desktop: int, states: dict, qa: dict) -> None:
+def _flicker(doc: dict, step_of: dict, desktop: int, states: dict, qa: dict) -> None:
     """A part seen on the frames either side but not on this one, its state unchanged."""
     area: dict[str, dict[int, int]] = defaultdict(dict)
     for ann in doc["annotations"]:
-        area[ann["attributes"]["instance_key"]][img_step(ann)] = int(ann["area"])
-    steps = sorted({img_step(a) for a in doc["annotations"]})
+        area[ann["attributes"]["instance_key"]][step_of[ann["image_id"]]] = int(ann["area"])
+    steps = sorted(set(step_of.values()))
     for key, seen in area.items():
         for i in range(1, len(steps) - 1):
             a, b, c = steps[i - 1], steps[i], steps[i + 1]
@@ -732,9 +882,10 @@ def _flicker(doc: dict, desktop: int, states: dict, qa: dict) -> None:
                          "area_before": seen[a], "area_after": seen[c]})
 
 
-def _hidden_before_leaving(doc: dict, desktop: int, leaving: dict, qa: dict) -> None:
+def _hidden_before_leaving(doc: dict, step_of: dict, desktop: int, leaving: dict,
+                           qa: dict) -> None:
     """A part removed at ``r`` whose frame ``r - 1`` shows nothing of it."""
-    area = {(a["attributes"]["instance_key"], img_step(a)): int(a["area"])
+    area = {(a["attributes"]["instance_key"], step_of[a["image_id"]]): int(a["area"])
             for a in doc["annotations"]}
     for key, lv in leaving.items():
         if lv["kind"] != "removed" or lv["before_frame"] is None:
@@ -793,48 +944,94 @@ def build_pack(db_path: str, out_dir: str, desktops: Sequence[int] = DEFAULT_DES
                cache_dir: Optional[str] = None, work_dir: Optional[str] = None,
                resolve: Optional[Callable[[str], Optional[str]]] = None,
                tail: Optional[Callable[[str], Optional[str]]] = None,
-               tax: Optional[Taxonomy] = None, force: bool = False) -> dict:
+               tax: Optional[Taxonomy] = None, force: bool = False,
+               exclude: Optional[dict[tuple[int, int], str]] = None,
+               notes: Sequence[str] = ()) -> dict:
     """Write the package; returns the summary (counts per desktop, the QA lists).
 
     ``resolve`` turns a recorded raw path into the file to read today and
     ``tail`` into its part below the dataset root (both default to the identity
     / ``None``: :mod:`tda.core.rawroot` is the CLI's business). ``work_dir``
     receives the database copy, the plain COCO exports and ``qa.json``.
+    ``exclude`` is ``(desktop, step) -> reason`` of frames to leave out;
+    ``notes`` are lines for the README's Known issues.
     """
     out = Path(out_dir)
     work = Path(work_dir) if work_dir else REPO / ".cache" / "scanpack_work"
     resolve = resolve or (lambda p: p)
     tail = tail or (lambda p: None)
     tax = tax or load_taxonomy()
+    exclude = dict(exclude or {})
+    wanted = [int(d) for d in desktops]
+    stray = sorted(k for k in exclude if k[0] not in wanted)
+    if stray:
+        raise PackError(f"--exclude names desktops that are not packed: {stray}")
     _prepare_out(out, force)
     db = Db(str(_work_copy(db_path, work)))
     qa: dict[str, list] = {k: [] for k in QA_KEYS}
     try:
         truth = TruthService(db, tax, cache_dir=cache_dir)
         per_desktop = []
-        for desktop in [int(d) for d in desktops]:
+        for desktop in wanted:
             if db.get_desktop(desktop) is None:
                 raise PackError(f"desktop {desktop} is not in {db_path}")
+            mine = {s: r for (d, s), r in exclude.items() if d == desktop}
             per_desktop.append(build_desktop(db, tax, truth, desktop, out, work, cache_dir,
-                                             resolve, tail, qa))
+                                             resolve, tail, qa, mine))
     finally:
         db.close()
     clean_rows = [r for d in per_desktop for r in d.pop("_clean_rows")]
+    stats: Counter = Counter()
+    by_class: dict[str, Counter] = defaultdict(Counter)
+    values = {"state": set(), "placement": set()}
+    other_image = []
+    for d in per_desktop:
+        stats.update(d.pop("_stats"))
+        for cls, c in d.pop("_by_class").items():
+            by_class[cls].update(c)
+        for k, v in d.pop("_values").items():
+            values[k] |= v
+        other_image += [dict(r, desktop=d["desktop"]) for r in d.pop("_other_image")]
     _write_clean_csv(out / "clean_parts.csv", clean_rows)
-    by_class = Counter(r["class"] for r in clean_rows)
     summary = {
         "package": "scanpack", "pack_version": PACK_VERSION, "view": VIEW,
         "coco_export_version": EXPORT_VERSION,
         "desktops": [d["desktop"] for d in per_desktop],
         "totals": {k: sum(d[k] for d in per_desktop)
                    for k in ("frames", "instances", "annotations", "crowd", "clean",
-                             "amodal_union_rows", "shared_px")},
+                             "amodal_widened_rows", "overlap_frames", "overlap_px",
+                             "shared_px")},
         "per_desktop": per_desktop,
-        "clean_by_class": dict(sorted(by_class.items())),
+        "clean_by_class": {c: int(by_class[c]["clean"]) for c in sorted(by_class)
+                           if by_class[c]["clean"]},
+        "annotations_by_class": {c: int(by_class[c]["annotations"]) for c in sorted(by_class)},
         "clean_by_desktop_and_class": {
             desktop_dir(d["desktop"]): dict(sorted(Counter(
                 r["class"] for r in clean_rows if r["desktop"] == d["desktop"]).items()))
             for d in per_desktop},
+        "visibility_counts": {k.split(":", 1)[1]: int(v) for k, v in sorted(stats.items())
+                              if k.startswith("visibility:")},
+        "placement_counts": {k.split(":", 1)[1]: int(v) for k, v in sorted(stats.items())
+                             if k.startswith("placement:")},
+        "state_values": sorted(values["state"]),
+        "placement_values": sorted(values["placement"]),
+        "burst_sizes": {k.split("_", 1)[1]: int(v) for k, v in sorted(stats.items())
+                        if k.startswith("burst_")},
+        "amodal_box_outside_roi_by_class": dict(sorted(
+            ((k.split(":", 1)[1], int(v)) for k, v in stats.items()
+             if k.startswith("roi_outside:")), key=lambda kv: (-kv[1], kv[0]))),
+        "checks": {
+            "occlusion_ratio_differs_from_confirmed": int(stats["ratio_differs"]),
+            "occluded_full_with_pixels": int(stats["occluded_full_with_pixels"]),
+            "amodal_box_outside_roi": int(stats["roi_outside"]),
+            "clean_but_for_roi": int(stats["only_roi"]),
+            "clean_but_for_shared_px": int(stats["only_shared"]),
+        },
+        "frame_record_names_other_image": sorted(
+            other_image, key=lambda r: (r["desktop"], r["step"])),
+        "exclusions": [{"desktop": d, "step": s, "reason": r}
+                       for (d, s), r in sorted(exclude.items())],
+        "notes": [str(n) for n in notes],
     }
     (out / "LICENSE_NOTE.txt").write_text(LICENSE_NOTE, encoding="utf-8", newline="\n")
     (out / "README.md").write_text(readme_text(summary), encoding="utf-8", newline="\n")
@@ -880,7 +1077,7 @@ from pycocotools import mask as mask_utils   # pip install pycocotools
 
 desk = "D02"                                 # any desktop folder of the package
 coco = json.load(open(f"{desk}/annotations.json"))
-inst = json.load(open(f"{desk}/instances.json"))["instances"]
+inst = json.load(open(f"{desk}/instances.json"))["instances"]   # keys are strings
 ann = next(a for a in coco["annotations"] if a["clean"])         # a clean part
 img = next(i for i in coco["images"] if i["id"] == ann["image_id"])
 labels = np.array(Image.open(f"{desk}/{img['label_file']}"))     # uint16 ids
@@ -895,16 +1092,83 @@ print("hidden pixels (amodal minus visible):", int((amodal & ~visible).sum()))
 '''
 
 
+def _pct(value: float) -> str:
+    return f"{value:g}"
+
+
+def _class_lists(summary: dict) -> tuple[list[str], list[str]]:
+    """``(classes never clean, classes rarely clean)`` among the annotated ones."""
+    never, rarely = [], []
+    for cls, n in sorted(summary["annotations_by_class"].items(), key=lambda kv: -kv[1]):
+        clean = summary["clean_by_class"].get(cls, 0)
+        if clean == 0:
+            never.append(f"{cls} (0 of {n})")
+        elif clean < RARELY_CLEAN * n:
+            rarely.append(f"{cls} ({clean} of {n})")
+    return never, rarely
+
+
+def _known_issues(summary: dict) -> str:
+    t, c = summary["totals"], summary["checks"]
+    items = []
+    if t["overlap_frames"]:
+        items.append(
+            f"**Overlapping confirmed masks.** On {t['overlap_frames']} frames, "
+            f"{t['overlap_px']} pixels are claimed by two confirmed visible masks: rows "
+            f"confirmed at different times (an outline adjusted later, within the tool's "
+            f"tolerance) and masks corrected on one frame only. The label map gives each "
+            f"such pixel to one part (see *Where two confirmed masks overlap*); take points "
+            f"from the label map. Every row involved has `shared_px > 0` and none is clean.")
+    if c["occluded_full_with_pixels"]:
+        items.append(
+            f"**`occluded_full` with a sliver.** {c['occluded_full_with_pixels']} annotations "
+            f"are labelled `occluded_full` yet keep a few visible pixels: the label follows "
+            f"the rule occlusion ratio >= {_pct(OCCLUDED_FULL_RATIO)} (on the confirmed "
+            f"ratio), not \"no pixel visible\". The pixels are real; use them like any "
+            f"other visible pixels.")
+    other = summary["frame_record_names_other_image"]
+    if other:
+        where = ", ".join(f"{desktop_dir(r['desktop'])} {frame_name(r['step'])}" for r in other)
+        items.append(
+            f"**Picture vs. our frame record.** For {len(other)} frames our database's frame "
+            f"record names `P_0.png`, but the picture the masks were drawn on -- the one in "
+            f"this package -- is another image of the burst (`P_0` is a dark exposure): "
+            f"{where}. `frames.json` gives the file in `file_name` and the record's name in "
+            f"`frame_record_file`. The masks match the packaged picture.")
+    for ex in summary["exclusions"]:
+        reason = str(ex["reason"]).strip()
+        reason += "" if reason.endswith((".", "!", "?")) else "."
+        items.append(f"**{desktop_dir(ex['desktop'])} {frame_name(ex['step'])} is left out** "
+                     f"(no picture, label map or annotation; not in any count): {reason}")
+    items += [str(n) for n in summary["notes"]]
+    return "\n".join(f"{i}. {text}" for i, text in enumerate(items, start=1)) or "None known."
+
+
 def readme_text(summary: dict) -> str:
-    t = summary["totals"]
+    t, c = summary["totals"], summary["checks"]
     rows = "\n".join(
-        f"| {desktop_dir(d['desktop'])} | {d['brand']} {d['model']} | {d['frames']} | "
+        f"| {desktop_dir(d['desktop'])} | {d['model']} | {d['frames']} | "
         f"{d['instances_annotated']} | {d['annotations']} | {d['crowd']} | {d['clean']} | "
         f"{d['clean_instances']} |"
         for d in summary["per_desktop"])
     classes = ", ".join(f"{k} {v}" for k, v in sorted(summary["clean_by_class"].items(),
                                                        key=lambda kv: (-kv[1], kv[0])))
     desks = ", ".join(desktop_dir(d) for d in summary["desktops"])
+    never, rarely = _class_lists(summary)
+    seldom = ", ".join(entry.split(" (")[0] for entry in never + rarely)
+    seldom_zh = (f"这些类没有或几乎没有 clean 行：{seldom}（大件上总压着螺丝、线头或卡扣）。"
+                 if seldom else "")
+    vis = summary["visibility_counts"]
+    bursts = summary["burst_sizes"]
+    longest = max((int(k) for k in bursts), default=0)
+    odd_bursts = sum(v for k, v in bursts.items() if int(k) < longest)
+    roi_classes = ", ".join(f"{k} {v}" for k, v in
+                            summary["amodal_box_outside_roi_by_class"].items()) or "none"
+    bench = summary["placement_counts"].get("on_bench", 0)
+    full, part = _pct(OCCLUDED_FULL_RATIO), _pct(OCCLUDED_PARTIAL_RATIO)
+    small, tiny = TOO_SMALL_PX, VISIBLE_TINY_PX
+    excluded = ", ".join(f"{desktop_dir(e['desktop'])} {frame_name(e['step'])}"
+                         for e in summary["exclusions"]) or "none"
     return f"""# Scanner-view segmentation package (scanpack v{summary['pack_version']})
 
 ## 中文摘要
@@ -912,21 +1176,34 @@ def readme_text(summary: dict) -> str:
 本包是 {len(summary['desktops'])} 台台式机（{desks}）结构光扫描仪俯视 RGB 帧（1600×1600）的二维分割标注，
 供 3D 合作方测试"用 2D 掩码从重建点云里取出每个零件的点"。每台机器一个文件夹 `D<nn>/`：
 `images/S<nn>.png` 是标注时画掩码所用的那张原始扫描图（从原始盘逐字节拷贝），
-`labels/S<nn>.png` 是 16 位实例 id 图（0 = 背景，id 见 `instances.json`），
+`labels/S<nn>.png` 是 16 位实例 id 图（0 = 背景，id 见 `instances.json`，只在本台机器内有效），
 `annotations.json` 是 COCO 格式（可见掩码 + 完整形状 amodal 掩码 + 遮挡信息），
 `frames.json` / `sequence.json` 给出每一步的名称、动作和每个零件的状态时间线。
-坐标就是图像像素 (x, y)，原点在左上角。建议先用 `clean_parts.csv`（共 {t['clean']} 条）：
-这些零件在那一帧上没有被任何东西挡住（可见掩码与完整形状逐像素相同、标签为 visible、在 ROI 内），
-掩码下的像素就是它的全部可见表面。被遮挡的零件有两条路：(1) 只取可见掩码下的点；
-(2) 用拆卸顺序：零件在第 r 步离开，取第 r-1 帧重建里有、第 r 帧重建里没有、且落在它 amodal 掩码内的点。
-amodal 掩码是完整轮廓，不是点集——被挡住的表面扫描仪看不到。内部测试数据，请勿外传（见 `LICENSE_NOTE.txt`）。
+坐标就是图像像素 (x, y)，原点在左上角。S01 是初始状态，没有动作；其余每张图都拍在该步动作**之后**
+（S05 上第 5 步拆下的零件已经不在了）。
+
+**取点以 label map 为准**：零件的点就是 `labels/S<nn>.png == instance_id` 的像素下的点。
+确认的可见掩码在 {t['overlap_frames']} 帧上有重叠，`segmentation` 保持确认时的原样，重叠像素在 label map 里只归一个零件。
+
+建议先用 `clean_parts.csv`（共 {t['clean']} 条）。`clean` 要同时满足六条：
+(1) 可见掩码与完整形状逐像素相同；(2) 标签为 `visible`；(3) amodal 框在 ROI 内；
+(4) amodal 就是标注的形状本身（没有被可见掩码撑大）；(5) label map 把它的每个可见像素都给了它；
+(6) 它的可见像素没有一个同时被别的确认掩码占用（`shared_px == 0`）。
+这样的零件在那一帧上没有被任何东西挡住，掩码下的点就是扫描仪看到的它的全部表面。
+{seldom_zh}
+被遮挡的零件有两条路：(1) 只取可见掩码（label map）下的点；
+(2) 用拆卸顺序：零件在第 r 步离开，取第 r-1 帧重建里有、第 r 帧重建里没有、且落在它第 r-1 帧 amodal 掩码内的点。
+完全被挡住的零件是 crowd 行（`iscrowd: 1`，可见掩码为空），那一帧上没有它的点。
+amodal 掩码是完整轮廓，不是点集——被挡住的表面扫描仪看不到。已知问题见文末 *Known issues*。
+内部测试数据，请勿外传（见 `LICENSE_NOTE.txt`）。
 
 ## What this is
 
 Two-dimensional instance segmentation of the top-down RGB frames of the
 structured-light scanner, for {len(summary['desktops'])} desktop computers being
 taken apart step by step. Every frame was annotated and then confirmed by a
-human annotator; the masks here are exactly the confirmed ones. The goal of the
+human annotator; the visible masks here are exactly the confirmed ones (see
+*Confirmed and derived fields* for what else is in the files). The goal of the
 package is to test whether these masks let you select each annotated part's
 points in your 3D reconstruction of the same scanner frame.
 
@@ -937,7 +1214,16 @@ points in your 3D reconstruction of the same scanner frame.
 
 *Parts* counts the instances with at least one annotation; *Clean* counts
 (frame, part) annotations, *Clean parts* the distinct parts among them.
+Frames left out of this package: {excluded} (see *Known issues*). `frames.json`,
+`instances.json` and `annotations.json` give the model name (`model`) and the
+teardown sheet's own spelling of it (`model_sheet`).
+
 Clean annotations by class: {classes}.
+
+**Large parts have (almost) no clean rows.** Something small -- a screw, a
+connector, a latch -- nearly always sits on them. Never clean: {', '.join(never) or 'none'}.
+Rarely clean (under {int(RARELY_CLEAN * 100)} % of their annotations): {', '.join(rarely) or 'none'}.
+For these use the visible mask or the disassembly order (*Occluded parts*).
 
 ## Layout
 
@@ -955,50 +1241,65 @@ D<nn>/
   sequence.json      the step table and the state timeline per part
 ```
 
-`S<nn>` is the step number. A step's picture is taken **after** that step's
-action: on `S05` the part removed at step 5 is already gone.
+## Steps and pictures
+
+`S<nn>` is the step number. **S01 is the initial condition** (step name
+"Initial conditions", no action). Every other picture is taken **after** that
+step's action: on `S05` the part removed at step 5 is already gone.
+
+The scanner writes a burst of images per step (`P_0.png`, `P_1.png`, ...) and
+one of them is the picture the masks were drawn on. `frames.json` names it:
+`source_folder` (below the dataset root on our scanner drive) and `file_name`,
+with `burst_choice`: `index` is its position in the burst as listed,
+`p_index` the number in its file name (`P_<p_index>.png`), `burst_size` how
+many images the burst has, `reason` why it was chosen (`p0`: the first one;
+`p0_dark`: the first was a dark exposure, so a later one) and `by` who chose
+it (`annotation_tool`: the tool that showed it to the annotator). Burst sizes
+here: {', '.join(f'{v} frames with {k} images' for k, v in sorted(bursts.items(), key=lambda kv: int(kv[0])))}{'.' if not odd_bursts else f'; in the {odd_bursts} shorter bursts an image is missing, so `index` and `p_index` can differ.'}
+`sha256`, `width`, `height` identify the file; `identical_to_annotated_copy`
+says that the annotation tool's working copy of the picture was byte for byte
+this file.
 
 ## Coordinate frame
 
 Everything is in image pixels of the picture `frames.json` names: `(x, y)` with
 the origin at the top-left corner, x to the right (column), y down (row),
 1600 x 1600 for every frame here. Masks, boxes (`[x, y, w, h]`), the label maps
-and the ROI all use this frame, unshifted and uncropped. `images/S<nn>.png` is
-the very file the masks were drawn on: `frames.json` gives its original folder
-and file name on our scanner drive (`source_folder`, `file_name`; the scanner
-writes a burst `P_0..P_9` per step and one was chosen -- `burst_choice`), its
-sha256 and its size, so you can match it with the scanner frame your
-reconstruction was built from.
+and the ROI all use this frame, unshifted and uncropped.
 
 ## Selecting points
 
 If your reconstruction keeps, for each 3D point, the pixel of this image it
 came from (an organized point cloud, or a depth map registered to this RGB
-image), then **the points under a part's visible mask are that part's points**:
-read the label map at the pixel (`labels/S<nn>.png == instance_id`) or decode
-the annotation's `segmentation`. The scanner only measures surfaces it can see,
-so a hidden surface has no points: the `amodal_segmentation` is the part's full
-silhouette on the image (what it would cover if nothing were in front), not a
-set of points.
+image), then **the points of a part are the points under its pixels in the
+label map**: `labels/S<nn>.png == instance_id`. Use the label map, not the
+annotation's `segmentation`: the segmentation is the confirmed mask as it was
+signed off and, on {t['overlap_frames']} frames, it overlaps another part's
+(*Where two confirmed masks overlap*); the label map gives every pixel to one
+part. Where they do not overlap the two are identical. The scanner only
+measures surfaces it can see, so a hidden surface has no points: the
+`amodal_segmentation` is the part's full silhouette on the image (what it would
+cover if nothing were in front), not a set of points.
 
 ### Start with the clean set
 
 `clean_parts.csv` lists the annotations with `clean: true` ({t['clean']} rows): the
 part is not covered by anything on that frame, so its visible mask *is* its
 whole outline and the points under it are all of the part the scanner saw.
-Precisely, `clean` is true when
+`clean` is true when all six hold:
 
-* the visible mask equals the amodal mask to the pixel (0 px difference),
-* its label (`visibility`) is `visible`,
-* the amodal box lies inside the frame's ROI,
-* the amodal shape is the annotated shape itself (`amodal_is_shape`), and
-* the label map gives the part every pixel of its visible mask (`label_px == area`).
+1. the visible mask equals the amodal mask to the pixel (0 px difference);
+2. its label (`visibility`) is `visible`;
+3. the amodal box lies inside the frame's ROI;
+4. the amodal shape is the annotated shape itself (`amodal_is_shape`);
+5. the label map gives the part every pixel of its visible mask (`label_px == area`);
+6. no other confirmed mask claims any of its pixels (`shared_px == 0`).
 
 ### Occluded parts: two routes
 
-1. **Visible mask.** Take the points under the visible mask only. This is what
-   the scanner could see of the part on that frame; it is the amodal shape
-   minus the parts above it (`occlusion_ratio` says how much is missing).
+1. **Visible mask.** Take the points under the part's pixels in the label map.
+   This is what the scanner could see of the part on that frame
+   (`occlusion_ratio` says how much of its silhouette is missing).
 2. **Disassembly order.** `instances.json` gives each part's leaving step `r`
    (`leaving.step`, with the verb and, for a part that rode out inside another
    one, `left_with`). The part is present on frame `r-1` (`leaving.before_frame`)
@@ -1009,13 +1310,39 @@ Precisely, `clean` is true when
    other parts leaving at `r` in `sequence.json` (`leaving`). `kind` is
    `removed` for a part taken out, `displaced` for one moved aside but still in
    the picture, and `changed` for a part that never leaves but changes state
-   (a connector unplugged, a latch opened).
+   (a connector unplugged, a latch opened). A frame left out of the package is
+   never a `before_frame` or `after_frame`.
+
+### Visibility labels
+
+`visibility` is one of six values. The annotation tool decides it from the
+occlusion ratio of the confirmed row and the shorter side of the visible
+mask's bounding box, in this order (an annotator may override it, and then
+`attributes.occluder` may give the reason: `cable` -- hidden by a cable nobody
+annotates -- or `viewpoint`):
+
+| Value | Rule | Annotations here |
+|---|---|---|
+| `occluded_full` | occlusion ratio >= {full} | {vis.get('occluded_full', 0)} |
+| `too_small` | shorter side < {small} px | {vis.get('too_small', 0)} |
+| `visible_tiny` | shorter side {small}-{tiny - 1} px (< {tiny}) | {vis.get('visible_tiny', 0)} |
+| `occluded_partial` | occlusion ratio {part}-{full} | {vis.get('occluded_partial', 0)} |
+| `visible` | occlusion ratio < {part} | {vis.get('visible', 0)} |
+| `out_of_view` | no pixel and no shape on the frame | 0 (never an annotation) |
+
+So **a `visible` part may still be partly covered** (up to {int(float(part) * 100)} % of its
+silhouette); `clean` is the test for "not covered at all". An `occluded_full`
+part may keep a sliver of visible pixels (*Known issues*).
 
 ### `occlusion_ratio` and `occluders`
 
-`occlusion_ratio = 1 - area / amodal_area`: the share of the part's silhouette
-hidden on that frame. `occluders` lists who takes the hidden pixels, read off
-the label map: `[{{"id": instance_id, "px": pixels}}, ...]`, largest first.
+`occlusion_ratio` (top level) is `1 - area / amodal_area`, measured on the two
+masks in the file: the share of the part's silhouette hidden on that frame.
+`attributes.occlusion_ratio` is the value recorded when the row was confirmed
+(the one `visibility` was decided from); the two differ on
+{c['occlusion_ratio_differs_from_confirmed']} annotations, where today's amodal shape is not the one the
+row was confirmed against. `occluders` lists who takes the hidden pixels, read
+off the label map: `[{{"id": instance_id, "px": pixels}}, ...]`, largest first.
 `occluded_unlabelled_px` is the rest -- hidden pixels no labelled part shows
 (a cable, a part nobody annotates, a hand). The three add up:
 `sum(px) + occluded_unlabelled_px == amodal_area - area`.
@@ -1023,9 +1350,11 @@ the label map: `[{{"id": instance_id, "px": pixels}}, ...]`, largest first.
 ### The ROI
 
 `frames.json` gives each frame's `roi` `[x0, y0, x1, y1]` (x1, y1 exclusive):
-the rectangle around the chassis that annotation concentrated on (it is the
-same for every frame of a desktop here). Parts outside it -- set down on the
-bench -- are rare; a part whose amodal box leaves the ROI is never `clean`.
+the rectangle the annotation concentrated on, drawn once per desktop around the
+chassis. Every annotation in this package is of a part in the chassis --
+{'none is of a part' if bench == 0 else f'{bench} annotations are of parts'} set down on the bench. The rectangle is not a tight fit: on {c['amodal_box_outside_roi']}
+annotations ({roi_classes}) the amodal box reaches past it, which by rule 3
+makes them not clean -- for {c['clean_but_for_roi']} of them it is the only reason.
 
 ### Fully covered parts (crowd rows)
 
@@ -1036,47 +1365,74 @@ use route 2 (or another frame) for it.
 
 ### Where two confirmed masks overlap
 
-A few confirmed visible masks claim the same pixels ({t['shared_px']} pixel claims in the
-whole package): rows confirmed at different times, or a mask corrected on one
-frame only. The label map gives such a pixel to the part higher in the frame's
-layer order (a part corrected on that frame wins). Each annotation's
-`shared_px` says how many of its visible pixels another mask also claims and
-`label_px` how many the label map gives it; `segmentation` itself is kept as it
-was confirmed.
+On {t['overlap_frames']} frames two confirmed visible masks claim the same {t['overlap_px']} pixels:
+rows confirmed at different times, or a mask corrected on one frame only. The
+label map gives such a pixel to the part higher in the frame's annotated layer
+order (a part whose mask was corrected on that frame is on top). Each
+annotation's `shared_px` says how many of its visible pixels another mask also
+claims and `label_px` how many the label map gives it; `segmentation` itself
+is kept as it was confirmed. No annotation with `shared_px > 0` is clean.
+
+## Confirmed and derived fields
+
+* **Confirmed** (as the annotator signed the frame off): `segmentation`,
+  `area`, `bbox` (for a crowd row: the amodal box), `iscrowd`, and in
+  `attributes`: `visibility`, `occlusion_ratio`, `occluder`, `placement`,
+  `verified`.
+* **Derived from today's annotation** (the part's drawn shape on that frame):
+  `amodal_segmentation`, `amodal_bbox`, `amodal_area`; on {t['amodal_widened_rows']}
+  annotations the shape is widened to hold the confirmed visible mask
+  (`amodal_is_shape: false`).
+* **Computed for this package** from the two: the label maps, the top-level
+  `occlusion_ratio`, `occluders`, `occluded_unlabelled_px`, `shared_px`,
+  `label_px`, `amodal_is_shape`, `clean`; and from the teardown log and the
+  annotation: `states`, `leaving`, `sequence.json`.
 
 ## Files in detail
 
-* `annotations.json` -- COCO (`images`, `annotations`, `categories`) as our
-  annotation tool exports it (version {summary['coco_export_version']}): `segmentation` (visible mask) and
-  `amodal_segmentation` are compressed RLE (`pycocotools.mask.decode`), plus
-  `amodal_bbox`, `amodal_area` and an `attributes` block (`instance_key`,
-  `state`, `placement`, `visibility`, `verified`, ...). The package adds at the
-  top of each annotation: `instance_id`, `visibility`, `occlusion_ratio`,
-  `occluders`, `occluded_unlabelled_px`, `shared_px`, `label_px`,
-  `amodal_is_shape`, `clean`. Each image has `file_name` (`images/S<nn>.png`)
-  and `label_file` (`labels/S<nn>.png`). `visibility` is one of `visible`,
-  `occluded_partial`, `occluded_full`, `visible_tiny` (a human may label a part
-  `occluded_full` with a sliver still showing).
+* **ids and keys.** `instance_id` is valid within one desktop folder: on every
+  frame of that desktop it names the same part, and each desktop counts from 1.
+  `key` (e.g. `screw.cpu_cooler.03`) is our name for the part and the identity
+  to use across versions of this package. JSON object keys are strings:
+  `instances["12"]`, `frames["5"]`.
+* `annotations.json` -- COCO (`images`, `annotations`, `categories`):
+  `segmentation` (visible mask) and `amodal_segmentation` are compressed RLE
+  (`pycocotools.mask.decode`), plus `amodal_bbox`, `amodal_area` and an
+  `attributes` block: `instance_key`, `state`, `placement`, `visibility`,
+  `occluder`, `visibility_reviewed` (a person re-checked the label),
+  `occlusion_ratio` (confirmed), `amodal_complete` (the drawn shape covers the
+  whole part), `implied`, `tier` (the annotation standard of this camera:
+  `gold`) and `verified`. The package adds at the top of each annotation:
+  `instance_id`, `visibility`, `occlusion_ratio`, `occluders`,
+  `occluded_unlabelled_px`, `shared_px`, `label_px`, `amodal_is_shape`,
+  `clean`. Each image has `file_name` (`images/S<nn>.png`) and `label_file`
+  (`labels/S<nn>.png`); `extra.step` is its step.
 * `labels/S<nn>.png` -- single-channel 16-bit PNG, value = `instance_id`
   (0 = background). Read it with Pillow (`np.array(Image.open(p))`) or OpenCV
   (`cv2.imread(p, cv2.IMREAD_UNCHANGED)`).
-* `instances.json` -- `instances[id]`: `key` (our stable name, e.g.
-  `screw.cpu_cooler.03`), `class` and `class_description`, `category_id` (the
-  COCO category), `attrs`, `parent` / `attached` (an attached part leaves with
-  its parent), `mounted_on`, `fastens`, `socket_host`, `captive` (a captive
-  screw stays on its part), `extra` (added by the annotator, not named in the
-  log), `implied` (assumed present, e.g. the motherboard of a machine whose log
-  never names it), `leaving` (see route 2), `frames` (annotation counts) and
-  `states` (state and placement at every step). ids are this package's;
-  `key` is the identity to use across versions.
+* `instances.json` -- `instances["<id>"]`: `key`, `class` and
+  `class_description`, `category_id` (the COCO category), `attrs`, `parent` /
+  `attached` (an attached part leaves with its parent), `mounted_on`,
+  `fastens`, `socket_host`, `captive` (a captive screw stays on its part),
+  `extra` (added by the annotator, not named in the teardown log), `implied`
+  (assumed present, e.g. the motherboard of a machine whose log never names
+  it), `leaving` (see route 2), `frames` (annotation counts) and `states`
+  (`states["<step>"]`: state and placement at every step). States:
+  {', '.join(f'`{s}`' for s in summary['state_values'])}; placements:
+  {', '.join(f'`{p}`' for p in summary['placement_values'])}.
 * `sequence.json` -- `steps`: step, name (as written in the teardown log),
   step type, verbs, targets and the actions; `leaving`: every part's leaving
   step in order; `timeline`: per part, runs of `(from, to, state, placement)`.
-* `frames.json` -- per step: `image`, `label`, `source_folder`, `file_name`,
-  `sha256`, `width`, `height`, `roi`, `step_name`, `step_type`, `actions`,
-  `review_status`, annotation counts.
-* `manifest.json` -- the counts above per desktop and per class, and the size
-  and sha256 of every other file.
+* `frames.json` -- `frames["<step>"]`: `image`, `label`, `source_folder`,
+  `file_name`, `burst_choice`, `frame_record_file`, `sha256`, `width`,
+  `height`, `roi`, `step_name`, `step_type`, `actions`, `review_status`,
+  annotation counts, and `excluded` (the reason, for a frame left out).
+* `manifest.json` -- the counts above per desktop and per class, the
+  exclusions and notes, and the size and sha256 of every other file.
+
+## Known issues
+
+{_known_issues(summary)}
 
 ## Python example
 
@@ -1111,6 +1467,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--out", default=DEFAULT_OUT, help="the package folder")
     parser.add_argument("--desktops", default=",".join(str(d) for d in DEFAULT_DESKTOPS),
                         help="e.g. 2,3,4,13 or 20-25")
+    parser.add_argument("--exclude", action="append", default=[],
+                        help="frames to leave out, 'D2:1,D4:1=reason' (repeatable)")
+    parser.add_argument("--note", action="append", default=[],
+                        help="a line for the README's Known issues (repeatable)")
     parser.add_argument("--paths", default=str(REPO / "configs" / "paths.yaml"),
                         help="paths.yaml: the raw drive and the frame cache")
     parser.add_argument("--cache-dir", default=None, help="overrides paths.yaml's cache_dir")
@@ -1131,7 +1491,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         summary = build_pack(
             args.db, args.out, _parse_desktops(args.desktops), cache_dir=cache_dir,
             work_dir=args.work, resolve=rawroot.resolve_raw,
-            tail=(raw.tail if raw is not None else None), force=args.force)
+            tail=(raw.tail if raw is not None else None), force=args.force,
+            exclude=parse_exclusions(args.exclude), notes=args.note)
     except PackError as exc:
         print(f"[scanpack] refused: {exc}")
         return 1
@@ -1139,6 +1500,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"[scanpack] D{d['desktop']:02d}: {d['frames']} frames, {d['instances']} parts, "
               f"{d['annotations']} annotations, {d['crowd']} crowd, {d['clean']} clean, "
               f"truth {d['truth_check']}")
+    print(f"[scanpack] totals {summary['totals']}")
+    print(f"[scanpack] checks {summary['checks']}")
     print(f"[scanpack] clean by class: {summary['clean_by_class']}")
     for key in QA_KEYS:
         print(f"[scanpack] qa {key}: {len(summary['qa'][key])}")

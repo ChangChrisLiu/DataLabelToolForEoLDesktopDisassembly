@@ -13,19 +13,26 @@ then
 * ``CABLED`` partly under a cable occluder nobody labels on frame 2,
 * ``PATCHED`` given a 「只改这一帧」 mask on frame 3 that reaches over
   ``NEIGHBOR`` -- two confirmed masks claiming the same pixels,
+* ``STALE_UPPER`` drawn over a strip of ``STALE_LOWER``, whose confirmed row on
+  frame 4 still holds that strip (a row confirmed before the upper part grew,
+  as on D2's cover/motherboard) -- an overlap with no per-frame mask, settled
+  by the layer order alone,
 
-and every frame confirmed (D2: all but the last). Pinned: the label map is the
-union of the visible masks with the right ids, visible ⊆ amodal, ``clean``
-implies equal masks, the manifest's counts and hashes, each picture is the
-chosen source file byte for byte, the output is deterministic, the README's
-example runs, and the build refuses confirmed rows the inputs no longer agree
-with.
+every frame confirmed (D2: all but the last), and one frame per scene left out
+with ``exclude`` (round 2). Pinned: the label map is the union of the visible
+masks with the right ids, visible ⊆ amodal, ``clean`` implies equal masks and
+no shared pixel, ``occlusion_ratio`` is the masks', the manifest's counts and
+hashes, each picture is the chosen source file byte for byte, the exclusion,
+the README (example, definitions, Known issues), no internal path in a shipped
+file, the output is deterministic, and the build refuses confirmed rows the
+inputs no longer agree with.
 """
 from __future__ import annotations
 
 import csv
 import hashlib
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -59,14 +66,23 @@ HW = (128, 128)
 SIDE = 16
 ROI = [0, 0, 128, 112]
 LAST = {2: 10, 13: 14}
+#: The frame each scene leaves out: the frame before a part leaves (D2: the fan
+#: connector unplugged at 7; D13: the SSD removed at 10).
+EXCLUDED = {2: 6, 13: 9}
+EXCLUDE_REASON = "the fixture's layer order is wrong on this frame"
+NOTE = "A fixture note for the Known issues."
 CHASSIS = "chassis"
 HIDDEN, COVER = "screw.motherboard.01", "ram_module.01"
 HALF, HALF_COVER = "screw.motherboard.02", "ram_module.02"
 OUTSIDE = "screw.motherboard.03"
 CABLED, CABLE_STEP = "screw.motherboard.04", 2
 PATCHED, NEIGHBOR, PATCH_STEP = "ram_latch.03", "ram_latch.04", 3
+STALE_LOWER, STALE_UPPER, STALE_STEP = "screw.motherboard.05", "screw.motherboard.06", 4
 CELLS = {COVER: 32, HIDDEN: 33, HALF_COVER: 34, HALF: 35, PATCHED: 40, NEIGHBOR: 41,
-         CABLED: 42, OUTSIDE: 60}
+         CABLED: 42, STALE_LOWER: 44, STALE_UPPER: 45, OUTSIDE: 60}
+#: The columns of STALE_LOWER's cell STALE_UPPER is drawn over (the 12 px left
+#: keep it ``visible`` rather than ``visible_tiny``).
+STRIP = 2
 CHOSEN_P1_STEP, REENCODED_STEP = 3, 4
 
 
@@ -89,7 +105,7 @@ def sha(path) -> str:
 # --------------------------------------------------------------------------- #
 # the scene
 # --------------------------------------------------------------------------- #
-def _pictures(root: Path, desktop: int, last: int) -> tuple[dict, dict]:
+def _pictures(root: Path, desktop: int, last: int) -> dict:
     """Two burst images per step on the stand-in raw drive, the cache, its manifest."""
     raw_paths, manifest = {}, {}
     cache = root / "cache" / VIEW / f"D{desktop:02d}"
@@ -117,7 +133,7 @@ def _pictures(root: Path, desktop: int, last: int) -> tuple[dict, dict]:
             "src": burst[pick]}
         raw_paths[step] = burst
     (cache / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    return raw_paths, manifest
+    return raw_paths
 
 
 def build_scene(root: Path, desktop: int) -> Path:
@@ -134,8 +150,8 @@ def build_scene(root: Path, desktop: int) -> Path:
         if key.startswith("screw.cpu_cooler."):       # captive: rides out with the cooler
             rec.parent, rec.attached, rec.fastens = cooler, True, cooler
         db.upsert_instance(rec)
-    db.upsert_desktop(desktop, {"brand": "Dell", "model_family": f"fixture D{desktop}"})
-    raw_paths, _ = _pictures(root, desktop, last)
+    db.upsert_desktop(desktop, {"brand": "Dell", "model_family": "Optiplex 7020"})
+    raw_paths = _pictures(root, desktop, last)
     for step in range(1, last + 1):
         db.upsert_frame(FrameKey(desktop, step, VIEW), raw_paths[step][0],
                         {"hw": list(HW), "burst": raw_paths[step]}, None)
@@ -152,14 +168,18 @@ def build_scene(root: Path, desktop: int) -> Path:
         shapes[key] = cell(CELLS[key] if key in CELLS else next(free))
     shapes[COVER] = shapes[COVER] | shapes[HIDDEN]
     ys, xs = np.nonzero(cell(CELLS[HALF]))
-    left = rect(int(xs.min()), int(ys.min()), int(xs.min()) + 7, int(ys.max()) + 1)
-    shapes[HALF_COVER] = shapes[HALF_COVER] | left
+    shapes[HALF_COVER] = shapes[HALF_COVER] | rect(int(xs.min()), int(ys.min()),
+                                                   int(xs.min()) + 7, int(ys.max()) + 1)
+    ys, xs = np.nonzero(cell(CELLS[STALE_LOWER]))
+    shapes[STALE_UPPER] = shapes[STALE_UPPER] | rect(int(xs.max()) + 1 - STRIP, int(ys.min()),
+                                                     int(xs.max()) + 3, int(ys.max()) + 1)
     for key, mask in shapes.items():
         db.add_keyframe(ShapeKeyframe(
             id=None, instance=key, desktop=desktop, view=VIEW, pose_segment=1,
             anchor_step=last, placement="in_chassis", geom_type="mask",
             parts=[ShapePart("main", masks.encode_rle(mask))]))
-    order = [CHASSIS] + [k for k in keys if k not in (COVER, HALF_COVER)] + [COVER, HALF_COVER]
+    top = (COVER, HALF_COVER, STALE_UPPER)
+    order = [CHASSIS] + [k for k in keys if k not in top] + list(top)
     db.set_zorder(ZOrderRec(desktop, VIEW, 1, [(k, "main") for k in order]))
     ys, xs = np.nonzero(cell(CELLS[CABLED]))
     db.set_occluder(OccluderMask(FrameKey(desktop, CABLE_STEP, VIEW), "cable", masks.encode_rle(
@@ -174,11 +194,21 @@ def build_scene(root: Path, desktop: int) -> Path:
     confirm = steps[:-1] if desktop == 2 else steps
     for step in confirm:
         truth.verify_frame(FrameKey(desktop, step, VIEW), "tester")
+    # STALE_LOWER's confirmed row on frame 4 still holds the strip STALE_UPPER
+    # covers today: confirmed before the upper part grew (same inputs digest,
+    # as a row inside the re-tracing tolerance keeps)
+    key = FrameKey(desktop, STALE_STEP, VIEW)
+    row = db.compiled(key)[STALE_LOWER]
+    db.put_compiled(key, STALE_LOWER, masks.encode_rle(cell(CELLS[STALE_LOWER])),
+                    row["occlusion_ratio"], row["visibility"], row["placement"], "verified",
+                    row["input_hash"], verified_by=row["verified_by"])
     db.close()
     return root / "tda.sqlite"
 
 
 def make_pack(root: Path, db_path: Path, desktop: int, name: str = "pack", **kw) -> dict:
+    kw.setdefault("exclude", {(desktop, EXCLUDED[desktop]): EXCLUDE_REASON})
+    kw.setdefault("notes", [NOTE])
     return S.build_pack(str(db_path), str(root / name), [desktop],
                         cache_dir=str(root / "cache"), work_dir=str(root / f"work_{name}"),
                         **kw)
@@ -198,7 +228,8 @@ def built(request, tmp_path_factory):
     frames = json.loads((ddir / "frames.json").read_text(encoding="utf-8"))
     return {"desktop": desktop, "root": root, "db": db_path, "db_sha_before": before,
             "summary": summary, "pack": pack, "ddir": ddir, "coco": coco,
-            "instances": instances, "frames": frames}
+            "instances": instances, "frames": frames,
+            "step_of": {i["id"]: i["extra"]["step"] for i in coco["images"]}}
 
 
 def _label(built, img) -> np.ndarray:
@@ -244,6 +275,9 @@ def test_label_map_is_the_union_of_the_visible_masks_and_the_ids_match(built):
         assert np.array_equal(label > 0, claims > 0)
         alone = claims == 1
         assert np.array_equal(label[alone], owner[alone])
+        for ann in anns:
+            seen = masks.decode_rle(ann["segmentation"]).astype(bool)
+            assert ann["shared_px"] == int((claims[seen] > 1).sum())
 
 
 def test_two_confirmed_masks_on_one_pixel_go_to_the_frames_own_correction(built):
@@ -258,6 +292,26 @@ def test_two_confirmed_masks_on_one_pixel_go_to_the_frames_own_correction(built)
     assert _ann(built, 1, NEIGHBOR)["clean"]
 
 
+def test_without_a_per_frame_mask_the_layer_order_owns_the_shared_pixels(built):
+    """D2's cover over the motherboard: an older confirmed row under a newer upper part."""
+    lower = _ann(built, STALE_STEP, STALE_LOWER)
+    upper = _ann(built, STALE_STEP, STALE_UPPER)
+    shared = STRIP * (SIDE - 2)
+    assert lower["shared_px"] == upper["shared_px"] == shared
+    assert upper["label_px"] == upper["area"]                       # higher layer wins
+    assert lower["label_px"] == lower["area"] - shared
+    # the lower row is its whole square again -- equal to its shape, labelled
+    # visible -- and still not clean: the map gave the strip away
+    assert lower["area"] == lower["amodal_area"] and lower["visibility"] == "visible"
+    assert not lower["clean"]
+    # the upper part is uncovered and owns every pixel: only shared_px keeps it out
+    assert upper["area"] == upper["amodal_area"] and upper["visibility"] == "visible"
+    assert upper["label_px"] == upper["area"] and upper["amodal_is_shape"]
+    assert not upper["clean"]
+    assert _ann(built, 1, STALE_UPPER)["clean"]                     # no overlap there
+    assert built["summary"]["checks"]["clean_but_for_shared_px"] >= 1
+
+
 # --------------------------------------------------------------------------- #
 # the annotations
 # --------------------------------------------------------------------------- #
@@ -270,10 +324,26 @@ def test_visible_lies_inside_amodal_and_the_occluders_add_up(built):
         hidden = sum(o["px"] for o in ann["occluders"]) + ann["occluded_unlabelled_px"]
         assert hidden == ann["amodal_area"] - ann["area"]
         assert ann["visibility"] == ann["attributes"]["visibility"]
-        assert ann["occlusion_ratio"] == ann["attributes"]["occlusion_ratio"]
 
 
-def test_clean_implies_equal_masks_visible_label_and_inside_the_roi(built):
+def test_occlusion_ratio_is_the_masks_and_the_confirmed_value_stays_in_attributes(built):
+    differs = 0
+    for ann in built["coco"]["annotations"]:
+        assert ann["occlusion_ratio"] == pytest.approx(1 - ann["area"] / ann["amodal_area"],
+                                                       abs=1e-12)
+        differs += ann["occlusion_ratio"] != pytest.approx(
+            ann["attributes"]["occlusion_ratio"], abs=1e-9)
+    # the per-frame mask reaches outside its shape: today's amodal is wider than
+    # the one the row was confirmed against
+    patched = _ann(built, PATCH_STEP, PATCHED)
+    assert patched["attributes"]["occlusion_ratio"] == 0.0 and patched["occlusion_ratio"] > 0
+    assert differs == built["summary"]["checks"]["occlusion_ratio_differs_from_confirmed"]
+    # a part 'visible' by the ladder may still be partly covered (< 0.3)
+    lower = _ann(built, 1, STALE_LOWER)
+    assert lower["visibility"] == "visible" and 0 < lower["occlusion_ratio"] < 0.3
+
+
+def test_clean_implies_equal_masks_visible_label_inside_the_roi_and_no_shared_pixel(built):
     clean = [a for a in built["coco"]["annotations"] if a["clean"]]
     assert clean
     for ann in clean:
@@ -285,6 +355,7 @@ def test_clean_implies_equal_masks_visible_label_and_inside_the_roi(built):
         assert x >= ROI[0] and y >= ROI[1] and x + w <= ROI[2] and y + h <= ROI[3]
         assert ann["occluders"] == [] and ann["occluded_unlabelled_px"] == 0
         assert ann["label_px"] == ann["area"] and ann["amodal_is_shape"]
+        assert ann["shared_px"] == 0 and ann["occlusion_ratio"] == 0.0
 
 
 def test_the_scenes_parts_are_classified_as_drawn(built):
@@ -297,6 +368,7 @@ def test_the_scenes_parts_are_classified_as_drawn(built):
     assert not half["clean"] and half["occluders"][0]["id"] == _id(built, HALF_COVER)
     outside = _ann(built, 1, OUTSIDE)
     assert outside["area"] == outside["amodal_area"] > 0 and not outside["clean"]
+    assert built["summary"]["checks"]["clean_but_for_roi"] >= 1
     cabled = _ann(built, CABLE_STEP, CABLED)
     assert cabled["occluded_unlabelled_px"] > 0 and not cabled["clean"]
     assert _ann(built, 1, CABLED)["clean"]
@@ -304,18 +376,80 @@ def test_the_scenes_parts_are_classified_as_drawn(built):
     assert chassis["occlusion_ratio"] > 0 and not chassis["clean"]
 
 
-def test_only_confirmed_frames_are_exported(built):
-    last = LAST[built["desktop"]]
+def test_only_confirmed_and_not_excluded_frames_are_exported(built):
+    desktop, last = built["desktop"], LAST[built["desktop"]]
+    gone = EXCLUDED[desktop]
     exported = sorted(i["extra"]["step"] for i in built["coco"]["images"])
+    confirmed = range(1, last) if desktop == 2 else range(1, last + 1)
+    assert exported == [s for s in confirmed if s != gone]
     frames = built["frames"]["frames"]
-    if built["desktop"] == 2:
-        assert exported == list(range(1, last))
+    if desktop == 2:
         assert frames[str(last)]["exported"] is False and frames[str(last)]["image"] is None
-        assert not (built["ddir"] / "images" / f"S{last:02d}.png").exists()
-    else:
-        assert exported == list(range(1, last + 1))
+        assert frames[str(last)]["excluded"] is None
     assert all(a["attributes"]["verified"] for a in built["coco"]["annotations"])
     assert built["coco"]["info"]["version"] == "2"
+
+
+def test_an_excluded_frame_is_out_of_the_files_and_the_counts(built):
+    desktop, gone = built["desktop"], EXCLUDED[built["desktop"]]
+    ddir = built["ddir"]
+    assert not (ddir / "images" / f"S{gone:02d}.png").exists()
+    assert not (ddir / "labels" / f"S{gone:02d}.png").exists()
+    assert gone not in built["step_of"].values()
+    entry = built["frames"]["frames"][str(gone)]
+    assert entry["exported"] is False and entry["excluded"] == EXCLUDE_REASON
+    assert built["coco"]["info"]["excluded_frames"] == [{"step": gone, "reason": EXCLUDE_REASON}]
+    seq = json.loads((ddir / "sequence.json").read_text(encoding="utf-8"))
+    row = next(s for s in seq["steps"] if s["step"] == gone)
+    assert row["frame"] is None and row["excluded"] == EXCLUDE_REASON
+    manifest = json.loads((built["pack"] / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["exclusions"] == [{"desktop": desktop, "step": gone,
+                                       "reason": EXCLUDE_REASON}]
+    assert manifest["per_desktop"][0]["frames"] == len(built["coco"]["images"])
+    with open(built["pack"] / "clean_parts.csv", encoding="utf-8", newline="") as handle:
+        assert all(int(r["step"]) != gone for r in csv.DictReader(handle))
+    # never a part's before or after frame: the one before it is
+    leaving = [v["leaving"] for v in built["instances"]["instances"].values()
+               if v["leaving"] and v["leaving"]["step"] == gone + 1]
+    assert leaving
+    assert all(lv["before_frame"] == gone - 1 and lv["after_frame"] == gone + 1
+               for lv in leaving)
+    readme = (built["pack"] / "README.md").read_text(encoding="utf-8")
+    assert f"D{desktop:02d} S{gone:02d} is left out" in readme and EXCLUDE_REASON in readme
+
+
+def test_an_exclusion_must_name_a_packed_frame(built, tmp_path):
+    with pytest.raises(S.PackError, match="not packed"):
+        make_pack(tmp_path, built["db"], built["desktop"], exclude={(99, 1): "x"})
+    with pytest.raises(S.PackError, match="no frame"):
+        make_pack(tmp_path, built["db"], built["desktop"], name="p2",
+                  exclude={(built["desktop"], 77): "x"})
+
+
+def test_exclusions_parse():
+    assert S.parse_exclusions(["D2:1,D4:1=why not", "d13:s5"]) == {
+        (2, 1): "why not", (4, 1): "why not", (13, 5): S.DEFAULT_EXCLUDE_REASON}
+    with pytest.raises(S.PackError):
+        S.parse_exclusions(["D2-1"])
+
+
+def test_model_names_are_normalised_and_the_sheet_text_kept():
+    sheet = {
+        ("Dell", "Optiplex 7020"): "Dell OptiPlex 7020",
+        ("Dell", "Optiplex 990"): "Dell OptiPlex 990",
+        ("HP", "Compoq 8100 Elite Small Form Fador"): "HP Compaq 8100 Elite SFF",
+        ("HP", "Compoq 8300 Elite Small Form Fador"): "HP Compaq 8300 Elite SFF",
+        ("HP", "EliteDesk 800 GI SFF"): "HP EliteDesk 800 G1 SFF",
+    }
+    for (brand, family), model in sheet.items():
+        raw = f"{brand} {family}"
+        assert S.model_names({"brand": brand, "model_family": family,
+                              "brand_model_raw": raw}) == (model, raw)
+    for family in ("ProDesk 4300 GI SFF", "ProDesk 4300"):
+        model, raw = S.model_names({"brand": "HP", "model_family": family})
+        assert model.startswith("HP Pro 4300 SFF (sheet: ") and "nameplate" in model
+        assert raw == f"HP {family}"
+    assert S.model_names({"brand": "Acme", "model_family": "X1"}) == ("Acme X1", "Acme X1")
 
 
 # --------------------------------------------------------------------------- #
@@ -332,12 +466,12 @@ def test_each_picture_is_the_chosen_source_file_byte_for_byte(built):
         image = built["ddir"] / entry["image"]
         assert sha(image) == sha(source) == entry["sha256"]
         assert entry["file_name"] == f"P_{pick}.png"
+        assert entry["burst_choice"]["p_index"] == pick
         assert (entry["width"], entry["height"]) == (HW[1], HW[0])
         assert entry["roi"] == ROI
-        assert entry["frame_row_path"] == (
-            (raw / f"RGB{step}1" / "P_0.png").as_posix() if pick else None)
-        assert entry["cache_identical"] is (step != REENCODED_STEP)
-        assert entry["cache_pixels_identical"] is True
+        assert entry["frame_record_file"] == ("P_0.png" if pick else None)
+        assert entry["identical_to_annotated_copy"] is (step != REENCODED_STEP)
+        assert entry["annotated_copy_same_pixels"] is True
         assert entry["review_status"] == "verified"
     s4 = built["frames"]["frames"][str(REENCODED_STEP)]
     assert sha(built["ddir"] / s4["image"]) != sha(
@@ -345,6 +479,8 @@ def test_each_picture_is_the_chosen_source_file_byte_for_byte(built):
     qa = built["summary"]["qa"]
     assert [r["step"] for r in qa["frame_row_names_other_image"]] == [CHOSEN_P1_STEP]
     assert [r["step"] for r in qa["cache_differs_from_raw"]] == [REENCODED_STEP]
+    readme = (built["pack"] / "README.md").read_text(encoding="utf-8")
+    assert f"D{built['desktop']:02d} S{CHOSEN_P1_STEP:02d}" in readme
 
 
 def test_frames_carry_the_step_name_and_its_actions(built):
@@ -380,10 +516,11 @@ def test_the_captive_screws_leave_with_the_cooler(built):
     assert [s["step"] for s in seq["steps"]] == list(range(1, LAST[built["desktop"]] + 1))
 
 
-def test_instances_carry_class_descriptions(built):
+def test_instances_carry_class_descriptions_and_no_bookkeeping(built):
     for inst in built["instances"]["instances"].values():
         assert inst["class_description"]
         assert inst["category_id"] is not None
+        assert not set(inst["attrs"]) & set(S.DROP_ATTRS)
 
 
 # --------------------------------------------------------------------------- #
@@ -406,15 +543,47 @@ def test_manifest_counts_and_hashes(built):
     assert desk["clean"] == sum(a["clean"] for a in anns) == manifest["totals"]["clean"]
     assert desk["instances"] == len(built["instances"]["instances"])
     assert desk["truth_check"]["rows"] == len(anns)
+    assert manifest["notes"] == [NOTE]
     with open(pack / "clean_parts.csv", encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
     assert len(rows) == desk["clean"]
     assert sum(manifest["clean_by_class"].values()) == desk["clean"]
-    by_key = {(a["image_id"] % 100_000 // 10, a["instance_id"]): a for a in anns}
+    by_key = {(built["step_of"][a["image_id"]], a["instance_id"]): a for a in anns}
     for row in rows:
         ann = by_key[(int(row["step"]), int(row["instance_id"]))]
         assert ann["clean"] and int(row["area"]) == ann["area"]
         assert row["class"] == built["instances"]["instances"][row["instance_id"]]["class"]
+
+
+def test_the_shipped_files_carry_no_internal_paths_or_jargon(built):
+    root = str(built["root"]).replace("\\", "/")
+    for path in built["pack"].rglob("*"):
+        if path.suffix not in (".json", ".md", ".csv", ".txt"):
+            continue
+        text = path.read_text(encoding="utf-8")
+        for word in ("spec 8", "spec §", "rehearsal", "TDA ", "cache_file_name",
+                     "source_recorded_path", "added_by"):
+            assert word not in text, (path.name, word)
+        if path.name != "annotations.json":  # RLE counts are arbitrary characters
+            assert not re.search(r"\bU\d\d\b", text), path.name
+        if path.name != "frames.json":       # the fixture's "raw drive" is a temp folder
+            assert root not in text, path.name
+
+
+def test_the_readme_states_the_rules(built):
+    text = (built["pack"] / "README.md").read_text(encoding="utf-8")
+    summary = text.split("## What this is")[0]
+    assert "shared_px == 0" in summary and "之后" in summary and "S01" in summary
+    assert "label map" in summary
+    for value in ("occluded_full", "too_small", "visible_tiny", "occluded_partial",
+                  "visible", "out_of_view"):
+        assert f"| `{value}` |" in text
+    assert ">= 0.95" in text and "< 6 px" in text and "< 0.3" in text
+    assert "6. no other confirmed mask claims any of its pixels (`shared_px == 0`)" in text
+    assert "## Known issues" in text and NOTE in text
+    assert "## Confirmed and derived fields" in text
+    assert "Initial conditions" in text
+    assert "none is of a part set down on the bench" in text
 
 
 def test_the_input_database_is_not_written(built):
