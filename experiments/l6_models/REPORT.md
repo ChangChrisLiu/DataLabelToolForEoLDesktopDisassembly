@@ -153,3 +153,53 @@ The rule ships nothing. If the controller overrules:
 - GPU time: detector training 7.7 h; SAM training 5.1 h; SAM evaluation 0.33 h; inference, perf and tests about 0.1 h. Wall clock 21:53 to 05:41 (7.8 h), the two queues overlapping.
 - Waits for the app: 0 (the app was never opened during the run).
 - C:: between 22:06 and 23:52 on 10-24 `%APPDATA%\NVIDIA\ComputeCache` received 21 new files (317 MB) although `CUDA_CACHE_PATH` was set; nothing after 23:52. Removed by the controller (see 0a).
+
+## Round 2 (2026-10-25): a screw-only confidence floor for the detector
+
+Script `experiments/l6_models/round2_floor.py`, result `results/round2_floor.json`. It uses round 1's cached detections of F, v2h and v2 on D19 and D27 (every box ≥ 0.001 into the merge, L4's protocol). There is no retraining and no GPU.
+
+For each floor, F's screw boxes below it are dropped and every other class stays at 0.05. Recall / precision are L4's curves. Rank-1 is L4's guess (the app's `already_drawn` plus `box_change`) on the 48 removal events of the armed classes, read at 0.05, so a screw event's candidates are the screw boxes ≥ the floor. The comparators are round 1's at 0.05: v2h on D19, the shipped v2 on D27.
+
+**Criterion** (the controller's): the smallest floor at which F's screw rank-1 is ≥ the comparator's on both desktops (D19 6/7, D27 8/8), while connectors keep ≥ 10/25 and ram_module ≥ 3/5.
+
+**Result: no floor meets it.**
+
+| screw floor | screw D19 R/P | screw D27 R/P | rank-1 screw D19 | D27 | connector (25) | ram_module (5) | psu_latch | cpu | all 48 | meets |
+|---|---|---|---|---|---|---|---|---|---|---|
+| F, 0.05 (round 1) | 80.2/31.5 | 95.5/64.5 | 4/7 | 8/8 | 11 | 4 | 1/1 | 2/2 | 30 | no |
+| F, 0.06 | 79.1/37.0 | 95.1/74.1 | 4/7 | 8/8 | 11 | 4 | 1/1 | 2/2 | 30 | no |
+| F, 0.07 | 77.5/41.5 | 95.1/82.6 | 4/7 | 8/8 | 11 | 4 | 1/1 | 2/2 | 30 | no |
+| F, 0.08 | 76.6/46.1 | 93.9/87.7 | 4/7 | 7/8 | 11 | 4 | 1/1 | 2/2 | 29 | no |
+| F, 0.09 | 75.9/50.3 | 93.9/90.5 | 5/7 | 7/8 | 11 | 4 | 1/1 | 2/2 | 30 | no |
+| F, 0.10 | 75.2/53.6 | 93.0/92.7 | 5/7 | 7/8 | 11 | 4 | 1/1 | 2/2 | 30 | no |
+| F, 0.15 | 71.1/68.9 | 91.0/95.7 | **7/7** | 7/8 | 11 | 4 | 1/1 | 2/2 | **32** | no |
+| F, 0.20 | 69.1/78.8 | 88.1/96.8 | 7/7 | 7/8 | 11 | 4 | 1/1 | 2/2 | 32 | no |
+| F, 0.25 | 68.2/83.6 | 88.1/97.3 | 7/7 | 7/8 | 11 | 4 | 1/1 | 2/2 | 32 | no |
+| comparators, 0.05 | 67.7/47.4 | 94.7/79.1 | 6/7 | 8/8 | 4 | 1 | 1/1 | 2/2 | 22 | – |
+
+**Why no floor works.** The two desktops pull in opposite directions:
+- D19 reaches the comparator's 6/7 only from 0.15. Below that, the low-score boxes on the PSU cable bundle out-rank the removed screw by dE.
+- D27 loses one event, s37 `screw.motherboard.03`, at any floor above 0.078. F scores that removed screw at **0.078** on frame j = 36. v2h scores it 0.075; the shipped v2 scores it 0.67. Above 0.078 F has no candidate on it, so the ceiling drops to 7/8.
+- Connectors (11/25) and ram_module (4/5) do not depend on the screw floor.
+
+**Nearest miss: 0.15.**
+- Screw rank-1: 7/7 on D19 and 7/8 on D27, so 14/15 pooled, equal to the comparators' 14/15.
+- All 48 events: 32 against 22. Connectors 11 vs 4, ram_module 4 vs 1.
+- By gate D's own definitions at 0.15:
+  - screw on D19 turns BETTER: 313 vs 298 hits, precision 68.9 vs 47.4;
+  - screw on D27 is WORSE by recall: 222 vs 231 hits, more than the 4.9-box tolerance, although precision is 95.7 vs 79.1.
+
+Per frame (stored = the detection cache, which holds every box ≥ 0.05 whatever the floor; candidates = armed-class boxes after the floor):
+
+| | D19 stored / armed cand. / screw cand. / screw FP | D27 |
+|---|---|---|
+| F, 0.05 | 46.95 / 38.25 / 21.25 / 14.56 | 23.19 / 15.69 / 10.03 / 3.56 |
+| F, 0.10 | 46.95 / 28.36 / 11.36 / 5.27 | 23.19 / 12.47 / 6.81 / 0.50 |
+| F, 0.15 | 46.95 / 25.29 / 8.29 / 2.58 | 23.19 / 12.11 / 6.44 / 0.28 |
+| F, 0.20 | 46.95 / 24.04 / 7.04 / 1.49 | 23.19 / 11.83 / 6.17 / 0.19 |
+| F, 0.25 | 46.95 / 23.55 / 6.55 / 1.07 | 23.19 / 11.81 / 6.14 / 0.17 |
+| comparators, 0.05 | 32.85 / 23.98 / 11.55 / 6.07 | 25.28 / 19.06 / 8.11 / 1.69 |
+
+**Not done, by the instruction "if a floor works".** `conf_by_class` was not added to `tda/`, and there are no new tests or manifest field. If the controller wants 0.15 anyway (screws pooled 14/15 = the comparators', all events 32 vs 22, at the cost of D27 s37), that is the change to make. I can implement it on request.
+
+**C: (round 2).** The controller removed `%APPDATA%\NVIDIA\ComputeCache`. Three GPU processes then ran here: `infer_det` launched directly, a `SamService` load plus predict, and earlier the queue-launched ones. All wrote to `D:\DataSet\.cache\nv_compute` (rewritten at 05:55–05:56), and `%APPDATA%\NVIDIA\` stays empty. No launcher needed fixing. The 22:06–23:52 writes of round 1 remain unexplained.

@@ -1,0 +1,1676 @@
+{
+ "comparators": {
+  "D19": "v2h",
+  "D27": "v2"
+ },
+ "comparator": {
+  "rank1": {
+   "D19:connector": [
+    1,
+    12
+   ],
+   "D19:ram_module": [
+    0,
+    4
+   ],
+   "D19:cpu": [
+    1,
+    1
+   ],
+   "D19:psu_latch": [
+    1,
+    1
+   ],
+   "D19:screw": [
+    6,
+    7
+   ],
+   "D27:connector": [
+    3,
+    13
+   ],
+   "D27:ram_module": [
+    1,
+    1
+   ],
+   "D27:cpu": [
+    1,
+    1
+   ],
+   "D27:screw": [
+    8,
+    8
+   ]
+  },
+  "counts": {
+   "D19:screw": {
+    "n_gt": 440,
+    "hits": 298,
+    "n_det": 635,
+    "fp": 334,
+    "frames": 55
+   },
+   "D19:connector": {
+    "n_gt": 352,
+    "hits": 122,
+    "n_det": 596,
+    "fp": 446,
+    "frames": 55
+   },
+   "D19:psu_latch": {
+    "n_gt": 44,
+    "hits": 44,
+    "n_det": 44,
+    "fp": 0,
+    "frames": 55
+   },
+   "D19:ram_module": {
+    "n_gt": 70,
+    "hits": 22,
+    "n_det": 29,
+    "fp": 4,
+    "frames": 55
+   },
+   "D19:cpu": {
+    "n_gt": 14,
+    "hits": 14,
+    "n_det": 15,
+    "fp": 1,
+    "frames": 55
+   },
+   "D27:screw": {
+    "n_gt": 244,
+    "hits": 231,
+    "n_det": 292,
+    "fp": 61,
+    "frames": 36
+   },
+   "D27:connector": {
+    "n_gt": 118,
+    "hits": 33,
+    "n_det": 345,
+    "fp": 289,
+    "frames": 36
+   },
+   "D27:psu_latch": {
+    "n_gt": 0,
+    "hits": 0,
+    "n_det": 0,
+    "fp": 0,
+    "frames": 36
+   },
+   "D27:ram_module": {
+    "n_gt": 23,
+    "hits": 23,
+    "n_det": 24,
+    "fp": 1,
+    "frames": 36
+   },
+   "D27:cpu": {
+    "n_gt": 25,
+    "hits": 25,
+    "n_det": 25,
+    "fp": 0,
+    "frames": 36
+   }
+  },
+  "per_frame": {
+   "D19": {
+    "frames": 55,
+    "stored_per_frame": 32.85,
+    "armed_candidates_per_frame": 23.98,
+    "screw_candidates_per_frame": 11.55,
+    "screw_fp_per_frame": 6.07
+   },
+   "D27": {
+    "frames": 36,
+    "stored_per_frame": 25.28,
+    "armed_candidates_per_frame": 19.06,
+    "screw_candidates_per_frame": 8.11,
+    "screw_fp_per_frame": 1.69
+   }
+  }
+ },
+ "floors": {
+  "0.05": {
+   "rank1": {
+    "D19:connector": [
+     5,
+     12
+    ],
+    "D19:ram_module": [
+     3,
+     4
+    ],
+    "D19:cpu": [
+     1,
+     1
+    ],
+    "D19:psu_latch": [
+     1,
+     1
+    ],
+    "D19:screw": [
+     4,
+     7
+    ],
+    "D27:connector": [
+     6,
+     13
+    ],
+    "D27:ram_module": [
+     1,
+     1
+    ],
+    "D27:cpu": [
+     1,
+     1
+    ],
+    "D27:screw": [
+     8,
+     8
+    ]
+   },
+   "rank1_pooled": {
+    "screw": [
+     12,
+     15
+    ],
+    "connector": [
+     11,
+     25
+    ],
+    "ram_module": [
+     4,
+     5
+    ],
+    "psu_latch": [
+     1,
+     1
+    ],
+    "cpu": [
+     2,
+     2
+    ]
+   },
+   "counts": {
+    "D19:screw": {
+     "n_gt": 440,
+     "hits": 353,
+     "n_det": 1169,
+     "fp": 801,
+     "frames": 55,
+     "recall": 80.2,
+     "precision": 31.5
+    },
+    "D19:connector": {
+     "n_gt": 352,
+     "hits": 201,
+     "n_det": 809,
+     "fp": 452,
+     "frames": 55,
+     "recall": 57.1,
+     "precision": 44.1
+    },
+    "D19:psu_latch": {
+     "n_gt": 44,
+     "hits": 44,
+     "n_det": 45,
+     "fp": 1,
+     "frames": 55,
+     "recall": 100.0,
+     "precision": 97.8
+    },
+    "D19:ram_module": {
+     "n_gt": 70,
+     "hits": 63,
+     "n_det": 67,
+     "fp": 3,
+     "frames": 55,
+     "recall": 90.0,
+     "precision": 95.5
+    },
+    "D19:cpu": {
+     "n_gt": 14,
+     "hits": 14,
+     "n_det": 14,
+     "fp": 0,
+     "frames": 55,
+     "recall": 100.0,
+     "precision": 100.0
+    },
+    "D27:screw": {
+     "n_gt": 244,
+     "hits": 233,
+     "n_det": 361,
+     "fp": 128,
+     "frames": 36,
+     "recall": 95.5,
+     "precision": 64.5
+    },
+    "D27:connector": {
+     "n_gt": 118,
+     "hits": 59,
+     "n_det": 164,
+     "fp": 100,
+     "frames": 36,
+     "recall": 50.0,
+     "precision": 39.0
+    },
+    "D27:psu_latch": {
+     "n_gt": 0,
+     "hits": 0,
+     "n_det": 0,
+     "fp": 0,
+     "frames": 36,
+     "recall": null,
+     "precision": null
+    },
+    "D27:ram_module": {
+     "n_gt": 23,
+     "hits": 15,
+     "n_det": 15,
+     "fp": 0,
+     "frames": 36,
+     "recall": 65.2,
+     "precision": 100.0
+    },
+    "D27:cpu": {
+     "n_gt": 25,
+     "hits": 25,
+     "n_det": 25,
+     "fp": 0,
+     "frames": 36,
+     "recall": 100.0,
+     "precision": 100.0
+    }
+   },
+   "per_frame": {
+    "D19": {
+     "frames": 55,
+     "stored_per_frame": 46.95,
+     "armed_candidates_per_frame": 38.25,
+     "screw_candidates_per_frame": 21.25,
+     "screw_fp_per_frame": 14.56
+    },
+    "D27": {
+     "frames": 36,
+     "stored_per_frame": 23.19,
+     "armed_candidates_per_frame": 15.69,
+     "screw_candidates_per_frame": 10.03,
+     "screw_fp_per_frame": 3.56
+    }
+   },
+   "meets_criterion": false
+  },
+  "0.06": {
+   "rank1": {
+    "D19:connector": [
+     5,
+     12
+    ],
+    "D19:ram_module": [
+     3,
+     4
+    ],
+    "D19:cpu": [
+     1,
+     1
+    ],
+    "D19:psu_latch": [
+     1,
+     1
+    ],
+    "D19:screw": [
+     4,
+     7
+    ],
+    "D27:connector": [
+     6,
+     13
+    ],
+    "D27:ram_module": [
+     1,
+     1
+    ],
+    "D27:cpu": [
+     1,
+     1
+    ],
+    "D27:screw": [
+     8,
+     8
+    ]
+   },
+   "rank1_pooled": {
+    "screw": [
+     12,
+     15
+    ],
+    "connector": [
+     11,
+     25
+    ],
+    "ram_module": [
+     4,
+     5
+    ],
+    "psu_latch": [
+     1,
+     1
+    ],
+    "cpu": [
+     2,
+     2
+    ]
+   },
+   "counts": {
+    "D19:screw": {
+     "n_gt": 440,
+     "hits": 348,
+     "n_det": 964,
+     "fp": 607,
+     "frames": 55,
+     "recall": 79.1,
+     "precision": 37.0
+    },
+    "D19:connector": {
+     "n_gt": 352,
+     "hits": 201,
+     "n_det": 809,
+     "fp": 452,
+     "frames": 55,
+     "recall": 57.1,
+     "precision": 44.1
+    },
+    "D19:psu_latch": {
+     "n_gt": 44,
+     "hits": 44,
+     "n_det": 45,
+     "fp": 1,
+     "frames": 55,
+     "recall": 100.0,
+     "precision": 97.8
+    },
+    "D19:ram_module": {
+     "n_gt": 70,
+     "hits": 63,
+     "n_det": 67,
+     "fp": 3,
+     "frames": 55,
+     "recall": 90.0,
+     "precision": 95.5
+    },
+    "D19:cpu": {
+     "n_gt": 14,
+     "hits": 14,
+     "n_det": 14,
+     "fp": 0,
+     "frames": 55,
+     "recall": 100.0,
+     "precision": 100.0
+    },
+    "D27:screw": {
+     "n_gt": 244,
+     "hits": 232,
+     "n_det": 313,
+     "fp": 81,
+     "frames": 36,
+     "recall": 95.1,
+     "precision": 74.1
+    },
+    "D27:connector": {
+     "n_gt": 118,
+     "hits": 59,
+     "n_det": 164,
+     "fp": 100,
+     "frames": 36,
+     "recall": 50.0,
+     "precision": 39.0
+    },
+    "D27:psu_latch": {
+     "n_gt": 0,
+     "hits": 0,
+     "n_det": 0,
+     "fp": 0,
+     "frames": 36,
+     "recall": null,
+     "precision": null
+    },
+    "D27:ram_module": {
+     "n_gt": 23,
+     "hits": 15,
+     "n_det": 15,
+     "fp": 0,
+     "frames": 36,
+     "recall": 65.2,
+     "precision": 100.0
+    },
+    "D27:cpu": {
+     "n_gt": 25,
+     "hits": 25,
+     "n_det": 25,
+     "fp": 0,
+     "frames": 36,
+     "recall": 100.0,
+     "precision": 100.0
+    }
+   },
+   "per_frame": {
+    "D19": {
+     "frames": 55,
+     "stored_per_frame": 46.95,
+     "armed_candidates_per_frame": 34.53,
+     "screw_candidates_per_frame": 17.53,
+     "screw_fp_per_frame": 11.04
+    },
+    "D27": {
+     "frames": 36,
+     "stored_per_frame": 23.19,
+     "armed_candidates_per_frame": 14.36,
+     "screw_candidates_per_frame": 8.69,
+     "screw_fp_per_frame": 2.25
+    }
+   },
+   "meets_criterion": false
+  },
+  "0.07": {
+   "rank1": {
+    "D19:connector": [
+     5,
+     12
+    ],
+    "D19:ram_module": [
+     3,
+     4
+    ],
+    "D19:cpu": [
+     1,
+     1
+    ],
+    "D19:psu_latch": [
+     1,
+     1
+    ],
+    "D19:screw": [
+     4,
+     7
+    ],
+    "D27:connector": [
+     6,
+     13
+    ],
+    "D27:ram_module": [
+     1,
+     1
+    ],
+    "D27:cpu": [
+     1,
+     1
+    ],
+    "D27:screw": [
+     8,
+     8
+    ]
+   },
+   "rank1_pooled": {
+    "screw": [
+     12,
+     15
+    ],
+    "connector": [
+     11,
+     25
+    ],
+    "ram_module": [
+     4,
+     5
+    ],
+    "psu_latch": [
+     1,
+     1
+    ],
+    "cpu": [
+     2,
+     2
+    ]
+   },
+   "counts": {
+    "D19:screw": {
+     "n_gt": 440,
+     "hits": 341,
+     "n_det": 836,
+     "fp": 489,
+     "frames": 55,
+     "recall": 77.5,
+     "precision": 41.5
+    },
+    "D19:connector": {
+     "n_gt": 352,
+     "hits": 201,
+     "n_det": 809,
+     "fp": 452,
+     "frames": 55,
+     "recall": 57.1,
+     "precision": 44.1
+    },
+    "D19:psu_latch": {
+     "n_gt": 44,
+     "hits": 44,
+     "n_det": 45,
+     "fp": 1,
+     "frames": 55,
+     "recall": 100.0,
+     "precision": 97.8
+    },
+    "D19:ram_module": {
+     "n_gt": 70,
+     "hits": 63,
+     "n_det": 67,
+     "fp": 3,
+     "frames": 55,
+     "recall": 90.0,
+     "precision": 95.5
+    },
+    "D19:cpu": {
+     "n_gt": 14,
+     "hits": 14,
+     "n_det": 14,
+     "fp": 0,
+     "frames": 55,
+     "recall": 100.0,
+     "precision": 100.0
+    },
+    "D27:screw": {
+     "n_gt": 244,
+     "hits": 232,
+     "n_det": 281,
+     "fp": 49,
+     "frames": 36,
+     "recall": 95.1,
+     "precision": 82.6
+    },
+    "D27:connector": {
+     "n_gt": 118,
+     "hits": 59,
+     "n_det": 164,
+     "fp": 100,
+     "frames": 36,
+     "recall": 50.0,
+     "precision": 39.0
+    },
+    "D27:psu_latch": {
+     "n_gt": 0,
+     "hits": 0,
+     "n_det": 0,
+     "fp": 0,
+     "frames": 36,
+     "recall": null,
+     "precision": null
+    },
+    "D27:ram_module": {
+     "n_gt": 23,
+     "hits": 15,
+     "n_det": 15,
+     "fp": 0,
+     "frames": 36,
+     "recall": 65.2,
+     "precision": 100.0
+    },
+    "D27:cpu": {
+     "n_gt": 25,
+     "hits": 25,
+     "n_det": 25,
+     "fp": 0,
+     "frames": 36,
+     "recall": 100.0,
+     "precision": 100.0
+    }
+   },
+   "per_frame": {
+    "D19": {
+     "frames": 55,
+     "stored_per_frame": 46.95,
+     "armed_candidates_per_frame": 32.2,
+     "screw_candidates_per_frame": 15.2,
+     "screw_fp_per_frame": 8.89
+    },
+    "D27": {
+     "frames": 36,
+     "stored_per_frame": 23.19,
+     "armed_candidates_per_frame": 13.47,
+     "screw_candidates_per_frame": 7.81,
+     "screw_fp_per_frame": 1.36
+    }
+   },
+   "meets_criterion": false
+  },
+  "0.08": {
+   "rank1": {
+    "D19:connector": [
+     5,
+     12
+    ],
+    "D19:ram_module": [
+     3,
+     4
+    ],
+    "D19:cpu": [
+     1,
+     1
+    ],
+    "D19:psu_latch": [
+     1,
+     1
+    ],
+    "D19:screw": [
+     4,
+     7
+    ],
+    "D27:connector": [
+     6,
+     13
+    ],
+    "D27:ram_module": [
+     1,
+     1
+    ],
+    "D27:cpu": [
+     1,
+     1
+    ],
+    "D27:screw": [
+     7,
+     8
+    ]
+   },
+   "rank1_pooled": {
+    "screw": [
+     11,
+     15
+    ],
+    "connector": [
+     11,
+     25
+    ],
+    "ram_module": [
+     4,
+     5
+    ],
+    "psu_latch": [
+     1,
+     1
+    ],
+    "cpu": [
+     2,
+     2
+    ]
+   },
+   "counts": {
+    "D19:screw": {
+     "n_gt": 440,
+     "hits": 337,
+     "n_det": 742,
+     "fp": 400,
+     "frames": 55,
+     "recall": 76.6,
+     "precision": 46.1
+    },
+    "D19:connector": {
+     "n_gt": 352,
+     "hits": 201,
+     "n_det": 809,
+     "fp": 452,
+     "frames": 55,
+     "recall": 57.1,
+     "precision": 44.1
+    },
+    "D19:psu_latch": {
+     "n_gt": 44,
+     "hits": 44,
+     "n_det": 45,
+     "fp": 1,
+     "frames": 55,
+     "recall": 100.0,
+     "precision": 97.8
+    },
+    "D19:ram_module": {
+     "n_gt": 70,
+     "hits": 63,
+     "n_det": 67,
+     "fp": 3,
+     "frames": 55,
+     "recall": 90.0,
+     "precision": 95.5
+    },
+    "D19:cpu": {
+     "n_gt": 14,
+     "hits": 14,
+     "n_det": 14,
+     "fp": 0,
+     "frames": 55,
+     "recall": 100.0,
+     "precision": 100.0
+    },
+    "D27:screw": {
+     "n_gt": 244,
+     "hits": 229,
+     "n_det": 261,
+     "fp": 32,
+     "frames": 36,
+     "recall": 93.9,
+     "precision": 87.7
+    },
+    "D27:connector": {
+     "n_gt": 118,
+     "hits": 59,
+     "n_det": 164,
+     "fp": 100,
+     "frames": 36,
+     "recall": 50.0,
+     "precision": 39.0
+    },
+    "D27:psu_latch": {
+     "n_gt": 0,
+     "hits": 0,
+     "n_det": 0,
+     "fp": 0,
+     "frames": 36,
+     "recall": null,
+     "precision": null
+    },
+    "D27:ram_module": {
+     "n_gt": 23,
+     "hits": 15,
+     "n_det": 15,
+     "fp": 0,
+     "frames": 36,
+     "recall": 65.2,
+     "precision": 100.0
+    },
+    "D27:cpu": {
+     "n_gt": 25,
+     "hits": 25,
+     "n_det": 25,
+     "fp": 0,
+     "frames": 36,
+     "recall": 100.0,
+     "precision": 100.0
+    }
+   },
+   "per_frame": {
+    "D19": {
+     "frames": 55,
+     "stored_per_frame": 46.95,
+     "armed_candidates_per_frame": 30.49,
+     "screw_candidates_per_frame": 13.49,
+     "screw_fp_per_frame": 7.27
+    },
+    "D27": {
+     "frames": 36,
+     "stored_per_frame": 23.19,
+     "armed_candidates_per_frame": 12.92,
+     "screw_candidates_per_frame": 7.25,
+     "screw_fp_per_frame": 0.89
+    }
+   },
+   "meets_criterion": false
+  },
+  "0.09": {
+   "rank1": {
+    "D19:connector": [
+     5,
+     12
+    ],
+    "D19:ram_module": [
+     3,
+     4
+    ],
+    "D19:cpu": [
+     1,
+     1
+    ],
+    "D19:psu_latch": [
+     1,
+     1
+    ],
+    "D19:screw": [
+     5,
+     7
+    ],
+    "D27:connector": [
+     6,
+     13
+    ],
+    "D27:ram_module": [
+     1,
+     1
+    ],
+    "D27:cpu": [
+     1,
+     1
+    ],
+    "D27:screw": [
+     7,
+     8
+    ]
+   },
+   "rank1_pooled": {
+    "screw": [
+     12,
+     15
+    ],
+    "connector": [
+     11,
+     25
+    ],
+    "ram_module": [
+     4,
+     5
+    ],
+    "psu_latch": [
+     1,
+     1
+    ],
+    "cpu": [
+     2,
+     2
+    ]
+   },
+   "counts": {
+    "D19:screw": {
+     "n_gt": 440,
+     "hits": 334,
+     "n_det": 674,
+     "fp": 335,
+     "frames": 55,
+     "recall": 75.9,
+     "precision": 50.3
+    },
+    "D19:connector": {
+     "n_gt": 352,
+     "hits": 201,
+     "n_det": 809,
+     "fp": 452,
+     "frames": 55,
+     "recall": 57.1,
+     "precision": 44.1
+    },
+    "D19:psu_latch": {
+     "n_gt": 44,
+     "hits": 44,
+     "n_det": 45,
+     "fp": 1,
+     "frames": 55,
+     "recall": 100.0,
+     "precision": 97.8
+    },
+    "D19:ram_module": {
+     "n_gt": 70,
+     "hits": 63,
+     "n_det": 67,
+     "fp": 3,
+     "frames": 55,
+     "recall": 90.0,
+     "precision": 95.5
+    },
+    "D19:cpu": {
+     "n_gt": 14,
+     "hits": 14,
+     "n_det": 14,
+     "fp": 0,
+     "frames": 55,
+     "recall": 100.0,
+     "precision": 100.0
+    },
+    "D27:screw": {
+     "n_gt": 244,
+     "hits": 229,
+     "n_det": 253,
+     "fp": 24,
+     "frames": 36,
+     "recall": 93.9,
+     "precision": 90.5
+    },
+    "D27:connector": {
+     "n_gt": 118,
+     "hits": 59,
+     "n_det": 164,
+     "fp": 100,
+     "frames": 36,
+     "recall": 50.0,
+     "precision": 39.0
+    },
+    "D27:psu_latch": {
+     "n_gt": 0,
+     "hits": 0,
+     "n_det": 0,
+     "fp": 0,
+     "frames": 36,
+     "recall": null,
+     "precision": null
+    },
+    "D27:ram_module": {
+     "n_gt": 23,
+     "hits": 15,
+     "n_det": 15,
+     "fp": 0,
+     "frames": 36,
+     "recall": 65.2,
+     "precision": 100.0
+    },
+    "D27:cpu": {
+     "n_gt": 25,
+     "hits": 25,
+     "n_det": 25,
+     "fp": 0,
+     "frames": 36,
+     "recall": 100.0,
+     "precision": 100.0
+    }
+   },
+   "per_frame": {
+    "D19": {
+     "frames": 55,
+     "stored_per_frame": 46.95,
+     "armed_candidates_per_frame": 29.25,
+     "screw_candidates_per_frame": 12.25,
+     "screw_fp_per_frame": 6.09
+    },
+    "D27": {
+     "frames": 36,
+     "stored_per_frame": 23.19,
+     "armed_candidates_per_frame": 12.69,
+     "screw_candidates_per_frame": 7.03,
+     "screw_fp_per_frame": 0.67
+    }
+   },
+   "meets_criterion": false
+  },
+  "0.10": {
+   "rank1": {
+    "D19:connector": [
+     5,
+     12
+    ],
+    "D19:ram_module": [
+     3,
+     4
+    ],
+    "D19:cpu": [
+     1,
+     1
+    ],
+    "D19:psu_latch": [
+     1,
+     1
+    ],
+    "D19:screw": [
+     5,
+     7
+    ],
+    "D27:connector": [
+     6,
+     13
+    ],
+    "D27:ram_module": [
+     1,
+     1
+    ],
+    "D27:cpu": [
+     1,
+     1
+    ],
+    "D27:screw": [
+     7,
+     8
+    ]
+   },
+   "rank1_pooled": {
+    "screw": [
+     12,
+     15
+    ],
+    "connector": [
+     11,
+     25
+    ],
+    "ram_module": [
+     4,
+     5
+    ],
+    "psu_latch": [
+     1,
+     1
+    ],
+    "cpu": [
+     2,
+     2
+    ]
+   },
+   "counts": {
+    "D19:screw": {
+     "n_gt": 440,
+     "hits": 331,
+     "n_det": 625,
+     "fp": 290,
+     "frames": 55,
+     "recall": 75.2,
+     "precision": 53.6
+    },
+    "D19:connector": {
+     "n_gt": 352,
+     "hits": 201,
+     "n_det": 809,
+     "fp": 452,
+     "frames": 55,
+     "recall": 57.1,
+     "precision": 44.1
+    },
+    "D19:psu_latch": {
+     "n_gt": 44,
+     "hits": 44,
+     "n_det": 45,
+     "fp": 1,
+     "frames": 55,
+     "recall": 100.0,
+     "precision": 97.8
+    },
+    "D19:ram_module": {
+     "n_gt": 70,
+     "hits": 63,
+     "n_det": 67,
+     "fp": 3,
+     "frames": 55,
+     "recall": 90.0,
+     "precision": 95.5
+    },
+    "D19:cpu": {
+     "n_gt": 14,
+     "hits": 14,
+     "n_det": 14,
+     "fp": 0,
+     "frames": 55,
+     "recall": 100.0,
+     "precision": 100.0
+    },
+    "D27:screw": {
+     "n_gt": 244,
+     "hits": 227,
+     "n_det": 245,
+     "fp": 18,
+     "frames": 36,
+     "recall": 93.0,
+     "precision": 92.7
+    },
+    "D27:connector": {
+     "n_gt": 118,
+     "hits": 59,
+     "n_det": 164,
+     "fp": 100,
+     "frames": 36,
+     "recall": 50.0,
+     "precision": 39.0
+    },
+    "D27:psu_latch": {
+     "n_gt": 0,
+     "hits": 0,
+     "n_det": 0,
+     "fp": 0,
+     "frames": 36,
+     "recall": null,
+     "precision": null
+    },
+    "D27:ram_module": {
+     "n_gt": 23,
+     "hits": 15,
+     "n_det": 15,
+     "fp": 0,
+     "frames": 36,
+     "recall": 65.2,
+     "precision": 100.0
+    },
+    "D27:cpu": {
+     "n_gt": 25,
+     "hits": 25,
+     "n_det": 25,
+     "fp": 0,
+     "frames": 36,
+     "recall": 100.0,
+     "precision": 100.0
+    }
+   },
+   "per_frame": {
+    "D19": {
+     "frames": 55,
+     "stored_per_frame": 46.95,
+     "armed_candidates_per_frame": 28.36,
+     "screw_candidates_per_frame": 11.36,
+     "screw_fp_per_frame": 5.27
+    },
+    "D27": {
+     "frames": 36,
+     "stored_per_frame": 23.19,
+     "armed_candidates_per_frame": 12.47,
+     "screw_candidates_per_frame": 6.81,
+     "screw_fp_per_frame": 0.5
+    }
+   },
+   "meets_criterion": false
+  },
+  "0.15": {
+   "rank1": {
+    "D19:connector": [
+     5,
+     12
+    ],
+    "D19:ram_module": [
+     3,
+     4
+    ],
+    "D19:cpu": [
+     1,
+     1
+    ],
+    "D19:psu_latch": [
+     1,
+     1
+    ],
+    "D19:screw": [
+     7,
+     7
+    ],
+    "D27:connector": [
+     6,
+     13
+    ],
+    "D27:ram_module": [
+     1,
+     1
+    ],
+    "D27:cpu": [
+     1,
+     1
+    ],
+    "D27:screw": [
+     7,
+     8
+    ]
+   },
+   "rank1_pooled": {
+    "screw": [
+     14,
+     15
+    ],
+    "connector": [
+     11,
+     25
+    ],
+    "ram_module": [
+     4,
+     5
+    ],
+    "psu_latch": [
+     1,
+     1
+    ],
+    "cpu": [
+     2,
+     2
+    ]
+   },
+   "counts": {
+    "D19:screw": {
+     "n_gt": 440,
+     "hits": 313,
+     "n_det": 456,
+     "fp": 142,
+     "frames": 55,
+     "recall": 71.1,
+     "precision": 68.9
+    },
+    "D19:connector": {
+     "n_gt": 352,
+     "hits": 201,
+     "n_det": 809,
+     "fp": 452,
+     "frames": 55,
+     "recall": 57.1,
+     "precision": 44.1
+    },
+    "D19:psu_latch": {
+     "n_gt": 44,
+     "hits": 44,
+     "n_det": 45,
+     "fp": 1,
+     "frames": 55,
+     "recall": 100.0,
+     "precision": 97.8
+    },
+    "D19:ram_module": {
+     "n_gt": 70,
+     "hits": 63,
+     "n_det": 67,
+     "fp": 3,
+     "frames": 55,
+     "recall": 90.0,
+     "precision": 95.5
+    },
+    "D19:cpu": {
+     "n_gt": 14,
+     "hits": 14,
+     "n_det": 14,
+     "fp": 0,
+     "frames": 55,
+     "recall": 100.0,
+     "precision": 100.0
+    },
+    "D27:screw": {
+     "n_gt": 244,
+     "hits": 222,
+     "n_det": 232,
+     "fp": 10,
+     "frames": 36,
+     "recall": 91.0,
+     "precision": 95.7
+    },
+    "D27:connector": {
+     "n_gt": 118,
+     "hits": 59,
+     "n_det": 164,
+     "fp": 100,
+     "frames": 36,
+     "recall": 50.0,
+     "precision": 39.0
+    },
+    "D27:psu_latch": {
+     "n_gt": 0,
+     "hits": 0,
+     "n_det": 0,
+     "fp": 0,
+     "frames": 36,
+     "recall": null,
+     "precision": null
+    },
+    "D27:ram_module": {
+     "n_gt": 23,
+     "hits": 15,
+     "n_det": 15,
+     "fp": 0,
+     "frames": 36,
+     "recall": 65.2,
+     "precision": 100.0
+    },
+    "D27:cpu": {
+     "n_gt": 25,
+     "hits": 25,
+     "n_det": 25,
+     "fp": 0,
+     "frames": 36,
+     "recall": 100.0,
+     "precision": 100.0
+    }
+   },
+   "per_frame": {
+    "D19": {
+     "frames": 55,
+     "stored_per_frame": 46.95,
+     "armed_candidates_per_frame": 25.29,
+     "screw_candidates_per_frame": 8.29,
+     "screw_fp_per_frame": 2.58
+    },
+    "D27": {
+     "frames": 36,
+     "stored_per_frame": 23.19,
+     "armed_candidates_per_frame": 12.11,
+     "screw_candidates_per_frame": 6.44,
+     "screw_fp_per_frame": 0.28
+    }
+   },
+   "meets_criterion": false
+  },
+  "0.20": {
+   "rank1": {
+    "D19:connector": [
+     5,
+     12
+    ],
+    "D19:ram_module": [
+     3,
+     4
+    ],
+    "D19:cpu": [
+     1,
+     1
+    ],
+    "D19:psu_latch": [
+     1,
+     1
+    ],
+    "D19:screw": [
+     7,
+     7
+    ],
+    "D27:connector": [
+     6,
+     13
+    ],
+    "D27:ram_module": [
+     1,
+     1
+    ],
+    "D27:cpu": [
+     1,
+     1
+    ],
+    "D27:screw": [
+     7,
+     8
+    ]
+   },
+   "rank1_pooled": {
+    "screw": [
+     14,
+     15
+    ],
+    "connector": [
+     11,
+     25
+    ],
+    "ram_module": [
+     4,
+     5
+    ],
+    "psu_latch": [
+     1,
+     1
+    ],
+    "cpu": [
+     2,
+     2
+    ]
+   },
+   "counts": {
+    "D19:screw": {
+     "n_gt": 440,
+     "hits": 304,
+     "n_det": 387,
+     "fp": 82,
+     "frames": 55,
+     "recall": 69.1,
+     "precision": 78.8
+    },
+    "D19:connector": {
+     "n_gt": 352,
+     "hits": 201,
+     "n_det": 809,
+     "fp": 452,
+     "frames": 55,
+     "recall": 57.1,
+     "precision": 44.1
+    },
+    "D19:psu_latch": {
+     "n_gt": 44,
+     "hits": 44,
+     "n_det": 45,
+     "fp": 1,
+     "frames": 55,
+     "recall": 100.0,
+     "precision": 97.8
+    },
+    "D19:ram_module": {
+     "n_gt": 70,
+     "hits": 63,
+     "n_det": 67,
+     "fp": 3,
+     "frames": 55,
+     "recall": 90.0,
+     "precision": 95.5
+    },
+    "D19:cpu": {
+     "n_gt": 14,
+     "hits": 14,
+     "n_det": 14,
+     "fp": 0,
+     "frames": 55,
+     "recall": 100.0,
+     "precision": 100.0
+    },
+    "D27:screw": {
+     "n_gt": 244,
+     "hits": 215,
+     "n_det": 222,
+     "fp": 7,
+     "frames": 36,
+     "recall": 88.1,
+     "precision": 96.8
+    },
+    "D27:connector": {
+     "n_gt": 118,
+     "hits": 59,
+     "n_det": 164,
+     "fp": 100,
+     "frames": 36,
+     "recall": 50.0,
+     "precision": 39.0
+    },
+    "D27:psu_latch": {
+     "n_gt": 0,
+     "hits": 0,
+     "n_det": 0,
+     "fp": 0,
+     "frames": 36,
+     "recall": null,
+     "precision": null
+    },
+    "D27:ram_module": {
+     "n_gt": 23,
+     "hits": 15,
+     "n_det": 15,
+     "fp": 0,
+     "frames": 36,
+     "recall": 65.2,
+     "precision": 100.0
+    },
+    "D27:cpu": {
+     "n_gt": 25,
+     "hits": 25,
+     "n_det": 25,
+     "fp": 0,
+     "frames": 36,
+     "recall": 100.0,
+     "precision": 100.0
+    }
+   },
+   "per_frame": {
+    "D19": {
+     "frames": 55,
+     "stored_per_frame": 46.95,
+     "armed_candidates_per_frame": 24.04,
+     "screw_candidates_per_frame": 7.04,
+     "screw_fp_per_frame": 1.49
+    },
+    "D27": {
+     "frames": 36,
+     "stored_per_frame": 23.19,
+     "armed_candidates_per_frame": 11.83,
+     "screw_candidates_per_frame": 6.17,
+     "screw_fp_per_frame": 0.19
+    }
+   },
+   "meets_criterion": false
+  },
+  "0.25": {
+   "rank1": {
+    "D19:connector": [
+     5,
+     12
+    ],
+    "D19:ram_module": [
+     3,
+     4
+    ],
+    "D19:cpu": [
+     1,
+     1
+    ],
+    "D19:psu_latch": [
+     1,
+     1
+    ],
+    "D19:screw": [
+     7,
+     7
+    ],
+    "D27:connector": [
+     6,
+     13
+    ],
+    "D27:ram_module": [
+     1,
+     1
+    ],
+    "D27:cpu": [
+     1,
+     1
+    ],
+    "D27:screw": [
+     7,
+     8
+    ]
+   },
+   "rank1_pooled": {
+    "screw": [
+     14,
+     15
+    ],
+    "connector": [
+     11,
+     25
+    ],
+    "ram_module": [
+     4,
+     5
+    ],
+    "psu_latch": [
+     1,
+     1
+    ],
+    "cpu": [
+     2,
+     2
+    ]
+   },
+   "counts": {
+    "D19:screw": {
+     "n_gt": 440,
+     "hits": 300,
+     "n_det": 360,
+     "fp": 59,
+     "frames": 55,
+     "recall": 68.2,
+     "precision": 83.6
+    },
+    "D19:connector": {
+     "n_gt": 352,
+     "hits": 201,
+     "n_det": 809,
+     "fp": 452,
+     "frames": 55,
+     "recall": 57.1,
+     "precision": 44.1
+    },
+    "D19:psu_latch": {
+     "n_gt": 44,
+     "hits": 44,
+     "n_det": 45,
+     "fp": 1,
+     "frames": 55,
+     "recall": 100.0,
+     "precision": 97.8
+    },
+    "D19:ram_module": {
+     "n_gt": 70,
+     "hits": 63,
+     "n_det": 67,
+     "fp": 3,
+     "frames": 55,
+     "recall": 90.0,
+     "precision": 95.5
+    },
+    "D19:cpu": {
+     "n_gt": 14,
+     "hits": 14,
+     "n_det": 14,
+     "fp": 0,
+     "frames": 55,
+     "recall": 100.0,
+     "precision": 100.0
+    },
+    "D27:screw": {
+     "n_gt": 244,
+     "hits": 215,
+     "n_det": 221,
+     "fp": 6,
+     "frames": 36,
+     "recall": 88.1,
+     "precision": 97.3
+    },
+    "D27:connector": {
+     "n_gt": 118,
+     "hits": 59,
+     "n_det": 164,
+     "fp": 100,
+     "frames": 36,
+     "recall": 50.0,
+     "precision": 39.0
+    },
+    "D27:psu_latch": {
+     "n_gt": 0,
+     "hits": 0,
+     "n_det": 0,
+     "fp": 0,
+     "frames": 36,
+     "recall": null,
+     "precision": null
+    },
+    "D27:ram_module": {
+     "n_gt": 23,
+     "hits": 15,
+     "n_det": 15,
+     "fp": 0,
+     "frames": 36,
+     "recall": 65.2,
+     "precision": 100.0
+    },
+    "D27:cpu": {
+     "n_gt": 25,
+     "hits": 25,
+     "n_det": 25,
+     "fp": 0,
+     "frames": 36,
+     "recall": 100.0,
+     "precision": 100.0
+    }
+   },
+   "per_frame": {
+    "D19": {
+     "frames": 55,
+     "stored_per_frame": 46.95,
+     "armed_candidates_per_frame": 23.55,
+     "screw_candidates_per_frame": 6.55,
+     "screw_fp_per_frame": 1.07
+    },
+    "D27": {
+     "frames": 36,
+     "stored_per_frame": 23.19,
+     "armed_candidates_per_frame": 11.81,
+     "screw_candidates_per_frame": 6.14,
+     "screw_fp_per_frame": 0.17
+    }
+   },
+   "meets_criterion": false
+  }
+ },
+ "chosen_floor": null
+}
