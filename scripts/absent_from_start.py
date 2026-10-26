@@ -21,8 +21,9 @@ Without ``--apply`` it is a dry run: the op is carried out on a backup-API copy 
 before / after below are that copy's. ``--db`` defaults to the LIVE database;
 ``--apply`` on it refuses while the annotator app is running (and when ``psutil`` is
 missing, so that cannot be told) or holds the lock, and first takes the app's own
-safety backup (``backup_dir`` of ``paths.yaml``). An abandoned lock it takes over is
-put back as it was afterwards; only a lock it made itself is removed.
+safety backup (``backup_dir`` of ``paths.yaml``). Somebody else's abandoned lock it
+takes over is put back as it was afterwards; only a lock in its own name is removed
+(one a killed run left behind included).
 
 What it prints, before and after: the part's state and placement at the first and
 the last step, the sheet's actions on it, the hand-written events, how many frames of
@@ -229,12 +230,20 @@ def main(argv: Optional[list[str]] = None) -> int:
         target = str(out / f"dryrun_{stamp}.sqlite")
         snapshot(src, target)
         log(f"DRY RUN: carried out on a copy, {target}")
-    from tda.core.db_backup import acquire_lock_file, lock_path_for, release_lock_file
-    # an abandoned lock (older than the TTL) is taken over by acquire_lock_file;
-    # it is put back as it was afterwards -- only a lock this run made is removed
-    # (U34 round 2, N6)
+    from tda.core.db_backup import (
+        acquire_lock_file,
+        lock_path_for,
+        read_lock_file,
+        release_lock_file,
+    )
+    # somebody else's abandoned lock (older than the TTL) is taken over by
+    # acquire_lock_file; it is put back as it was afterwards (U34 round 2, N6).
+    # A lock in this script's own name -- one a killed run left behind -- is
+    # not put back: it would lock the annotator out for the TTL (R2-N1)
     lock = lock_path_for(target)
-    prior = lock.read_bytes() if lock.exists() else None
+    held = read_lock_file(target)
+    prior = (lock.read_bytes() if lock.exists()
+             and (held or {}).get("annotator") != ANNOTATOR else None)
     try:
         acquire_lock_file(target, ANNOTATOR)
     except RuntimeError as exc:

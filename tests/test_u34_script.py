@@ -176,3 +176,33 @@ def test_an_abandoned_lock_taken_over_is_put_back(source, tmp_path):
     lock.unlink()
     assert script.main([*args, "--present"]) == 0
     assert not lock.exists()                             # its own: removed
+
+
+def test_a_lock_in_its_own_name_is_removed_and_a_fresh_foreign_one_refuses(source, tmp_path):
+    """R2-N1: a killed run's leftover is never put back (it would lock the annotator
+    out for the TTL); somebody else's fresh lock refuses and is not touched."""
+    import json as _json
+
+    from tda.core.dbrows import now_iso
+    from tda.core.db_backup import lock_path_for
+
+    script = _script()
+    args = ["--desktop", str(DESKTOP), "--instance", DRIVE, "--db", source,
+            "--out", str(tmp_path / "out"), "--apply"]
+    lock = lock_path_for(source)
+    # a fresh leftover in the script's own name: taken, then removed
+    lock.write_text(_json.dumps({"annotator": script.ANNOTATOR, "ts": now_iso()}),
+                    encoding="utf-8")
+    assert script.main(args) == 0
+    assert not lock.exists()
+    # the annotator's fresh lock: refused, nothing written, the lock as it was
+    fresh = _json.dumps({"annotator": "chang", "ts": now_iso()}).encode("utf-8")
+    lock.write_bytes(fresh)
+    before = _sha(source)
+    assert script.main([*args, "--present"]) == 2
+    assert lock.read_bytes() == fresh and _sha(source) == before
+    db = Db(source)
+    try:
+        assert AB.is_absent(db, DESKTOP, DRIVE)          # the first run's write stands
+    finally:
+        db.close()
