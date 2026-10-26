@@ -57,5 +57,6 @@ def test_the_spec_has_the_paragraph_and_the_entry():
                                           "- **v1.23", "- **v1.24", "- **v1.25",
                                           "- **v1.26", "- **v1.27",
                                           "- **v1.28", "- **v1.29", "- **v1.30",
-                                          "- **v1.31"))
+                                          "- **v1.31", "- **v1.32", "- **v1.33",
+                                          "- **v1.34", "- **v1.35"))
     assert changelog.index("- **v1.17") < changelog.index("- **v1.16")

@@ -63,7 +63,8 @@ def test_the_spec_has_the_paragraph_in_3_2_and_v1_20_on_top():
     # (and U32's v1.31)
     assert entries[0].startswith(("- **v1.20", "- **v1.21", "- **v1.22", "- **v1.23",
                                   "- **v1.24", "- **v1.25", "- **v1.26", "- **v1.27",
-                                  "- **v1.28", "- **v1.29", "- **v1.30", "- **v1.31"))
+                                  "- **v1.28", "- **v1.29", "- **v1.30", "- **v1.31",
+                                  "- **v1.32", "- **v1.33", "- **v1.34", "- **v1.35"))
     assert any(e.startswith("- **v1.20（2026-10-22）**：**机架自带卡扣**（U20，§3.2）")
-               for e in entries[:12])
+               for e in entries[:16])
     assert changes.index("- **v1.20") < changes.index("- **v1.19")

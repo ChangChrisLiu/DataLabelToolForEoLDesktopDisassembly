@@ -413,8 +413,9 @@ def test_the_spec_has_v1_22_on_top_with_the_whole_table():
     # (and U32's v1.31)
     assert entries[0].startswith(("- **v1.22", "- **v1.23", "- **v1.24", "- **v1.25",
                                   "- **v1.26", "- **v1.27",
-                                  "- **v1.28", "- **v1.29", "- **v1.30", "- **v1.31"))
-    [first] = [e for e in entries[:10] if e.startswith("- **v1.22")]
+                                  "- **v1.28", "- **v1.29", "- **v1.30", "- **v1.31",
+                                  "- **v1.32", "- **v1.33", "- **v1.34", "- **v1.35"))
+    [first] = [e for e in entries[:14] if e.startswith("- **v1.22")]
     assert first.startswith("- **v1.22（2026-10-23）**：**左手键**（U22，§4.6）")
     for name, keys in MAP.items():
         if name in ("confirm", "tool_eraser", "flash_compare", "review_rework",

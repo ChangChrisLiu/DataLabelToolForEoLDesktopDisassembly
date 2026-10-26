@@ -33,7 +33,7 @@ def test_v1_26_is_in_the_changelog_above_v1_24():
     changes = SPEC.read_text(encoding="utf-8").split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
     # on top when it landed; whatever lands later goes above it
-    [entry] = [e for e in entries[:6] if e.startswith("- **v1.26")]
+    [entry] = [e for e in entries[:10] if e.startswith("- **v1.26")]
     assert entry.startswith("- **v1.26（2026-10-24）**：**正常的遮挡不再算问题；COCO 带完整形状**"
                             "（U26，§8.1、§9.1）")
     for needed in ("`tda.core.empty_visible`", "D3 232 → 0", "`--no-amodal`", "`--no-hidden`",
