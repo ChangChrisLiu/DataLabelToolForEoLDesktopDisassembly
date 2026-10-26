@@ -328,7 +328,7 @@ def test_the_real_round2_declarations_hold(fixes):
     """The yaml's round-2 entries are the coordinator's rulings (U25 round 2)."""
     assert fixes["oak"][1]["gallery_captures"] == ["040"]
     assert fixes["oak"][60]["cam1_order"] == "folder"
-    assert fixes["scan"][41]["skipped_steps"] == [32]
+    assert fixes["scan"][41]["skipped_steps"] == [31]
     assert fixes["scan"][61]["skipped_steps"] == [26]
 
 

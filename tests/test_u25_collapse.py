@@ -305,7 +305,7 @@ def test_u25_yaml_entries_parse():
     assert "dupli_replaces" not in fixes["oak"][60]
     assert fixes["oak"][1]["gallery_captures"] == ["040"]
     assert 38 not in scan[1]["missing_steps"]
-    assert scan[41]["skipped_steps"] == [32] and scan[61]["skipped_steps"] == [26]
+    assert scan[41]["skipped_steps"] == [31] and scan[61]["skipped_steps"] == [26]
     assert "UNCERTAIN" in scan[61]["reason"]
     for view in ("oak", "scan", "rs"):
         for desktop, entry in fixes[view].items():
