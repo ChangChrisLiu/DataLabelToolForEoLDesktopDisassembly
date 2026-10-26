@@ -434,6 +434,64 @@ def test_an_exclusion_must_name_a_packed_frame(built, tmp_path):
                   exclude={(built["desktop"], 77): "x"})
 
 
+RULED = "under the closed cage on these frames"
+
+
+def test_not_clean_rules_parse():
+    assert S.parse_not_clean(["D28:connector.06, connector.07@1-10=" + RULED,
+                              "d4:screw.motherboard.01@S03,5-6=why"]) == [
+        {"desktop": 28, "parts": ["connector.06", "connector.07"],
+         "steps": list(range(1, 11)), "reason": RULED},
+        {"desktop": 4, "parts": ["screw.motherboard.01"], "steps": [3, 5, 6],
+         "reason": "why"}]
+    for bad in ("D28:connector.06@1-10", "D28@1-10=x", "D28:connector.06@10-1=x",
+                "D28:connector.06@a=x"):
+        with pytest.raises(S.PackError):
+            S.parse_not_clean([bad])
+    assert S._steps_text([1, 2, 3, 7, 9, 10]) == "S01-S03, S07, S09-S10"
+
+
+def test_a_part_ruled_not_clean_leaves_the_clean_set(built, tmp_path):
+    """Final build, decision 1: D28's plugs under the closed cage on S01-S10."""
+    assert all(a["clean_note"] is None for a in built["coco"]["annotations"])
+    desktop = built["desktop"]
+    rule = S.parse_not_clean([f"D{desktop}:{NEIGHBOR}@1-2={RULED}"])
+    summary = make_pack(tmp_path, built["db"], desktop, not_clean=rule)
+    coco = json.loads((tmp_path / "pack" / f"D{desktop:02d}" / "annotations.json")
+                      .read_text(encoding="utf-8"))
+    step_of = {i["id"]: i["extra"]["step"] for i in coco["images"]}
+    mine = {step_of[a["image_id"]]: a for a in coco["annotations"]
+            if a["attributes"]["instance_key"] == NEIGHBOR}
+    for step in (1, 2):
+        assert mine[step]["clean"] is False and mine[step]["clean_note"] == RULED
+    assert mine[4]["clean"] is True and mine[4]["clean_note"] is None
+    assert summary["totals"]["clean"] == built["summary"]["totals"]["clean"] - 2
+    assert summary["checks"]["clean_but_ruled_not_clean"] == 2
+    assert summary["not_clean"] == [{"desktop": desktop, "parts": [NEIGHBOR],
+                                     "steps": "S01-S02", "reason": RULED,
+                                     "annotations": 2, "were_clean": 2}]
+    with open(tmp_path / "pack" / "clean_parts.csv", encoding="utf-8", newline="") as handle:
+        assert not [r for r in csv.DictReader(handle)
+                    if r["instance_key"] == NEIGHBOR and int(r["step"]) in (1, 2)]
+    readme = (tmp_path / "pack" / "README.md").read_text(encoding="utf-8")
+    assert f"D{desktop:02d} S01-S02 `{NEIGHBOR}` (2 annotations)" in readme
+    zh = readme.split("## What this is")[0]
+    assert "`clean_note`" in zh
+    # F-N2: the Chinese summary lists them in Chinese
+    assert f"D{desktop:02d} 的 S01–S02 帧上的 `{NEIGHBOR}`（共 2 条）" in zh
+    assert "annotations)" not in zh and "Known issues）" not in zh
+
+
+def test_a_not_clean_rule_must_match(built, tmp_path):
+    desktop = built["desktop"]
+    with pytest.raises(S.PackError, match="matches no annotation"):
+        make_pack(tmp_path, built["db"], desktop,
+                  not_clean=S.parse_not_clean([f"D{desktop}:no.such.part@1-2=x"]))
+    with pytest.raises(S.PackError, match="not packed"):
+        make_pack(tmp_path, built["db"], desktop, name="p2",
+                  not_clean=S.parse_not_clean(["D99:connector.06@1=x"]))
+
+
 def test_exclusions_parse():
     assert S.parse_exclusions(["D2:1,D4:1=why not", "d13:s5"]) == {
         (2, 1): "why not", (4, 1): "why not", (13, 5): S.DEFAULT_EXCLUDE_REASON}
@@ -448,12 +506,14 @@ def test_model_names_are_normalised_and_the_sheet_text_kept():
         ("HP", "Compoq 8100 Elite Small Form Fador"): "HP Compaq 8100 Elite SFF",
         ("HP", "Compoq 8300 Elite Small Form Fador"): "HP Compaq 8300 Elite SFF",
         ("HP", "EliteDesk 800 GI SFF"): "HP EliteDesk 800 G1 SFF",
+        ("HP", "Compoq 8200 Elite Small Form Fador"): "HP Compaq 8200 Elite SFF",
+        ("HP", "ProDesk 400 GI SFF"): "HP ProDesk 400 G1 SFF",
     }
     for (brand, family), model in sheet.items():
         raw = f"{brand} {family}"
         assert S.model_names({"brand": brand, "model_family": family,
                               "brand_model_raw": raw}) == (model, raw, None)
-    for family in ("ProDesk 4300 GI SFF", "ProDesk 4300"):
+    for family in ("ProDesk 4300 GI SFF", "ProDesk 4300", "Compoq 4300 Elite Small Form Fador"):
         model, raw, note = S.model_names({"brand": "HP", "model_family": family})
         assert model == "HP Compaq Pro 4300 SFF"          # the name only (R2-N4)
         assert raw == f"HP {family}"
@@ -653,7 +713,8 @@ def test_the_readme_example_runs(built, monkeypatch, capsys):
     text = (built["pack"] / "README.md").read_text(encoding="utf-8")
     code = text.split("```python\n", 1)[1].split("```", 1)[0]
     assert len(code.strip().splitlines()) <= 22
-    code = code.replace('desk = "D02"', f'desk = "D{built["desktop"]:02d}"')
+    # as shipped: it names a desktop the package has (the final build had no D02)
+    assert f'desk = "D{built["desktop"]:02d}"' in code
     monkeypatch.chdir(built["pack"])
     exec(compile(code, "README example", "exec"), {})
     out = capsys.readouterr().out
@@ -737,7 +798,46 @@ def test_a_model_note_is_a_paragraph_below_the_table_not_a_row_of_it():
     assert "| D30 | HP Compaq Pro 4300 SFF * |" in text
     total_row = next(line for line in text.splitlines() if line.startswith("| **Total**"))
     after = text.split(total_row, 1)[1]
-    assert after.startswith("\n\n\\* D30: check it.\n")
+    assert after.startswith("\n\n\\* D30: check it.\n\n*Parts* counts")
+    # the final build's case: nothing overlaps, nothing is left out (no "0 frames")
+    assert "No two confirmed masks overlap in this package" in text
+    assert "本包里确认的可见掩码互不重叠" in text and "在 0 帧上" not in text
+    assert "on 0 frames" not in text and "On 0 frames" not in text
+    assert "No two confirmed visible masks claim the same pixel in this package." in text
+    assert "No frame is left out of this package." in text and "none (see" not in text
+    assert 'desk = "D30"' in text
+    # F-N1: no "0 annotations" sentences
+    assert "here the two are equal on every annotation." in text
+    assert "here no shape had to be widened" in text
+    assert "0 annotations" not in text
+    desk["model_note"] = None
+    plain = S.readme_text(summary)
+    total_row = next(line for line in plain.splitlines() if line.startswith("| **Total**"))
+    assert plain.split(total_row, 1)[1].startswith("\n\n*Parts* counts")
+
+
+def test_the_overlap_cause_follows_the_counts(built):
+    """Final build (e): after the re-sign only per-frame masks may overlap; say which."""
+    t = built["summary"]["totals"]
+    # the scene has both: PATCHED's per-frame mask and STALE_LOWER's old row
+    assert 0 < t["overlap_px_without_per_frame_mask"] < t["overlap_px"]
+    assert t["overlap_frames_without_per_frame_mask"] == 1
+    text = (built["pack"] / "README.md").read_text(encoding="utf-8")
+    assert S.overlap_cause(built["summary"]) in text
+
+    def cause(total, plain, frames=1):
+        return S.overlap_cause({"totals": {
+            "overlap_px": total, "overlap_px_without_per_frame_mask": plain,
+            "overlap_frames_without_per_frame_mask": frames}})
+
+    only_corrected = cause(50, 0)
+    assert "every one of them is a mask corrected on that frame only" in only_corrected
+    assert "do not overlap anywhere" in only_corrected
+    assert cause(50, 50).startswith("they are rows confirmed at different times")
+    assert cause(50, 20, 2).startswith("30 of them are a mask corrected")
+    assert "20 (on 2 frames) are rows confirmed" in cause(50, 20, 2)
+    assert S.overlap_intro({"totals": {"overlap_px": 0, "overlap_frames": 0}}) == \
+        "No two confirmed visible masks claim the same pixel in this package."
 
 
 def test_the_few_clean_classes_are_named_without_a_reason():
@@ -779,7 +879,41 @@ def test_the_roi_paragraph_reads_right_in_every_branch():
         {"desktop": 4, "pose_segments": 2, "rois": 2},
         {"desktop": 13, "pose_segments": 1, "rois": 1}]))
     assert "D04 (2 camera poses, 2 ROIs) has more than one" in poses
-    assert "one camera pose and has one ROI" not in poses
+    assert "D13 was scanned from one camera pose and has one ROI" in poses
+    assert "Each desktop here" not in poses
+
+    # F-B3: no ROI stored is said, never counted as one ROI
+    none = S.roi_paragraph(_summary(per_desktop=[
+        {"desktop": 27, "pose_segments": 1, "rois": 0, "frames_without_roi": 43},
+        {"desktop": 4, "pose_segments": 1, "rois": 1, "frames_without_roi": 0},
+        {"desktop": 13, "pose_segments": 1, "rois": 1, "frames_without_roi": 0}]))
+    assert "(x1, y1 exclusive; null where none is stored)" in none
+    assert "D04, D13 were each scanned from one camera pose and have one ROI each" in none
+    assert ("No ROI is stored for D27 (43 frames): `roi` is null there, and rule 3 of "
+            "*clean* is not applied to those frames.") in none
+    assert "Each desktop here" not in none
+
+
+def test_a_desktop_without_an_roi_counts_no_roi_and_skips_rule_3(tmp_path):
+    """F-B3: D27 had no ROI; `rois` was 1 and the README said every desktop had one."""
+    db_path = build_scene(tmp_path, 13)
+    db = Db(str(db_path))
+    db.set_pose_segment_roi(13, VIEW, 1, None)
+    db.close()
+    summary = make_pack(tmp_path, db_path, 13)
+    (desk,) = summary["per_desktop"]
+    assert desk["rois"] == 0 and desk["frames_without_roi"] == desk["frames"] > 0
+    frames = json.loads((tmp_path / "pack" / "D13" / "frames.json").read_text(encoding="utf-8"))
+    assert all(f["roi"] is None for f in frames["frames"].values())
+    readme = (tmp_path / "pack" / "README.md").read_text(encoding="utf-8")
+    assert f"No ROI is stored for D13 ({desk['frames']} frames)" in readme
+    assert "has one ROI" not in readme
+    # rule 3 is not applied: the part drawn below the old ROI is clean now
+    coco = json.loads((tmp_path / "pack" / "D13" / "annotations.json").read_text(encoding="utf-8"))
+    first = next(i["id"] for i in coco["images"] if i["extra"]["step"] == 1)
+    outside = next(a for a in coco["annotations"]
+                   if a["image_id"] == first and a["attributes"]["instance_key"] == OUTSIDE)
+    assert outside["clean"] and summary["checks"]["amodal_box_outside_roi"] == 0
 
 
 # --------------------------------------------------------------------------- #

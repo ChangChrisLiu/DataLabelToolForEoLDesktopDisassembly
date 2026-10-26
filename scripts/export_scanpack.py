@@ -5,6 +5,7 @@
     python scripts/export_scanpack.py --db <copy of tda.sqlite> \
         [--out D:/DataSet/exports/scanpack_2026-10-26] [--desktops 2,3,4,13,19,23,24,28,30,31] \
         [--exclude "D2:1,D4:1=why"] [--note "text"] \
+        [--not-clean "D28:connector.06,connector.07@1-10=why"] \
         [--paths configs/paths.yaml] [--cache-dir <dir>] [--work <dir>] [--force]
 
 The collaborators hold 3D reconstructions from the same structured-light
@@ -56,8 +57,11 @@ visible pixel the label map's, and no pixel shared with another confirmed mask
 
 ``--exclude D2:1,D4:1=<reason>`` leaves listed frames out of the package (no
 picture, label map or annotation; out of every count) and lists them under the
-README's Known issues with the reason; ``--note`` adds a line there. Both are
-recorded in ``manifest.json``.
+README's Known issues with the reason; ``--note`` adds a line there.
+``--not-clean D28:connector.06,connector.07@1-10=<reason>`` marks annotations a
+person ruled not clean whatever the six rules say (``clean: false`` and the
+reason in ``clean_note``; out of ``clean_parts.csv``). All three are recorded
+in ``manifest.json``.
 
 Read-only on the database it is given (a ``mode=ro`` backup-API copy is made
 into ``--work`` and only that copy is opened -- the export's re-check pass
@@ -116,7 +120,7 @@ from tda.core.truth_refusals import frozen_disagreements  # noqa: E402
 from tda.ui.locator_pair import leaving_steps  # noqa: E402
 
 __all__ = ["CLASS_EN", "DEFAULT_DESKTOPS", "MODEL_NAMES", "PACK_VERSION", "PackError",
-           "build_pack", "main", "model_names", "parse_exclusions"]
+           "build_pack", "main", "model_names", "parse_exclusions", "parse_not_clean"]
 
 #: The ten desktops of the first package: five Dell, five HP.
 DEFAULT_DESKTOPS = (2, 3, 4, 13, 19, 23, 24, 28, 30, 31)
@@ -130,7 +134,8 @@ OCCLUDED_FULL = "occluded_full"
 GROUP_RANK = {"in_chassis": 0, "on_bench": 1, "context": 2}
 #: What the package adds to every COCO annotation, at its top level.
 ANN_FIELDS = ("instance_id", "visibility", "occlusion_ratio", "occluders",
-              "occluded_unlabelled_px", "shared_px", "label_px", "amodal_is_shape", "clean")
+              "occluded_unlabelled_px", "shared_px", "label_px", "amodal_is_shape", "clean",
+              "clean_note")
 #: A crowd row whose amodal shape the label map leaves mostly empty: nothing
 #: labelled covers it, yet nothing of it is seen (a QA note, not a rule).
 UNLABELLED_SHARE = 0.5
@@ -154,7 +159,12 @@ MODEL_NAMES: dict[tuple[str, str], tuple[str, Optional[str]]] = {
     ("Dell", "Optiplex 990"): ("Dell OptiPlex 990", None),
     ("HP", "Compoq 8100 Elite Small Form Fador"): ("HP Compaq 8100 Elite SFF", None),
     ("HP", "Compoq 8300 Elite Small Form Fador"): ("HP Compaq 8300 Elite SFF", None),
+    ("HP", "Compoq 8200 Elite Small Form Fador"): ("HP Compaq 8200 Elite SFF", None),
+    # HP made no "Compaq 4300 Elite": the nearest is the Compaq Pro 4300 SFF
+    ("HP", "Compoq 4300 Elite Small Form Fador"): (
+        "HP Compaq Pro 4300 SFF", NAMEPLATE.format(sheet="Compoq 4300 Elite Small Form Fador")),
     ("HP", "EliteDesk 800 GI SFF"): ("HP EliteDesk 800 G1 SFF", None),
+    ("HP", "ProDesk 400 GI SFF"): ("HP ProDesk 400 G1 SFF", None),
     ("HP", "ProDesk 4300 GI SFF"): ("HP Compaq Pro 4300 SFF",
                                     NAMEPLATE.format(sheet="ProDesk 4300 GI SFF")),
     ("HP", "ProDesk 4300"): ("HP Compaq Pro 4300 SFF", NAMEPLATE.format(sheet="ProDesk 4300")),
@@ -263,6 +273,55 @@ def parse_exclusions(specs: Sequence[str]) -> dict[tuple[int, int], str]:
                 raise PackError(f"--exclude: {item!r} is not D<desktop>:<step>")
             out[(int(found.group(1)), int(found.group(2)))] = reason
     return out
+
+
+def _parse_steps(text: str) -> list[int]:
+    steps: set[int] = set()
+    for part in text.split(","):
+        part = part.strip()
+        found = re.fullmatch(r"[Ss]?(\d+)(?:\s*-\s*[Ss]?(\d+))?", part)
+        if found is None:
+            raise PackError(f"--not-clean: {part!r} is not a step or a step range")
+        lo = int(found.group(1))
+        hi = int(found.group(2) or lo)
+        if hi < lo:
+            raise PackError(f"--not-clean: the range {part!r} runs backwards")
+        steps.update(range(lo, hi + 1))
+    return sorted(steps)
+
+
+def parse_not_clean(specs: Sequence[str]) -> list[dict]:
+    """``["D28:connector.06,connector.07@1-10=why", ...]`` -> override rules.
+
+    Each rule names a desktop, parts and steps whose annotations are not clean
+    whatever the six rules say -- what the masks cannot show (a part drawn
+    above a closed cage it sits under) -- and why. The build sets ``clean``
+    false and ``clean_note`` to the reason on every annotation it matches.
+    """
+    out: list[dict] = []
+    for spec in specs or ():
+        target, _, reason = str(spec).partition("=")
+        reason = reason.strip()
+        found = re.fullmatch(r"\s*[Dd]?(\d+)\s*:\s*([^@]+)@(.+)", target)
+        if found is None or not reason:
+            raise PackError(f"--not-clean: {spec!r} is not "
+                            f"D<desktop>:<part>[,<part>...]@<steps>=<reason>")
+        parts = sorted(p.strip() for p in found.group(2).split(",") if p.strip())
+        out.append({"desktop": int(found.group(1)), "parts": parts,
+                    "steps": _parse_steps(found.group(3)), "reason": reason})
+    return out
+
+
+def _steps_text(steps: Sequence[int]) -> str:
+    """``[1, 2, 3, 7]`` -> ``"S01-S03, S07"``."""
+    runs: list[list[int]] = []
+    for step in sorted(steps):
+        if runs and step == runs[-1][1] + 1:
+            runs[-1][1] = step
+        else:
+            runs.append([step, step])
+    return ", ".join(frame_name(a) if a == b else f"{frame_name(a)}-{frame_name(b)}"
+                     for a, b in runs)
 
 
 def _decode(rle: Optional[dict], hw: tuple[int, int]) -> np.ndarray:
@@ -529,6 +588,7 @@ def _leaving(desktop_actions, leaving, frame_steps: list[int], seg_of) -> dict[s
 def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out: Path,
                   work: Path, cache_dir: Optional[str], resolve: Callable, tail: Callable,
                   qa: dict, excluded: dict[int, str],
+                  not_clean: Sequence[dict] = (),
                   expected_hw: tuple[int, int] = EXPECTED_HW,
                   expected_tier: str = EXPECTED_TIER) -> dict:
     """Write ``out/D<nn>/`` for one desktop; returns its counts.
@@ -597,6 +657,7 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
     other_image: list[dict] = []
     segments: set = set()
     rois: set = set()
+    no_roi = 0
     for frame in frames:
         step = int(frame["step"])
         key = FrameKey(desktop, step, VIEW)
@@ -647,7 +708,10 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
         stats[f"burst_{int(source['choice']['burst_size'] or 0)}"] += 1
         stats[f"burst_reason:{source['choice']['reason'] or 'frame_record'}"] += 1
         segments.add(entry["pose_segment"])
-        rois.add(None if roi is None else tuple(roi))
+        if roi is None:
+            no_roi += 1                          # no ROI stored: not "one ROI" (F-B3)
+        else:
+            rois.add(tuple(roi))
         # -- the picture: copied from the raw drive, compared with the cache's
         raw = resolve(source["recorded"])
         if not raw or not Path(raw).is_file():
@@ -728,8 +792,29 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
         patched = {k for k, fo in db.frame_overrides(key).items() if fo.visible_rle}
         label, visible = frame_label_map(anns, hw, key_to_id, compiled, patched)
         frame_stats = annotate_frame(anns, label, visible, hw, key_to_id, roi, compiled)
+        # a person's "not clean": what the six rules cannot see (--not-clean)
+        for ann in anns:
+            ann["clean_note"] = None
+            for rule in not_clean:
+                if step in rule["steps"] and ann["attributes"]["instance_key"] in rule["parts"]:
+                    rule["annotations"] += 1
+                    rule["were_clean"] += int(ann["clean"])
+                    ann["clean"] = False
+                    ann["clean_note"] = rule["reason"]
         stats.update(frame_stats)
         stats["overlap_frames"] += int(frame_stats["overlap_px"] > 0)
+        if frame_stats["overlap_px"]:
+            # which shared pixels a per-frame mask claims (the tool never takes
+            # one out of its neighbours) and which come from rows alone
+            claims = np.zeros(hw, dtype=np.uint8)
+            for mask in visible.values():
+                claims += mask
+            corrected = np.zeros(hw, dtype=bool)
+            for k in patched & set(visible):
+                corrected |= visible[k]
+            plain = int(np.count_nonzero((claims > 1) & ~corrected))
+            stats["overlap_px_plain"] += plain
+            stats["overlap_frames_plain"] += int(plain > 0)
         lpath = ddir / "labels" / f"{name}.png"
         write_label_png(lpath, label)
         entry.update({"label": f"labels/{name}.png", "label_sha256": sha256_of(lpath)})
@@ -782,6 +867,12 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
                         pairs.append({"a": a, "b": b, "px": n})
             qa["overlapping_confirmed_masks"].append(
                 {"desktop": desktop, "step": step, "pairs": pairs})
+
+    unmatched = [r for r in not_clean if not r["annotations"]]
+    if unmatched:
+        raise PackError(f"--not-clean matches no annotation of D{desktop:02d}: "
+                        + "; ".join(f"{','.join(r['parts'])}@{_steps_text(r['steps'])}"
+                                    for r in unmatched))
 
     # -- the timeline: states per step, the leaving step, flicker
     steps_all = sorted(set(steps_tab) | set(frame_steps))
@@ -854,6 +945,9 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
 
     meta = db.get_desktop(desktop) or {}
     model, sheet, note = model_names(meta)
+    if (str(meta.get("brand") or "").strip(),
+            str(meta.get("model_family") or "").strip()) not in MODEL_NAMES:
+        qa["model_names_not_normalised"].append({"desktop": desktop, "model": model})
     head = {"desktop": desktop, "brand": meta.get("brand"), "model": model,
             "model_sheet": sheet, "model_note": note, "view": VIEW}
     doc["info"] = {
@@ -891,7 +985,7 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
         "desktop": desktop, "brand": head["brand"], "model": model, "model_sheet": sheet,
         "model_note": note,
         "frames": len(images), "frames_in_view": len(frames),
-        "pose_segments": len(segments), "rois": len(rois),
+        "pose_segments": len(segments), "rois": len(rois), "frames_without_roi": no_roi,
         "excluded": [{"step": s, "reason": r} for s, r in sorted(excluded.items())],
         "instances": len(key_to_id),
         "instances_annotated": sum(1 for k in key_to_id if per_inst[k]["annotations"]),
@@ -902,6 +996,9 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
         "amodal_widened_rows": int(stats["amodal_widened"]),
         "overlap_frames": int(stats["overlap_frames"]),
         "overlap_px": int(stats["overlap_px"]),
+        # of which no per-frame mask is involved: confirmed rows alone
+        "overlap_px_without_per_frame_mask": int(stats["overlap_px_plain"]),
+        "overlap_frames_without_per_frame_mask": int(stats["overlap_frames_plain"]),
         "shared_px": int(stats["shared_px"]),
         # every confirmed row against what today's annotation draws for it
         "confirmed_vs_today": {"rows_compared": truth_rows,
@@ -957,7 +1054,7 @@ QA_KEYS = ("overlapping_confirmed_masks", "occluded_full_label_with_pixels",
            "hidden_on_the_frame_before_leaving", "amodal_widened_by_visible",
            "confirmed_rows_without_annotation", "frame_row_names_other_image",
            "cache_differs_from_raw", "manifest_steps_without_frame",
-           "unconfirmed_rows_left_out")
+           "unconfirmed_rows_left_out", "model_names_not_normalised")
 
 
 def _prepare_out(out: Path, force: bool) -> None:
@@ -1000,8 +1097,13 @@ def build_pack(db_path: str, out_dir: str, desktops: Sequence[int] = DEFAULT_DES
                exclude: Optional[dict[tuple[int, int], str]] = None,
                notes: Sequence[str] = (),
                expected_hw: tuple[int, int] = EXPECTED_HW,
-               expected_tier: str = EXPECTED_TIER) -> dict:
+               expected_tier: str = EXPECTED_TIER,
+               not_clean: Sequence[dict] = ()) -> dict:
     """Write the package; returns the summary (counts per desktop, the QA lists).
+
+    ``not_clean`` are :func:`parse_not_clean` rules: annotations a person
+    ruled not clean whatever the six rules say (``clean: false``,
+    ``clean_note``); a rule that matches nothing stops the build.
 
     ``resolve`` turns a recorded raw path into the file to read today and
     ``tail`` into its part below the dataset root (the CLI passes
@@ -1023,6 +1125,10 @@ def build_pack(db_path: str, out_dir: str, desktops: Sequence[int] = DEFAULT_DES
     stray = sorted(k for k in exclude if k[0] not in wanted)
     if stray:
         raise PackError(f"--exclude names desktops that are not packed: {stray}")
+    rules = [dict(r, annotations=0, were_clean=0) for r in not_clean]
+    stray = sorted({r["desktop"] for r in rules if r["desktop"] not in wanted})
+    if stray:
+        raise PackError(f"--not-clean names desktops that are not packed: {stray}")
     _prepare_out(out, force)
     db = Db(str(_work_copy(db_path, work)))
     qa: dict[str, list] = {k: [] for k in QA_KEYS}
@@ -1033,10 +1139,10 @@ def build_pack(db_path: str, out_dir: str, desktops: Sequence[int] = DEFAULT_DES
             if db.get_desktop(desktop) is None:
                 raise PackError(f"desktop {desktop} is not in {db_path}")
             mine = {s: r for (d, s), r in exclude.items() if d == desktop}
-            per_desktop.append(build_desktop(db, tax, truth, desktop, out, work, cache_dir,
-                                             resolve, tail, qa, mine,
-                                             expected_hw=tuple(expected_hw),
-                                             expected_tier=expected_tier))
+            per_desktop.append(build_desktop(
+                db, tax, truth, desktop, out, work, cache_dir, resolve, tail, qa, mine,
+                not_clean=[r for r in rules if r["desktop"] == desktop],
+                expected_hw=tuple(expected_hw), expected_tier=expected_tier))
     finally:
         db.close()
     clean_rows = [r for d in per_desktop for r in d.pop("_clean_rows")]
@@ -1062,6 +1168,8 @@ def build_pack(db_path: str, out_dir: str, desktops: Sequence[int] = DEFAULT_DES
         "totals": {k: sum(d[k] for d in per_desktop)
                    for k in ("frames", "instances", "annotations", "crowd", "clean",
                              "amodal_widened_rows", "overlap_frames", "overlap_px",
+                             "overlap_px_without_per_frame_mask",
+                             "overlap_frames_without_per_frame_mask",
                              "shared_px")},
         "per_desktop": per_desktop,
         "clean_by_class": {c: int(by_class[c]["clean"]) for c in sorted(by_class)
@@ -1090,9 +1198,14 @@ def build_pack(db_path: str, out_dir: str, desktops: Sequence[int] = DEFAULT_DES
             "amodal_box_outside_roi": int(stats["roi_outside"]),
             "clean_but_for_roi": int(stats["only_roi"]),
             "clean_but_for_shared_px": int(stats["only_shared"]),
+            "clean_but_ruled_not_clean": sum(r["were_clean"] for r in rules),
         },
         "frame_record_names_other_image": sorted(
             other_image, key=lambda r: (r["desktop"], r["step"])),
+        "not_clean": [{"desktop": r["desktop"], "parts": r["parts"],
+                       "steps": _steps_text(r["steps"]), "reason": r["reason"],
+                       "annotations": r["annotations"], "were_clean": r["were_clean"]}
+                      for r in rules],
         "exclusions": [{"desktop": d, "step": s, "reason": r}
                        for (d, s), r in sorted(exclude.items())],
         "notes": [str(n) for n in notes],
@@ -1199,20 +1312,37 @@ def roi_paragraph(summary: dict) -> str:
     """The README's ROI section body, every sentence from the data (R2-N2, R2-N3)."""
     c = summary["checks"]
     bench = int(summary["placement_counts"].get("on_bench", 0))
-    out = ["`frames.json` gives each frame's `roi` `[x0, y0, x1, y1]` (x1, y1 exclusive): "
-           "the rectangle around the chassis the annotation concentrated on."]
-    several = [d for d in summary["per_desktop"]
+    desks = summary["per_desktop"]
+    # a frame with no ROI stored is not "one ROI" (F-B3): it is said, and rule 3
+    # is not applied there (the build checks a box only against a stored ROI)
+    missing = [d for d in desks if d.get("frames_without_roi", 0)]
+    several = [d for d in desks
                if d.get("pose_segments", 1) > 1 or d.get("rois", 1) > 1]
-    if not several:
+    plain = [d for d in desks if d not in missing and d not in several]
+    out = ["`frames.json` gives each frame's `roi` `[x0, y0, x1, y1]` (x1, y1 exclusive"
+           f"{'; null where none is stored' if missing else ''}): the rectangle around the "
+           "chassis the annotation concentrated on."]
+    if plain and not several and not missing:
         out.append("Each desktop here was scanned from one camera pose and has one ROI, "
                    "shared by all its frames.")
-    else:
+    elif plain:
+        names = ", ".join(desktop_dir(d["desktop"]) for d in plain)
+        out.append(f"{names} was scanned from one camera pose and has one ROI, shared by "
+                   f"all its frames." if len(plain) == 1 else
+                   f"{names} were each scanned from one camera pose and have one ROI each, "
+                   f"shared by all their frames.")
+    if several:
         which = ", ".join(f"{desktop_dir(d['desktop'])} "
                           f"({_n(d['pose_segments'], 'camera pose')}, {_n(d['rois'], 'ROI')})"
                           for d in several)
         out.append(f"An ROI is drawn once per camera pose (`pose_segment` in `frames.json`); "
                    f"{which} {'has' if len(several) == 1 else 'have'} more than one, so "
                    f"read `roi` frame by frame.")
+    if missing:
+        which = ", ".join(f"{desktop_dir(d['desktop'])} "
+                          f"({_n(d['frames_without_roi'], 'frame')})" for d in missing)
+        out.append(f"No ROI is stored for {which}: `roi` is null there, and rule 3 of "
+                   f"*clean* is not applied to those frames.")
     if bench == 0:
         out.append("Every annotation in this package is of a part in the chassis; none is "
                    "of a part set down on the bench.")
@@ -1254,17 +1384,44 @@ def _reason_text(reason: str) -> str:
     return reason
 
 
+def overlap_cause(summary: dict) -> str:
+    """Why confirmed masks overlap here, from the counts (final build, item e)."""
+    t = summary["totals"]
+    total = int(t["overlap_px"])
+    plain = int(t.get("overlap_px_without_per_frame_mask", 0))
+    corrected = ("a mask corrected on that frame only (the annotation tool does not take a "
+                 "per-frame mask out of its neighbours)")
+    rows = ("rows confirmed at different times (an outline adjusted later, within the "
+            "tool's tolerance)")
+    if plain == 0:
+        return (f"every one of them is {corrected}; masks without such a correction do "
+                f"not overlap anywhere in this package")
+    if plain == total:
+        return f"they are {rows}"
+    return (f"{total - plain} of them are {corrected}, and {plain} (on "
+            f"{_n(int(t.get('overlap_frames_without_per_frame_mask', 0)), 'frame')}) are "
+            f"{rows}")
+
+
+def overlap_intro(summary: dict) -> str:
+    """The first sentence of *Where two confirmed masks overlap*, zero included."""
+    t = summary["totals"]
+    if not t["overlap_px"]:
+        return "No two confirmed visible masks claim the same pixel in this package."
+    return (f"On {_n(t['overlap_frames'], 'frame')} two confirmed visible masks claim the "
+            f"same {t['overlap_px']} pixels; {overlap_cause(summary)}.")
+
+
 def _known_issues(summary: dict) -> str:
     t, c = summary["totals"], summary["checks"]
     items = []
     if t["overlap_frames"]:
         items.append(
-            f"**Overlapping confirmed masks.** On {t['overlap_frames']} frames, "
-            f"{t['overlap_px']} pixels are claimed by two confirmed visible masks: rows "
-            f"confirmed at different times (an outline adjusted later, within the tool's "
-            f"tolerance) and masks corrected on one frame only. The label map gives each "
-            f"such pixel to one part (see *Where two confirmed masks overlap*); take points "
-            f"from the label map. Every row involved has `shared_px > 0` and none is clean.")
+            f"**Overlapping confirmed masks.** On {_n(t['overlap_frames'], 'frame')}, "
+            f"{t['overlap_px']} pixels are claimed by two confirmed visible masks: "
+            f"{overlap_cause(summary)}. The label map gives each such pixel to one part "
+            f"(see *Where two confirmed masks overlap*); take points from the label map. "
+            f"Every row involved has `shared_px > 0` and none is clean.")
     if c["occluded_full_with_pixels"]:
         items.append(
             f"**`occluded_full` with a sliver.** {c['occluded_full_with_pixels']} annotations "
@@ -1315,7 +1472,52 @@ def readme_text(summary: dict) -> str:
     full, part = _pct(OCCLUDED_FULL_RATIO), _pct(OCCLUDED_PARTIAL_RATIO)
     small, tiny = TOO_SMALL_PX, VISIBLE_TINY_PX
     excluded = ", ".join(f"{desktop_dir(e['desktop'])} {frame_name(e['step'])}"
-                         for e in summary["exclusions"]) or "none"
+                         for e in summary["exclusions"])
+    excluded = (f"Frames left out of this package: {excluded} (see *Known issues*)."
+                if excluded else "No frame is left out of this package.")
+    if t["overlap_frames"]:
+        overlap_zh = (f"确认的可见掩码在 {t['overlap_frames']} 帧上有重叠，`segmentation` 保持确认时的原样，"
+                      f"重叠像素在 label map 里只归一个零件。")
+        overlap_en = (f"Use the label map, not the annotation's `segmentation`: the segmentation "
+                      f"is the confirmed mask as it was\nsigned off and, on "
+                      f"{_n(t['overlap_frames'], 'frame')}, it overlaps another part's\n"
+                      f"(*Where two confirmed masks overlap*); the label map gives every pixel "
+                      f"to one\npart. Where they do not overlap the two are identical.")
+    else:
+        overlap_zh = "本包里确认的可见掩码互不重叠，label map 与各 `segmentation` 逐像素一致。"
+        overlap_en = ("No two confirmed masks overlap in this package, so the label map and the "
+                      "annotations'\n`segmentation` give the same pixels; the label map is the "
+                      "simpler to read.")
+    # no "0 annotations" sentences (F-N1)
+    differ = int(c["occlusion_ratio_differs_from_confirmed"])
+    ratio_text = ("here the two are equal on every annotation." if not differ else
+                  f"the two differ on {_n(differ, 'annotation')}, where today's amodal shape "
+                  f"is not the one the row was confirmed against.")
+    widened = int(t["amodal_widened_rows"])
+    widened_text = ("here no shape had to be widened to hold a confirmed visible mask." if not
+                    widened else
+                    f"on {_n(widened, 'annotation')} the shape is widened to hold the "
+                    f"confirmed visible mask (`amodal_is_shape: false`).")
+    # the example runs as shipped: on a desktop the package has
+    ruled = [r for r in summary.get("not_clean", []) if r["annotations"]]
+    ruled_n = sum(r["were_clean"] for r in ruled)
+    ruled_list = "; ".join(f"{desktop_dir(r['desktop'])} {r['steps']} "
+                           f"{', '.join(f'`{p}`' for p in r['parts'])} "
+                           f"({_n(r['annotations'], 'annotation')})" for r in ruled)
+    ruled_en = (f"\n\nBesides the six rules, a person ruled some annotations not clean: "
+                f"{ruled_list}. They have `clean: false` and the reason in `clean_note` "
+                f"(null everywhere else), and are not in `clean_parts.csv`; {ruled_n} of them "
+                f"pass all six rules (*Known issues*)." if ruled else "")
+    # the Chinese summary in Chinese (F-N2): no English list spliced in
+    ruled_list_zh = "；".join(
+        f"{desktop_dir(r['desktop'])} 的 {r['steps'].replace('-', '–')} 帧上的 "
+        f"{'、'.join(f'`{p}`' for p in r['parts'])}（共 {r['annotations']} 条）"
+        for r in ruled)
+    ruled_zh = (f"\n另有人工判定为非 clean 的标注：{ruled_list_zh}。它们的 `clean` 为 false，"
+                f"原因写在 `clean_note`，不在 `clean_parts.csv` 里（其中 {ruled_n} 条本来满足六条，"
+                f"见文末已知问题）。" if ruled else "")
+    example = README_EXAMPLE.replace('desk = "D02"',
+                                     f'desk = "{desktop_dir(summary["desktops"][0])}"')
     return f"""# Scanner-view segmentation package (scanpack v{summary['pack_version']})
 
 ## 中文摘要
@@ -1330,12 +1532,12 @@ def readme_text(summary: dict) -> str:
 （S05 上第 5 步拆下的零件已经不在了）。
 
 **取点以 label map 为准**：零件的点就是 `labels/S<nn>.png == instance_id` 的像素下的点。
-确认的可见掩码在 {t['overlap_frames']} 帧上有重叠，`segmentation` 保持确认时的原样，重叠像素在 label map 里只归一个零件。
+{overlap_zh}
 
 建议先用 `clean_parts.csv`（共 {t['clean']} 条）。`clean` 要同时满足六条：
-(1) 可见掩码与完整形状逐像素相同；(2) 标签为 `visible`；(3) amodal 框在 ROI 内；
+(1) 可见掩码与完整形状逐像素相同；(2) 标签为 `visible`；(3) amodal 框在 ROI 内（没有存 ROI 的帧不查这一条）；
 (4) amodal 就是标注的形状本身（没有被可见掩码撑大）；(5) label map 把它的每个可见像素都给了它；
-(6) 它的可见像素没有一个同时被别的确认掩码占用（`shared_px == 0`）。
+(6) 它的可见像素没有一个同时被别的确认掩码占用（`shared_px == 0`）。{ruled_zh}
 这样的零件在那一帧上没有被任何东西挡住，掩码下的点就是扫描仪看到的它的全部表面。
 {few_zh}
 被遮挡的零件有两条路：(1) 只取可见掩码（label map）下的点；
@@ -1359,10 +1561,9 @@ points in your 3D reconstruction of the same scanner frame.
 {rows}
 | **Total** | | {t['frames']} | | {t['annotations']} | {t['crowd']} | {t['clean']} | |
 {model_notes}
-
 *Parts* counts the instances with at least one annotation; *Clean* counts
 (frame, part) annotations, *Clean parts* the distinct parts among them.
-Frames left out of this package: {excluded} (see *Known issues*). `frames.json`,
+{excluded} `frames.json`,
 `instances.json` and `annotations.json` give the model name (`model`), the
 teardown sheet's own spelling of it (`model_sheet`) and a caveat about the
 name where there is one (`model_note`, else null).
@@ -1418,11 +1619,7 @@ and the ROI all use this frame, unshifted and uncropped.
 If your reconstruction keeps, for each 3D point, the pixel of this image it
 came from (an organized point cloud, or a depth map registered to this RGB
 image), then **the points of a part are the points under its pixels in the
-label map**: `labels/S<nn>.png == instance_id`. Use the label map, not the
-annotation's `segmentation`: the segmentation is the confirmed mask as it was
-signed off and, on {t['overlap_frames']} frames, it overlaps another part's
-(*Where two confirmed masks overlap*); the label map gives every pixel to one
-part. Where they do not overlap the two are identical. The scanner only
+label map**: `labels/S<nn>.png == instance_id`. {overlap_en} The scanner only
 measures surfaces it can see, so a hidden surface has no points: the
 `amodal_segmentation` is the part's full silhouette on the image (what it would
 cover if nothing were in front), not a set of points.
@@ -1436,10 +1633,10 @@ whole outline and the points under it are all of the part the scanner saw.
 
 1. the visible mask equals the amodal mask to the pixel (0 px difference);
 2. its label (`visibility`) is `visible`;
-3. the amodal box lies inside the frame's ROI;
+3. the amodal box lies inside the frame's ROI (not applied on a frame with no ROI stored);
 4. the amodal shape is the annotated shape itself (`amodal_is_shape`);
 5. the label map gives the part every pixel of its visible mask (`label_px == area`);
-6. no other confirmed mask claims any of its pixels (`shared_px == 0`).
+6. no other confirmed mask claims any of its pixels (`shared_px == 0`).{ruled_en}
 
 ### Occluded parts: two routes
 
@@ -1490,9 +1687,7 @@ part may keep a sliver of visible pixels (*Known issues*).
 `occlusion_ratio` (top level) is `1 - area / amodal_area`, measured on the two
 masks in the file: the share of the part's silhouette hidden on that frame.
 `attributes.occlusion_ratio` is the value recorded when the row was confirmed
-(the one `visibility` was decided from); the two differ on
-{c['occlusion_ratio_differs_from_confirmed']} annotations, where today's amodal shape is not the one the
-row was confirmed against. `occluders` lists who takes the hidden pixels, read
+(the one `visibility` was decided from); {ratio_text} `occluders` lists who takes the hidden pixels, read
 off the label map: `[{{"id": instance_id, "px": pixels}}, ...]`, largest first.
 `occluded_unlabelled_px` is the rest -- hidden pixels no labelled part shows
 (a cable, a part nobody annotates, a hand). The three add up:
@@ -1511,8 +1706,7 @@ use route 2 (or another frame) for it.
 
 ### Where two confirmed masks overlap
 
-On {t['overlap_frames']} frames two confirmed visible masks claim the same {t['overlap_px']} pixels:
-rows confirmed at different times, or a mask corrected on one frame only. The
+{overlap_intro(summary)} The
 label map gives such a pixel to the part higher in the frame's annotated layer
 order (a part whose mask was corrected on that frame is on top). Each
 annotation's `shared_px` says how many of its visible pixels another mask also
@@ -1526,9 +1720,7 @@ is kept as it was confirmed. No annotation with `shared_px > 0` is clean.
   `attributes`: `visibility`, `occlusion_ratio`, `occluder`, `placement`,
   `verified`.
 * **Derived from today's annotation** (the part's drawn shape on that frame):
-  `amodal_segmentation`, `amodal_bbox`, `amodal_area`; on {t['amodal_widened_rows']}
-  annotations the shape is widened to hold the confirmed visible mask
-  (`amodal_is_shape: false`).
+  `amodal_segmentation`, `amodal_bbox`, `amodal_area`; {widened_text}
 * **Computed for this package** from the two: the label maps, the top-level
   `occlusion_ratio`, `occluders`, `occluded_unlabelled_px`, `shared_px`,
   `label_px`, `amodal_is_shape`, `clean`; and from the teardown log and the
@@ -1551,7 +1743,8 @@ is kept as it was confirmed. No annotation with `shared_px > 0` is clean.
   `{summary['tier']}` on every annotation here) and `verified`. The package adds at the top of each annotation:
   `instance_id`, `visibility`, `occlusion_ratio`, `occluders`,
   `occluded_unlabelled_px`, `shared_px`, `label_px`, `amodal_is_shape`,
-  `clean`. Each image has `file_name` (`images/S<nn>.png`) and `label_file`
+  `clean`, `clean_note` (why a person ruled the annotation not clean, else
+  null). Each image has `file_name` (`images/S<nn>.png`) and `label_file`
   (`labels/S<nn>.png`); `extra.step` is its step.
 * `labels/S<nn>.png` -- single-channel 16-bit PNG, value = `instance_id`
   (0 = background). Read it with Pillow (`np.array(Image.open(p))`) or OpenCV
@@ -1595,7 +1788,7 @@ is kept as it was confirmed. No annotation with `shared_px > 0` is clean.
 Run from the package root:
 
 ```python
-{README_EXAMPLE}```
+{example}```
 """
 
 
@@ -1627,6 +1820,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="frames to leave out, 'D2:1,D4:1=reason' (repeatable)")
     parser.add_argument("--note", action="append", default=[],
                         help="a line for the README's Known issues (repeatable)")
+    parser.add_argument("--not-clean", action="append", default=[],
+                        help="annotations ruled not clean, "
+                             "'D28:connector.06,connector.07@1-10=reason' (repeatable)")
     parser.add_argument("--paths", default=str(REPO / "configs" / "paths.yaml"),
                         help="paths.yaml: the raw drive and the frame cache")
     parser.add_argument("--cache-dir", default=None, help="overrides paths.yaml's cache_dir")
@@ -1648,7 +1844,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             args.db, args.out, _parse_desktops(args.desktops), cache_dir=cache_dir,
             work_dir=args.work, resolve=rawroot.resolve_raw,
             tail=(raw.tail if raw is not None else None), force=args.force,
-            exclude=parse_exclusions(args.exclude), notes=args.note)
+            exclude=parse_exclusions(args.exclude), notes=args.note,
+            not_clean=parse_not_clean(args.not_clean))
     except PackError as exc:
         print(f"[scanpack] refused: {exc}")
         return 1
