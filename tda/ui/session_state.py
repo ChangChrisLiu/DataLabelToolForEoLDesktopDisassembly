@@ -311,7 +311,8 @@ class StateMixin:
             return rows
         needs = needs_geom(instances, state, self.tax)
         # 「一开始就不在（这台没有它）」 (task U34): on the part's first frame, for
-        # a part nobody has drawn anywhere -- one more entry of the picker
+        # a part nobody has drawn anywhere -- one more entry of the state combo
+        # (never a stop of T's cycle, round 2)
         offers = getattr(self, "absent_offers", None)
         absent = offers(state, instances, needs) if callable(offers) else set()
         for row in rows:
@@ -324,14 +325,11 @@ class StateMixin:
     def next_state(self, instance: str) -> Optional[str]:
         """The state ``T`` moves ``instance`` to: the one after its current one.
 
-        On the part's first frame, for a part nobody has drawn anywhere, the
-        cycle runs on to 「一开始就不在」 (:data:`~tda.core.absent.CHOICE`, task
-        U34) -- the window asks before it writes that.
+        States only: 「一开始就不在」 (task U34) is the state combo's entry and
+        Steps' right-click, never a stop of the cycle (U34 round 2) -- two
+        presses of ``T`` on a two-state part go back where they started.
         """
         choices, _why = self.state_gate(instance)
-        offered = getattr(self, "absent_offered", None)
-        if callable(offered) and offered(instance):
-            choices = [*choices, ABSENT_CHOICE]
         if not choices:
             return None
         held = state_of(self.db, self.tax, self.desktop, self._step).get(instance)
@@ -411,10 +409,7 @@ class StateMixin:
         if default and key.step <= default[0].step:
             # the cage latch's card row (U20 review, N1): open, from here
             return str(default[0].new), int(key.step)
-        nxt = self.next_state(instance)
-        if nxt == ABSENT_CHOICE:      # not a state: Ctrl+T sets states only (U34)
-            nxt = next(iter(self.state_gate(instance)[0]), None)
-        return nxt, int(step)
+        return self.next_state(instance), int(step)
 
     def _state_gate_here(self, instance: str, state: str) -> FrameKey:
         """The frame both state gestures stand on, or the refusal of ``T`` there."""

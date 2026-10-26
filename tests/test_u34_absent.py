@@ -295,3 +295,50 @@ def test_the_frozen_frames_it_was_in_are_queued_for_a_re_check(db, tax):
     # and the way back reaches the same frames (it is in them again)
     _op, back = AB.mark_present(db, tax, DESKTOP, DRIVE, "tester")
     assert back.rechecks == {VIEW: [12, 13]}
+
+
+# --------------------------------------------------------------------------- #
+# round 2 (N5): what else names it -- the cable label refuses, the rest is said
+# --------------------------------------------------------------------------- #
+def test_a_cable_label_refuses_and_the_other_residues_are_listed(db, tax):
+    from tda.core.model import FrameKey, FrameOverride, PairOverride, ZOrderRec
+
+    db.set_frame_override(FrameOverride(FrameKey(DESKTOP, 3, VIEW), DRIVE,
+                                        visibility="occluded_partial"))
+    db.set_instance_flags(FrameKey(DESKTOP, 4, VIEW), DRIVE, {"visibility_reviewed": True})
+    db.add_conflict(FrameKey(DESKTOP, 5, "oak1"), DRIVE, None, None, 12)
+    db.set_pair_override(PairOverride(DESKTOP, VIEW, 1, DRIVE, "chassis"))
+    db.set_zorder(ZOrderRec(DESKTOP, VIEW, 1, [("chassis", "main"), (DRIVE, "main")]))
+    found = AB.residues(db, DESKTOP, DRIVE)
+    assert found == {AB.RES_LABEL: {VIEW: [3]}, AB.RES_FLAGS: {VIEW: [4]},
+                     AB.RES_CONFLICT: {"oak1": [5]}, AB.RES_PAIR: {VIEW: [1]},
+                     AB.RES_ZORDER: {VIEW: [1]}}
+    lines = AB.residue_lines(found)
+    assert lines[0] == "单帧可见性标签 1 处：scan 第 3 帧"
+    assert "开着的冲突 1 处：oak1 第 5 帧" in lines
+    assert "层级里的位置（位姿段） 1 处：scan 位姿段 1" in lines
+    assert AB.refusal(db, tax, DESKTOP, DRIVE) == ""          # said, not refused
+    # a 「被线挡住」 reason: once absent nobody could select it to take it back
+    for step in (6, 7):
+        db.set_frame_override(FrameOverride(FrameKey(DESKTOP, step, VIEW), DRIVE,
+                                            visibility="occluded_full", occluder="cable"))
+    why = AB.refusal(db, tax, DESKTOP, DRIVE)
+    assert "scan 第 6、7 帧 标着「被线挡住」" in why and "按 ` 撤回" in why and "Ctrl+`" in why
+    with pytest.raises(AB.AbsentError, match="被线挡住"):
+        AB.mark_absent(db, tax, DESKTOP, DRIVE, "tester")
+    assert manual(db) == []
+
+
+# --------------------------------------------------------------------------- #
+# round 2 (N8): a merge with a part said absent is refused, either way round
+# --------------------------------------------------------------------------- #
+def test_a_merge_with_an_absent_part_is_refused_both_ways(db, tax):
+    from tda.core.merge_instances import MergeError, plan_merge
+
+    db.upsert_instance(InstanceRec(key="optical_drive.02", desktop=DESKTOP,
+                                   cls="optical_drive", raw_names=["Optical drive"]))
+    plan_merge(db, tax, DESKTOP, "optical_drive.02", DRIVE)      # fine while it is there
+    AB.mark_absent(db, tax, DESKTOP, DRIVE, "tester")
+    for gone, keep in (("optical_drive.02", DRIVE), (DRIVE, "optical_drive.02")):
+        with pytest.raises(MergeError, match="「一开始就不在」.*「其实有…」"):
+            plan_merge(db, tax, DESKTOP, gone, keep)

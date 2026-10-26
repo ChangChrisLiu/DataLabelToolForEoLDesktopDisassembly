@@ -134,6 +134,52 @@ def test_a_drawn_part_is_refused_in_words(panel):
     assert "画过的零件就是在这台机器里" in panel.status.text()
 
 
+def test_an_unapplied_rename_of_a_frame_object_refuses_it(panel):
+    """Round 2 (N3): the reload after the write would drop the rename without a word."""
+    from tda.core.model import InstanceRec
+    from tda.ui.steps_merge import staged_edits
+
+    panel.db.upsert_instance(InstanceRec(key="ctx.misc_part.01", desktop=DESKTOP,
+                                         cls="misc_part",
+                                         attrs={"context": True, "label": "cup"}))
+    panel.set_desktop(DESKTOP)
+    panel.data.relabel_context("ctx.misc_part.01", "mug")
+    assert staged_edits(panel.data, panel.db) == ["框外零件名称"]
+    _entries(panel, DRIVE)[SA.MENU_ABSENT].trigger()
+    assert not panel.asked and not AB.is_absent(panel.db, DESKTOP, DRIVE)
+    assert "框外零件名称" in panel.status.text()
+    assert panel.data.relabelled                       # still staged, still there
+
+
+def test_the_question_lists_what_still_names_it(panel):
+    """Round 2 (N5): residues are said in the confirmation, not refused."""
+    from tda.core.model import FrameKey, FrameOverride
+
+    panel.db.set_frame_override(FrameOverride(FrameKey(DESKTOP, 4, "oak1"), DRIVE,
+                                              visibility="out_of_view"))
+    _entries(panel, DRIVE)[SA.MENU_ABSENT].trigger()
+    [(_key, lines)] = panel.asked
+    assert "还有这些记着它（原样留着，不影响这次）：" in lines
+    assert "  · 单帧可见性标签 1 处：oak1 第 4 帧" in lines
+    assert AB.is_absent(panel.db, DESKTOP, DRIVE)
+
+
+def test_merging_into_or_from_an_absent_part_is_refused(panel):
+    """Round 2 (N8): 「合并到…」 says to take it back first."""
+    from tda.core.model import InstanceRec
+    from tda.ui import steps_merge as SM
+
+    panel.db.upsert_instance(InstanceRec(key="optical_drive.02", desktop=DESKTOP,
+                                         cls="optical_drive", raw_names=["Optical drive"]))
+    panel.set_desktop(DESKTOP)
+    _entries(panel, DRIVE)[SA.MENU_ABSENT].trigger()
+    from tda.ui.steps_values import EditError
+
+    for gone, keep in (("optical_drive.02", DRIVE), (DRIVE, "optical_drive.02")):
+        with pytest.raises(EditError, match="「其实有…」"):
+            SM.plan(panel.data, panel.db, gone, keep)
+
+
 def test_staged_edits_do_not_count_a_frame_object_as_one(panel):
     """A desktop with a 框外零件 used to read as an unapplied instance edit (U34 fix)."""
     from tda.core.model import InstanceRec

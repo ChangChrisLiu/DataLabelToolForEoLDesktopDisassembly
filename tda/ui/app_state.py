@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from tda.core.absent import CHOICE as ABSENT_CHOICE
+from tda.core.absent import residue_lines, residues
 from tda.ui import app_actions as A
 from tda.ui import app_support as S
 from tda.ui.class_names import state_zh
@@ -79,6 +80,8 @@ ABSENT_ASK = ("{label}：这台机器根本没有它？\n"
               "它的螺丝、接头不跟着变，要单独看。\n"
               "Ctrl+Z 撤销；Steps → Instances 右键「其实有」也能改回来。")
 ABSENT_DONE = "{label}：一开始就不在（这台没有它），每一帧都不再要它"
+#: Above what still names it (U34 round 2, N5): said, not refused.
+ABSENT_RESIDUES = "还有这些记着它（原样留着，不影响这次）："
 ABSENT_RECHECK = "；{n} 个已确认帧会重新核对"
 
 
@@ -411,7 +414,9 @@ class StateMixin:
             gate = getattr(self.session, "cut_copy_gate", None)
             return self._why_once("cut_copy", instance, gate) if callable(gate) else ""
         row = self.instances.row_of(instance)
-        if row is not None and row.get("state_choices"):
+        # 「一开始就不在」 is the combo's, never T's (U34 round 2): it enables nothing here
+        if row is not None and [c for c in row.get("state_choices") or ()
+                                if c != ABSENT_CHOICE]:
             return ""
         gate = getattr(self.session, "state_gate", None)
         return (self._why_once("state", instance, lambda part: gate(part)[1])
@@ -502,18 +507,24 @@ class StateMixin:
         return [HINT_RANGE, HINT_LOG][:max(0, min(count - 1, 2))]
 
     # ------------------------------------- 「一开始就不在（这台没有它）」 (U34)
-    def ask_absent_from_start(self, label: str, instance: str) -> bool:
-        """The confirmation (a method, so a test answers it); ``True``: go ahead."""
+    def ask_absent_from_start(self, label: str, instance: str, notes=()) -> bool:
+        """The confirmation (a method, so a test answers it); ``True``: go ahead.
+
+        ``notes``: what still names the part and stays (U34 round 2, N5).
+        """
         from PySide6.QtWidgets import QMessageBox
 
+        text = ABSENT_ASK.format(label=label)
+        if notes:
+            text += "\n" + "\n".join([ABSENT_RESIDUES, *(f"  · {line}" for line in notes)])
         answer = QMessageBox.question(
-            self, ABSENT_TITLE, ABSENT_ASK.format(label=label),
+            self, ABSENT_TITLE, text,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No)
         return answer == QMessageBox.StandardButton.Yes
 
     def absent_from_start_here(self, instance: str) -> Optional[dict]:
-        """「一开始就不在」 from the ``T`` picker: ask, write, say what changed (U34)."""
+        """「一开始就不在」 from the state combo: ask, write, say what changed (U34)."""
         label = self._label_of(instance)[0] or instance
         if not callable(getattr(self.session, "mark_absent_from_start", None)):
             self._refuse_state(f"{REFUSED}这个会话不支持 / not supported by this session")
@@ -523,7 +534,9 @@ class StateMixin:
             self.instances.refresh()             # the combo goes back to what holds
             self._refuse_state(f"{REFUSED}{why}")
             return None
-        if not self.ask_absent_from_start(label, instance):
+        notes = residue_lines(residues(self.session.db, self.session.current().desktop,
+                                       instance))
+        if not self.ask_absent_from_start(label, instance, notes):
             self.instances.refresh()
             self.report(f"{label}：没有改 / not changed")
             return None
@@ -543,7 +556,7 @@ class StateMixin:
     def assert_state_here(self, instance: str, state: str) -> Optional[dict]:
         """Write the state, repaint what reads it, and say what changed.
 
-        The picker's 「一开始就不在」 (task U34) is no state: it goes to
+        The state combo's 「一开始就不在」 (task U34) is no state: it goes to
         :meth:`absent_from_start_here`.
         """
         if state == ABSENT_CHOICE:

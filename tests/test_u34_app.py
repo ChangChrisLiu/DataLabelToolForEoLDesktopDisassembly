@@ -53,8 +53,9 @@ def window(qapp, tmp_path: Path):
     seed_shapes(win.session, LAST_STEP, skip=(DRIVE,))
     win.asked = []
 
-    def answer(label: str, instance: str) -> bool:
+    def answer(label: str, instance: str, notes=()) -> bool:
         win.asked.append(instance)
+        win.notes = list(notes)
         return getattr(win, "answer", True)
 
     win.ask_absent_from_start = answer
@@ -110,8 +111,14 @@ def test_a_one_state_part_gets_it_too_and_the_combo_shows_what_holds(window):
     combo = window.instances.state_combo
     assert [combo.itemText(i) for i in range(combo.count())] == ["状态：插上", AB.CAPTION]
     assert combo.currentText() == "状态：插上" and combo.isEnabled()
-    assert window.session.next_state(plug) == AB.CHOICE
+    # T has no state to set on it, as before (round 2: the choice is not T's)
+    assert window.session.next_state(plug) is None
     window.act_cycle_state()
+    assert window.asked == [] and window.status_message().startswith("改不了状态：")
+    assert "只有一种" in window.status_message()
+    assert window.state_button_refusal("cycle_state", False) != ""
+    combo.activated.emit(1)                     # the combo's 「一开始就不在」
+    QApplication.processEvents()
     assert window.asked == [plug] and AB.is_absent(window.db, DESKTOP, plug)
 
 
@@ -144,17 +151,16 @@ def test_answering_no_writes_nothing(window):
     assert "没有改" in window.status_message()
 
 
-def test_t_cycles_on_to_it(window):
+def test_t_only_toggles_the_states_and_never_asks(window):
+    """Round 2 (ruling): the choice is the combo's and Steps', not a stop of ``T``."""
     goto(window, 1)
-    window.instances.select_instance(DRIVE)
-    window.act_cycle_state()                   # installed -> displaced (a T assertion)
-    assert (1, "state", "displaced") in manual(window) and window.asked == []
-    window.instances.select_instance(DRIVE)
-    window.act_cycle_state()                   # displaced -> 一开始就不在, after asking
-    assert window.asked == [DRIVE]
-    assert (0, "state", "removed") in manual(window)
-    assert AB.is_absent(window.db, DESKTOP, DRIVE)
-    assert row(window) is None
+    for expected in ("displaced", "installed", "displaced", "installed"):
+        window.instances.select_instance(DRIVE)
+        assert window.session.next_state(DRIVE) == expected
+        window.act_cycle_state()
+        assert row(window)["state"] == expected
+    assert window.asked == [] and not AB.is_absent(window.db, DESKTOP, DRIVE)
+    assert all(step > 0 for step, _attr, _new in manual(window))
 
 
 def test_ctrl_z_and_ctrl_y(window):
@@ -177,6 +183,25 @@ def test_the_removed_rows_say_what_it_is(window):
 
     gone = {r["key"]: r for r in compat.removed_rows(window.session)}
     assert gone[DRIVE]["state"] == AB.SHORT and gone[DRIVE]["verb_fix"] is None
+
+
+def test_the_question_lists_residues_and_a_cable_label_refuses(window):
+    """Round 2 (N5): what still names it is said; a 「被线挡住」 reason stops it."""
+    from tda.core.model import FrameKey, FrameOverride
+
+    goto(window, 1)
+    window.db.set_frame_override(FrameOverride(FrameKey(DESKTOP, 2, "scan"), DRIVE,
+                                               visibility="occluded_partial"))
+    window.answer = False
+    window.assert_state_here(DRIVE, AB.CHOICE)
+    assert window.notes == ["单帧可见性标签 1 处：scan 第 2 帧"]
+    window.db.set_frame_override(FrameOverride(FrameKey(DESKTOP, 3, "scan"), DRIVE,
+                                               visibility="occluded_full", occluder="cable"))
+    window.asked.clear()
+    window.answer = True
+    window.assert_state_here(DRIVE, AB.CHOICE)
+    assert window.asked == [] and manual(window) == []
+    assert "标着「被线挡住」" in window.status_message()
 
 
 def test_a_part_being_drawn_with_pixels_is_refused(window):

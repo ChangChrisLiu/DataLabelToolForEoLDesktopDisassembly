@@ -28,8 +28,15 @@ def test_the_paragraph_is_in_4_2():
                    "**一个事件都不推导**", "空操作", "不报警", "没有它的行，也没有 ✂",
                    "`DesktopCtx.absent`", "**不连带**", "「一开始就不在（这台没有它）」",
                    "最早可标的一帧", "「这台没有这个零件…」", "「其实有…」", "`Ctrl+Z` / `Ctrl+Y`",
-                   "`import-logs --force`", "`scripts/absent_from_start.py"):
+                   "`import-logs --force`", "`scripts/absent_from_start.py",
+                   # round 2
+                   "`T` 的循环不停在这一项", "标着「被线挡住」", "`absent.residues`",
+                   "「合并到…」（含「其实是硬盘架…」）涉及「不在」的零件，任一方向都拒绝",
+                   "`export_scanpack`", "UTF-8", "`psutil`", "弃置锁事后原样放回",
+                   "`python -m tda.cli check --desktop N --views scan,oak1,oak2,rs`"):
         assert needed in para, needed
+    # round 2 (ruling N2): T does not cycle onto it
+    assert "`T` 循环到它时也是这一项" not in para
 
 
 def test_v1_33_is_on_top_of_14():
@@ -43,8 +50,11 @@ def test_v1_33_is_on_top_of_14():
                    "`events_from_actions`", "「一开始就不在（这台没有它）」",
                    "「这台没有这个零件…」/「其实有…」", "`import-logs --force` 保留",
                    "`scripts/absent_from_start.py`", "`steps_merge.staged_edits`",
-                   "D37、D38", "库结构不变（仍为 v5）"):
+                   "D37、D38", "库结构不变（仍为 v5）", "**第二轮**",
+                   "从 `T` 的循环里拿掉", "「被线挡住」", "框外零件改名", "`export_scanpack`",
+                   "`psutil`"):
         assert needed in entry, needed
+    assert "`T` 循环到）" not in entry
     assert changes.index("- **v1.33") < changes.index("- **v1.31")
 
 
@@ -54,15 +64,19 @@ def test_the_quickstart_has_the_recipe():
     assert quick.index("### 画面里的状态和日志不一样（`T`）") < quick.index(head) \
         < quick.index("### 盖板/卡扣其实被拆走了（`Shift+T`）")
     recipe = quick.split(head, 1)[1].split("\n### ", 1)[0]
-    for needed in ("D34", "`optical_drive.01`", "「一开始就不在（这台没有它）」", "按 `T`",
+    for needed in ("D34", "`optical_drive.01`", "「一开始就不在（这台没有它）」",
+                   "`T` 不会切到这一项",
                    "光驱 optical_drive.01：一开始就不在（这台没有它），每一帧都不再要它（Ctrl+Z 撤销）",
-                   "**不跟着变**", "「这台没有这个零件…」", "「其实有…」", "`import-logs --force`"):
+                   "**不跟着变**", "「这台没有这个零件…」", "「其实有…」", "`import-logs --force`",
+                   "标过「被线挡住」会被拒绝"):
         assert needed in recipe, needed
+    assert "或按 `T`" not in recipe          # round 2 (N2): the combo's, not T's
 
 
 def test_the_guide_has_its_line_inside_the_budget():
     body = GUIDE.read_text(encoding="utf-8")
-    assert "**这台根本没有这个零件**" in body and "「一开始就不在」" in body
+    line = next(x for x in body.splitlines() if x.startswith("**这台根本没有这个零件**"))
+    assert "状态框选「一开始就不在」" in line and "按 `T`" not in line   # round 2 (N2)
     prose = [line for line in body.splitlines() if not line.startswith("| `")]
     assert sum(len(line) for line in prose) <= 7700
 

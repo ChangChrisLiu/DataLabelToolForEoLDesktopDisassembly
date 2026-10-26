@@ -1,19 +1,20 @@
 """「这台没有这个零件」 as an undoable op of the session (task U34).
 
-:mod:`tda.core.absent` writes it; this is the session's half: where the ``T``
-picker offers it (:meth:`AbsentMixin.absent_offered` -- the part's first
+:mod:`tda.core.absent` writes it; this is the session's half: where the state
+combo offers it (:meth:`AbsentMixin.absent_offered` -- the part's first
 frame, a part with no shape anywhere), the write with its op, and the
 undo/redo handler (:func:`apply_absent`), which both write the part's
 step-0 events as the op's payload or inverse says and settle the view on
 screen. The frozen frames of every view the change reaches are queued by the
 core write; the one in hand is recompiled here, as for every other edit.
 
-``T`` cycles a part's states; on the first frame of a part nobody has drawn
-anywhere it cycles on to :data:`~tda.core.absent.CHOICE` as well, and the
-instance list's state combo lists it as 「一开始就不在（这台没有它）」. Neither
-is a state assertion -- ``removed`` stays the step table's to say
-(:func:`tda.core.state_assert.assertable_states`) -- the window routes the
-choice here, after asking.
+The instance list's state combo (the picker ``T``'s gesture shares) lists
+:data:`~tda.core.absent.CHOICE` as 「一开始就不在（这台没有它）」 on the first
+frame of a part nobody has drawn anywhere. It is no state assertion --
+``removed`` stays the step table's to say
+(:func:`tda.core.state_assert.assertable_states`) -- and ``T``'s own cycle
+never stops on it (U34 round 2): the window routes the combo's choice here,
+after asking.
 """
 from __future__ import annotations
 
@@ -35,7 +36,7 @@ __all__ = ["OP_KIND", "AbsentMixin", "apply_absent", "commit_absent"]
 #: ``op`` kind of the session's undo stack, the same word as the op-log row's.
 OP_KIND = AB.OP_KIND
 #: Why the choice is not offered here: not the part's first frame.
-NOT_FIRST = ("「{caption}」只在第一帧（第 {first} 步）上给：在那一帧选中它按 T，"
+NOT_FIRST = ("「{caption}」只在第一帧（第 {first} 步）上给：在那一帧选中它、在实例表的状态框里选，"
              "或 Steps → Instances 右键「这台没有这个零件」")
 
 
@@ -88,7 +89,7 @@ class AbsentMixin:
 
     def absent_offers(self, rows_state=None, instances=None,
                       needs: Optional[dict] = None) -> set[str]:
-        """The parts the ``T`` picker offers 「一开始就不在」 for on the open frame.
+        """The parts the state combo offers 「一开始就不在」 for on the open frame.
 
         Only on the first frame of this view, only for a real part of the
         machine (not a draft, a 框外零件 or a part added in S1) whose class
@@ -119,7 +120,7 @@ class AbsentMixin:
         return {k for k in candidates if k not in shaped}
 
     def absent_offered(self, instance: str) -> bool:
-        """Does the ``T`` picker offer 「一开始就不在」 for ``instance`` here?"""
+        """Does the state combo offer 「一开始就不在」 for ``instance`` here?"""
         return str(instance) in self.absent_offers()
 
     def absent_gate(self, instance: str) -> str:

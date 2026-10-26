@@ -44,6 +44,7 @@ its derived log starts from :func:`~tda.core.states.initial_overrides`.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass, field
 from typing import Iterable, Optional
 
@@ -93,6 +94,8 @@ __all__ = [
     "plan_absent",
     "plan_present",
     "refusal",
+    "residue_lines",
+    "residues",
     "shaped_instances",
     "write_rows",
 ]
@@ -103,9 +106,9 @@ OP_KIND = "absent_from_start"
 OP_VIEW = "-"
 #: ``StateEvent.evidence_view`` of the two events the op writes.
 EVIDENCE = "s1:absent"
-#: The pseudo-state the ``T`` picker offers on a part's first frame (task U34).
+#: The pseudo-state the state combo offers on a part's first frame (task U34).
 CHOICE = "absent_from_start"
-#: How the picker, the Steps menu and the rows say it.
+#: How the state combo, the Steps menu and the rows say it.
 CAPTION = "一开始就不在（这台没有它）"
 #: The Steps row's short word, and the inverse's menu entry.
 SHORT = "一开始就不在"
@@ -178,7 +181,103 @@ def refusal(db: Db, tax: Taxonomy, desktop: int, key: str) -> str:
         where = "、".join(f"{view} {n} 个" for view, n in sorted(shapes.items()))
         return (f"{key} 已经画过形状（{where}）：画过的零件就是在这台机器里。真没有它就先把"
                 f"形状删掉（Ctrl+Z 撤回那次提交，或在那一帧擦掉后提交）")
+    occluded = residues(db, desktop, key).get(RES_OCCLUDER) or {}
+    if occluded:
+        # U34 round 2 (N5): once it is absent it is on no instance list, and
+        # nobody can select it to take the label back
+        return (f"{key} 在 {_where(occluded)} 标着「被线挡住」：先到那几帧选中它按 ` 撤回"
+                f"（连着几帧用 Ctrl+` 一次撤回一段），再说这台没有它——说了之后它不在实例表上，"
+                f"就选不中了")
     return ""
+
+
+# --------------------------------------------------------------------------- #
+# what else names it (task U34 round 2, N5)
+# --------------------------------------------------------------------------- #
+#: :func:`residues`' keys, in the order :func:`residue_lines` says them.
+RES_OCCLUDER = "occluder"
+RES_LABEL = "frame_override"
+RES_FLAGS = "instance_frame_flags"
+RES_CONFLICT = "conflict"
+RES_PAIR = "pair_override"
+RES_ZORDER = "zorder"
+_RES_WORDS = {
+    RES_OCCLUDER: "「被线挡住」标签（拒绝：先撤回）",
+    RES_LABEL: "单帧可见性标签",
+    RES_FLAGS: "可见性审查等实例标记",
+    RES_CONFLICT: "开着的冲突",
+    RES_PAIR: "成对层级",
+    RES_ZORDER: "层级里的位置（位姿段）",
+}
+
+
+def _where(steps_by_view: dict[str, list[int]]) -> str:
+    """``scan 第 3、5 帧、oak1 第 2 帧``."""
+    return "、".join(f"{view} 第 {'、'.join(str(s) for s in steps)} 帧"
+                    for view, steps in sorted(steps_by_view.items()))
+
+
+def residues(db: Db, desktop: int, key: str) -> dict[str, dict[str, list[int]]]:
+    """What still names ``key`` besides shapes: ``kind -> view -> steps`` (or segments).
+
+    A 「被线挡住」 / reason row (``frame_override.occluder``, :data:`RES_OCCLUDER`)
+    is what :func:`refusal` refuses: once the part is absent nobody can select
+    it to take the label back. A label without a reason (:data:`RES_LABEL`),
+    the visibility review's flags, open conflicts, pair overrides and the
+    layer orders naming it (by pose segment) are only reported -- they name a
+    part no frame asks for any more and do no harm. Pixels of one frame are a
+    shape (:func:`refusal`), not a residue.
+    """
+    desktop, key = int(desktop), str(key)
+    out: dict[str, dict[str, list[int]]] = {}
+
+    def add(kind: str, view, step) -> None:
+        out.setdefault(kind, {}).setdefault(str(view), []).append(int(step))
+
+    for row in db.conn.execute(
+            "SELECT view, step, occluder FROM frame_override WHERE desktop=? AND instance=? "
+            "AND visible_rle_json IS NULL ORDER BY view, step", (desktop, key)):
+        add(RES_OCCLUDER if row[2] else RES_LABEL, row[0], row[1])
+    for row in db.conn.execute(
+            "SELECT view, step FROM instance_frame_flags WHERE desktop=? AND instance=? "
+            "ORDER BY view, step", (desktop, key)):
+        add(RES_FLAGS, row[0], row[1])
+    for row in db.conn.execute(
+            "SELECT view, step FROM conflict WHERE desktop=? AND instance=? AND status='open' "
+            "ORDER BY view, step", (desktop, key)):
+        add(RES_CONFLICT, row[0], row[1])
+    for row in db.conn.execute(
+            "SELECT view, pose_segment FROM pair_override WHERE desktop=? "
+            "AND (above=? OR below=?) ORDER BY view, pose_segment", (desktop, key, key)):
+        add(RES_PAIR, row[0], row[1])
+    for view, seg, text in db.conn.execute(
+            "SELECT view, pose_segment, order_json FROM zorder WHERE desktop=? "
+            "ORDER BY view, pose_segment", (desktop,)):
+        try:
+            order = json.loads(text or "[]")
+        except ValueError:
+            continue
+        if isinstance(order, list) and any(isinstance(p, (list, tuple)) and p and p[0] == key
+                                           for p in order):
+            add(RES_ZORDER, view, seg)
+    return out
+
+
+def residue_lines(found: dict[str, dict[str, list[int]]]) -> list[str]:
+    """:func:`residues` in the annotator's words, one line per kind (``[]``: none)."""
+    lines = []
+    for kind, words in _RES_WORDS.items():
+        by_view = found.get(kind)
+        if not by_view:
+            continue
+        n = sum(len(v) for v in by_view.values())
+        if kind in (RES_PAIR, RES_ZORDER):
+            where = "、".join(f"{view} 位姿段 {'、'.join(str(s) for s in sorted(set(segs)))}"
+                             for view, segs in sorted(by_view.items()))
+        else:
+            where = _where(by_view)
+        lines.append(f"{words} {n} 处：{where}")
+    return lines
 
 
 def absent_events(desktop: int, key: str, held: str) -> list[StateEvent]:

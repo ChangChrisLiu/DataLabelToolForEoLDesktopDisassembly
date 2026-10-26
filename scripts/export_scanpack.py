@@ -528,9 +528,15 @@ def write_label_png(path: Path, label: np.ndarray) -> None:
 # --------------------------------------------------------------------------- #
 # one desktop
 # --------------------------------------------------------------------------- #
-def instance_ids(db: Db, desktop: int) -> dict[str, int]:
-    """``key -> id``, 1..N in key order over every real instance (drafts left out)."""
-    keys = sorted(k for k in db.instances(desktop) if not is_provisional(k))
+def instance_ids(db: Db, desktop: int, skip=()) -> dict[str, int]:
+    """``key -> id``, 1..N in key order over every real instance (drafts left out).
+
+    ``skip`` are keys left out as well: the parts the machine does not have
+    (「这台没有这个零件」, task U34, ``DesktopCtx.absent``) -- the package never
+    names a part that was never there.
+    """
+    skip = set(skip)
+    keys = sorted(k for k in db.instances(desktop) if not is_provisional(k) and k not in skip)
     if len(keys) >= np.iinfo(np.uint16).max:
         raise PackError(f"desktop {desktop}: {len(keys)} instances do not fit a 16-bit map")
     return {k: i for i, k in enumerate(keys, start=1)}
@@ -602,7 +608,9 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
     """
     ddir = out / desktop_dir(desktop)
     ctx = load_ctx(db, tax, desktop, VIEW)
-    key_to_id = instance_ids(db, desktop)
+    # a part said absent from the start (U34) is out of the ids, the instances
+    # and the action rows alike, as it is out of the COCO and VLM exports
+    key_to_id = instance_ids(db, desktop, skip=ctx.absent)
     all_insts = {k: r for k, r in db.instances(desktop).items() if k in key_to_id}
     cat_of = category_ids(tax)
 
@@ -636,7 +644,7 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
     if stale:
         qa["manifest_steps_without_frame"].append({"desktop": desktop, "steps": stale})
     steps_tab = ctx.steps
-    actions = db.actions(desktop)
+    actions = [a for a in db.actions(desktop) if a.target not in ctx.absent]
     acts_at: dict[int, list] = defaultdict(list)
     for a in actions:
         acts_at[int(a.step)].append(a)

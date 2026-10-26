@@ -138,6 +138,10 @@ def staged_edits(data: "StepTableData", db: Db) -> list[str]:
         what.append("实例表")
     if data.relations is not None and data.relations.dirty:
         what.append("约束边")
+    if data.relabelled:
+        # a 框外零件 renamed and not applied (U18): a write-through command reloads
+        # the table, and the rename would go without a word (U34 round 2, N3)
+        what.append("框外零件名称")
     return what
 
 

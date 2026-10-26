@@ -15,22 +15,31 @@ from typing import Optional
 
 from PySide6.QtWidgets import QMenu, QMessageBox
 
-from tda.core.absent import AbsentPatch
+from tda.core.absent import AbsentPatch, residue_lines
+from tda.core.absent import residues as residues_of
 from tda.ui import steps_absent as SA
 from tda.ui.steps_values import EditError
 
 __all__ = ["ABSENT_TITLE", "AbsentMenuMixin", "confirm_lines", "done_line"]
 
 ABSENT_TITLE = "这台没有这个零件 / not in this machine"
+#: Above the residues the confirmation lists (U34 round 2, N5).
+RESIDUE_HEAD = "还有这些记着它（原样留着，不影响这次）："
 
 
-def confirm_lines(key: str, patch: AbsentPatch) -> list[str]:
-    """The confirmation of either entry, in the annotator's words."""
+def confirm_lines(key: str, patch: AbsentPatch, residues: list[str] = ()) -> list[str]:
+    """The confirmation of either entry, in the annotator's words.
+
+    ``residues`` (:func:`tda.core.absent.residue_lines`, U34 round 2) are what
+    still names the part and stays as it is: said, not refused.
+    """
     if patch.absent:
+        notes = ([RESIDUE_HEAD, *(f"  · {line}" for line in residues)] if residues else [])
         return [f"{key}：这台机器根本没有它？",
                 "从第 1 帧起它就不在机器里：每一帧的任务卡都不再要它，cli check 和导出里也没有它；"
                 "日志里对它的动作留着，但不再算。",
                 "它的螺丝、接头不跟着变，要单独看。",
+                *notes,
                 "立即写入，不经 Apply；右键「其实有」改回来。"]
     return [f"{key}：其实有这个零件？",
             "它回到机器里，从第 1 帧起照日志算，任务卡又要它。",
@@ -72,7 +81,9 @@ class AbsentMenuMixin:
         except EditError as error:
             self._show_error(str(error))
             return None
-        if not self.ask_absent(key, confirm_lines(key, planned)):
+        residues = (residue_lines(residues_of(self.db, self.desktop, key))
+                    if planned.absent else [])
+        if not self.ask_absent(key, confirm_lines(key, planned, residues)):
             self.status.setText(f"没有改 / {key} was not changed.")
             return None
         return self.absent_instance(key, present=not planned.absent)

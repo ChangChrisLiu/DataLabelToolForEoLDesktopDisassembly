@@ -89,3 +89,90 @@ def test_apply_writes_and_present_takes_it_back(source, tmp_path, monkeypatch):
         assert not AB.is_absent(db, DESKTOP, DRIVE)
     finally:
         db.close()
+
+
+# --------------------------------------------------------------------------- #
+# round 2
+# --------------------------------------------------------------------------- #
+def test_a_cp1252_pipe_does_not_stop_it(source, tmp_path):
+    """N1: piped or redirected on Windows, stdout is cp1252 -- the Chinese lines must print."""
+    import os
+    import subprocess
+    import sys
+
+    env = dict(os.environ, PYTHONIOENCODING="cp1252")
+    done = subprocess.run(
+        [sys.executable, str(SCRIPT), "--desktop", str(DESKTOP), "--instance", DRIVE,
+         "--db", source, "--out", str(tmp_path / "out")],
+        capture_output=True, env=env, timeout=600)
+    assert done.returncode == 0, done.stderr.decode("utf-8", "replace")
+    text = done.stdout.decode("utf-8")
+    assert f"D{DESKTOP:02d} {DRIVE} (这台没有这个零件)" in text and "wrote op" in text
+
+
+def test_residues_are_listed_and_a_cable_label_refuses(source, tmp_path, capsys):
+    """N5: listed before writing; a 「被线挡住」 reason is the app's refusal too."""
+    from tda.core.model import FrameKey, FrameOverride
+
+    db = Db(source)
+    try:
+        db.set_frame_override(FrameOverride(FrameKey(DESKTOP, 2, "scan"), DRIVE,
+                                            visibility="occluded_partial"))
+    finally:
+        db.close()
+    script = _script()
+    args = ["--desktop", str(DESKTOP), "--instance", DRIVE, "--db", source,
+            "--out", str(tmp_path / "out")]
+    assert script.main(args) == 0
+    text = capsys.readouterr().out
+    assert "still naming it (kept as they are):" in text
+    assert "    - 单帧可见性标签 1 处：scan 第 2 帧" in text
+    db = Db(source)
+    try:
+        db.set_frame_override(FrameOverride(FrameKey(DESKTOP, 3, "scan"), DRIVE,
+                                            visibility="occluded_full", occluder="cable"))
+    finally:
+        db.close()
+    assert script.main(args) == 1
+    text = capsys.readouterr().out
+    assert "refused:" in text and "标着「被线挡住」" in text and "nothing written" in text
+
+
+def test_apply_says_to_run_check(source, tmp_path, capsys):
+    """N7: the part's old compiled rows go with the next refresh: say which command."""
+    script = _script()
+    assert script.main(["--desktop", str(DESKTOP), "--instance", DRIVE, "--db", source,
+                        "--out", str(tmp_path / "out"), "--apply"]) == 0
+    assert (f"run: python -m tda.cli check --desktop {DESKTOP} --views scan,oak1,oak2,rs"
+            in capsys.readouterr().out)
+
+
+def test_without_psutil_the_live_database_is_refused(source, tmp_path, monkeypatch):
+    """N6: fail-closed -- nobody can tell whether the app is open."""
+    import sys
+
+    script = _script()
+    monkeypatch.setitem(sys.modules, "psutil", None)      # import psutil -> ImportError
+    assert script.app_running() is True
+    monkeypatch.setattr(script, "LIVE", source)
+    before = _sha(source)
+    assert script.main(["--desktop", str(DESKTOP), "--instance", DRIVE, "--db", source,
+                        "--out", str(tmp_path / "out"), "--apply"]) == 2
+    assert _sha(source) == before
+
+
+def test_an_abandoned_lock_taken_over_is_put_back(source, tmp_path):
+    """N6: only a lock this run made is removed; one it took over is left as it was."""
+    from tda.core.db_backup import lock_path_for
+
+    script = _script()
+    args = ["--desktop", str(DESKTOP), "--instance", DRIVE, "--db", source,
+            "--out", str(tmp_path / "out"), "--apply"]
+    lock = lock_path_for(source)
+    stale = '{"annotator": "chang", "ts": "2026-01-01T00:00:00+00:00"}'.encode("utf-8")
+    lock.write_bytes(stale)
+    assert script.main(args) == 0
+    assert lock.read_bytes() == stale                    # as it was, not deleted
+    lock.unlink()
+    assert script.main([*args, "--present"]) == 0
+    assert not lock.exists()                             # its own: removed

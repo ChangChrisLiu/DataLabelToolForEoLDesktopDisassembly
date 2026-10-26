@@ -1,6 +1,6 @@
 """Controller: 「这台没有这个零件」 -- a logged part the machine does not have (task U34).
 
-The same op as the app's ``T`` picker on the first frame and the Steps menu entry
+The same op as the app's state-combo entry on the first frame and the Steps menu entry
 (:func:`tda.core.absent.mark_absent`): the part is ``removed`` / ``elsewhere`` from
 step 0 (two hand-written step-0 events), the stored automatic events are recompiled,
 the graph meta re-stamped and the frozen frames whose work changes queued for a
@@ -19,15 +19,22 @@ Usage::
 Without ``--apply`` it is a dry run: the op is carried out on a backup-API copy of
 ``--db`` in ``--out`` (``dryrun_<stamp>.sqlite``), never on ``--db`` itself, and the
 before / after below are that copy's. ``--db`` defaults to the LIVE database;
-``--apply`` on it refuses while the annotator app is running or holds the lock and
-first takes the app's own safety backup (``backup_dir`` of ``paths.yaml``).
+``--apply`` on it refuses while the annotator app is running (and when ``psutil`` is
+missing, so that cannot be told) or holds the lock, and first takes the app's own
+safety backup (``backup_dir`` of ``paths.yaml``). An abandoned lock it takes over is
+put back as it was afterwards; only a lock it made itself is removed.
 
 What it prints, before and after: the part's state and placement at the first and
 the last step, the sheet's actions on it, the hand-written events, how many frames of
 each sequence view ask for its geometry (what the compiler, ``Space`` and ``cli
 check``'s ``missing_shape`` go by: it has no shape, so every one of them is a missing
 shape) and on which frames the task card of the reverse walk has a row for it, the
-state warnings about it, and the frozen frames the op queued.
+state warnings about it, and the frozen frames the op queued. Before writing it lists
+what else still names the part (:func:`tda.core.absent.residues`: single-frame
+labels, review flags, open conflicts, pair overrides, layer orders -- kept as they
+are); a 「被线挡住」 reason refuses, as in the app. After ``--apply`` it says to run
+``python -m tda.cli check`` on the four views, which recompiles the part's old rows.
+Output is UTF-8 whatever the console or pipe.
 """
 from __future__ import annotations
 
@@ -83,11 +90,15 @@ def snapshot(src: str, dst: str) -> None:
 
 
 def app_running() -> bool:
-    """Is ``python -m tda.cli app`` running? (argv, not a substring of a shell line)"""
+    """Is ``python -m tda.cli app`` running? (argv, not a substring of a shell line)
+
+    Fail-closed (U34 round 2, N6): without ``psutil`` nobody can tell, and the
+    answer that keeps the live database safe is "yes".
+    """
     try:
         import psutil
     except ImportError:
-        return False
+        return True
     for p in psutil.process_iter(["cmdline"]):
         try:
             args = list(p.info.get("cmdline") or [])
@@ -166,7 +177,24 @@ def show(log, title: str, facts: dict) -> None:
             f"card change rows at {v['card'] or 'no frame'}; frozen frames {v['frozen']}")
 
 
+def utf8_streams() -> None:
+    """Print Chinese whatever the console or pipe is (U34 round 2, N1).
+
+    Redirected or piped, Windows gives Python a cp1252 ``stdout``, and the first
+    line naming 「这台没有这个零件」 raised ``UnicodeEncodeError`` -- before the
+    plan, but after the lock and the dry-run copy were made.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if str(getattr(stream, "encoding", "") or "").lower().replace("-", "") == "utf8":
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass   # not a text stream that can be reconfigured: leave it
+
+
 def main(argv: Optional[list[str]] = None) -> int:
+    utf8_streams()
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--desktop", type=int, required=True)
     ap.add_argument("--instance", required=True)
@@ -192,7 +220,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     src = os.path.abspath(args.db)
     is_live = os.path.normcase(src) == os.path.normcase(os.path.abspath(LIVE))
     if args.apply and is_live and app_running():
-        log("the annotator app is running: close it first -- nothing touched")
+        log("the annotator app is running (or psutil is missing, so it cannot be told): "
+            "close it first -- nothing touched")
         return 2
     if args.apply:
         target = src
@@ -200,12 +229,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         target = str(out / f"dryrun_{stamp}.sqlite")
         snapshot(src, target)
         log(f"DRY RUN: carried out on a copy, {target}")
-    from tda.core.db_backup import acquire_lock_file, release_lock_file
+    from tda.core.db_backup import acquire_lock_file, lock_path_for, release_lock_file
+    # an abandoned lock (older than the TTL) is taken over by acquire_lock_file;
+    # it is put back as it was afterwards -- only a lock this run made is removed
+    # (U34 round 2, N6)
+    lock = lock_path_for(target)
+    prior = lock.read_bytes() if lock.exists() else None
     try:
         acquire_lock_file(target, ANNOTATOR)
     except RuntimeError as exc:
         log(f"locked: {exc} -- nothing touched")
         return 2
+    db = None
     try:
         config = P.load_paths(args.paths)
         db = Db(target)
@@ -214,6 +249,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         before = describe(db, tax, d, key)
         log(f"D{d:02d} {key} ({'其实有' if args.present else '这台没有这个零件'})")
         show(log, "before", before)
+        # what else still names it (U34 round 2, N5): a 「被线挡住」 reason refuses
+        # (the plan below says so), the rest is listed and stays
+        found = AB.residues(db, d, key)
+        if not args.present:
+            lines = AB.residue_lines(found)
+            log("  still naming it (kept as they are): " + ("none" if not lines else ""))
+            for line in lines:
+                log(f"    - {line}")
         try:
             plan = (AB.plan_present if args.present else AB.plan_absent)(db, tax, d, key)
         except AB.AbsentError as refused:
@@ -237,13 +280,21 @@ def main(argv: Optional[list[str]] = None) -> int:
         show(log, "after", after)
         summary = {"desktop": d, "instance": key, "present": args.present, "apply": args.apply,
                    "target": target, "op": op_id, "rechecks": patch.rechecks,
-                   "before": before, "after": after}
+                   "residues": found, "before": before, "after": after}
         path = out / f"absent_summary_{mode}_D{d:02d}_{stamp}.json"
         path.write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
         log(f"summary -> {path}")
-        db.close()
+        if args.apply:
+            # the compiled rows of the part are a cache the next refresh drops
+            # (U34 round 2, N7): check recompiles every frame of the four views
+            log(f"run: python -m tda.cli check --desktop {d} --views scan,oak1,oak2,rs")
     finally:
-        release_lock_file(target)
+        if db is not None:
+            db.close()
+        if prior is None:
+            release_lock_file(target)
+        else:
+            lock.write_bytes(prior)
         logf.close()
     return 0
 
