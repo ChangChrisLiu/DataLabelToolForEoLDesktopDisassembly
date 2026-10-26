@@ -2,8 +2,9 @@
 paragraph, v1.34 on top of §14, sentences in the quickstart's Review section.
 
 Round 2 (N8): the guide gets one sentence at the end of §6, paid for by
-tightening four lines elsewhere -- its prose stays within 7700 characters and
-the key table is untouched.
+tightening lines elsewhere -- its prose stays within 7700 characters and the
+key table is untouched. Round 3: 「不写注册表和 C 盘」 stays (the user's
+promise); the sentence is the shorter one.
 """
 from __future__ import annotations
 
@@ -47,7 +48,10 @@ def test_review_says_where_the_box_is_and_what_it_does():
                    "「这一帧的说明 / frame notes: n (scan a, oak1 b)」", "§3.1 `FrameNote`",
                    # round 2
                    "**不承诺 `Ctrl+Z`**",
-                   "「…离开时已自动保存（换了视角，撤销记录已清空；要改回在复查里改）」",
+                   "「…离开时已自动保存（换了视角或机器，撤销记录已清空；要改回在复查里改）」",
+                   # round 3
+                   "没有图像的帧上画布不显示，就交给时间轴，`PgDn` 照样能走",
+                   "库旁可能留下空的 `-wal` / `-shm`，库文件不变",
                    "从事件循环里说", "走不动的帧上确认——写「已保存」",
                    "关窗口时写不进去，文字连同错误进日志，窗口照关",
                    "「快捷键没生效：焦点在说明框里，按 Tab 回到画布」", "字母数字键不提示",
@@ -99,6 +103,9 @@ def test_the_guide_has_one_sentence_in_6_and_its_prose_stays_within_its_limit():
     body = GUIDE.read_text(encoding="utf-8")
     section = body.split("## 6. 复查队列", 1)[1].split("\n---", 1)[0]
     last = [line for line in section.splitlines() if line.strip()][-1]
-    assert last == "队列下面「这一帧的说明」：给读数据的人留话，翻帧自动存，`cli notes` 读。"
+    assert last == "队列下「这一帧的说明」：翻帧自动存，`cli notes` 读。"         # round 3
     prose = [line for line in body.splitlines() if not line.startswith("| `")]
     assert sum(len(line) for line in prose) <= 7700
+    # a promise the user cares about: it stays (round 3, R2-N2)
+    assert "不写注册表和 C 盘" in body
+    assert "面向每天标注 6 小时的人" not in body and "复查不扫全视图" not in body

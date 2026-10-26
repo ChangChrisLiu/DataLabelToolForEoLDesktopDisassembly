@@ -28,7 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 
 from tda.core.frame_notes import OP_KIND
 from tda.core.model import FrameKey, is_component_view
@@ -45,7 +45,7 @@ NOTE_CLEARED = "{frame}的说明已清除（Ctrl+Z 撤销）"
 NOTE_LEFT = "{frame}的说明改过没保存：离开时已自动保存（Ctrl+Z 撤销）"
 #: ... when the move opened another view (or machine) and the undo stack went
 #: with it: ``Ctrl+Z`` is not promised (review round 2, N1).
-NOTE_LEFT_NO_UNDO = ("{frame}的说明改过没保存：离开时已自动保存（换了视角，撤销记录已清空；"
+NOTE_LEFT_NO_UNDO = ("{frame}的说明改过没保存：离开时已自动保存（换了视角或机器，撤销记录已清空；"
                      "要改回在复查里改）")
 NOTE_SAVED_NO_UNDO = "{frame}的说明已保存（撤销记录已清空；要改回在复查里改）"
 #: How long that line holds against the arrival's own lines.
@@ -74,7 +74,16 @@ class NotesWindowMixin:
         self.review.sigNoteSave.connect(self.on_note_save)
         self.review.sigNoteClear.connect(self.on_note_clear)
         self.review.sigNoteLeft.connect(self.on_note_left)
-        self.review.sigNoteTabOut.connect(self.focus_canvas)
+        self.review.sigNoteTabOut.connect(self.leave_note_box)
+
+    def leave_note_box(self) -> None:
+        """The keyboard out of the note box: to the canvas, or -- on a frame with no
+        image, where the canvas is not shown -- to the timeline (round 3, R2-N1),
+        so that the frame keys (``PgDn``) work again either way."""
+        self.focus_canvas()
+        box = getattr(getattr(self, "review", None), "note_box", None)
+        if box is not None and box.edit.hasFocus():
+            self.timeline.list_widget().setFocus(Qt.FocusReason.TabFocusReason)
 
     def _undo_ops(self) -> list:
         stack = getattr(self.session, "undo_stack", None)
@@ -113,14 +122,14 @@ class NotesWindowMixin:
         saved = self._write_note(key, text)
         if saved is not None:
             self.report(self.note_saved_text(saved, left=False))
-        self.focus_canvas()
+        self.leave_note_box()
 
     @S.guard
     def on_note_clear(self, key: FrameKey) -> None:
         """「清除」: the frame has no note any more."""
         if self._write_note(key, "") is not None:
             self.report(NOTE_CLEARED.format(frame=_frame(key)))
-        self.focus_canvas()
+        self.leave_note_box()
 
     @S.guard
     def on_note_left(self, key: FrameKey, text: str) -> None:

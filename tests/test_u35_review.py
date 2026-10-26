@@ -203,8 +203,8 @@ def test_another_view_clears_the_undo_stack_so_ctrl_z_is_not_promised(window):
     assert stored(window, step)["text"] == "换视角前写的"
     assert not [op for op in window.session.undo_stack.ops if op.kind == OP_KIND]
     said = window.status_message()
-    assert said.endswith(f"第 {step} 帧的说明改过没保存：离开时已自动保存（换了视角，撤销记录已清空；"
-                         f"要改回在复查里改）")
+    assert said.endswith(f"第 {step} 帧的说明改过没保存：离开时已自动保存（换了视角或机器，"
+                         f"撤销记录已清空；要改回在复查里改）")
     assert "Ctrl+Z" not in said
     window.act_undo()                                     # nothing of the note's to undo
     assert stored(window, step)["text"] == "换视角前写的"
@@ -388,6 +388,45 @@ def test_tab_in_the_box_goes_back_to_the_canvas_and_the_focus_is_shown(window):
     QApplication.processEvents()
     assert window.focusWidget() is window.canvas
     assert edit.toPlainText() == "x"                      # no tab typed
+
+
+def test_tab_leaves_the_box_on_a_frame_with_no_image_too(qapp, tmp_path):
+    """Round 3, R2-N1: a frame with no image shows the placeholder, not the canvas
+    (D1 scan step 2 is one); Tab still takes the keyboard out of the box -- to the
+    timeline -- and PgDn then walks on."""
+    session = app_scene.make_session(tmp_path, missing=(13,))
+    win = MainWindow(session, app_scene.make_paths(tmp_path), "tester",
+                     sam_queue=app_scene.StubSamQueue())
+    win.resize(900, 700)
+    win.show()
+    QApplication.processEvents()
+    try:
+        if win.roi_editing:
+            win.act_clear_edit()
+        win.set_mode(A.MODE_REVIEW)
+        win.timeline_goto(13)
+        QApplication.processEvents()
+        assert session.current().step == 13 and session.image() is None
+        assert win.stack.currentWidget() is not win.canvas
+        edit = box(win).edit
+        type_into(win, "这一帧没有图像")
+        QTest.keyClick(edit, Qt.Key.Key_Tab)
+        QApplication.processEvents()
+        assert not edit.hasFocus() and win.focusWidget() is not edit
+        assert win.focusWidget() is win.timeline.list_widget()
+        assert edit.toPlainText() == "这一帧没有图像"           # no tab typed
+        QTest.keyClick(win.focusWidget(), Qt.Key.Key_PageDown)
+        QApplication.processEvents()
+        assert session.current().step == 12                # the frame key works again
+        assert stored(win, 13)["text"] == "这一帧没有图像"    # saved on the way out
+        # 「保存」 on such a frame leaves the box the same way
+        win.timeline_goto(13)
+        type_into(win, "再改一次")
+        box(win).save_button.click()
+        QApplication.processEvents()
+        assert win.focusWidget() is not edit
+    finally:
+        app_scene.close_window(win)
 
 
 def test_a_note_that_cannot_be_saved_on_close_goes_into_the_log(qapp, tmp_path, monkeypatch):

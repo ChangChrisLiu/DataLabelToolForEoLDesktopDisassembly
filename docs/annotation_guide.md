@@ -17,7 +17,7 @@ D:\Anaconda\envs\tda\python.exe -m tda.cli app --annotator chang --desktop 13 --
 - 先取**单人锁**再开数据库：别人开着时弹框写明持有人和时间，数据库没被打开。
 - SAM 和螺丝检测器在窗口显示**之后**后台加载；没模型只是 `S`/`X` 不可用（§8）。
 - 窗口大小、面板布局也在 `.cache\tda_app.ini`，日志在 `.cache\logs\tda_app.log`（都在
-  `D:\DataSet` 下）。
+  `D:\DataSet` 下，不写注册表和 C 盘）。
 
 **关闭时**依次：保存（等复检收尾）→ 备份到 `backup_dir` 并校验非空 → 放锁。备份失败只告警不拦关窗；
 有**没提交的编辑**先弹框问提交/放弃/取消。
@@ -197,7 +197,7 @@ D:\Anaconda\envs\tda\python.exe -m tda.cli check --desktop 13 --view scan
 
 导出（`export-coco`/`export-vlm`）先重编译；有帧等复检就拒绝，先跑 `check`。
 
-队列下面「这一帧的说明」：给读数据的人留话，翻帧自动存，`cli notes` 读。
+队列下「这一帧的说明」：翻帧自动存，`cli notes` 读。
 
 ---
 

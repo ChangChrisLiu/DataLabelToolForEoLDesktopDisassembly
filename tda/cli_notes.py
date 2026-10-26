@@ -15,7 +15,10 @@ gives Markdown (a section per view, a heading per frame, the text quoted);
 schema bootstrap would create the table and stamp version 6 -- so reading the
 notes never upgrades a database, and the live file's first v6 open is the
 annotator's app after the update.  No lock either.  A database still at
-version 5 has no notes yet: that is said, and the exit code is 0.
+version 5 has no notes yet: that is said, and the exit code is 0.  Opening a
+WAL database read-only may leave empty ``-wal`` / ``-shm`` side files next to
+it (只读打开会在库旁留下空的 -wal/-shm，库文件不变); the database file itself
+is not changed.
 
 The text is printed as UTF-8 whatever the console's code page (a note is
 Chinese more often than not; a Windows pipe defaults to cp1252).  In
