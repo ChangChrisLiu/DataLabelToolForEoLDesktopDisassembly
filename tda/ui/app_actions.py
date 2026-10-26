@@ -79,6 +79,7 @@ __all__ = [
     "PALETTE_REVIEW",
     "PALETTE_STATE",
     "PALETTE_TOOLS",
+    "TYPING_PROPERTY",
     "Action",
     "MenuEntry",
     "action_for",
@@ -86,6 +87,7 @@ __all__ = [
     "blocks_shortcuts",
     "cheat_sheet_html",
     "combos_of",
+    "is_typing_box",
     "key_caption",
     "mode_cheat_html",
     "mode_cheat_rows",
@@ -669,6 +671,18 @@ def blocks_shortcuts(widget: Optional[QWidget]) -> bool:
     edited in the step table is covered by the same check.
     """
     return widget is not None and isinstance(widget, _TEXT_WIDGETS)
+
+
+#: Qt property of a text box where typing is the whole point (the Review
+#: panel's 「这一帧的说明」, task U35): its keystrokes are kept from the window
+#: like any text field's, but the window does not say 「快捷键没生效」 about
+#: them -- a ``Q`` there is the letter the annotator meant.
+TYPING_PROPERTY = "tdaTyping"
+
+
+def is_typing_box(widget: Optional[QWidget]) -> bool:
+    """Is ``widget`` a text box made for writing in (:data:`TYPING_PROPERTY`)?"""
+    return widget is not None and bool(widget.property(TYPING_PROPERTY))
 
 
 #: Keys a focused list or table must keep for moving its own selection.  Page

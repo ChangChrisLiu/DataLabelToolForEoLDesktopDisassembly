@@ -49,6 +49,7 @@ from tda.ui.steps_values import (
 __all__ = [
     "BLANK",
     "INSTANCE_COLUMNS",
+    "NOTE_GLYPH",
     "STEP_COLUMNS",
     "THUMB_PX",
     "THUMB_VIEW",
@@ -64,6 +65,8 @@ THUMB_PX = 96
 #: The view whose frames the step table shows.
 THUMB_VIEW = "scan"
 BLANK = ""
+#: A step one of whose frames carries a note (「这一帧的说明」, task U35).
+NOTE_GLYPH = "✎"
 
 Choices = Callable[[Taxonomy], Sequence[str]]
 
@@ -336,11 +339,23 @@ class StepTableModel(_TableModel):
             if column.kind != "thumb" or action_idx > 0:
                 return None
             return self._thumb(row.number + column.offset)
+        # 「这一帧的说明」 (task U35): ✎ next to the step's own thumbnail
+        notes = (self._notes_of(row.number)
+                 if column.kind == "thumb" and column.offset == 0 and action_idx == 0 else [])
         if role == Qt.ToolTipRole:
-            return "\n".join([*row.issues, *row.ls_notes]) or None
+            lines = [*row.issues, *row.ls_notes]
+            if notes:
+                lines += [f"{NOTE_GLYPH} {n['view']}：{n['text']}" for n in notes]
+            return "\n".join(lines) or None
+        if role == Qt.DisplayRole and notes:
+            return NOTE_GLYPH
         if role in (Qt.DisplayRole, Qt.EditRole):
             return self._value(row, action_idx, column, decorate=role == Qt.DisplayRole)
         return None
+
+    def _notes_of(self, step: int) -> list[dict]:
+        """The notes of ``step``'s frames, any sequence view (task U35)."""
+        return list((getattr(self.data_model, "notes", None) or {}).get(int(step)) or ())
 
     def setData(self, index: QModelIndex, value, role=Qt.EditRole) -> bool:  # noqa: N802
         if not index.isValid() or role != Qt.EditRole:

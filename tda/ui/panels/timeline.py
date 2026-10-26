@@ -34,12 +34,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from tda.core.frame_notes import first_line
 from tda.core.model import is_component_view
 from tda.ui import session_api as api
 from tda.ui.panels import session_is_open
 
-__all__ = ["BREAK_COLOR", "BREAK_ROLE", "NO_IMAGE_TEXT", "SKIPPED_TEXT", "TimelinePanel",
-           "STATUS_COLORS", "read_thumb", "row_text", "status_brush"]
+__all__ = ["BREAK_COLOR", "BREAK_ROLE", "NOTE_GLYPH", "NO_IMAGE_TEXT", "SKIPPED_TEXT",
+           "TimelinePanel", "STATUS_COLORS", "read_thumb", "row_text", "status_brush"]
 
 
 def read_thumb(path: str, size: int) -> Optional[QImage]:
@@ -143,6 +144,8 @@ STATUS_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 BREAK_ROLE = int(Qt.ItemDataRole.UserRole) + 2
 #: A components-gallery row's position among the shots (task U10); 0 elsewhere.
 SHOT_ROLE = int(Qt.ItemDataRole.UserRole) + 3
+#: The first line of the frame's note (task U35), ``None`` for a frame with none.
+NOTE_ROLE = int(Qt.ItemDataRole.UserRole) + 4
 
 #: Colour of that boundary mark.
 BREAK_COLOR = QColor(120, 170, 235)
@@ -174,16 +177,24 @@ NO_IMAGE_COLOR = QColor(150, 150, 156)
 SKIPPED_TEXT = "跳过"
 SKIPPED_TIP = ("这一步在步骤表里标了 ignore：不用做，也不算进 [已确认/总数] / "
                "marked ignore in the step table: nothing to do here, and not counted")
+#: The mark of a frame that carries a note (「这一帧的说明」, task U35), right
+#: after the thumbnail; the row's tooltip starts with the note's first line.
+NOTE_GLYPH = "✎"
+NOTE_TIP = "✎ 这一帧有说明：{line}"
 
 
-def row_text(step: int, status: str, skipped: bool = False, shot: int = 0) -> str:
+def row_text(step: int, status: str, skipped: bool = False, shot: int = 0,
+             noted: bool = False) -> str:
     """A row's label: the step, then "无图像" or "跳过" when it is not work.
 
     ``shot``: on a components-gallery view (task U10) the row's position among
     the shots, whose frames are photos of the laid-out parts rather than steps
-    -- ``第 2 张``; ``0`` on the sequence.
+    -- ``第 2 张``; ``0`` on the sequence.  ``noted``: the frame carries a
+    note (task U35) -- :data:`NOTE_GLYPH` first, next to the thumbnail.
     """
     name = f"第 {int(shot)} 张" if shot else f"Step {step}"
+    if noted:
+        name = f"{NOTE_GLYPH} {name}"
     if status == api.STATUS_MISSING:
         return f"{name} · {NO_IMAGE_TEXT}"
     if skipped:
@@ -308,6 +319,9 @@ class TimelinePanel(QWidget):
         """Attach a session (or ``None``) and rebuild the list."""
         if self._session is not None:
             self._session.sigFrameChanged.disconnect(self._on_frame_changed)
+            changed = getattr(self._session, "sigNoteChanged", None)
+            if changed is not None:
+                changed.disconnect(self._on_note_changed)
         self._session = session
         self._thumbs.clear()
         self._asked.clear()
@@ -315,6 +329,10 @@ class TimelinePanel(QWidget):
         self._context = None
         if session is not None:
             session.sigFrameChanged.connect(self._on_frame_changed)
+            # 这一帧的说明 (task U35): a note written or taken back re-marks the rows
+            changed = getattr(session, "sigNoteChanged", None)
+            if changed is not None:
+                changed.connect(self._on_note_changed)
         self.refresh()
 
     def list_widget(self) -> QListWidget:
@@ -329,6 +347,7 @@ class TimelinePanel(QWidget):
         try:
             self._list.clear()
             skipped = self._skipped_steps()
+            notes = self._notes()
             # a gallery shot is named by its position (第 k 张), task U10: a sheet
             # row's photo is shot 1013 in the database and the 1st on screen
             shots = is_component_view((self._context or (0, ""))[1])
@@ -338,7 +357,8 @@ class TimelinePanel(QWidget):
                 item = QListWidgetItem(f"Step {step}")
                 item.setData(STEP_ROLE, step)
                 item.setData(SHOT_ROLE, ordinal.get(step, 0))
-                self._set_status(item, step, self._status(step), step in skipped)
+                self._set_status(item, step, self._status(step), step in skipped,
+                                 notes.get(step))
                 item.setData(BREAK_ROLE, step in self._breaks)
                 item.setSizeHint(
                     QSize(self.THUMB_SIZE * 2, self.THUMB_SIZE + 2 * self.BAR_WIDTH)
@@ -593,11 +613,35 @@ class TimelinePanel(QWidget):
 
     def _refresh_statuses(self) -> None:
         skipped = self._skipped_steps()
+        notes = self._notes()
         for row in range(self._list.count()):
             item = self._list.item(row)
             step = int(item.data(STEP_ROLE))
-            self._set_status(item, step, self._status(step), step in skipped)
+            self._set_status(item, step, self._status(step), step in skipped, notes.get(step))
         self._list.viewport().update()
+
+    def _notes(self) -> dict[int, str]:
+        """``{step: first line}`` of the frames of this view that carry a note (U35)."""
+        if not session_is_open(self._session):
+            return {}
+        noted = getattr(self._session, "noted_steps", None)
+        finder = getattr(self._session, "frame_note", None)
+        if not callable(noted) or not callable(finder):
+            return {}
+        out: dict[int, str] = {}
+        for step in sorted(noted()):
+            note = finder(step)
+            if note:
+                out[int(step)] = first_line(note.get("text") or "", limit=80)
+        return out
+
+    def noted_steps(self) -> list[int]:
+        """The steps whose rows carry :data:`NOTE_GLYPH`, ascending."""
+        return sorted(int(self._list.item(r).data(STEP_ROLE)) for r in range(self._list.count())
+                      if self._list.item(r).data(NOTE_ROLE) is not None)
+
+    def _on_note_changed(self, _key: object) -> None:
+        self._refresh_statuses()
 
     def _skipped_steps(self) -> set[int]:
         """The steps the view's walk leaves out (U2d).
@@ -616,20 +660,26 @@ class TimelinePanel(QWidget):
 
     @staticmethod
     def _set_status(item: QListWidgetItem, step: int, status: str,
-                    skipped: bool = False) -> None:
+                    skipped: bool = False, note: Optional[str] = None) -> None:
         """The bar's colour, and for a step that is not work, the words and the grey.
 
         The hatched bar alone read as one more shade of "not done yet" (task
         U2c); the row now says 无图像 and is greyed like the placeholder.  A
         step typed ``ignore`` that has an image says 跳过 the same way (U2d).
+        ``note`` is the first line of the frame's note (task U35): the row
+        starts with :data:`NOTE_GLYPH` and the tooltip with the line.
         """
         item.setData(STATUS_ROLE, status)
-        item.setText(row_text(step, status, skipped, int(item.data(SHOT_ROLE) or 0)))
+        item.setData(NOTE_ROLE, note)
+        item.setText(row_text(step, status, skipped, int(item.data(SHOT_ROLE) or 0),
+                              noted=note is not None))
         missing = status == api.STATUS_MISSING
         tip = NO_IMAGE_TIP if missing else SKIPPED_TIP if skipped else None
         # ``None`` clears the role: an empty QBrush would paint no text at all
         item.setData(Qt.ItemDataRole.ForegroundRole,
                      QBrush(NO_IMAGE_COLOR) if tip else None)
+        if note is not None:
+            tip = NOTE_TIP.format(line=note) + (f"\n{tip}" if tip else "")
         item.setData(Qt.ItemDataRole.ToolTipRole, tip)
 
     def _visible_rows(self) -> list[int]:

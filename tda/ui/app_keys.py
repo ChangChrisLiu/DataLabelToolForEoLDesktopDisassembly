@@ -82,8 +82,11 @@ class KeysMixin:
             # ``action_for`` first: ``_warn_swallowed_once`` *consumes* the
             # once-per-episode marker, so asking it about an unbound key spent
             # the budget and the ``B`` that followed said nothing (round 3).
+            # ... except in a box made for writing (「这一帧的说明」, U35): a ``Q``
+            # typed there is the letter the annotator meant, not a missed key
             if (event.type() == QEvent.Type.KeyPress
                     and not event.isAutoRepeat()
+                    and not A.is_typing_box(focus)
                     and A.action_for(event.key(), event.modifiers(),
                                      self.mode) is not None
                     and self._warn_swallowed_once(focus)):

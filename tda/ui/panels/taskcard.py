@@ -67,6 +67,7 @@ from tda.ui.gallery import (
     is_component_view,
 )
 from tda.ui.panels import session_is_open
+from tda.ui.panels.frame_note import NoteLine
 from tda.ui.session_cable import LABEL_ZH as CABLE_ZH
 
 #: A row's tail when the part is 被线挡住 on this frame (task U15).
@@ -793,6 +794,11 @@ class TaskCardPanel(QWidget):
         self.header.setToolTip(ICON_LEGEND)
         self.header.setStyleSheet("QLabel { font-weight: bold; padding: 3px 4px; "
                                   "background: #eef2f8; border-radius: 3px; }")
+        #: 「说明：…」 -- the frame's note, read-only (task U35): written in
+        #: Review's 「这一帧的说明」, shown here when the frame has one.
+        self.note_line = NoteLine()
+        self.note_line.setVisible(False)
+        self._note_enabled = True
 
         self._list = QListWidget()
         self._list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
@@ -833,6 +839,7 @@ class TaskCardPanel(QWidget):
         title.setToolTip(ICON_LEGEND)
         layout.addWidget(title)
         layout.addWidget(self.header)
+        layout.addWidget(self.note_line)
         layout.addWidget(self._list, 1)
         layout.addWidget(self._problems_label)
         layout.addWidget(self._problems_list)
@@ -847,10 +854,16 @@ class TaskCardPanel(QWidget):
         if self._session is not None:
             self._session.sigFrameChanged.disconnect(self._on_frame_changed)
             self._session.sigProblems.disconnect(self._on_problems)
+            changed = getattr(self._session, "sigNoteChanged", None)
+            if changed is not None:
+                changed.disconnect(self._on_note_changed)
         self._session = session
         if session is not None:
             session.sigFrameChanged.connect(self._on_frame_changed)
             session.sigProblems.connect(self._on_problems)
+            changed = getattr(session, "sigNoteChanged", None)
+            if changed is not None:
+                changed.connect(self._on_note_changed)
         self._hide_problems()
         self.refresh()
         # The session announced the frame it opened on before this panel was
@@ -891,6 +904,7 @@ class TaskCardPanel(QWidget):
                              if opened else {})
         self._blockers = self.problem_count()
         self._paint_header()
+        self._show_note()
         first_open = -1
         for i, row in enumerate(rows):
             kind = str(row.get("kind", api.KIND_CONFIRM))
@@ -936,6 +950,31 @@ class TaskCardPanel(QWidget):
     def header_text(self) -> str:
         """The sentence above the list."""
         return self.header.text()
+
+    # -- 这一帧的说明 (task U35) ------------------------------------------------
+    def set_note_line_enabled(self, enabled: bool) -> None:
+        """Show the frame's note under the header (Annotate) or not (Review has the box)."""
+        self._note_enabled = bool(enabled)
+        self._show_note()
+
+    def note_text(self) -> str:
+        """The 「说明：…」 line as built (before it is cut to the width); ``""`` when hidden."""
+        return self.note_line.full_text() if not self.note_line.isHidden() else ""
+
+    def _show_note(self) -> None:
+        finder = getattr(self._session, "frame_note", None)
+        note = None
+        if self._note_enabled and session_is_open(self._session) and callable(finder):
+            try:
+                note = finder()
+            except Exception:  # noqa: BLE001 - a header line is not worth a failure
+                note = None
+        self.note_line.set_note(note)
+        self.note_line.setVisible(note is not None)
+
+    def _on_note_changed(self, key: object) -> None:
+        if session_is_open(self._session) and key == self._session.current():
+            self._show_note()
 
     def _paint_header(self) -> None:
         text = (card_header(**self._header_args, blockers=self._blockers)
