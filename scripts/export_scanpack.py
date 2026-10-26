@@ -5,6 +5,7 @@
     python scripts/export_scanpack.py --db <copy of tda.sqlite> \
         [--out D:/DataSet/exports/scanpack_2026-10-26] [--desktops 2,3,4,13,19,23,24,28,30,31] \
         [--exclude "D2:1,D4:1=why"] [--note "text"] \
+        [--not-clean "D28:connector.06,connector.07@1-10=why"] \
         [--paths configs/paths.yaml] [--cache-dir <dir>] [--work <dir>] [--force]
 
 The collaborators hold 3D reconstructions from the same structured-light
@@ -56,8 +57,11 @@ visible pixel the label map's, and no pixel shared with another confirmed mask
 
 ``--exclude D2:1,D4:1=<reason>`` leaves listed frames out of the package (no
 picture, label map or annotation; out of every count) and lists them under the
-README's Known issues with the reason; ``--note`` adds a line there. Both are
-recorded in ``manifest.json``.
+README's Known issues with the reason; ``--note`` adds a line there.
+``--not-clean D28:connector.06,connector.07@1-10=<reason>`` marks annotations a
+person ruled not clean whatever the six rules say (``clean: false`` and the
+reason in ``clean_note``; out of ``clean_parts.csv``). All three are recorded
+in ``manifest.json``.
 
 Read-only on the database it is given (a ``mode=ro`` backup-API copy is made
 into ``--work`` and only that copy is opened -- the export's re-check pass
@@ -116,7 +120,7 @@ from tda.core.truth_refusals import frozen_disagreements  # noqa: E402
 from tda.ui.locator_pair import leaving_steps  # noqa: E402
 
 __all__ = ["CLASS_EN", "DEFAULT_DESKTOPS", "MODEL_NAMES", "PACK_VERSION", "PackError",
-           "build_pack", "main", "model_names", "parse_exclusions"]
+           "build_pack", "main", "model_names", "parse_exclusions", "parse_not_clean"]
 
 #: The ten desktops of the first package: five Dell, five HP.
 DEFAULT_DESKTOPS = (2, 3, 4, 13, 19, 23, 24, 28, 30, 31)
@@ -130,7 +134,8 @@ OCCLUDED_FULL = "occluded_full"
 GROUP_RANK = {"in_chassis": 0, "on_bench": 1, "context": 2}
 #: What the package adds to every COCO annotation, at its top level.
 ANN_FIELDS = ("instance_id", "visibility", "occlusion_ratio", "occluders",
-              "occluded_unlabelled_px", "shared_px", "label_px", "amodal_is_shape", "clean")
+              "occluded_unlabelled_px", "shared_px", "label_px", "amodal_is_shape", "clean",
+              "clean_note")
 #: A crowd row whose amodal shape the label map leaves mostly empty: nothing
 #: labelled covers it, yet nothing of it is seen (a QA note, not a rule).
 UNLABELLED_SHARE = 0.5
@@ -268,6 +273,55 @@ def parse_exclusions(specs: Sequence[str]) -> dict[tuple[int, int], str]:
                 raise PackError(f"--exclude: {item!r} is not D<desktop>:<step>")
             out[(int(found.group(1)), int(found.group(2)))] = reason
     return out
+
+
+def _parse_steps(text: str) -> list[int]:
+    steps: set[int] = set()
+    for part in text.split(","):
+        part = part.strip()
+        found = re.fullmatch(r"[Ss]?(\d+)(?:\s*-\s*[Ss]?(\d+))?", part)
+        if found is None:
+            raise PackError(f"--not-clean: {part!r} is not a step or a step range")
+        lo = int(found.group(1))
+        hi = int(found.group(2) or lo)
+        if hi < lo:
+            raise PackError(f"--not-clean: the range {part!r} runs backwards")
+        steps.update(range(lo, hi + 1))
+    return sorted(steps)
+
+
+def parse_not_clean(specs: Sequence[str]) -> list[dict]:
+    """``["D28:connector.06,connector.07@1-10=why", ...]`` -> override rules.
+
+    Each rule names a desktop, parts and steps whose annotations are not clean
+    whatever the six rules say -- what the masks cannot show (a part drawn
+    above a closed cage it sits under) -- and why. The build sets ``clean``
+    false and ``clean_note`` to the reason on every annotation it matches.
+    """
+    out: list[dict] = []
+    for spec in specs or ():
+        target, _, reason = str(spec).partition("=")
+        reason = reason.strip()
+        found = re.fullmatch(r"\s*[Dd]?(\d+)\s*:\s*([^@]+)@(.+)", target)
+        if found is None or not reason:
+            raise PackError(f"--not-clean: {spec!r} is not "
+                            f"D<desktop>:<part>[,<part>...]@<steps>=<reason>")
+        parts = sorted(p.strip() for p in found.group(2).split(",") if p.strip())
+        out.append({"desktop": int(found.group(1)), "parts": parts,
+                    "steps": _parse_steps(found.group(3)), "reason": reason})
+    return out
+
+
+def _steps_text(steps: Sequence[int]) -> str:
+    """``[1, 2, 3, 7]`` -> ``"S01-S03, S07"``."""
+    runs: list[list[int]] = []
+    for step in sorted(steps):
+        if runs and step == runs[-1][1] + 1:
+            runs[-1][1] = step
+        else:
+            runs.append([step, step])
+    return ", ".join(frame_name(a) if a == b else f"{frame_name(a)}-{frame_name(b)}"
+                     for a, b in runs)
 
 
 def _decode(rle: Optional[dict], hw: tuple[int, int]) -> np.ndarray:
@@ -534,6 +588,7 @@ def _leaving(desktop_actions, leaving, frame_steps: list[int], seg_of) -> dict[s
 def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out: Path,
                   work: Path, cache_dir: Optional[str], resolve: Callable, tail: Callable,
                   qa: dict, excluded: dict[int, str],
+                  not_clean: Sequence[dict] = (),
                   expected_hw: tuple[int, int] = EXPECTED_HW,
                   expected_tier: str = EXPECTED_TIER) -> dict:
     """Write ``out/D<nn>/`` for one desktop; returns its counts.
@@ -733,6 +788,15 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
         patched = {k for k, fo in db.frame_overrides(key).items() if fo.visible_rle}
         label, visible = frame_label_map(anns, hw, key_to_id, compiled, patched)
         frame_stats = annotate_frame(anns, label, visible, hw, key_to_id, roi, compiled)
+        # a person's "not clean": what the six rules cannot see (--not-clean)
+        for ann in anns:
+            ann["clean_note"] = None
+            for rule in not_clean:
+                if step in rule["steps"] and ann["attributes"]["instance_key"] in rule["parts"]:
+                    rule["annotations"] += 1
+                    rule["were_clean"] += int(ann["clean"])
+                    ann["clean"] = False
+                    ann["clean_note"] = rule["reason"]
         stats.update(frame_stats)
         stats["overlap_frames"] += int(frame_stats["overlap_px"] > 0)
         if frame_stats["overlap_px"]:
@@ -799,6 +863,12 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
                         pairs.append({"a": a, "b": b, "px": n})
             qa["overlapping_confirmed_masks"].append(
                 {"desktop": desktop, "step": step, "pairs": pairs})
+
+    unmatched = [r for r in not_clean if not r["annotations"]]
+    if unmatched:
+        raise PackError(f"--not-clean matches no annotation of D{desktop:02d}: "
+                        + "; ".join(f"{','.join(r['parts'])}@{_steps_text(r['steps'])}"
+                                    for r in unmatched))
 
     # -- the timeline: states per step, the leaving step, flicker
     steps_all = sorted(set(steps_tab) | set(frame_steps))
@@ -1023,8 +1093,13 @@ def build_pack(db_path: str, out_dir: str, desktops: Sequence[int] = DEFAULT_DES
                exclude: Optional[dict[tuple[int, int], str]] = None,
                notes: Sequence[str] = (),
                expected_hw: tuple[int, int] = EXPECTED_HW,
-               expected_tier: str = EXPECTED_TIER) -> dict:
+               expected_tier: str = EXPECTED_TIER,
+               not_clean: Sequence[dict] = ()) -> dict:
     """Write the package; returns the summary (counts per desktop, the QA lists).
+
+    ``not_clean`` are :func:`parse_not_clean` rules: annotations a person
+    ruled not clean whatever the six rules say (``clean: false``,
+    ``clean_note``); a rule that matches nothing stops the build.
 
     ``resolve`` turns a recorded raw path into the file to read today and
     ``tail`` into its part below the dataset root (the CLI passes
@@ -1046,6 +1121,10 @@ def build_pack(db_path: str, out_dir: str, desktops: Sequence[int] = DEFAULT_DES
     stray = sorted(k for k in exclude if k[0] not in wanted)
     if stray:
         raise PackError(f"--exclude names desktops that are not packed: {stray}")
+    rules = [dict(r, annotations=0, were_clean=0) for r in not_clean]
+    stray = sorted({r["desktop"] for r in rules if r["desktop"] not in wanted})
+    if stray:
+        raise PackError(f"--not-clean names desktops that are not packed: {stray}")
     _prepare_out(out, force)
     db = Db(str(_work_copy(db_path, work)))
     qa: dict[str, list] = {k: [] for k in QA_KEYS}
@@ -1056,10 +1135,10 @@ def build_pack(db_path: str, out_dir: str, desktops: Sequence[int] = DEFAULT_DES
             if db.get_desktop(desktop) is None:
                 raise PackError(f"desktop {desktop} is not in {db_path}")
             mine = {s: r for (d, s), r in exclude.items() if d == desktop}
-            per_desktop.append(build_desktop(db, tax, truth, desktop, out, work, cache_dir,
-                                             resolve, tail, qa, mine,
-                                             expected_hw=tuple(expected_hw),
-                                             expected_tier=expected_tier))
+            per_desktop.append(build_desktop(
+                db, tax, truth, desktop, out, work, cache_dir, resolve, tail, qa, mine,
+                not_clean=[r for r in rules if r["desktop"] == desktop],
+                expected_hw=tuple(expected_hw), expected_tier=expected_tier))
     finally:
         db.close()
     clean_rows = [r for d in per_desktop for r in d.pop("_clean_rows")]
@@ -1115,9 +1194,14 @@ def build_pack(db_path: str, out_dir: str, desktops: Sequence[int] = DEFAULT_DES
             "amodal_box_outside_roi": int(stats["roi_outside"]),
             "clean_but_for_roi": int(stats["only_roi"]),
             "clean_but_for_shared_px": int(stats["only_shared"]),
+            "clean_but_ruled_not_clean": sum(r["were_clean"] for r in rules),
         },
         "frame_record_names_other_image": sorted(
             other_image, key=lambda r: (r["desktop"], r["step"])),
+        "not_clean": [{"desktop": r["desktop"], "parts": r["parts"],
+                       "steps": _steps_text(r["steps"]), "reason": r["reason"],
+                       "annotations": r["annotations"], "were_clean": r["were_clean"]}
+                      for r in rules],
         "exclusions": [{"desktop": d, "step": s, "reason": r}
                        for (d, s), r in sorted(exclude.items())],
         "notes": [str(n) for n in notes],
@@ -1384,6 +1468,18 @@ def readme_text(summary: dict) -> str:
                       "annotations'\n`segmentation` give the same pixels; the label map is the "
                       "simpler to read.")
     # the example runs as shipped: on a desktop the package has
+    ruled = [r for r in summary.get("not_clean", []) if r["annotations"]]
+    ruled_n = sum(r["were_clean"] for r in ruled)
+    ruled_list = "; ".join(f"{desktop_dir(r['desktop'])} {r['steps']} "
+                           f"{', '.join(f'`{p}`' for p in r['parts'])} "
+                           f"({_n(r['annotations'], 'annotation')})" for r in ruled)
+    ruled_en = (f"\n\nBesides the six rules, a person ruled some annotations not clean: "
+                f"{ruled_list}. They have `clean: false` and the reason in `clean_note` "
+                f"(null everywhere else), and are not in `clean_parts.csv`; {ruled_n} of them "
+                f"pass all six rules (*Known issues*)." if ruled else "")
+    ruled_zh = (f"\n另有人工判定为非 clean 的标注：{ruled_list}；它们 `clean: false`，原因写在 "
+                f"`clean_note`，不在 `clean_parts.csv` 里（其中 {ruled_n} 条满足六条，见 Known issues）。"
+                if ruled else "")
     example = README_EXAMPLE.replace('desk = "D02"',
                                      f'desk = "{desktop_dir(summary["desktops"][0])}"')
     return f"""# Scanner-view segmentation package (scanpack v{summary['pack_version']})
@@ -1405,7 +1501,7 @@ def readme_text(summary: dict) -> str:
 建议先用 `clean_parts.csv`（共 {t['clean']} 条）。`clean` 要同时满足六条：
 (1) 可见掩码与完整形状逐像素相同；(2) 标签为 `visible`；(3) amodal 框在 ROI 内；
 (4) amodal 就是标注的形状本身（没有被可见掩码撑大）；(5) label map 把它的每个可见像素都给了它；
-(6) 它的可见像素没有一个同时被别的确认掩码占用（`shared_px == 0`）。
+(6) 它的可见像素没有一个同时被别的确认掩码占用（`shared_px == 0`）。{ruled_zh}
 这样的零件在那一帧上没有被任何东西挡住，掩码下的点就是扫描仪看到的它的全部表面。
 {few_zh}
 被遮挡的零件有两条路：(1) 只取可见掩码（label map）下的点；
@@ -1504,7 +1600,7 @@ whole outline and the points under it are all of the part the scanner saw.
 3. the amodal box lies inside the frame's ROI;
 4. the amodal shape is the annotated shape itself (`amodal_is_shape`);
 5. the label map gives the part every pixel of its visible mask (`label_px == area`);
-6. no other confirmed mask claims any of its pixels (`shared_px == 0`).
+6. no other confirmed mask claims any of its pixels (`shared_px == 0`).{ruled_en}
 
 ### Occluded parts: two routes
 
@@ -1615,7 +1711,8 @@ is kept as it was confirmed. No annotation with `shared_px > 0` is clean.
   `{summary['tier']}` on every annotation here) and `verified`. The package adds at the top of each annotation:
   `instance_id`, `visibility`, `occlusion_ratio`, `occluders`,
   `occluded_unlabelled_px`, `shared_px`, `label_px`, `amodal_is_shape`,
-  `clean`. Each image has `file_name` (`images/S<nn>.png`) and `label_file`
+  `clean`, `clean_note` (why a person ruled the annotation not clean, else
+  null). Each image has `file_name` (`images/S<nn>.png`) and `label_file`
   (`labels/S<nn>.png`); `extra.step` is its step.
 * `labels/S<nn>.png` -- single-channel 16-bit PNG, value = `instance_id`
   (0 = background). Read it with Pillow (`np.array(Image.open(p))`) or OpenCV
@@ -1691,6 +1788,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="frames to leave out, 'D2:1,D4:1=reason' (repeatable)")
     parser.add_argument("--note", action="append", default=[],
                         help="a line for the README's Known issues (repeatable)")
+    parser.add_argument("--not-clean", action="append", default=[],
+                        help="annotations ruled not clean, "
+                             "'D28:connector.06,connector.07@1-10=reason' (repeatable)")
     parser.add_argument("--paths", default=str(REPO / "configs" / "paths.yaml"),
                         help="paths.yaml: the raw drive and the frame cache")
     parser.add_argument("--cache-dir", default=None, help="overrides paths.yaml's cache_dir")
@@ -1712,7 +1812,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             args.db, args.out, _parse_desktops(args.desktops), cache_dir=cache_dir,
             work_dir=args.work, resolve=rawroot.resolve_raw,
             tail=(raw.tail if raw is not None else None), force=args.force,
-            exclude=parse_exclusions(args.exclude), notes=args.note)
+            exclude=parse_exclusions(args.exclude), notes=args.note,
+            not_clean=parse_not_clean(args.not_clean))
     except PackError as exc:
         print(f"[scanpack] refused: {exc}")
         return 1

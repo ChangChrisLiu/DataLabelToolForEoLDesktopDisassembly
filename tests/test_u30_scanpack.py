@@ -434,6 +434,60 @@ def test_an_exclusion_must_name_a_packed_frame(built, tmp_path):
                   exclude={(built["desktop"], 77): "x"})
 
 
+RULED = "under the closed cage on these frames"
+
+
+def test_not_clean_rules_parse():
+    assert S.parse_not_clean(["D28:connector.06, connector.07@1-10=" + RULED,
+                              "d4:screw.motherboard.01@S03,5-6=why"]) == [
+        {"desktop": 28, "parts": ["connector.06", "connector.07"],
+         "steps": list(range(1, 11)), "reason": RULED},
+        {"desktop": 4, "parts": ["screw.motherboard.01"], "steps": [3, 5, 6],
+         "reason": "why"}]
+    for bad in ("D28:connector.06@1-10", "D28@1-10=x", "D28:connector.06@10-1=x",
+                "D28:connector.06@a=x"):
+        with pytest.raises(S.PackError):
+            S.parse_not_clean([bad])
+    assert S._steps_text([1, 2, 3, 7, 9, 10]) == "S01-S03, S07, S09-S10"
+
+
+def test_a_part_ruled_not_clean_leaves_the_clean_set(built, tmp_path):
+    """Final build, decision 1: D28's plugs under the closed cage on S01-S10."""
+    assert all(a["clean_note"] is None for a in built["coco"]["annotations"])
+    desktop = built["desktop"]
+    rule = S.parse_not_clean([f"D{desktop}:{NEIGHBOR}@1-2={RULED}"])
+    summary = make_pack(tmp_path, built["db"], desktop, not_clean=rule)
+    coco = json.loads((tmp_path / "pack" / f"D{desktop:02d}" / "annotations.json")
+                      .read_text(encoding="utf-8"))
+    step_of = {i["id"]: i["extra"]["step"] for i in coco["images"]}
+    mine = {step_of[a["image_id"]]: a for a in coco["annotations"]
+            if a["attributes"]["instance_key"] == NEIGHBOR}
+    for step in (1, 2):
+        assert mine[step]["clean"] is False and mine[step]["clean_note"] == RULED
+    assert mine[4]["clean"] is True and mine[4]["clean_note"] is None
+    assert summary["totals"]["clean"] == built["summary"]["totals"]["clean"] - 2
+    assert summary["checks"]["clean_but_ruled_not_clean"] == 2
+    assert summary["not_clean"] == [{"desktop": desktop, "parts": [NEIGHBOR],
+                                     "steps": "S01-S02", "reason": RULED,
+                                     "annotations": 2, "were_clean": 2}]
+    with open(tmp_path / "pack" / "clean_parts.csv", encoding="utf-8", newline="") as handle:
+        assert not [r for r in csv.DictReader(handle)
+                    if r["instance_key"] == NEIGHBOR and int(r["step"]) in (1, 2)]
+    readme = (tmp_path / "pack" / "README.md").read_text(encoding="utf-8")
+    assert f"D{desktop:02d} S01-S02 `{NEIGHBOR}` (2 annotations)" in readme
+    assert "`clean_note`" in readme.split("## What this is")[0]
+
+
+def test_a_not_clean_rule_must_match(built, tmp_path):
+    desktop = built["desktop"]
+    with pytest.raises(S.PackError, match="matches no annotation"):
+        make_pack(tmp_path, built["db"], desktop,
+                  not_clean=S.parse_not_clean([f"D{desktop}:no.such.part@1-2=x"]))
+    with pytest.raises(S.PackError, match="not packed"):
+        make_pack(tmp_path, built["db"], desktop, name="p2",
+                  not_clean=S.parse_not_clean(["D99:connector.06@1=x"]))
+
+
 def test_exclusions_parse():
     assert S.parse_exclusions(["D2:1,D4:1=why not", "d13:s5"]) == {
         (2, 1): "why not", (4, 1): "why not", (13, 5): S.DEFAULT_EXCLUDE_REASON}
