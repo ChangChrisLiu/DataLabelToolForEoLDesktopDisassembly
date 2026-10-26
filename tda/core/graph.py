@@ -264,12 +264,18 @@ def validate_sequence(
     hand-written events -- the state a part added in S1 starts in. Without it
     an added clip the picture shows ``open``, linked to its module by ``of``,
     would be replayed ``closed`` and the module's removal reported as a breach.
+    An ``initial`` of ``removed`` is a part this machine does not have (task
+    U34): its own actions are not replayed at all -- D34's failed "remove the
+    optical drive" is no constraint's business.
     """
     active = active_edges(edges)
     ordered = sorted(actions, key=lambda a: (a.step, a.idx))
+    gone = {key for key, state in (initial or {}).items() if state == REMOVED}
     problems: list[str] = []
 
     for i, action in enumerate(ordered):
+        if action.target in gone:
+            continue
         events = events_from_actions(instances, ordered[:i], tax, initial=initial)
         state = state_at(instances, events, _ALL_STEPS, tax, initial=initial)
         gating = applicable_preconditions(active, action)

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from tda.core.absent import CHOICE as ABSENT_CHOICE
 from tda.core.cut_follow import CutMove, cut_views, mask_states, plan_cut_moves
 from tda.core.db import Db
 from tda.core.model import FrameKey, Placement, is_context, is_provisional
@@ -309,14 +310,28 @@ class StateMixin:
                 row["state_choices"] = []   # no state on a gallery shot (U10)
             return rows
         needs = needs_geom(instances, state, self.tax)
+        # 「一开始就不在（这台没有它）」 (task U34): on the part's first frame, for
+        # a part nobody has drawn anywhere -- one more entry of the picker
+        offers = getattr(self, "absent_offers", None)
+        absent = offers(state, instances, needs) if callable(offers) else set()
         for row in rows:
-            row["state_choices"] = gate(instances, state, self.tax,
-                                        str(row.get("key", "")), step, needs)[0]
+            key = str(row.get("key", ""))
+            row["state_choices"] = gate(instances, state, self.tax, key, step, needs)[0]
+            if key in absent:
+                row["state_choices"] = [*row["state_choices"], ABSENT_CHOICE]
         return rows
 
     def next_state(self, instance: str) -> Optional[str]:
-        """The state ``T`` moves ``instance`` to: the one after its current one."""
+        """The state ``T`` moves ``instance`` to: the one after its current one.
+
+        On the part's first frame, for a part nobody has drawn anywhere, the
+        cycle runs on to 「一开始就不在」 (:data:`~tda.core.absent.CHOICE`, task
+        U34) -- the window asks before it writes that.
+        """
         choices, _why = self.state_gate(instance)
+        offered = getattr(self, "absent_offered", None)
+        if callable(offered) and offered(instance):
+            choices = [*choices, ABSENT_CHOICE]
         if not choices:
             return None
         held = state_of(self.db, self.tax, self.desktop, self._step).get(instance)
@@ -396,7 +411,10 @@ class StateMixin:
         if default and key.step <= default[0].step:
             # the cage latch's card row (U20 review, N1): open, from here
             return str(default[0].new), int(key.step)
-        return self.next_state(instance), int(step)
+        nxt = self.next_state(instance)
+        if nxt == ABSENT_CHOICE:      # not a state: Ctrl+T sets states only (U34)
+            nxt = next(iter(self.state_gate(instance)[0]), None)
+        return nxt, int(step)
 
     def _state_gate_here(self, instance: str, state: str) -> FrameKey:
         """The frame both state gestures stand on, or the refusal of ``T`` there."""

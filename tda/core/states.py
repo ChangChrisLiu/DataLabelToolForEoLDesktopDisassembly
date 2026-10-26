@@ -33,6 +33,19 @@ Virtual nodes are targets starting with ``cable:`` (or, for actions, anything
 absent from ``instances``). They have their own small state machine and are
 carried in a :data:`FrameState` once an event mentions them, but they never
 carry geometry, because :func:`needs_geom` only answers for real instances.
+
+**A part this machine does not have** (「这台没有这个零件」, task U34): the
+sheet can log a part the machine never had -- D34 has no optical drive, yet
+step 37 "Try to remove the optical drive" made ``optical_drive.01``, which then
+stood installed from frame 1. The annotator says so with a hand-written
+``removed`` at :data:`INITIAL_STEP` (:mod:`tda.core.absent`), and from then on
+the part is :func:`absent <absent_keys>`: it starts ``removed`` and
+``elsewhere`` (:func:`initial_state`), so it never needs geometry, never joins
+the components gallery and takes nobody out with it; the sheet's own actions
+on it derive nothing (:func:`events_from_actions`), and any later event about
+it -- a stale derived one, a hand-written one -- is a no-op in the fold
+(:func:`state_at`) and in the validation (:func:`event_problems`), never a
+resurrection and never a warning.
 """
 from __future__ import annotations
 
@@ -54,6 +67,7 @@ __all__ = [
     "AFTER_LAST_STEP",
     "ANY_VIEW",
     "CAGE_LATCH_EVIDENCE",
+    "absent_keys",
     "GALLERY_EXPORT_STATE",
     "GALLERY_PLACEMENT",
     "INITIAL_STEP",
@@ -89,6 +103,10 @@ CABLE_CLASS = "cable"
 CONNECTOR_CLASS = "connector"
 IN_CHASSIS = Placement.IN_CHASSIS.value
 ON_BENCH = Placement.ON_BENCH.value
+#: Where a part this machine does not have is (task U34): out of every view --
+#: not in the chassis, and not on the bench either, where a view with a bench
+#: ROI would ask for its box.
+ABSENT_PLACEMENT = Placement.ELSEWHERE.value
 _PLACEMENTS = frozenset(p.value for p in Placement)
 _SUCCESS = "success"
 #: ``StateEvent.evidence_view`` of the one derived event no action stands
@@ -142,6 +160,9 @@ class InstState:
     #: A part of the components gallery (task U10, :func:`gallery_state`): it
     #: is drawn in a layout photo whatever its state and placement say.
     gallery: bool = field(default=False, compare=False)
+    #: A part this machine does not have (task U34, :func:`absent_keys`): it
+    #: is ``removed`` / ``elsewhere`` from before step 1 and nothing moves it.
+    absent: bool = field(default=False, compare=False)
 
 
 #: instance key -> its state at one logical step
@@ -174,14 +195,21 @@ def initial_state(
     A 框外零件 (:func:`tda.core.model.is_context`, task U18) has no state at
     all: it is not part of the machine, so no snapshot carries it -- and with
     that no geometry policy, task card, cascade or validation ever sees it.
+
+    An override of ``removed`` is a part this machine does not have (task
+    U34): it starts :data:`ABSENT_PLACEMENT` and marked ``absent``.
     """
     over = initial or {}
-    return {
+    out: FrameState = {
         key: InstState(state=over.get(key) or tax.default_state(rec.cls),
                        placement=IN_CHASSIS)
         for key, rec in instances.items()
         if not is_context(rec)
     }
+    for key, state in over.items():
+        if state == REMOVED and key in out:
+            out[key] = InstState(state=REMOVED, placement=ABSENT_PLACEMENT, absent=True)
+    return out
 
 
 def initial_overrides(events: Iterable[StateEvent]) -> dict[str, str]:
@@ -201,6 +229,25 @@ def initial_overrides(events: Iterable[StateEvent]) -> dict[str, str]:
                 and event.attr == ATTR_STATE and event.new):
             out[event.target] = str(event.new)
     return out
+
+
+def absent_keys(events: Iterable[StateEvent]) -> set[str]:
+    """The parts this machine does not have: initial state ``removed`` (task U34).
+
+    A hand-written ``removed`` before step 1 can mean nothing else -- an added
+    part never starts there (:func:`tda.core.extra.state_choices`) -- so it is
+    the whole record of 「这台没有这个零件」 (:mod:`tda.core.absent`). The
+    answer is :func:`initial_overrides`'s (the last initial state wins), read
+    in one pass without sorting: :func:`state_at` asks it on every call.
+    """
+    last: dict[str, tuple[int, str]] = {}
+    for event in events:
+        if (not event.auto and event.step <= INITIAL_STEP
+                and event.attr == ATTR_STATE and event.new):
+            held = last.get(event.target)
+            if held is None or event.step >= held[0]:
+                last[event.target] = (int(event.step), str(event.new))
+    return {key for key, (_step, state) in last.items() if state == REMOVED}
 
 
 def _attached_children(instances: dict[str, InstanceRec]) -> dict[str, list[str]]:
@@ -301,9 +348,18 @@ def events_from_actions(
     at the step before its cage comes out (:func:`cage_latch_opens`, task U20),
     after the actions of that step, marked :data:`CAGE_LATCH_EVIDENCE`. Nothing
     is emitted when the latch is already open or gone by then.
+
+    A part ``initial`` starts ``removed`` is one this machine does not have
+    (task U34, :func:`absent_keys`): the sheet's actions on it -- a failed
+    remove, a displace, any verb -- derive **nothing**, not even a cage
+    latch's default, and a parent leaving takes nothing out through it (its
+    own attached children stay as the sheet says).
     """
     actions = list(actions)
     frame = initial_state(instances, tax, initial)
+    absent = {key for key, inst in frame.items() if inst.absent}
+    if absent:
+        actions = [a for a in actions if a.target not in absent]
     cable_states: dict[str, str] = {}
     children = _attached_children(instances)
     events: list[StateEvent] = []
@@ -348,8 +404,8 @@ def events_from_actions(
         if frame[target].placement == IN_CHASSIS:
             emit(action, target, ATTR_PLACEMENT, ON_BENCH)
         for child in children.get(target, ()):
-            if child in seen:
-                continue
+            if child in seen or child in absent:
+                continue      # a part the machine does not have is not taken out (U34)
             seen.add(child)
             emit(action, child, ATTR_STATE, REMOVED)
             detach(action, child, seen)
@@ -443,8 +499,8 @@ def _close_attached_cascade(
                 continue
             seen.add(child)
             inst = frame.get(child)
-            if inst is None or not claims(parent, child):
-                continue
+            if inst is None or inst.absent or not claims(parent, child):
+                continue      # (U34: a part the machine does not have is in nothing)
             inst.state = REMOVED
             if inst.placement == IN_CHASSIS:
                 inst.placement = ON_BENCH
@@ -454,8 +510,8 @@ def _close_attached_cascade(
     for key in sorted(children):  # only instances that actually have children
         rec = instances.get(key)
         inst = frame.get(key)
-        if rec is None or inst is None or inst.state != REMOVED:
-            continue
+        if rec is None or inst is None or inst.state != REMOVED or inst.absent:
+            continue      # absent (U34): it never left, so it takes nobody out
         if _cascades_on_removal(rec):
             walk(key, {key})
 
@@ -489,12 +545,33 @@ def state_at(
     events that carry an added part's initial state are not in it, so the
     snapshot has to start from them. A full log that contains them folds them
     either way.
+
+    A part this machine does not have (task U34, :func:`absent_keys` of the
+    log, or an ``initial`` of ``removed``) is ``removed`` / ``elsewhere`` and
+    ``absent`` at every step, and **every** event about it is a no-op: a
+    stale derived one (a cached log from before it was said) or a hand-written
+    one can never bring it back.
     """
     frame = initial_state(instances, tax, initial)
+    ordered = sorted(events, key=lambda e: e.step)  # stable: keeps intra-step order
+    # the initial events sort first: only they can say a part is absent (U34)
+    head = 0
+    while head < len(ordered) and ordered[head].step <= INITIAL_STEP:
+        head += 1
+    gone = absent_keys(ordered[:head])
+    if initial:
+        gone |= {key for key, state in initial.items() if state == REMOVED}
+    if step >= INITIAL_STEP:
+        for key in gone:
+            if key in frame:
+                frame[key] = InstState(state=REMOVED, placement=ABSENT_PLACEMENT,
+                                       absent=True)
     removed_at: dict[str, int] = {}
-    for event in sorted(events, key=lambda e: e.step):  # stable: keeps intra-step order
+    for event in ordered:
         if event.step > step:
             break
+        if event.target in gone:
+            continue        # U34: nothing happens to a part the machine does not have
         inst = frame.get(event.target)
         if inst is None:
             cls = _virtual_class(event.target)
@@ -576,8 +653,9 @@ def needs_geom(
     geom: dict[str, str] = {}
     for key, inst in fs.items():
         rec = instances.get(key)
-        if rec is None or is_provisional(key) or gone_with_parent(fs, key):
-            continue
+        if (rec is None or is_provisional(key) or inst.absent
+                or gone_with_parent(fs, key)):
+            continue      # (inst.absent: a part the machine does not have, U34)
         if inst.gallery:
             # a part laid out for the components gallery (task U10) is a mask
             # wherever it is, and the snapshot only marks the ones to draw
@@ -628,8 +706,8 @@ def is_gallery_part(instances: dict[str, InstanceRec], final: FrameState, key: s
     inst = final.get(key)
     if rec is None or inst is None or is_provisional(key):
         return False
-    if rec.cls in set(excluded) or inst.state != REMOVED:
-        return False
+    if rec.cls in set(excluded) or inst.state != REMOVED or inst.absent:
+        return False      # absent (U34): it was never taken out, it was never there
     return not gone_with_parent(final, key)
 
 
@@ -706,11 +784,15 @@ def event_problems(
     """:func:`validate_events` as :class:`EventProblem` records, same order."""
     problems: list[EventProblem] = []
     current: dict[str, InstState] = initial_state(instances, tax)
+    events = list(events)
+    gone = absent_keys(events)
 
     for event in sorted(events, key=lambda e: e.step):  # stable: keeps intra-step order
         rec = instances.get(event.target)
         if rec is not None and is_context(rec):
             continue        # a 框外零件 (task U18): no state, nothing to validate
+        if event.target in gone:
+            continue        # absent (U34): whatever is said about it is a no-op
         if rec is not None:
             cls = rec.cls
         else:
@@ -780,7 +862,9 @@ def validate_events(
     Events are replayed in ``(step, list)`` order and applied even when flagged,
     so later events are checked against the recorded trajectory. Targets that
     are neither instances nor virtual nodes are ignored, as are attributes other
-    than ``state`` and ``placement``. :func:`event_problems` is the same check
-    as records.
+    than ``state`` and ``placement`` -- and so is every event about a part this
+    machine does not have (task U34, :func:`absent_keys`): ``removed ->
+    removed`` or ``removed -> displaced`` after it is a no-op, not a warning.
+    :func:`event_problems` is the same check as records.
     """
     return [problem.text for problem in event_problems(instances, events, tax)]

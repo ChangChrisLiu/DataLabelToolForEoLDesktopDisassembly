@@ -123,10 +123,15 @@ def staged_edits(data: "StepTableData", db: Db) -> list[str]:
     """What the panel holds that the database does not, in the annotator's words."""
     from tda.ui.steps_model import stored_signature, table_signature
 
+    from tda.core.model import machine_only
+
     what: list[str] = []
     if table_signature(data.steps, data.actions) != stored_signature(db, data.desktop):
         what.append("步骤/动作")
-    stored = db.instances(data.desktop)
+    # the panel's table is the machine's own (the 框外零件 sit in data.context,
+    # task U18): compared with the whole stored table a desktop with one always
+    # read as an unapplied instance edit (found in U34)
+    stored = machine_only(db.instances(data.desktop))
     if data.extras:
         what.append("添加的零件")
     elif {k: v for k, v in data.instances.items()} != stored:

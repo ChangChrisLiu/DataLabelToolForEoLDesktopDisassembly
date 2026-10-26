@@ -34,14 +34,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from tda.core.absent import CHOICE as ABSENT_CHOICE
 from tda.ui import app_actions as A
 from tda.ui import app_support as S
 from tda.ui.class_names import state_zh
 
-__all__ = ["CONFIRM_DIRTY", "CUT_CONFIRMED", "CUT_DROPPED", "CUT_KEPT", "CUT_MOVED",
-           "HINT_LOG", "HINT_RANGE", "NO_TARGET", "NO_TARGET_FOR", "REMOVED_ROW",
-           "SPLIT_NOW", "StateMixin", "StateRangeDialog", "cut_text", "range_note",
-           "state_note"]
+__all__ = ["ABSENT_ASK", "ABSENT_DONE", "CONFIRM_DIRTY", "CUT_CONFIRMED", "CUT_DROPPED",
+           "CUT_KEPT", "CUT_MOVED", "HINT_LOG", "HINT_RANGE", "NO_TARGET", "NO_TARGET_FOR",
+           "REMOVED_ROW", "SPLIT_NOW", "StateMixin", "StateRangeDialog", "absent_note",
+           "cut_text", "range_note", "state_note"]
 
 #: ``T`` with nothing selected and nothing being drawn.
 NO_TARGET = ("T 改的是实例表里选中的零件（或正在画的零件）：先在右下实例表点一行 / "
@@ -70,6 +71,23 @@ CONFIRM_DIRTY = ("正在画的像素还没提交：画的就是这一帧的样�
 HINT_RANGE = "同一状态持续多帧？Ctrl+T 一次设到某一步"
 #: ... from the third frame on: perhaps it is the log that misses the action.
 HINT_LOG = "日志本身漏了这一步的动作？去 Steps 模式加动作更稳"
+#: 「一开始就不在（这台没有它）」 (task U34): the question, and the status line.
+ABSENT_TITLE = "这台没有这个零件 / not in this machine"
+ABSENT_ASK = ("{label}：这台机器根本没有它？\n"
+              "从第 1 帧起它就不在机器里：每一帧的任务卡都不再要它，cli check 和导出里也没有它。"
+              "日志里对它的动作留着，但不再算。\n"
+              "它的螺丝、接头不跟着变，要单独看。\n"
+              "Ctrl+Z 撤销；Steps → Instances 右键「其实有」也能改回来。")
+ABSENT_DONE = "{label}：一开始就不在（这台没有它），每一帧都不再要它"
+ABSENT_RECHECK = "；{n} 个已确认帧会重新核对"
+
+
+def absent_note(label: str, patch) -> str:
+    """The status line after 「一开始就不在」 (task U34)."""
+    text = ABSENT_DONE.format(label=label)
+    if getattr(patch, "frames", 0):
+        text += ABSENT_RECHECK.format(n=patch.frames)
+    return text + "（Ctrl+Z 撤销）"
 
 
 def redraw_text(state: str, run: tuple[int, int], redraw) -> str:
@@ -483,8 +501,53 @@ class StateMixin:
         self._t_last = (key.desktop, key.view, instance, state, key.step, count)
         return [HINT_RANGE, HINT_LOG][:max(0, min(count - 1, 2))]
 
+    # ------------------------------------- 「一开始就不在（这台没有它）」 (U34)
+    def ask_absent_from_start(self, label: str, instance: str) -> bool:
+        """The confirmation (a method, so a test answers it); ``True``: go ahead."""
+        from PySide6.QtWidgets import QMessageBox
+
+        answer = QMessageBox.question(
+            self, ABSENT_TITLE, ABSENT_ASK.format(label=label),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        return answer == QMessageBox.StandardButton.Yes
+
+    def absent_from_start_here(self, instance: str) -> Optional[dict]:
+        """「一开始就不在」 from the ``T`` picker: ask, write, say what changed (U34)."""
+        label = self._label_of(instance)[0] or instance
+        if not callable(getattr(self.session, "mark_absent_from_start", None)):
+            self._refuse_state(f"{REFUSED}这个会话不支持 / not supported by this session")
+            return None
+        why = self.session.absent_gate(instance)
+        if why:
+            self.instances.refresh()             # the combo goes back to what holds
+            self._refuse_state(f"{REFUSED}{why}")
+            return None
+        if not self.ask_absent_from_start(label, instance):
+            self.instances.refresh()
+            self.report(f"{label}：没有改 / not changed")
+            return None
+        try:
+            result = self.session.mark_absent_from_start(instance)
+        except ValueError as refused:            # SessionRefusal is one
+            self.logger.info("absent_from_start refused %s: %s", instance, refused)
+            self.instances.refresh()
+            self._refuse_state(f"{REFUSED}{refused}")
+            return None
+        self.logger.info("absent_from_start %s (%s frozen frames to re-check)", instance,
+                         result["patch"].frames)
+        self._t_last = None
+        self._after_state_change(absent_note(label, result["patch"]))
+        return result
+
     def assert_state_here(self, instance: str, state: str) -> Optional[dict]:
-        """Write the state, repaint what reads it, and say what changed."""
+        """Write the state, repaint what reads it, and say what changed.
+
+        The picker's 「一开始就不在」 (task U34) is no state: it goes to
+        :meth:`absent_from_start_here`.
+        """
+        if state == ABSENT_CHOICE:
+            return self.absent_from_start_here(instance)
         key = self.session.current()
         try:
             result = self.session.assert_state(instance, state)

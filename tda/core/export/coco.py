@@ -123,7 +123,7 @@ from tda.core.model import (
     is_provisional,
     step_is_annotatable,
 )
-from tda.core.states import GALLERY_EXPORT_STATE, FrameState, state_at
+from tda.core.states import GALLERY_EXPORT_STATE, FrameState, absent_keys, state_at
 from tda.core.taxonomy import Taxonomy
 from tda.core.truth import TruthService
 from tda.core.truth_fresh import selected_keyframes
@@ -308,6 +308,11 @@ class DesktopCtx:
     The 框外零件 (task U18) are taken out the same way, into :attr:`context`:
     no VLM question may count, name or reason about something that is not part
     of the machine, and the COCO export writes them from there, on their own.
+
+    So are the parts this machine does not have (「这台没有这个零件」, task
+    U34, :func:`tda.core.states.absent_keys`), into :attr:`absent`, and the
+    sheet's actions on them with them: D34's failed "remove the optical
+    drive" is no history of anything in the pictures.
     """
 
     desktop: int
@@ -321,6 +326,8 @@ class DesktopCtx:
     drafts: dict[str, InstanceRec] = field(default_factory=dict, repr=False)
     #: The context objects :meth:`__post_init__` took out of ``instances`` (U18).
     context: dict[str, InstanceRec] = field(default_factory=dict, repr=False)
+    #: The parts the machine does not have, taken out of ``instances`` (U34).
+    absent: dict[str, InstanceRec] = field(default_factory=dict, repr=False)
     _states: dict[int, FrameState] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
@@ -334,6 +341,12 @@ class DesktopCtx:
             self.context = context
             self.instances = {k: v for k, v in self.instances.items()
                               if k not in context}
+        gone = absent_keys(self.events)
+        absent = {k: v for k, v in self.instances.items() if k in gone}
+        if absent:
+            self.absent = absent
+            self.instances = {k: v for k, v in self.instances.items() if k not in absent}
+            self.actions = [a for a in self.actions if a.target not in absent]
 
     def context_cls(self, instance: str) -> Optional[str]:
         """The class a context object is exported under (a taxonomy class or ``other``)."""
