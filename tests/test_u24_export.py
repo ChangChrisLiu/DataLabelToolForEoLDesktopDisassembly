@@ -118,10 +118,13 @@ def test_status_says_how_far_each_view_is(reviewed):
     assert (row["views"]["oak1"]["vis_reviewed"], row["views"]["oak1"]["vis_total"]) == (0, 0)
     detail = format_desktop(reviewed.db, row)
     scan_line = next(line for line in detail.splitlines() if line.startswith(f"  {VIEW} "))
-    assert scan_line.rstrip().endswith("可见性审查 2/17")
+    # task U36: and the runs still to review (the half-hidden part's 10-13, the
+    # tiny part's 10-11 and 13-14, and the three untouched lines)
+    assert scan["vis_runs"] == 6
+    assert scan_line.rstrip().endswith("可见性审查 2/17（待审 6 段）")
     table = format_status([row])
     assert "可见性审查 / visibility review" in table
-    assert f"D{DESKTOP:02d}      | scan 2/17 | oak1 0/0 | oak2 0/0 | rs 0/0" in table
+    assert f"D{DESKTOP:02d}      | scan 2/17（待审 6 段） | oak1 0/0 | oak2 0/0 | rs 0/0" in table
 
 
 def test_status_prints_nothing_about_it_with_nothing_to_audit():

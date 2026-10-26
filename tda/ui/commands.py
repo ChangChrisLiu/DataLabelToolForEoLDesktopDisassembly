@@ -40,6 +40,7 @@ KINDS: frozenset[str] = frozenset(
         "add_context",  # a 框外零件: an object outside the machine, made (or taken back) (U18)
         "reclass_instance",  # 其实是硬盘架 / 其实是卡扣: a drive cage <-> its latch (U21)
         "review_visibility",  # 可见性审查: a verdict on one part's label, and its stamp (U24)
+        "sync_visibility",  # 同步到其他视角: a run's verdict onto the other views (U36)
     }
 )
 

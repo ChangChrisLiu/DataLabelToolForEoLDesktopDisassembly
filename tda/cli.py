@@ -588,24 +588,33 @@ def format_status(rows: list[dict]) -> str:
 VIS_REVIEW_HEAD = "可见性审查"
 
 
+def _runs_left(counts: dict) -> str:
+    """``（待审 3 段）`` -- the runs still to review (task U36); ``""`` for none."""
+    runs = int(counts.get("vis_runs", 0) or 0)
+    return f"（待审 {runs} 段）" if runs else ""
+
+
 def vis_review_cell(counts: dict) -> str:
-    """``可见性审查 5/17`` -- reviewed / to review, confirmed rows of one view."""
-    return f"{VIS_REVIEW_HEAD} {counts.get('vis_reviewed', 0)}/{counts.get('vis_total', 0)}"
+    """``可见性审查 5/17（待审 3 段）`` -- reviewed / to review rows, and the runs left."""
+    return (f"{VIS_REVIEW_HEAD} {counts.get('vis_reviewed', 0)}/{counts.get('vis_total', 0)}"
+            f"{_runs_left(counts)}")
 
 
 def format_vis_review(rows: list[dict]) -> list[str]:
     """One line per desktop with labels to audit: 「可见性审查 n/m」 per view.
 
     Nothing at all when no confirmed frame anywhere has one (a fresh database).
+    A view with runs still to review says how many (task U36).
     """
     found = [r for r in rows if any(r["views"][v].get("vis_total") for v in VIEWS)]
     if not found:
         return []
-    lines = ["", "可见性审查 / visibility review (reviewed/total, Review mode)"]
+    lines = ["", "可见性审查 / visibility review (reviewed/total frames, runs left; Review mode)"]
     for row in found:
         lines.append(f"D{row['desktop']:02d}{'':<5} | " + " | ".join(
             f"{view} {row['views'][view].get('vis_reviewed', 0)}/"
-            f"{row['views'][view].get('vis_total', 0)}" for view in VIEWS))
+            f"{row['views'][view].get('vis_total', 0)}{_runs_left(row['views'][view])}"
+            for view in VIEWS))
     return lines
 
 

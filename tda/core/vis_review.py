@@ -27,8 +27,13 @@ This module is the rule, without Qt and without the session:
   keyframe in force, in run-length space where the transform is the identity
   -- no compilation;
 * the **runs** -- :func:`runs_of` compresses one part's rows over consecutive
-  annotatable frames with the same label, reason, hand/auto and occluders into
-  one queue entry (「ram_latch.03 第 1–13 帧 · occluded_full（被硬盘架挡住）」).
+  annotatable frames with the same label, the same hand label (or none) and
+  the same reason into one queue entry (「ram_latch.03 第 1–13 帧（13 帧） ·
+  occluded_full（被硬盘架挡住）」). Task U36: the parts that hide it are a
+  property of the run, not part of what makes one -- a 40-frame 看不见 under
+  two covers in turn is one run that says so (:attr:`Run.changes`), and the
+  annotator splits it where the reason changes (「从这帧起另算」, ``splits``);
+  :func:`order_runs` puts the part with the longest run first.
 """
 from __future__ import annotations
 
@@ -42,6 +47,7 @@ from tda.core.compiler import (
     _intersect_window,
     _part_mask,
     _part_window,
+    _union_window,
     _wrong_size,
     select_keyframe,
 )
@@ -65,9 +71,12 @@ __all__ = [
     "VERDICT_VIEWPOINT",
     "LAYER_PREFIX",
     "Run",
+    "amodal_box",
     "make_stamp",
+    "mark_whole",
     "occluders_on_frame",
     "order_of",
+    "order_runs",
     "progress",
     "review_rows",
     "runs_of",
@@ -240,6 +249,34 @@ def occluders_on_frame(db, key: FrameKey, wanted: dict[str, str],
     return out
 
 
+def amodal_box(db, key: FrameKey, instance: str, placement: str, hw: tuple[int, int],
+               cache: Optional[InputCache] = None) -> Optional[tuple[int, int, int, int]]:
+    """``(x0, y0, x1, y1)``: where the part's whole shape lies on one frame (U36).
+
+    The keyframe in force (its pose segment, its placement chain) through the
+    frame's transform, as the compiler would place it -- read off the
+    keyframe's run lengths, nothing decoded or compiled. ``None`` without a
+    shape there. What the review panel's frame strip crops around: the part
+    the line is about, even on a frame where none of it is seen.
+    """
+    cache = cache if cache is not None else InputCache()
+    seg = pose_segment_of(db, key, cache)
+    chain = [kf for kf in _keyframes_of(db, key.desktop, key.view, cache).get(str(instance), ())
+             if kf.pose_segment == seg and kf.placement == str(placement)]
+    kf = select_keyframe(chain, key.step)
+    if kf is None:
+        return None
+    transform = db.transform(key)
+    window = None
+    for part in kf.parts:
+        if part.rle is not None and _wrong_size(part.rle, hw):
+            continue
+        window = _union_window(window, _part_window(part, transform, hw))
+    if _empty_window(window):
+        return None
+    return tuple(int(v) for v in window)
+
+
 # --------------------------------------------------------------------------- #
 # runs
 # --------------------------------------------------------------------------- #
@@ -254,37 +291,58 @@ class Run:
     manual: bool
     #: The reason a hand label gives (``cable`` / ``viewpoint`` / ...), or ``None``.
     occluder: Optional[str]
-    #: The parts (and ``@layers``) that hide a computed occlusion.
+    #: The parts (and ``@layers``) that hide a computed occlusion, over the
+    #: whole run, in the order they first do (task U36: not what makes a run).
     occluded_by: tuple[str, ...] = ()
     placement: str = ""
     #: ``step -> input_hash`` of the rows, for whoever caches per row.
     hashes: dict = field(default_factory=dict, repr=False)
+    #: The run's frames carry a stamp that covers them (``cli check``'s listing
+    #: builds runs of reviewed and unreviewed rows alike; the queue's are not).
+    reviewed: bool = False
+    #: The run is every confirmed frame the part has in this view (U36): it is
+    #: never seen there at all -- a camera angle, or a part not in the machine.
+    whole: bool = False
+    #: The frames from which none of the parts hiding it before hides it (U36):
+    #: another reason -- where 「从这帧起另算」 may be wanted.
+    changes: list[int] = field(default_factory=list)
 
     def entry(self) -> dict:
         """The queue entry a panel lists (``step`` is the run's first frame)."""
         return {"step": self.steps[0], "steps": list(self.steps),
+                "a": self.steps[0], "b": self.steps[-1], "n": len(self.steps),
                 "instance": self.instance, "visibility": self.visibility,
                 "manual": self.manual, "occluder": self.occluder,
-                "occluded_by": list(self.occluded_by), "placement": self.placement}
+                "occluded_by": list(self.occluded_by), "placement": self.placement,
+                "whole": self.whole, "changes": list(self.changes)}
 
 
-def _signature(row: dict, names: tuple[str, ...]) -> tuple:
+def _signature(row: dict) -> tuple:
+    """What two neighbouring frames must share to be one run (task U36).
+
+    The label, whether it was set by hand, the reason it gives -- and, for
+    ``cli check``'s listing over reviewed rows too, whether a stamp covers it.
+    """
     return (str(row.get("visibility") or ""), row.get("hand_visibility") is not None,
-            row.get("occluder") or None, names)
+            row.get("occluder") or None, bool(row.get("reviewed", False)))
 
 
 def runs_of(rows: Iterable[dict], order: list[int],
-            names: Optional[dict] = None) -> list[Run]:
+            names: Optional[dict] = None, splits: Iterable = ()) -> list[Run]:
     """Compress the rows to runs: one part, consecutive frames, one signature.
 
     ``order`` is the view's annotatable steps, ascending: two rows are
     consecutive when nothing of ``order`` lies between them -- a step with no
     image or an ``ignore`` step does not break a run, a frame that is not in the
-    queue (not confirmed, or reviewed already) does. ``names`` is
-    ``(step, part) -> occluders`` (missing: none). Parts in key order, each
-    part's runs by step.
+    queue (not confirmed, or reviewed already, or a frame the part is not on)
+    does. ``names`` is ``(step, part) -> occluders`` (missing: none): the run
+    collects them, and :attr:`Run.changes` says where they change. ``splits``
+    is ``(part, step)`` pairs where the annotator said 「从这帧起另算」: a run
+    breaks before that frame. Parts in key order, each part's runs by step
+    (:func:`order_runs` is the queue's order).
     """
     names = names or {}
+    cut = {(str(part), int(step)) for part, step in splits}
     index = {int(step): i for i, step in enumerate(order)}
     by_part: dict[str, list[dict]] = {}
     for row in rows:
@@ -294,23 +352,59 @@ def runs_of(rows: Iterable[dict], order: list[int],
         current: Optional[Run] = None
         current_sig: Optional[tuple] = None
         last_at: Optional[int] = None
+        last_who: tuple[str, ...] = ()
         for row in sorted(by_part[part], key=lambda r: int(r["step"])):
             step = int(row["step"])
             who = tuple(names.get((step, part), ()))
-            sig = _signature(row, who)
+            sig = _signature(row)
             at = index.get(step)
             if (current is not None and at is not None and last_at is not None
-                    and at == last_at + 1 and sig == current_sig):
+                    and at == last_at + 1 and sig == current_sig
+                    and (part, step) not in cut):
                 current.steps.append(step)
                 current.hashes[step] = row.get("input_hash")
+                if who != last_who and not set(who) & set(last_who):
+                    # none of the parts over it before is over it now: another
+                    # reason (a part taken off, so another one shows, is not)
+                    current.changes.append(step)
+                current.occluded_by += tuple(n for n in who if n not in current.occluded_by)
             else:
                 current = Run(part, [step], sig[0], sig[1], sig[2], who,
                               str(row.get("placement") or ""),
-                              {step: row.get("input_hash")})
+                              {step: row.get("input_hash")}, reviewed=sig[3])
                 current_sig = sig
                 out.append(current)
-            last_at = at
+            last_at, last_who = at, who
     return out
+
+
+def mark_whole(runs: Iterable[Run], presence: dict[str, Iterable[int]],
+               order: Iterable[int]) -> None:
+    """Set :attr:`Run.whole`: the run is every frame of the part's presence.
+
+    ``presence`` is ``part -> the confirmed frames it has a row on``
+    (:meth:`~tda.core.db_visreview.VisReviewRowsMixin.vis_presence`), counted
+    over ``order`` (the view's annotatable steps).
+    """
+    keep = {int(s) for s in order}
+    for run in runs:
+        there = sorted(int(s) for s in presence.get(run.instance, ()) if int(s) in keep)
+        run.whole = bool(there) and there == sorted(run.steps)
+
+
+def order_runs(runs: Iterable[Run]) -> list[Run]:
+    """The queue's order (task U36): the part with the longest run first.
+
+    Parts by their longest run, longest first (ties by key); each part's runs
+    by step -- a part hidden for forty frames is not below twenty parts
+    hidden for one.
+    """
+    by_part: dict[str, list[Run]] = {}
+    for run in runs:
+        by_part.setdefault(run.instance, []).append(run)
+    parts = sorted(by_part, key=lambda p: (-max(len(r.steps) for r in by_part[p]), p))
+    return [run for part in parts
+            for run in sorted(by_part[part], key=lambda r: r.steps[0])]
 
 
 def order_of(db, desktop: int, view: str) -> list[int]:

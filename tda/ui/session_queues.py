@@ -13,17 +13,20 @@ from collections import defaultdict
 from typing import Callable, Optional
 
 from tda.core.db import Db
-from tda.core.model import FrameKey, is_component_view
+from tda.core.model import VIEWS, FrameKey, is_component_view
 from tda.core.truth import NEEDS_REVIEW, VERIFIED
 from tda.core.truth_conflicts import label_text, payload_labels
 from tda.core.truth_inputs import InputCache
 from tda.core.vis_review import (
     OCCLUDED_LABELS,
+    mark_whole,
     occluders_on_frame,
     order_of,
+    order_runs,
     review_rows,
     runs_of,
 )
+from tda.core.vis_runs import Side, hidden_stretches, read_side
 from tda.ui import session_api as api
 
 __all__ = ["ReviewState"]
@@ -54,12 +57,19 @@ class ReviewState:
         self._vis_memo: Optional[tuple] = None
         #: ``(step, part, input_hash, label) -> occluders``: what a confirmed row
         #: is hidden by, kept across changes -- the row's hash moves when it does.
+        #: Another view's rows (task U36) are keyed with the view in front.
         self._vis_names: dict[tuple, tuple[str, ...]] = {}
+        #: ``(part, step)``: 「从这帧起另算」 -- a run of the part breaks before
+        #: that frame (task U36). The annotator's, for as long as the view is open.
+        self.vis_splits: set[tuple[str, int]] = set()
+        #: ``(write token, {view: Side})``: every view's confirmed rows (U36).
+        self._vis_sides: Optional[tuple] = None
 
     def open(self, desktop: int, view: str, coverage: Callable[[], dict]) -> None:
         self.desktop, self.view = desktop, view
         self.coverage = coverage
         self._vis_names.clear()
+        self.vis_splits.clear()
         self.clear()
 
     def close(self) -> None:
@@ -67,12 +77,14 @@ class ReviewState:
         self.desktop, self.view = None, ""
         self.coverage = dict
         self._vis_names.clear()
+        self.vis_splits.clear()
         self.clear()
 
     def clear(self) -> None:
         self.problems.clear()
         self.unexplained.clear()
         self._vis_memo = None
+        self._vis_sides = None
         self.invalidate()
 
     def invalidate(self) -> None:
@@ -217,7 +229,8 @@ class ReviewState:
         if self.desktop is None or is_component_view(self.view):
             self._vis_memo = None
             return
-        token = self._write_token()
+        # a split moves no row: it is part of what the queue was built for
+        token = (self._write_token(), frozenset(self.vis_splits))
         if self._vis_memo is not None and self._vis_memo[0] == token:
             return
         pending, done = review_rows(self.db, self.desktop, self.view)
@@ -241,9 +254,69 @@ class ReviewState:
             for part, who in found.items():
                 self._vis_names[keys[(step, part)]] = who
                 names[(step, part)] = who
-        runs = runs_of(pending, order_of(self.db, self.desktop, self.view), names)
-        self._vis_memo = (token, [run.entry() for run in runs],
+        order = order_of(self.db, self.desktop, self.view)
+        runs = runs_of(pending, order, names, self.vis_splits)
+        # task U36: a run that is all of the part's confirmed frames, and the
+        # part with the longest run first
+        if runs:
+            mark_whole(runs, self.db.vis_presence(self.desktop, self.view), order)
+        self._vis_memo = (token, [run.entry() for run in order_runs(runs)],
                           (len(done), len(done) + len(pending)))
+
+    # -- the other views (task U36) ----------------------------------------------
+    def visibility_sides(self) -> dict[str, Side]:
+        """Every sequence view's confirmed rows of this desktop, read once per write.
+
+        No masks: one query per view (:func:`~tda.core.vis_runs.read_side`).
+        The open view is one of them.
+        """
+        if self.desktop is None:
+            return {}
+        token = self._write_token()
+        if self._vis_sides is None or self._vis_sides[0] != token:
+            self._vis_sides = (token, {view: read_side(self.db, self.desktop, view)
+                                       for view in VIEWS})
+        return self._vis_sides[1]
+
+    def visibility_summary(self) -> list[dict]:
+        """Per part of the queue, in its order: how long it is 看不见 in every view.
+
+        ``{"instance", "longest" (its longest run here, the queue's order),
+        "views": {view: (frames, stretches, longest) | None}}`` -- ``None`` is
+        「—」 (no confirmed frame there); see
+        :func:`~tda.core.vis_runs.hidden_stretches`.
+        """
+        entries = self.visibility_queue()
+        if not entries:
+            return []
+        sides = self.visibility_sides()
+        out: list[dict] = []
+        seen: dict[str, dict] = {}
+        for entry in entries:
+            part = str(entry["instance"])
+            if part in seen:
+                seen[part]["longest"] = max(seen[part]["longest"], len(entry["steps"]))
+                continue
+            seen[part] = {"instance": part, "longest": len(entry["steps"]),
+                          "views": {view: hidden_stretches(sides[view], part)
+                                    if view in sides else None for view in VIEWS},
+                          "states": {view: sides[view].state if view in sides else ""
+                                     for view in VIEWS}}
+            out.append(seen[part])
+        return out
+
+    def names_in(self, view: str, step: int, instance: str, row: dict) -> tuple[str, ...]:
+        """The parts hiding ``instance`` on one confirmed frame of any view, kept per row."""
+        if self.desktop is None:
+            return ()
+        memo = ((step, instance, row.get("input_hash"), row.get("visibility"))
+                if view == self.view else
+                (view, step, instance, row.get("input_hash"), row.get("visibility")))
+        if memo not in self._vis_names:
+            found = occluders_on_frame(self.db, FrameKey(self.desktop, int(step), view),
+                                       {instance: str(row.get("placement") or "")})
+            self._vis_names[memo] = tuple(found.get(instance, ()))
+        return self._vis_names[memo]
 
     def queues(self) -> dict[str, list[dict]]:
         """The review queues of spec 4.4, keyed by :data:`QUEUE_NAMES`.

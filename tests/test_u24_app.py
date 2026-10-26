@@ -34,12 +34,13 @@ from tda.ui import visreview_text as T
 from tda.ui.app import MainWindow
 from tda.ui.app_visreview import NOT_IN_REVIEW, OTHER_TAB
 
+#: Task U36: the frame count, 「全程」, and the part with the longest run first.
 LINES = [
-    "connector.03 第 10–14 帧 · too_small（自动）",
+    "connector.03 第 10–14 帧（5 帧） · too_small（自动） · 全程",
+    "ram_latch.03 第 10–14 帧（5 帧） · occluded_full（被螺丝挡住，自动） · 全程",
+    "ram_module.01 第 10–14 帧（5 帧） · occluded_partial（被螺丝挡住，自动） · 全程",
     "cpu.01 第 13 帧 · occluded_full（原因: 线缆，手动）",
     "psu.01 第 12 帧 · out_of_view（手动）",
-    "ram_latch.03 第 10–14 帧 · occluded_full（被螺丝挡住，自动）",
-    "ram_module.01 第 10–14 帧 · occluded_partial（被螺丝挡住，自动）",
 ]
 
 
@@ -210,7 +211,8 @@ def test_shift_space_is_spaces_alias(window):
     assert press(window, "Shift+Space")
     assert "第 10–14 帧 → 确认（按计算）" in window.status_message()
     assert not any(line.startswith(V.TINY) for line in lines(window))
-    assert window.review.selected_visibility()["instance"] == V.CABLED   # the next line
+    # the next line (U36's order: the next longest run)
+    assert window.review.selected_visibility()["instance"] == V.HIDDEN
     assert window.review.visibility_status() == "还要审 4 段 / 12 帧（已审 5 / 17 帧）"
     assert press(window, "Ctrl+Z")
     assert lines(window) == LINES
@@ -280,8 +282,8 @@ def test_the_per_frame_listing_answers_one_frame(window):
     window.review.set_per_frame(False)
     QApplication.processEvents()
     assert [line for line in lines(window) if line.startswith(V.HALF)] == [
-        "ram_module.01 第 10–11 帧 · occluded_partial（被螺丝挡住，自动）",
-        "ram_module.01 第 13–14 帧 · occluded_partial（被螺丝挡住，自动）"]
+        "ram_module.01 第 10–11 帧（2 帧） · occluded_partial（被螺丝挡住，自动）",
+        "ram_module.01 第 13–14 帧（2 帧） · occluded_partial（被螺丝挡住，自动）"]
     assert window.review.selected_visibility()["steps"] == [13, 14]   # kept, by frame
 
 

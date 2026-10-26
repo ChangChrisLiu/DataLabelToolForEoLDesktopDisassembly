@@ -29,6 +29,16 @@ The two buttons it does have (task U32), 「重签这一帧」 and 「重签全�
 nowhere else and have no key: they only **report**
 (:attr:`ReviewPanel.sigRefreeze`, ``"frame"`` or ``"all"``), and the window
 plans, asks -- naming the frame count -- and writes.
+
+Task U36 puts the runs and the other views on the 可见性审查 tab
+(:mod:`tda.ui.panels.visruns`): a summary at the top -- per part, how long it
+is 看不见 in every view; the lines with their frame count and 「全程」, the
+part with the longest run first (the caption says so); and under the list,
+for the selected line, its first / middle / last frames cut around the part,
+what every view says on the same steps, the suggested reason, and two more
+buttons without keys that only report: 「从这帧起另算」
+(:attr:`ReviewPanel.sigSplitRun`) and 「同步到其他视角」
+(:attr:`ReviewPanel.sigSyncViews`).
 """
 from __future__ import annotations
 
@@ -37,10 +47,13 @@ from typing import Optional
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QScrollArea,
+    QSplitter,
     QTabWidget,
     QToolButton,
     QVBoxLayout,
@@ -50,6 +63,7 @@ from PySide6.QtWidgets import (
 from tda.ui import session_api as api
 from tda.ui import visreview_text as VT
 from tda.ui.panels import session_is_open
+from tda.ui.panels.visruns import RunDetail, RunSummary
 
 __all__ = ["ReviewPanel", "QUEUE_TITLES", "REFREEZE_ALL", "REFREEZE_FRAME"]
 
@@ -67,10 +81,13 @@ QUEUE_TITLES: dict[str, str] = {
     api.QUEUE_VISIBILITY: "可见性审查",
 }
 
-#: The keys of the 可见性审查 tab, under its progress line.
+#: The keys of the 可见性审查 tab, under its progress line (the panel's tooltip).
 VIS_KEYS = ("选中的一行整段生效：Space 确认（按计算） · 数字键 手动设 · "
             "` 被线挡住（Shift 部分） · Z 角度看不到（Shift 部分） · Ctrl+Z 撤销；"
             "只改一帧：切到「按帧」")
+#: ... as the line under the progress says it (task U36: the dock is shared
+#: with the summary and the selected line's detail; the whole text is its tooltip).
+VIS_KEYS_SHORT = "整段生效：Space 对 · 数字 手动 · ` 线 · Z 角度（Shift 部分）· Ctrl+Z 撤销"
 #: The two listings of the 可见性审查 tab: a line per run, a line per frame.
 BY_RUN, BY_FRAME = "按段", "按帧"
 
@@ -114,6 +131,10 @@ class ReviewPanel(QWidget):
     sigVisibilityPicked = Signal(int, str)
     #: 「重签这一帧」 (``"frame"``) or 「重签全部」 (``"all"``) was clicked (task U32).
     sigRefreeze = Signal(str)
+    #: 「从这帧起另算」 was clicked (task U36): the selected line, at the open frame.
+    sigSplitRun = Signal()
+    #: 「同步到其他视角」 was clicked (task U36): the sync the window offered.
+    sigSyncViews = Signal()
 
     def __init__(self, session: Optional[api.SessionLike] = None,
                  parent: Optional[QWidget] = None) -> None:
@@ -133,6 +154,15 @@ class ReviewPanel(QWidget):
         self._pick_timer.setSingleShot(True)
         self._pick_timer.setInterval(0)
         self._pick_timer.timeout.connect(self._emit_picked)
+        #: The line whose frame strip is shown, or asked for (task U36): the
+        #: thumbnails are cut after the frame change a pick causes, not before.
+        self._strip_for: Optional[tuple] = None
+        #: The other views' suggestion for the selected line (U36), as last read.
+        self._suggestion: Optional[dict] = None
+        self._strip_timer = QTimer(self)
+        self._strip_timer.setSingleShot(True)
+        self._strip_timer.setInterval(30)
+        self._strip_timer.timeout.connect(self._load_strip)
 
         self._tabs = QTabWidget()
         self._lists: dict[str, QListWidget] = {}
@@ -247,12 +277,42 @@ class ReviewPanel(QWidget):
         head.addWidget(self._vis_status, 1)
         head.addWidget(self._vis_by_run)
         head.addWidget(self._vis_by_frame)
-        self._vis_keys = QLabel(VIS_KEYS)
+        self._vis_keys = QLabel(VIS_KEYS_SHORT)
+        self._vis_keys.setToolTip(VIS_KEYS)
         self._vis_keys.setWordWrap(True)
         self._vis_keys.setStyleSheet("color: gray; font-size: 8pt")
+        # task U36: per part, how long it is 看不见 in every view; the order
+        self.run_summary = RunSummary()
+        self.run_summary.setVisible(False)
+        self.run_summary.sigPartPicked.connect(self._on_summary_part)
+        self._vis_order = QLabel(VT.ORDER_CAPTION)
+        self._vis_order.setWordWrap(True)
+        self._vis_order.setStyleSheet("color: gray; font-size: 8pt")
+        # ... and under the list, the selected line across the views; the two
+        # halves share the dock's height through a splitter, the detail scrolls
+        self.run_detail = RunDetail()
+        self.run_detail.sigSplit.connect(self.sigSplitRun)
+        self.run_detail.sigSync.connect(self.sigSyncViews)
+        queue = QWidget()
+        top = QVBoxLayout(queue)
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(2)
+        top.addWidget(self.run_summary)
+        top.addWidget(self._vis_order)
+        top.addWidget(lw, 1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(self.run_detail)
+        self._vis_split = QSplitter(Qt.Orientation.Vertical)
+        self._vis_split.setChildrenCollapsible(False)
+        self._vis_split.addWidget(queue)
+        self._vis_split.addWidget(scroll)
+        self._vis_split.setStretchFactor(0, 1)
+        self._vis_split.setStretchFactor(1, 1)
         box.addLayout(head)
         box.addWidget(self._vis_keys)
-        box.addWidget(lw, 1)
+        box.addWidget(self._vis_split, 1)
         lw.currentItemChanged.connect(self._on_visibility_current)
         return page
 
@@ -318,7 +378,7 @@ class ReviewPanel(QWidget):
                 else None)
         lines = entries
         if self.per_frame():
-            lines = [dict(entry, step=int(step), steps=[int(step)])
+            lines = [dict(entry, step=int(step), steps=[int(step)], whole=False, changes=[])
                      for entry in entries for step in entry.get("steps") or ()]
         lw.clear()
         rows = 0
@@ -329,7 +389,12 @@ class ReviewPanel(QWidget):
             item.setData(ENTRY_ROLE, dict(entry))
             # the line is wider than the dock: the whole of it, and who hides it
             who = "、".join(entry.get("occluded_by") or ())
-            item.setToolTip(text + (f"\n挡住它的：{who}" if who else ""))
+            tip = text + (f"\n挡住它的：{who}" if who else "")
+            if entry.get("whole"):
+                tip += f"\n{VT.WHOLE}：{VT.WHOLE_TIP}"
+            if entry.get("changes"):
+                tip += "\n" + VT.CHANGES.format(steps=VT.steps_text(entry["changes"]))
+            item.setToolTip(tip)
             lw.addItem(item)
             rows += len(entry.get("steps") or [entry.get("step")])
         if keep is not None:
@@ -340,6 +405,59 @@ class ReviewPanel(QWidget):
         self._tabs.setTabText(index, f"{QUEUE_TITLES[api.QUEUE_VISIBILITY]} ({rows})")
         self._vis_status.setText(self._visibility_line(len(entries), rows)
                                  if session_is_open(self._session) else "")
+        summary = getattr(self._session, "visibility_summary", None)
+        self.run_summary.set_rows(list(summary()) if callable(summary) and entries
+                                  and session_is_open(self._session) else [])
+        self._show_detail(self.selected_visibility())
+
+    # -- the selected line across the views (task U36) ---------------------------
+    def _show_detail(self, entry: Optional[dict]) -> None:
+        """The detail under the list: what the views say, now; the strip, soon."""
+        detail = getattr(self._session, "visibility_detail", None)
+        found = (detail(entry) if callable(detail) and entry is not None
+                 and session_is_open(self._session) else {})
+        self._suggestion = (found or {}).get("suggestion")
+        self.run_detail.show_entry(entry, found or {})
+        wanted = (None if entry is None else
+                  (str(entry.get("instance")), tuple(int(s) for s in entry.get("steps") or ())))
+        if wanted != self._strip_for:
+            self._strip_for = wanted
+            self._strip_timer.start()
+
+    def _load_strip(self) -> None:
+        """Cut the selected line's thumbnails (after the frame change it caused)."""
+        strip = getattr(self._session, "visibility_strip", None)
+        if self._strip_for is None or not callable(strip) or not session_is_open(self._session):
+            self.run_detail.set_strip([])
+            return
+        instance, steps = self._strip_for
+        try:
+            frames = list(strip(instance, list(steps)))
+        except Exception:  # noqa: BLE001 - a thumbnail is never worth a failure
+            frames = []
+        self.run_detail.set_strip(frames)
+
+    def load_strip_now(self) -> None:
+        """Cut the thumbnails now rather than on the timer (the tests, a screenshot)."""
+        self._strip_timer.stop()
+        self._load_strip()
+
+    def selected_suggestion(self) -> Optional[dict]:
+        """The reason the other views point at for the selected line (or ``None``)."""
+        return self._suggestion if self.selected_visibility() is not None else None
+
+    def set_sync_offer(self, text: Optional[str]) -> None:
+        """Offer 「同步到其他视角」 (what it would do), or take the offer back (``None``)."""
+        self.run_detail.set_sync_offer(text)
+
+    def _on_summary_part(self, instance: str) -> None:
+        """A summary row was clicked: select that part's first line, as a click would."""
+        lw = self._lists[api.QUEUE_VISIBILITY]
+        for row in range(lw.count()):
+            entry = lw.item(row).data(ENTRY_ROLE) or {}
+            if entry.get("instance") == instance:
+                lw.setCurrentRow(row)
+                return
 
     def _visibility_line(self, runs: int, pending: int) -> str:
         """「还要审 n 段 / m 帧（已审 r / t 帧）」, or 「可见性审查完成」."""
@@ -374,6 +492,7 @@ class ReviewPanel(QWidget):
             lw.setCurrentRow(min(max(int(row), 0), lw.count() - 1))
         finally:
             self._refreshing = quiet
+        self._show_detail(self.selected_visibility())
         return True
 
     def visibility_status(self) -> str:
@@ -505,12 +624,16 @@ class ReviewPanel(QWidget):
         is still delivering its own ``currentItemChanged`` deletes the item
         being delivered (an access violation, not an exception).
         """
-        if self._refreshing or item is None:
+        if self._refreshing:
+            return
+        if item is None:
+            self._show_detail(None)
             return
         entry = item.data(ENTRY_ROLE) or {}
         steps = list(entry.get("steps") or ())
         if not steps or not entry.get("instance"):
             return
+        self._show_detail(dict(entry))
         here = (int(self._session.current().step) if session_is_open(self._session)
                 else None)
         self._picked = (here if here in steps else int(steps[0]), str(entry["instance"]))

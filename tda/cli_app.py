@@ -482,6 +482,8 @@ def _check_one(db, tax, args: argparse.Namespace, desktop: int, view: str) -> in
     if waiting:
         print(f"[check] 另有 {len(waiting)} 条同样落后、但挨着开着的冲突，等冲突处理完再重签: "
               + ", ".join(f"{instance}@{step}" for step, instance in waiting[:10]))
+    if getattr(args, "visibility", False) and not is_component_view(view):
+        _print_visibility_runs(db, desktop, view)
     for text in problems[: int(args.limit)]:
         print(f"  - {text}")
     if len(problems) > int(args.limit):
@@ -519,11 +521,37 @@ def _print_empty_visible(expected: Sequence, unexplained: Sequence) -> None:
               + ", ".join(f"{row.instance}@{row.step}" for row in unexplained[:10]))
 
 
+def _print_visibility_runs(db, desktop: int, view: str) -> None:
+    """``--visibility`` (task U36): every run of the visibility review, for an audit.
+
+    One header line, then one ``visibility_run`` line per run -- part, first
+    and last frame, frames, label, the reason a hand label gives (``-`` for
+    none), set by hand or not, a verdict (a stamp that covers it) or not, and
+    whether it is every confirmed frame of the part in the view. A listing,
+    not a problem: the exit code is untouched.
+    """
+    from tda.core.vis_runs import view_runs
+
+    runs = view_runs(db, desktop, view)
+    pending = [run for run in runs if not run.reviewed]
+    print(f"[check] visibility_runs D{desktop:02d} {view}: {len(runs)} 段 / "
+          f"{sum(len(run.steps) for run in runs)} 帧，待审 {len(pending)} 段 / "
+          f"{sum(len(run.steps) for run in pending)} 帧（可见性审查，按零件、按步）")
+    for run in runs:
+        print(f"  visibility_run {run.instance} a={run.steps[0]} b={run.steps[-1]} "
+              f"n={len(run.steps)} label={run.visibility} occluder={run.occluder or '-'} "
+              f"manual={'yes' if run.manual else 'no'} verdict={'yes' if run.reviewed else 'no'} "
+              f"whole={'yes' if run.whole else 'no'}")
+
+
 def _add_check(sub) -> None:
     p = sub.add_parser("check", help="recompile one or more views and count the problems")
     p.add_argument("--desktop", type=int, required=True)
     _add_view_flags(p)
     p.add_argument("--limit", type=int, default=20, help="how many problems to list")
+    p.add_argument("--visibility", action="store_true", default=False,
+                   help="also list the visibility review's runs per part (a-b, n, label, "
+                        "occluder, verdict yes/no); quiet by default")
     p.set_defaults(func=cmd_check)
 
 

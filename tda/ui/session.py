@@ -54,6 +54,8 @@ from tda.ui.session_context import OP_KIND as CONTEXT_OP
 from tda.ui.session_context import ContextMixin, apply_context
 from tda.ui.session_visreview import OP_KIND as VIS_REVIEW_OP
 from tda.ui.session_visreview import VisReviewMixin, apply_vis_review
+from tda.ui.session_visruns import OP_SYNC as VIS_SYNC_OP
+from tda.ui.session_visruns import VisRunsMixin, apply_sync
 
 __all__ = ["AnnotationSession"]
 
@@ -61,7 +63,7 @@ log = logging.getLogger("tda.session")
 
 class AnnotationSession(CommitMixin, ReviewMixin, ResignMixin, StateMixin, VerbMixin,
                         CaptiveMixin, ReclassMixin, CableMixin, ContextMixin, VisReviewMixin,
-                        TruthCacheMixin, QObject):
+                        VisRunsMixin, TruthCacheMixin, QObject):
     """One annotator's working set: a desktop, a view, and the frame in hand."""
 
     #: The current frame changed; payload is a :class:`~tda.core.model.FrameKey`.
@@ -177,6 +179,15 @@ class AnnotationSession(CommitMixin, ReviewMixin, ResignMixin, StateMixin, VerbM
             self._announce()
 
         self.undo_stack.register(VIS_REVIEW_OP, vis_review_handler, vis_review_handler)
+
+        # 同步到其他视角 (task U36): the other views' frames only -- none of
+        # them is the frame in hand, so nothing is installed or re-swept here
+        def vis_sync_handler(payload: dict) -> None:
+            apply_sync(self.db, self.truth, payload, None)
+            self.review.invalidate()
+            self._announce()
+
+        self.undo_stack.register(VIS_SYNC_OP, vis_sync_handler, vis_sync_handler)
         # a brush stroke is undone in the same history, but it touches nothing
         # but the editing layer: no database write, no recompilation
         self.undo_stack.register(

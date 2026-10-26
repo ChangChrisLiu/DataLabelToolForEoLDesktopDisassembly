@@ -42,6 +42,25 @@ _ROWS = (
     "ORDER BY c.instance, c.step"
 )
 
+#: Every row of one view's confirmed frames, ``visible`` ones included (task
+#: U36): what the other views say about a part on the same steps, and on which
+#: frames a part is there at all. No masks are read.
+_ALL_ROWS = (
+    "SELECT c.step AS step, c.instance AS instance, c.visibility AS visibility, "
+    "c.placement AS placement, c.input_hash AS input_hash, "
+    "o.visibility AS hand_visibility, o.occluder AS occluder, "
+    "g.difficulty_flags_json AS flags_json "
+    "FROM compiled_mask c "
+    "JOIN frame f ON f.desktop = c.desktop AND f.step = c.step AND f.view = c.view "
+    "LEFT JOIN frame_override o ON o.desktop = c.desktop AND o.step = c.step "
+    "AND o.view = c.view AND o.instance = c.instance "
+    "LEFT JOIN instance_frame_flags g ON g.desktop = c.desktop AND g.step = c.step "
+    "AND g.view = c.view AND g.instance = c.instance "
+    "WHERE c.desktop = ? AND c.view = ? AND f.review_status = 'verified' "
+    f"AND c.instance NOT LIKE '{CONTEXT_PREFIX}%' "
+    "ORDER BY c.instance, c.step"
+)
+
 
 class VisReviewRowsMixin:
     """``instance_frame_flags`` and the visibility review's rows, for ``Db``."""
@@ -109,11 +128,53 @@ class VisReviewRowsMixin:
         decoded object (``{}`` when the row has none), ``hand_visibility`` /
         ``occluder`` the frame override's columns (``None`` without one).
         """
+        return self._vis_rows(_ROWS, desktop, view)
+
+    def vis_view_rows(self, desktop: int, view: str) -> list[dict]:
+        """Every row of the view's confirmed frames, ``visible`` ones too (task U36).
+
+        The same keys as :meth:`vis_review_rows` but ``geom_type``: the other
+        views' side of the visibility review, and the frames a part is on.
+        """
+        return self._vis_rows(_ALL_ROWS, desktop, view)
+
+    def _vis_rows(self, sql: str, desktop: int, view: str) -> list[dict]:
         out = []
-        for row in self.conn.execute(_ROWS, (int(desktop), str(view))).fetchall():
+        for row in self.conn.execute(sql, (int(desktop), str(view))).fetchall():
             item = dict(row)
             flags = R.loads(item.pop("flags_json"))
             item["flags"] = dict(flags) if isinstance(flags, dict) else {}
             item["step"] = int(item["step"])
             out.append(item)
         return out
+
+    def vis_presence(self, desktop: int, view: str) -> dict[str, list[int]]:
+        """``part -> the confirmed frames it has a row on`` in one view (task U36).
+
+        Where a part *is* in a view: a run of the visibility review that is all
+        of it is a part never seen there.
+        """
+        out: dict[str, list[int]] = {}
+        for row in self.conn.execute(
+                "SELECT c.instance AS instance, c.step AS step FROM compiled_mask c "
+                "JOIN frame f ON f.desktop = c.desktop AND f.step = c.step "
+                "AND f.view = c.view WHERE c.desktop = ? AND c.view = ? "
+                f"AND f.review_status = 'verified' AND c.instance NOT LIKE '{CONTEXT_PREFIX}%' "
+                "ORDER BY c.instance, c.step", (int(desktop), str(view))).fetchall():
+            out.setdefault(str(row["instance"]), []).append(int(row["step"]))
+        return out
+
+    def view_annotation(self, desktop: int, view: str) -> tuple[int, list[int]]:
+        """``(keyframes, confirmed steps)`` of one view (task U36's 「—」 / 未确认).
+
+        A view with neither is not annotated; with shapes but no confirmed
+        frame it is drafts only (Label Studio imports, a view begun).
+        """
+        kfs = self.conn.execute(
+            "SELECT COUNT(*) FROM shape_keyframe WHERE desktop = ? AND view = ?",
+            (int(desktop), str(view))).fetchone()[0]
+        steps = [int(r[0]) for r in self.conn.execute(
+            "SELECT step FROM frame WHERE desktop = ? AND view = ? "
+            "AND review_status = 'verified' ORDER BY step",
+            (int(desktop), str(view))).fetchall()]
+        return int(kfs), steps

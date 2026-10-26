@@ -48,6 +48,7 @@ from tda.core.model import (
 )
 from tda.core.truth_inputs import HW_INFERRED, TRUTH_AUX_KEYS, infer_hw
 from tda.core.vis_review import progress as vis_review_progress
+from tda.core.vis_runs import pending_run_count as vis_review_runs
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PATHS_PATH = "configs/paths.yaml"
@@ -883,7 +884,8 @@ def status_rows(db: Db, desktops: Optional[set[int]] = None) -> list[dict]:
     ``[done/total]``, which leaves out the frames the view has no image for
     (task U2c). A sequence view also carries ``vis_reviewed`` / ``vis_total``:
     Review's 「可见性审查」 (task U24) -- confirmed rows whose label is not plain
-    ``visible`` or was set by hand, and how many of them are stamped reviewed.
+    ``visible`` or was set by hand, and how many of them are stamped reviewed
+    -- and ``vis_runs``, the runs of them still to review (task U36).
     """
     totals = {name: db.count_per_desktop(name) for name in STATUS_TOTALS}
     per_view = {name: db.count_per_view(name) for name in VIEW_COUNTERS}
@@ -898,7 +900,8 @@ def status_rows(db: Db, desktops: Optional[set[int]] = None) -> list[dict]:
             counts = views[view]
             reviewed, total = (vis_review_progress(db, desktop, view)
                                if counts.get("verified") else (0, 0))
-            counts.update(vis_reviewed=reviewed, vis_total=total)
+            runs = vis_review_runs(db, desktop, view) if total > reviewed else 0
+            counts.update(vis_reviewed=reviewed, vis_total=total, vis_runs=runs)
         out.append({
             "desktop": desktop,
             "brand": meta.get("brand_model_raw") or meta.get("brand") or "",
