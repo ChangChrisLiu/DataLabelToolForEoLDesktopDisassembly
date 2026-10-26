@@ -196,10 +196,13 @@ class VisReviewMixin:
         return f"{name} 第 {VT.steps_text(steps)} 帧 → {where}"
 
     def recheck_sync_offer(self) -> None:
-        """After ``Ctrl+Z`` / ``Ctrl+Y``: keep the offer only while it still copies something.
+        """The button of the run last answered, lit while there is something to copy.
 
-        The verdict it would copy may have been taken back (no stamp left), or
-        the sync done and undone; the plan is asked again (round 2, N8).
+        Asked after a sync and after every ``Ctrl+Z`` / ``Ctrl+Y`` (round 2,
+        N8 and R2-a): the run stays the one on offer until another is answered
+        or the view changes, and the plan is asked again -- the sync done:
+        dark; the sync undone: lit; its verdict undone (no stamp to copy): dark;
+        redone: lit again.
         """
         offer = getattr(self, "_vis_sync", None)
         if offer is None:
@@ -236,8 +239,9 @@ class VisReviewMixin:
             self.report(f"可见性审查：{refused}")
             return
         finally:
-            self._vis_sync = None
-            self.review.set_sync_offer(None)
+            # the run stays the one on offer: done, it has nothing left to copy
+            # and the button goes dark; Ctrl+Z of the sync lights it again (R2-a)
+            self.recheck_sync_offer()
         name = self._label_of(instance)[0] or instance_label(instance)
         self.logger.info("visibility sync %s %s: %s", instance, steps,
                          {k: result.get(k) for k in ("written", "skipped", "accepted",

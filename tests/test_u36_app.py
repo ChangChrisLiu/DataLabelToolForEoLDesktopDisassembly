@@ -200,6 +200,30 @@ def test_the_offer_goes_out_when_its_verdict_is_undone(window):
     assert sync.isEnabled()
 
 
+def test_the_offer_follows_undo_and_redo_of_the_sync_and_of_its_verdict(window):
+    """R2-a: Space, sync (dark: nothing left) -- Ctrl+Z the sync: lit; Ctrl+Z
+    the verdict: dark; Ctrl+Y the verdict: lit; Ctrl+Y the sync: dark."""
+    review(window)
+    sync = window.review.run_detail.sync_button
+    pick(window, V.HIDDEN)
+    assert press(window, "Space") and sync.isEnabled()
+    QTest.mouseClick(sync, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    assert window.status_message().startswith("已同步到其他视角：")
+    assert not sync.isEnabled()
+    assert press(window, "Ctrl+Z")                     # the sync
+    assert window.db.instance_flags(S.key(12, S.OTHER), V.HIDDEN) is None
+    assert sync.isEnabled() and "oak1 5 帧" in sync.toolTip()
+    assert press(window, "Ctrl+Z")                     # the verdict
+    assert window.db.instance_flags(S.key(12), V.HIDDEN) is None
+    assert not sync.isEnabled()
+    assert press(window, "Ctrl+Y")                     # the verdict again
+    assert sync.isEnabled()
+    assert press(window, "Ctrl+Y")                     # the sync again
+    assert window.db.instance_flags(S.key(12, S.OTHER), V.HIDDEN)["verdict"] == "computed"
+    assert not sync.isEnabled()
+
+
 def test_no_offer_when_the_other_views_have_nothing_to_take(window):
     review(window)
     pick(window, S.ANGLE)
