@@ -26,3 +26,5 @@ thumbs.db
 # the repo root's models/ only: an unanchored `models/` also hid tda/models/
 /models/
 experiments_out/
+# packages built for collaborators (scripts/export_scanpack.py): data, not code
+/exports/
