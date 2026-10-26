@@ -48,8 +48,8 @@ def test_v1_30_is_on_top_of_14():
     changes = SPEC.read_text(encoding="utf-8").split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
     # on top when it landed; U32's v1.31 has gone above it since
-    assert entries[0].startswith(("- **v1.30", "- **v1.31"))
-    [entry] = [e for e in entries[:2] if e.startswith("- **v1.30")]
+    assert entries[0].startswith(("- **v1.30", "- **v1.31", "- **v1.32", "- **v1.33"))
+    [entry] = [e for e in entries[:4] if e.startswith("- **v1.30")]
     assert entry.startswith("- **v1.30（2026-10-25）**：**检测器与 SAM 头用全部已确认帧重训；"
                             "按类置信度下限**（L6，§4.5、§5.1）")
     for needed in ("923 个已确认扫描仪帧", "`conf_by_class: {screw: 0.15}`", "F / S_F", "是假设",

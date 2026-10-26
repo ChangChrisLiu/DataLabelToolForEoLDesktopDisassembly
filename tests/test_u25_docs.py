@@ -32,8 +32,8 @@ def test_v1_25_is_on_top_of_14():
     # v1.27 and U28's v1.28 and U29's v1.29 and L6's v1.30 have gone above both since
     # (and U32's v1.31)
     assert entries[0].startswith(("- **v1.25", "- **v1.26", "- **v1.27",
-                                  "- **v1.28", "- **v1.29", "- **v1.30", "- **v1.31"))
-    [first] = [e for e in entries[:7] if e.startswith("- **v1.25")]
+                                  "- **v1.28", "- **v1.29", "- **v1.30", "- **v1.31", "- **v1.32", "- **v1.33"))
+    [first] = [e for e in entries[:9] if e.startswith("- **v1.25")]
     assert first.startswith("- **v1.25（2026-10-24）**：**`dupli` 行不是步；扫描仪按自己的编号对齐**"
                             "（U25，§2.2、§2.3）")
     for needed in ("`scan-align", "`duplicate_folders`", "dupli_replaces",
