@@ -56,6 +56,9 @@ def _left_alone(plan: dict) -> list[str]:
     stood = int(plan.get("disputed") or 0) + int(plan.get("open_conflicts") or 0)
     if stood:
         lines.append(f"超出容差（或有开着的冲突）的 {stood} 行不动：它们是冲突，在 Conflicts 里处理。")
+    waiting = int(plan.get("deferred") or 0)
+    if waiting:
+        lines.append(f"{waiting} 行挨着这些冲突的零件，等冲突处理完再重签。")
     gained = int(plan.get("missing") or 0) + int(plan.get("unsigned") or 0)
     if gained:
         lines.append(f"{gained} 个零件在它的帧上没确认过：不代签（帧会回到需复核）。")
@@ -84,6 +87,8 @@ def refreeze_status(result: dict) -> str:
     stood = int(result.get("disputed") or 0) + int(result.get("open_conflicts") or 0)
     if stood:
         text += f"；超出容差的 {stood} 行仍是冲突"
+    if result.get("deferred"):
+        text += f"；{result['deferred']} 行等冲突处理完再重签"
     if result.get("moved"):
         text += f"；{result['moved']} 帧写的时候变了，没改（再按一次）"
     return text + f" / re-signed {result['rewritten']} rows on {result['frames_rewritten']} frames"

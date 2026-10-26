@@ -28,6 +28,12 @@ by whoever asked.  Nothing else moves:
 * a row **beyond** the tolerance, or with a conflict open, is a conflict and
   stays one (:func:`~tda.core.truth_refusals.frozen_disagreements`, the
   comparison ``refresh`` and ``verify_frame`` use, decides which);
+* a row whose changing pixels touch such a row -- its frozen mask, or the
+  pixels the compile now gives it -- **waits** for that conflict (``deferred``):
+  re-signed now, it would take pixels the disputed row still holds (an overlap
+  the conflict's answer then removes) or give up pixels the disputed row does
+  not hold yet (a hole); found on D22, whose drive cage was raised over the
+  front-panel connector with that connector's 22 conflicts still open;
 * an instance the compile has and the frozen set lacks (or holds only as an
   ``auto`` row) is **reported, not written**: the frame then shows a different
   set of parts than the one confirmed, which the app's rule answers by sending
@@ -119,6 +125,9 @@ class FramePlan:
     unsigned: list[str] = field(default_factory=list)
     #: ``auto`` rows the compile no longer has (a refresh drops them): left alone.
     leftover: list[str] = field(default_factory=list)
+    #: Rows within the tolerance whose changing pixels touch a disputed (or
+    #: open-conflict) row: they wait for that conflict; re-signed by a later run.
+    deferred: list[str] = field(default_factory=list)
     #: Pixels shared by two frozen visible masks (every pair counted), before
     #: and after; ``None`` unless measured.
     overlap_before: Optional[int] = None
@@ -140,7 +149,7 @@ class FramePlan:
     def stands(self) -> bool:
         """Does anything stay in disagreement on this frame once it is re-signed?"""
         return bool(self.disputed or self.open_conflicts or self.missing or self.unsigned
-                    or self.leftover)
+                    or self.leftover or self.deferred)
 
 
 def _union(a, b):
@@ -229,6 +238,83 @@ def _new_raw(values, input_hash: str) -> dict:
     }
 
 
+def _paint_rle(canvas: np.ndarray, rle: Optional[dict]) -> None:
+    """OR one stored mask into ``canvas`` (same size), inside its own box."""
+    if not rle:
+        return
+    runs = masks.RunLengths(rle)
+    box = runs.bbox()
+    if box is None or tuple(runs.hw) != tuple(canvas.shape):
+        return
+    x0, y0, x1, y1 = box
+    canvas[y0:y1, x0:x1] |= runs.window(box)
+
+
+def _paint_box(canvas: np.ndarray, box) -> None:
+    rounded = rounded_box(box)
+    if rounded is not None:
+        x0, y0, x1, y1 = rounded
+        canvas[max(0, y0):max(0, y1), max(0, x0):max(0, x1)] = True
+
+
+def _canvas_hw(stored: dict, compiled: CompiledFrame) -> Optional[tuple[int, int]]:
+    for inst in compiled.instances.values():
+        if inst.visible is not None:
+            return tuple(int(v) for v in inst.visible.shape)
+    for row in stored.values():
+        if row.get("visible_rle"):
+            return tuple(int(v) for v in row["visible_rle"]["size"])
+    return None
+
+
+def _defer_near_conflicts(plan: FramePlan, stored: dict, compiled: CompiledFrame,
+                          alone: set[str]) -> None:
+    """Hold back the changes whose changing pixels touch a row left to its conflict.
+
+    ``alone`` are the frozen rows in disagreement (or with a conflict open);
+    what they cover is their frozen mask (box) and what the compile gives
+    them now.  A change is the pixels in exactly one of its stored and new
+    mask -- for a box or a mask <-> box change, the box around both.  Those
+    touching what a disputed row covers move from ``changes`` to ``deferred``.
+    """
+    if not alone or not plan.changes:
+        return
+    hw = _canvas_hw(stored, compiled)
+    if hw is None:
+        return
+    held = np.zeros(hw, dtype=bool)
+    for instance in alone:
+        row = stored.get(instance) or {}
+        if row.get("geom_type") == GEOM_BOX:
+            _paint_box(held, row.get("box"))
+        else:
+            _paint_rle(held, row.get("visible_rle"))
+        now = compiled.instances.get(instance)
+        if now is not None and now.visible is not None and tuple(now.visible.shape) == hw:
+            held |= now.visible
+        elif now is not None and now.box is not None:
+            _paint_box(held, now.box)
+    keep: list[RowChange] = []
+    for change in plan.changes:
+        old_rle, new_rle = R.loads(change.old["visible_rle_json"]), R.loads(change.new["visible_rle_json"])
+        if change.old["geom_type"] == GEOM_MASK and change.new["geom_type"] == GEOM_MASK:
+            moved = np.zeros(hw, dtype=bool)
+            _paint_rle(moved, old_rle)
+            fresh = np.zeros(hw, dtype=bool)
+            _paint_rle(fresh, new_rle)
+            moved ^= fresh
+        else:
+            moved = np.zeros(hw, dtype=bool)
+            for geom, rle, box in ((change.old["geom_type"], old_rle, R.loads(change.old["box_json"])),
+                                   (change.new["geom_type"], new_rle, R.loads(change.new["box_json"]))):
+                _paint_box(moved, _box_of(geom, rle, box))
+        if bool((moved & held).any()):
+            plan.deferred.append(change.instance)
+        else:
+            keep.append(change)
+    plan.changes = keep
+
+
 def plan_frame(db, key: FrameKey, compiled: CompiledFrame,
                overrides: Optional[dict] = None, measure: bool = False) -> FramePlan:
     """The frozen rows of one frame that today's compile would re-sign, and why the rest not.
@@ -240,8 +326,10 @@ def plan_frame(db, key: FrameKey, compiled: CompiledFrame,
     disagreements :func:`~tda.core.truth_refusals.frozen_disagreements` finds
     (beyond the tolerance, a label a human stated, a part gone) -- and its
     stored value still differs from the compile: pixels, the mask/box kind,
-    ``visibility`` or ``occlusion_ratio``.  ``measure`` also counts the pixels
-    shared by two frozen visible masks before and after (:func:`overlap_px`).
+    ``visibility`` or ``occlusion_ratio`` -- unless its changing pixels touch
+    a row left to its conflict, when it waits (``deferred``,
+    :func:`_defer_near_conflicts`).  ``measure`` also counts the pixels shared
+    by two frozen visible masks before and after (:func:`overlap_px`).
     """
     stored = db.compiled(key)
     raw = db.compiled_raw(key)
@@ -272,6 +360,7 @@ def plan_frame(db, key: FrameKey, compiled: CompiledFrame,
             continue
         plan.changes.append(RowChange(instance, dict(raw[instance]),
                                       _new_raw(values, compiled.input_hash), px, fields))
+    _defer_near_conflicts(plan, stored, compiled, disputed | set(plan.open_conflicts))
     if measure:
         frozen = {inst: row.get("visible_rle") for inst, row in stored.items()
                   if row["status"] == VERIFIED and (row.get("geom_type") or GEOM_MASK) == GEOM_MASK}
@@ -415,8 +504,8 @@ class RefreezeMixin:
         One transaction and one ``refreeze_frame`` op per frame that changes;
         a frame with nothing to re-sign writes nothing at all.  Returns
         ``{"frames": [FramePlan], "considered", "frames_rewritten", "rewritten",
-        "px", "disputed", "open_conflicts", "missing", "unsigned", "moved",
-        "overlap_before", "overlap_after", "ops", "run", "dry_run"}``.
+        "px", "disputed", "open_conflicts", "missing", "unsigned", "deferred",
+        "moved", "overlap_before", "overlap_after", "ops", "run", "dry_run"}``.
         """
         tag = run or f"{R.now_iso()}#{uuid.uuid4().hex[:6]}"
         cache = InputCache()
@@ -502,6 +591,7 @@ class RefreezeMixin:
             "open_conflicts": sum(len(f.open_conflicts) for f in frames),
             "missing": sum(len(f.missing) for f in frames),
             "unsigned": sum(len(f.unsigned) for f in frames),
+            "deferred": sum(len(f.deferred) for f in frames),
             "moved": sum(1 for f in frames if f.moved),
             "overlap_before": total("overlap_before"), "overlap_after": total("overlap_after"),
             "ops": [f.op for f in frames if f.op is not None], "run": run,

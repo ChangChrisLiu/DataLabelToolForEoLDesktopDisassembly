@@ -250,18 +250,40 @@ def test_a_row_beyond_the_tolerance_is_left_alone_and_stays_a_conflict(db, svc):
     done = svc.refreeze(DESKTOP, VIEW)
 
     for step, plan in zip(STEPS, done["frames"]):
-        assert plan.rows == [BOARD] and plan.disputed == [COVER] and plan.stands
-        assert db.compiled_raw(key(step))[COVER] == before[step][COVER]   # byte for byte
+        assert plan.disputed == [COVER] and plan.stands
+        # the board's strip is what the cover's conflict is about: re-signed now,
+        # a keep_old on the cover would leave it nobody's -- it waits
+        assert plan.rows == [] and plan.deferred == [BOARD]
+        assert db.compiled_raw(key(step)) == before[step]                 # byte for byte
         assert db.frame_digest(key(step)) == digests[step]                # nothing stamped
+    assert done["deferred"] == 3 and done["ops"] == []
     # ... and the refresh still raises it
     stats = svc.refresh_range(DESKTOP, VIEW, STEPS)
     assert stats["conflicts"] == 3
     assert {c["instance"] for c in db.conflicts(DESKTOP, VIEW)} == {COVER}
     # with the conflict open, a second run leaves it to Review as well
     again = svc.refreeze(DESKTOP, VIEW)
-    assert again["rewritten"] == 0 and again["open_conflicts"] == 3
+    assert again["rewritten"] == 0 and again["open_conflicts"] == 3 and again["deferred"] == 3
     assert all(db.compiled_raw(key(s))[COVER] == before[s][COVER] for s in STEPS)
     assert len(db.conflicts(DESKTOP, VIEW, open_only=True)) == 3
+    # settled: the board follows
+    assert accept_all(db, svc, COVER) == 3
+    last = svc.refreeze(DESKTOP, VIEW, measure=True)
+    assert last["rewritten"] == 3 and last["deferred"] == 0
+    assert last["overlap_after"] == 0
+
+
+def test_a_row_far_from_a_conflict_is_resigned_beside_it(db, svc):
+    """A disputed part elsewhere on the frame holds back only what touches it."""
+    kfs = build(db)
+    svc.refresh_range(DESKTOP, VIEW, STEPS)
+    confirm_all(svc)
+    retrace(db, kfs[SCREW], (150, 150, 171, 170))   # the screw: 20 px more, within its band
+    retrace(db, kfs[COVER], WIDER_COVER)             # the cover: beyond
+    done = svc.refreeze(DESKTOP, VIEW, dry_run=True)
+    for plan in done["frames"]:
+        assert plan.disputed == [COVER] and plan.deferred == [BOARD]
+        assert plan.rows == [SCREW]
 
 
 def test_a_part_the_frame_gained_is_reported_not_signed(db, svc):
@@ -349,6 +371,14 @@ def test_a_plan_is_written_as_planned_and_replanned_when_the_rows_moved(db, svc)
     done = svc.refreeze(DESKTOP, VIEW, plans=plan["frames"])
     assert [f.rows for f in done["frames"]] == [[], [BOARD], [BOARD]]
     assert db.compiled(key(1))[BOARD]["verified_by"] == "somebody"   # left as it was
+
+
+def test_overlap_counts_every_pair_once():
+    a, b, c = (masks.encode_rle(rect(*box)) for box in
+               ((0, 0, 10, 10), (5, 0, 15, 10), (8, 0, 20, 10)))
+    # a&b 50, b&c 70, a&c 20 -- the 2 x 10 px under all three count three pairs
+    assert overlap_px([a, b, c]) == 50 + 70 + 20
+    assert overlap_px([a, None, masks.encode_rle(np.zeros(HW, dtype=bool))]) == 0
 
 
 def test_plan_frame_is_what_cli_check_counts(db, svc):

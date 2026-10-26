@@ -58,6 +58,9 @@ def frame_line(plan) -> str:
         left.append(f"{len(plan.disputed)} beyond the tolerance ({', '.join(plan.disputed[:NAMED])})")
     if plan.open_conflicts:
         left.append(f"{len(plan.open_conflicts)} with an open conflict")
+    if plan.deferred:
+        left.append(f"{len(plan.deferred)} waiting for those conflicts "
+                    f"({', '.join(plan.deferred[:NAMED])})")
     if plan.missing or plan.unsigned:
         gained = plan.missing + plan.unsigned
         left.append(f"{len(gained)} not confirmed on this frame ({', '.join(gained[:NAMED])}): "
@@ -72,7 +75,7 @@ def frame_line(plan) -> str:
 def _report(desktop: int, view: str, result: dict) -> None:
     for plan in result["frames"]:
         if plan.changes or plan.disputed or plan.open_conflicts or plan.missing \
-                or plan.unsigned or plan.moved:
+                or plan.unsigned or plan.deferred or plan.moved:
             print(frame_line(plan))
     verb = "would re-sign" if result["dry_run"] else "re-signed"
     print(f"[refreeze] D{desktop:02d} {view}: {result['considered']} confirmed frames, "
@@ -83,6 +86,9 @@ def _report(desktop: int, view: str, result: dict) -> None:
     if stood:
         print(f"[refreeze] {stood} confirmed row(s) differ beyond the tolerance or have an "
               f"open conflict: left alone (Review > Conflicts; cli check queues them)")
+    if result.get("deferred"):
+        print(f"[refreeze] {result['deferred']} row(s) within the tolerance touch those rows: "
+              f"they wait for the conflicts (settle them, then run refreeze again)")
     gained = result["missing"] + result["unsigned"]
     if gained:
         print(f"[refreeze] {gained} part(s) in today's compile were never confirmed on their "

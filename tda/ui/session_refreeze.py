@@ -26,7 +26,8 @@ log = logging.getLogger("tda.session")
 
 def _empty() -> dict:
     return {"frames": [], "considered": 0, "frames_rewritten": 0, "rewritten": 0, "px": 0,
-            "disputed": 0, "open_conflicts": 0, "missing": 0, "unsigned": 0, "moved": 0,
+            "disputed": 0, "open_conflicts": 0, "missing": 0, "unsigned": 0, "deferred": 0,
+            "moved": 0,
             "overlap_before": None, "overlap_after": None, "ops": [], "run": "",
             "dry_run": True}
 
