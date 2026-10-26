@@ -206,9 +206,17 @@ def build_scene(root: Path, desktop: int) -> Path:
     return root / "tda.sqlite"
 
 
+def below_raw(path):
+    """The stand-in raw drive's ``tail``: the part of a path below ``.../raw/``."""
+    text = str(path).replace("\\", "/")
+    return text.split("/raw/", 1)[1] if "/raw/" in text else None
+
+
 def make_pack(root: Path, db_path: Path, desktop: int, name: str = "pack", **kw) -> dict:
     kw.setdefault("exclude", {(desktop, EXCLUDED[desktop]): EXCLUDE_REASON})
     kw.setdefault("notes", [NOTE])
+    kw.setdefault("tail", below_raw)
+    kw.setdefault("expected_hw", HW)
     return S.build_pack(str(db_path), str(root / name), [desktop],
                         cache_dir=str(root / "cache"), work_dir=str(root / f"work_{name}"),
                         **kw)
@@ -444,12 +452,21 @@ def test_model_names_are_normalised_and_the_sheet_text_kept():
     for (brand, family), model in sheet.items():
         raw = f"{brand} {family}"
         assert S.model_names({"brand": brand, "model_family": family,
-                              "brand_model_raw": raw}) == (model, raw)
+                              "brand_model_raw": raw}) == (model, raw, None)
     for family in ("ProDesk 4300 GI SFF", "ProDesk 4300"):
-        model, raw = S.model_names({"brand": "HP", "model_family": family})
-        assert model.startswith("HP Pro 4300 SFF (sheet: ") and "nameplate" in model
+        model, raw, note = S.model_names({"brand": "HP", "model_family": family})
+        assert model == "HP Compaq Pro 4300 SFF"          # the name only (R2-N4)
         assert raw == f"HP {family}"
-    assert S.model_names({"brand": "Acme", "model_family": "X1"}) == ("Acme X1", "Acme X1")
+        assert "nameplate" in note and f"'{family}'" in note
+    assert S.model_names({"brand": "Acme", "model_family": "X1"}) == ("Acme X1", "Acme X1",
+                                                                       None)
+
+
+def test_the_model_note_travels_beside_the_name(built):
+    for path in ("frames.json", "instances.json", "sequence.json"):
+        head = json.loads((built["ddir"] / path).read_text(encoding="utf-8"))
+        assert head["model"] == "Dell OptiPlex 7020" and head["model_note"] is None
+    assert built["coco"]["info"]["model_note"] is None
 
 
 # --------------------------------------------------------------------------- #
@@ -466,6 +483,7 @@ def test_each_picture_is_the_chosen_source_file_byte_for_byte(built):
         image = built["ddir"] / entry["image"]
         assert sha(image) == sha(source) == entry["sha256"]
         assert entry["file_name"] == f"P_{pick}.png"
+        assert entry["source_folder"] == f"D{built['desktop']:02d}/RGB{step}1"
         assert entry["burst_choice"]["p_index"] == pick
         assert (entry["width"], entry["height"]) == (HW[1], HW[0])
         assert entry["roi"] == ROI
@@ -542,7 +560,13 @@ def test_manifest_counts_and_hashes(built):
     assert desk["crowd"] == sum(a["iscrowd"] for a in anns)
     assert desk["clean"] == sum(a["clean"] for a in anns) == manifest["totals"]["clean"]
     assert desk["instances"] == len(built["instances"]["instances"])
-    assert desk["truth_check"]["rows"] == len(anns)
+    check = desk["confirmed_vs_today"]
+    assert check["rows_compared"] == len(anns)
+    assert check["pixel_identical"] + check["differ_within_tolerance"] == len(anns)
+    assert check["differ_within_tolerance"] >= 1     # STALE_LOWER's row on frame 4
+    assert (desk["pose_segments"], desk["rois"]) == (1, 1)
+    assert manifest["frame_size"] == {"width": HW[1], "height": HW[0]}
+    assert manifest["tier"] == "gold"
     assert manifest["notes"] == [NOTE]
     with open(pack / "clean_parts.csv", encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
@@ -555,35 +579,60 @@ def test_manifest_counts_and_hashes(built):
         assert row["class"] == built["instances"]["instances"][row["instance_id"]]["class"]
 
 
+INTERNAL_WORDS = ("spec 8", "spec §", "rehearsal", "TDA ", "cache_file_name",
+                  "source_recorded_path", "added_by", "truth_check",
+                  "identical_to_fresh_compile", "within_app_tolerance", "max_px_diff")
+
+
 def test_the_shipped_files_carry_no_internal_paths_or_jargon(built):
     root = str(built["root"]).replace("\\", "/")
     for path in built["pack"].rglob("*"):
         if path.suffix not in (".json", ".md", ".csv", ".txt"):
             continue
         text = path.read_text(encoding="utf-8")
-        for word in ("spec 8", "spec §", "rehearsal", "TDA ", "cache_file_name",
-                     "source_recorded_path", "added_by"):
+        for word in INTERNAL_WORDS:
             assert word not in text, (path.name, word)
+        assert root not in text and str(built["root"]) not in text, path.name
         if path.name != "annotations.json":  # RLE counts are arbitrary characters
             assert not re.search(r"\bU\d\d\b", text), path.name
-        if path.name != "frames.json":       # the fixture's "raw drive" is a temp folder
-            assert root not in text, path.name
+            # no drive letter anywhere, frames.json's source folders included (R2-N6)
+            assert not re.search(r"\b[A-Za-z]:[/\\]", text), path.name
+    for entry in built["frames"]["frames"].values():
+        assert not re.match(r"^([A-Za-z]:|/)", entry["source_folder"]), entry["source_folder"]
+
+
+def test_a_source_folder_outside_the_dataset_root_is_refused(built, tmp_path):
+    with pytest.raises(S.PackError, match="not below the raw dataset's root"):
+        make_pack(tmp_path, built["db"], built["desktop"], tail=lambda p: None)
 
 
 def test_the_readme_states_the_rules(built):
     text = (built["pack"] / "README.md").read_text(encoding="utf-8")
     summary = text.split("## What this is")[0]
     assert "shared_px == 0" in summary and "之后" in summary and "S01" in summary
-    assert "label map" in summary
-    for value in ("occluded_full", "too_small", "visible_tiny", "occluded_partial",
-                  "visible", "out_of_view"):
-        assert f"| `{value}` |" in text
-    assert ">= 0.95" in text and "< 6 px" in text and "< 0.3" in text
+    assert "label map" in summary and f"{HW[1]}×{HW[0]}" in summary
     assert "6. no other confirmed mask claims any of its pixels (`shared_px == 0`)" in text
     assert "## Known issues" in text and NOTE in text
     assert "## Confirmed and derived fields" in text
     assert "Initial conditions" in text
+    assert f"{HW[1]} x {HW[0]} for every frame here" in text
+    assert "`gold` on every annotation here" in text
+    assert "Each desktop here was scanned from one camera pose and has one ROI" in text
     assert "none is of a part set down on the bench" in text
+    assert "same_pose_segment" in text and "confirmed_vs_today" in text
+    # R2-N1: no reason is claimed for the classes with few clean rows
+    assert "Large parts" not in text and "大件" not in text
+
+
+def test_the_visibility_table_lists_the_rules_in_the_order_they_are_tried(built):
+    text = (built["pack"] / "README.md").read_text(encoding="utf-8")
+    table = text.split("| Value | Rule (first match wins) |")[1].split("\n\n")[0]
+    values = re.findall(r"^\| `(\w+)` \|", table, flags=re.M)
+    assert values == ["out_of_view", "occluded_full", "too_small", "visible_tiny",
+                      "occluded_partial", "visible"]
+    assert "| `out_of_view` | no geometry on the frame |" in table
+    assert ">= 0.95" in table and "< 6 px" in table and "< 0.3" in table
+    assert "6 to 11 px" in table
 
 
 def test_the_input_database_is_not_written(built):
@@ -629,3 +678,120 @@ def test_confirmed_rows_the_inputs_no_longer_make_are_refused(tmp_path):
     db.close()
     with pytest.raises(S.PackError, match="disagree"):
         make_pack(tmp_path, db_path, 13)
+
+
+# --------------------------------------------------------------------------- #
+# round 3: the README's fixed claims are checked at build time (R2-N3)
+# --------------------------------------------------------------------------- #
+def test_a_frame_of_another_size_stops_the_build(built, tmp_path):
+    with pytest.raises(S.PackError, match="the README says 1600x1600"):
+        make_pack(tmp_path, built["db"], built["desktop"], expected_hw=(1600, 1600))
+
+
+def test_another_tier_stops_the_build(built, tmp_path):
+    with pytest.raises(S.PackError, match="tier 'gold', the README says 'silver'"):
+        make_pack(tmp_path, built["db"], built["desktop"], expected_tier="silver")
+
+
+def test_a_picture_chosen_for_another_reason_than_a_dark_p0_stops_the_build(tmp_path):
+    db_path = build_scene(tmp_path, 13)
+    manifest = tmp_path / "cache" / VIEW / "D13" / "manifest.json"
+    records = json.loads(manifest.read_text(encoding="utf-8"))
+    records[str(CHOSEN_P1_STEP)]["reason"] = "p0_saturated"
+    manifest.write_text(json.dumps(records), encoding="utf-8")
+    with pytest.raises(S.PackError, match="the README explains only a dark P_0"):
+        make_pack(tmp_path, db_path, 13)
+
+
+# --------------------------------------------------------------------------- #
+# round 3: the README's data-driven sentences, every branch (R2-N1, R2-N2)
+# --------------------------------------------------------------------------- #
+def _summary(**over) -> dict:
+    base = {
+        "annotations_by_class": {"chassis": 40, "screw": 100, "ram_module": 30},
+        "clean_by_class": {"screw": 90, "ram_module": 2},
+        "placement_counts": {"in_chassis": 170},
+        "per_desktop": [{"desktop": 4, "pose_segments": 1, "rois": 1}],
+        "checks": {"amodal_box_outside_roi": 12, "clean_but_for_roi": 5},
+        "amodal_box_outside_roi_by_class": {"chassis": 10, "psu": 2},
+    }
+    base.update(over)
+    return base
+
+
+def test_a_model_note_is_a_paragraph_below_the_table_not_a_row_of_it():
+    desk = {"desktop": 30, "model": "HP Compaq Pro 4300 SFF", "model_note": "check it",
+            "frames": 1, "instances_annotated": 1, "annotations": 1, "crowd": 0, "clean": 1,
+            "clean_instances": 1, "pose_segments": 1, "rois": 1}
+    summary = _summary(
+        pack_version="1", desktops=[30], per_desktop=[desk],
+        totals={"frames": 1, "annotations": 1, "crowd": 0, "clean": 1, "overlap_frames": 0,
+                "overlap_px": 0, "amodal_widened_rows": 0},
+        checks={"amodal_box_outside_roi": 0, "clean_but_for_roi": 0,
+                "occlusion_ratio_differs_from_confirmed": 0, "occluded_full_with_pixels": 0},
+        visibility_counts={"visible": 1}, burst_sizes={"10": 1}, burst_reasons={"p0": 1},
+        frame_size={"width": 1600, "height": 1600}, tier="gold", state_values=["installed"],
+        placement_values=["in_chassis"], frame_record_names_other_image=[], exclusions=[],
+        notes=[], amodal_box_outside_roi_by_class={})
+    text = S.readme_text(summary)
+    assert "| D30 | HP Compaq Pro 4300 SFF * |" in text
+    total_row = next(line for line in text.splitlines() if line.startswith("| **Total**"))
+    after = text.split(total_row, 1)[1]
+    assert after.startswith("\n\n\\* D30: check it.\n")
+
+
+def test_the_few_clean_classes_are_named_without_a_reason():
+    en, zh = S.few_clean_text(_summary())
+    assert en.startswith("Classes with few or no clean rows (under 15 % of their annotations): "
+                         "chassis (0 of 40), ram_module (2 of 30).")
+    assert "Large" not in en and "sits on" not in en and "大件" not in zh
+    assert "chassis（0/40）" in zh and "ram_module（2/30）" in zh
+    en, zh = S.few_clean_text(_summary(clean_by_class={"chassis": 40, "screw": 90,
+                                                       "ram_module": 30}))
+    assert en == "Every class has at least 15 % of its annotations clean." and "15%" in zh
+
+
+def test_the_roi_paragraph_reads_right_in_every_branch():
+    plain = S.roi_paragraph(_summary())
+    assert "Each desktop here was scanned from one camera pose and has one ROI" in plain
+    assert "none is of a part set down on the bench" in plain
+    assert ("on 12 annotations (chassis 10, psu 2) the amodal box reaches past it, so by "
+            "rule 3 they are not clean; for 5 of them it is the only reason.") in plain
+
+    bench = S.roi_paragraph(_summary(placement_counts={"in_chassis": 160, "on_bench": 5}))
+    assert "5 annotations are of parts set down on the bench" in bench
+    assert "none is" not in bench and "Every annotation in this package is of a part in " \
+        "the chassis" not in bench
+
+    inside = S.roi_paragraph(_summary(checks={"amodal_box_outside_roi": 0,
+                                              "clean_but_for_roi": 0},
+                                      amodal_box_outside_roi_by_class={}))
+    assert "Every amodal box lies inside its frame's ROI" in inside
+    assert "0 annotations" not in inside and "(none)" not in inside
+
+    other_rule = S.roi_paragraph(_summary(checks={"amodal_box_outside_roi": 1,
+                                                  "clean_but_for_roi": 0},
+                                          amodal_box_outside_roi_by_class={"psu": 1}))
+    assert "on 1 annotation (psu 1) the amodal box reaches past it, so by rule 3 it is " \
+        "not clean; each of them also fails another rule." in other_rule
+
+    poses = S.roi_paragraph(_summary(per_desktop=[
+        {"desktop": 4, "pose_segments": 2, "rois": 2},
+        {"desktop": 13, "pose_segments": 1, "rois": 1}]))
+    assert "D04 (2 camera poses, 2 ROIs) has more than one" in poses
+    assert "one camera pose and has one ROI" not in poses
+
+
+# --------------------------------------------------------------------------- #
+# round 3: a missing neighbour frame is not a pose change (R2-N5)
+# --------------------------------------------------------------------------- #
+def test_same_pose_segment_is_null_when_a_frame_is_missing():
+    from tda.ui.locator_pair import Leaving
+
+    leaving = {"first": Leaving(2, "changed", "closed", "open"),
+               "last": Leaving(9, "removed", "installed", "removed"),
+               "middle": Leaving(5, "removed", "installed", "removed")}
+    out = S._leaving([], leaving, [3, 4, 5, 6], seg_of=lambda step: 1 if step < 5 else 2)
+    assert (out["first"]["before_frame"], out["first"]["same_pose_segment"]) == (None, None)
+    assert (out["last"]["after_frame"], out["last"]["same_pose_segment"]) == (None, None)
+    assert out["middle"]["same_pose_segment"] is False      # 4 and 5: two poses

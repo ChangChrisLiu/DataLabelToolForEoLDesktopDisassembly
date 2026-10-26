@@ -35,7 +35,7 @@ it by the app's own rule (:func:`tda.core.truth_refusals.frozen_disagreements`,
 the comparison Space and the re-check queue use; same instance set both
 ways). Pixel-exact agreement is not required -- a confirmed row may differ from
 today's compilation inside the re-tracing tolerance -- and is counted
-(``manifest.json`` ``truth_check``). The amodal shapes are today's (the export
+(``manifest.json`` ``confirmed_vs_today``). The amodal shapes are today's (the export
 derives them from the keyframes), and so is everything this script measures on
 top; the README says which field is which.
 
@@ -143,21 +143,29 @@ DROP_ATTRS = ("added_by", "added_at", "captive_source", "reason", "note",
 #: Reason given to an ``--exclude`` that names none.
 DEFAULT_EXCLUDE_REASON = "left out of this package on request"
 
-#: ``(brand, model as the teardown sheet spells it) -> the model's real name``.
-#: The sheet's text is kept beside it (``model_sheet``), as written.
-MODEL_NAMES: dict[tuple[str, str], str] = {
-    ("Dell", "Optiplex 7020"): "Dell OptiPlex 7020",
-    ("Dell", "Optiplex 7010"): "Dell OptiPlex 7010",
-    ("Dell", "Optiplex 3020"): "Dell OptiPlex 3020",
-    ("Dell", "Optiplex 990"): "Dell OptiPlex 990",
-    ("HP", "Compoq 8100 Elite Small Form Fador"): "HP Compaq 8100 Elite SFF",
-    ("HP", "Compoq 8300 Elite Small Form Fador"): "HP Compaq 8300 Elite SFF",
-    ("HP", "EliteDesk 800 GI SFF"): "HP EliteDesk 800 G1 SFF",
-    ("HP", "ProDesk 4300 GI SFF"):
-        "HP Pro 4300 SFF (sheet: ProDesk 4300 GI SFF; to be verified on the nameplate)",
-    ("HP", "ProDesk 4300"):
-        "HP Pro 4300 SFF (sheet: ProDesk 4300; to be verified on the nameplate)",
+#: ``(brand, model as the teardown sheet spells it) -> (the model's real name,
+#: a caveat or None)``. The sheet's text is kept beside it (``model_sheet``), as
+#: written; the caveat goes to ``model_note``, never into the name.
+NAMEPLATE = "to be verified on the nameplate: the teardown sheet says '{sheet}'"
+MODEL_NAMES: dict[tuple[str, str], tuple[str, Optional[str]]] = {
+    ("Dell", "Optiplex 7020"): ("Dell OptiPlex 7020", None),
+    ("Dell", "Optiplex 7010"): ("Dell OptiPlex 7010", None),
+    ("Dell", "Optiplex 3020"): ("Dell OptiPlex 3020", None),
+    ("Dell", "Optiplex 990"): ("Dell OptiPlex 990", None),
+    ("HP", "Compoq 8100 Elite Small Form Fador"): ("HP Compaq 8100 Elite SFF", None),
+    ("HP", "Compoq 8300 Elite Small Form Fador"): ("HP Compaq 8300 Elite SFF", None),
+    ("HP", "EliteDesk 800 GI SFF"): ("HP EliteDesk 800 G1 SFF", None),
+    ("HP", "ProDesk 4300 GI SFF"): ("HP Compaq Pro 4300 SFF",
+                                    NAMEPLATE.format(sheet="ProDesk 4300 GI SFF")),
+    ("HP", "ProDesk 4300"): ("HP Compaq Pro 4300 SFF", NAMEPLATE.format(sheet="ProDesk 4300")),
 }
+#: What the README promises about every frame; the build checks each one and
+#: stops when a frame breaks it (round 3, R2-N3).
+EXPECTED_HW = (1600, 1600)
+EXPECTED_TIER = "gold"
+#: The one reason the README gives for a picture other than ``P_0``.
+DARK_P0 = "p0_dark"
+FIRST_IMAGE = "P_0.png"
 
 #: One line of English per taxonomy class. ``configs/taxonomy.yaml`` carries
 #: no prose, so the words are written here; the class names are the taxonomy's.
@@ -230,12 +238,14 @@ def desktop_dir(desktop: int) -> str:
     return f"D{int(desktop):02d}"
 
 
-def model_names(meta: dict) -> tuple[str, str]:
-    """``(model, model_sheet)``: the real name, and the teardown sheet's text as is."""
+def model_names(meta: dict) -> tuple[str, str, Optional[str]]:
+    """``(model, model_sheet, model_note)``: the real name, the teardown sheet's
+    text as is, and a caveat about the name (or ``None``)."""
     brand = str(meta.get("brand") or "").strip()
     family = str(meta.get("model_family") or "").strip()
     sheet = str(meta.get("brand_model_raw") or f"{brand} {family}").strip()
-    return MODEL_NAMES.get((brand, family), f"{brand} {family}".strip()), sheet
+    name, note = MODEL_NAMES.get((brand, family), (f"{brand} {family}".strip(), None))
+    return name, sheet, note
 
 
 def parse_exclusions(specs: Sequence[str]) -> dict[tuple[int, int], str]:
@@ -316,9 +326,18 @@ def _source_record(frame: dict, chosen: Optional[dict]) -> dict:
 
 
 def _source_folder(recorded: str, tail: Callable[[str], Optional[str]]) -> tuple[str, str]:
-    """``(folder below the dataset root, file name)`` of a recorded raw path."""
+    """``(folder below the dataset root, file name)`` of a recorded raw path.
+
+    A path the dataset root does not hold would ship a machine's drive and
+    folders in ``frames.json``: the build stops instead (R2-N6).
+    """
     below = tail(recorded)
-    text = (below if below is not None else recorded).replace("\\", "/").lstrip("/")
+    if below is None:
+        raise PackError(f"{recorded} is not below the raw dataset's root: its folder "
+                        f"cannot be named without this machine's path")
+    text = below.replace("\\", "/").lstrip("/")
+    if re.match(r"^[A-Za-z]:", text):
+        raise PackError(f"{recorded}: the folder below the dataset root still names a drive")
     folder, _, name = text.rpartition("/")
     return folder, name
 
@@ -497,8 +516,9 @@ def _leaving(desktop_actions, leaving, frame_steps: list[int], seg_of) -> dict[s
             verb = verbs.get((r, str(found.left_with)))
         before = max((s for s in frame_steps if s < r), default=None)
         after = min((s for s in frame_steps if s >= r), default=None)
-        same_pose = (before is not None and after is not None
-                     and seg_of(before) == seg_of(after))
+        # unknown, not "a pose change", when one of the two frames is missing
+        same_pose = (None if before is None or after is None
+                     else seg_of(before) == seg_of(after))
         out[key] = {"step": r, "kind": found.kind, "old": found.old, "new": found.new,
                     "verb": verb, "left_with": found.left_with,
                     "before_frame": before, "after_frame": after,
@@ -508,10 +528,17 @@ def _leaving(desktop_actions, leaving, frame_steps: list[int], seg_of) -> dict[s
 
 def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out: Path,
                   work: Path, cache_dir: Optional[str], resolve: Callable, tail: Callable,
-                  qa: dict, excluded: dict[int, str]) -> dict:
+                  qa: dict, excluded: dict[int, str],
+                  expected_hw: tuple[int, int] = EXPECTED_HW,
+                  expected_tier: str = EXPECTED_TIER) -> dict:
     """Write ``out/D<nn>/`` for one desktop; returns its counts.
 
     ``excluded`` is ``step -> reason`` of the frames left out of the package.
+    The README's fixed claims are checked frame by frame and stop the build
+    when one fails (R2-N3): every picture ``expected_hw`` (height, width), the
+    view's tier ``expected_tier``, and a picture other than ``P_0`` chosen only
+    because ``P_0`` is dark (with the frame record, if it differs, naming
+    ``P_0``).
     """
     ddir = out / desktop_dir(desktop)
     ctx = load_ctx(db, tax, desktop, VIEW)
@@ -568,6 +595,8 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
     stats: Counter = Counter()
     per_inst = defaultdict(Counter)
     other_image: list[dict] = []
+    segments: set = set()
+    rois: set = set()
     for frame in frames:
         step = int(frame["step"])
         key = FrameKey(desktop, step, VIEW)
@@ -605,7 +634,20 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
         frames_out[str(step)] = entry
         if img is None:
             continue
+        if file_name != FIRST_IMAGE and source["choice"]["reason"] != DARK_P0:
+            raise PackError(f"D{desktop:02d} {name}: the picture is {file_name}, chosen for "
+                            f"{source['choice']['reason']!r}; the README explains only a dark "
+                            f"P_0 ({DARK_P0!r})")
+        if row_file is not None and row_file != FIRST_IMAGE:
+            raise PackError(f"D{desktop:02d} {name}: the frame record names {row_file}; the "
+                            f"README says such a record names {FIRST_IMAGE}")
+        if img.get("tier") != expected_tier:
+            raise PackError(f"D{desktop:02d} {name}: tier {img.get('tier')!r}, the README "
+                            f"says {expected_tier!r}")
         stats[f"burst_{int(source['choice']['burst_size'] or 0)}"] += 1
+        stats[f"burst_reason:{source['choice']['reason'] or 'frame_record'}"] += 1
+        segments.add(entry["pose_segment"])
+        rois.add(None if roi is None else tuple(roi))
         # -- the picture: copied from the raw drive, compared with the cache's
         raw = resolve(source["recorded"])
         if not raw or not Path(raw).is_file():
@@ -624,6 +666,9 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
         if (size[1], size[0]) != hw:
             raise PackError(f"D{desktop:02d} {name}: picture is {size[0]}x{size[1]}, "
                             f"masks are {hw[1]}x{hw[0]}")
+        if hw != tuple(expected_hw):
+            raise PackError(f"D{desktop:02d} {name}: picture is {hw[1]}x{hw[0]}, the README "
+                            f"says {expected_hw[1]}x{expected_hw[0]} for every frame")
         cached = (Path(cache_dir) / VIEW / desktop_dir(desktop) / f"s{step:03d}.png"
                   if cache_dir else None)
         if cached is not None and cached.is_file():
@@ -702,6 +747,9 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
             per_inst[k]["seen"] += int(ann["area"] > 0)
             per_inst[k]["crowd"] += int(bool(ann["iscrowd"]))
             per_inst[k]["clean"] += int(ann["clean"])
+            if attrs.get("tier") != expected_tier:
+                raise PackError(f"D{desktop:02d} {name} {k}: tier {attrs.get('tier')!r}, the "
+                                f"README says {expected_tier!r}")
             stats[f"visibility:{attrs.get('visibility')}"] += 1
             stats[f"placement:{attrs.get('placement')}"] += 1
             if not _bbox_inside(ann.get("amodal_bbox"), roi):
@@ -805,16 +853,16 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
         key=lambda r: (r["step"], r["key"]))
 
     meta = db.get_desktop(desktop) or {}
-    model, sheet = model_names(meta)
+    model, sheet, note = model_names(meta)
     head = {"desktop": desktop, "brand": meta.get("brand"), "model": model,
-            "model_sheet": sheet, "view": VIEW}
+            "model_sheet": sheet, "model_note": note, "view": VIEW}
     doc["info"] = {
         "description": f"Scanner-view segmentation package v{PACK_VERSION}, desktop "
                        f"{desktop_dir(desktop)}: confirmed visible masks, amodal shapes "
                        f"and occlusion, one annotation per (frame, part)",
         "version": doc["info"]["version"],
         "desktop": desktop, "brand": head["brand"], "model": model, "model_sheet": sheet,
-        "view": VIEW,
+        "model_note": note, "view": VIEW,
         "confirmed_rows_only": True, "full_frame_coordinates": True,
         "fully_covered_parts_as_crowd": True,
         "amodal_widened_rows": int(stats["amodal_widened"]),
@@ -841,7 +889,9 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
                                "instance_key": a["attributes"]["instance_key"]})
     return {
         "desktop": desktop, "brand": head["brand"], "model": model, "model_sheet": sheet,
+        "model_note": note,
         "frames": len(images), "frames_in_view": len(frames),
+        "pose_segments": len(segments), "rois": len(rois),
         "excluded": [{"step": s, "reason": r} for s, r in sorted(excluded.items())],
         "instances": len(key_to_id),
         "instances_annotated": sum(1 for k in key_to_id if per_inst[k]["annotations"]),
@@ -853,9 +903,11 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
         "overlap_frames": int(stats["overlap_frames"]),
         "overlap_px": int(stats["overlap_px"]),
         "shared_px": int(stats["shared_px"]),
-        "truth_check": {"rows": truth_rows, "identical_to_fresh_compile": truth_identical,
-                        "within_app_tolerance": truth_rows - truth_identical,
-                        "max_px_diff": truth_max_px},
+        # every confirmed row against what today's annotation draws for it
+        "confirmed_vs_today": {"rows_compared": truth_rows,
+                               "pixel_identical": truth_identical,
+                               "differ_within_tolerance": truth_rows - truth_identical,
+                               "largest_difference_px": truth_max_px},
         "_clean_rows": clean_rows,
         "_stats": stats,
         "_by_class": by_class,
@@ -946,15 +998,20 @@ def build_pack(db_path: str, out_dir: str, desktops: Sequence[int] = DEFAULT_DES
                tail: Optional[Callable[[str], Optional[str]]] = None,
                tax: Optional[Taxonomy] = None, force: bool = False,
                exclude: Optional[dict[tuple[int, int], str]] = None,
-               notes: Sequence[str] = ()) -> dict:
+               notes: Sequence[str] = (),
+               expected_hw: tuple[int, int] = EXPECTED_HW,
+               expected_tier: str = EXPECTED_TIER) -> dict:
     """Write the package; returns the summary (counts per desktop, the QA lists).
 
     ``resolve`` turns a recorded raw path into the file to read today and
-    ``tail`` into its part below the dataset root (both default to the identity
-    / ``None``: :mod:`tda.core.rawroot` is the CLI's business). ``work_dir``
-    receives the database copy, the plain COCO exports and ``qa.json``.
-    ``exclude`` is ``(desktop, step) -> reason`` of frames to leave out;
-    ``notes`` are lines for the README's Known issues.
+    ``tail`` into its part below the dataset root (the CLI passes
+    :mod:`tda.core.rawroot`'s; without one every source folder is refused
+    rather than shipped as a machine path). ``work_dir`` receives the database
+    copy, the plain COCO exports and ``qa.json``. ``exclude`` is ``(desktop,
+    step) -> reason`` of frames to leave out; ``notes`` are lines for the
+    README's Known issues. ``expected_hw`` (height, width) and
+    ``expected_tier`` are what the README promises of every frame; a frame
+    that breaks either stops the build.
     """
     out = Path(out_dir)
     work = Path(work_dir) if work_dir else REPO / ".cache" / "scanpack_work"
@@ -977,7 +1034,9 @@ def build_pack(db_path: str, out_dir: str, desktops: Sequence[int] = DEFAULT_DES
                 raise PackError(f"desktop {desktop} is not in {db_path}")
             mine = {s: r for (d, s), r in exclude.items() if d == desktop}
             per_desktop.append(build_desktop(db, tax, truth, desktop, out, work, cache_dir,
-                                             resolve, tail, qa, mine))
+                                             resolve, tail, qa, mine,
+                                             expected_hw=tuple(expected_hw),
+                                             expected_tier=expected_tier))
     finally:
         db.close()
     clean_rows = [r for d in per_desktop for r in d.pop("_clean_rows")]
@@ -997,6 +1056,9 @@ def build_pack(db_path: str, out_dir: str, desktops: Sequence[int] = DEFAULT_DES
         "package": "scanpack", "pack_version": PACK_VERSION, "view": VIEW,
         "coco_export_version": EXPORT_VERSION,
         "desktops": [d["desktop"] for d in per_desktop],
+        # checked on every frame (R2-N3)
+        "frame_size": {"width": int(expected_hw[1]), "height": int(expected_hw[0])},
+        "tier": expected_tier,
         "totals": {k: sum(d[k] for d in per_desktop)
                    for k in ("frames", "instances", "annotations", "crowd", "clean",
                              "amodal_widened_rows", "overlap_frames", "overlap_px",
@@ -1016,7 +1078,9 @@ def build_pack(db_path: str, out_dir: str, desktops: Sequence[int] = DEFAULT_DES
         "state_values": sorted(values["state"]),
         "placement_values": sorted(values["placement"]),
         "burst_sizes": {k.split("_", 1)[1]: int(v) for k, v in sorted(stats.items())
-                        if k.startswith("burst_")},
+                        if k.startswith("burst_") and not k.startswith("burst_reason:")},
+        "burst_reasons": {k.split(":", 1)[1]: int(v) for k, v in sorted(stats.items())
+                          if k.startswith("burst_reason:")},
         "amodal_box_outside_roi_by_class": dict(sorted(
             ((k.split(":", 1)[1], int(v)) for k, v in stats.items()
              if k.startswith("roi_outside:")), key=lambda kv: (-kv[1], kv[0]))),
@@ -1096,16 +1160,98 @@ def _pct(value: float) -> str:
     return f"{value:g}"
 
 
-def _class_lists(summary: dict) -> tuple[list[str], list[str]]:
-    """``(classes never clean, classes rarely clean)`` among the annotated ones."""
-    never, rarely = [], []
-    for cls, n in sorted(summary["annotations_by_class"].items(), key=lambda kv: -kv[1]):
+def _n(count: int, word: str, plural: Optional[str] = None) -> str:
+    """``"1 annotation"`` / ``"3 annotations"``."""
+    return f"{count} {word if count == 1 else (plural or word + 's')}"
+
+
+def few_clean(summary: dict) -> list[tuple[str, int, int]]:
+    """``(class, clean, annotations)`` of the classes under :data:`RARELY_CLEAN` clean."""
+    out = []
+    for cls, n in sorted(summary["annotations_by_class"].items(), key=lambda kv: (-kv[1], kv[0])):
         clean = summary["clean_by_class"].get(cls, 0)
-        if clean == 0:
-            never.append(f"{cls} (0 of {n})")
-        elif clean < RARELY_CLEAN * n:
-            rarely.append(f"{cls} ({clean} of {n})")
-    return never, rarely
+        if clean < RARELY_CLEAN * n:
+            out.append((cls, clean, n))
+    return out
+
+
+def few_clean_text(summary: dict) -> tuple[str, str]:
+    """``(English, Chinese)`` lines naming the classes with few or no clean rows.
+
+    Generated from the share alone and worded neutrally (R2-N1): which classes
+    fall under the line depends on the desktops packed, and no reason is given
+    that a class -- a RAM stick, a latch -- might not share.
+    """
+    share = int(round(RARELY_CLEAN * 100))
+    rows = few_clean(summary)
+    if not rows:
+        return (f"Every class has at least {share} % of its annotations clean.",
+                f"每一类都至少有 {share}% 的标注是 clean。")
+    en = ", ".join(f"{cls} ({clean} of {n})" for cls, clean, n in rows)
+    zh = "、".join(f"{cls}（{clean}/{n}）" for cls, clean, n in rows)
+    return (f"Classes with few or no clean rows (under {share} % of their annotations): "
+            f"{en}. For these use the visible mask or the disassembly order "
+            f"(*Occluded parts*).",
+            f"clean 行占比低于 {share}% 的类：{zh}；这些类请用可见掩码或拆卸顺序取点。")
+
+
+def roi_paragraph(summary: dict) -> str:
+    """The README's ROI section body, every sentence from the data (R2-N2, R2-N3)."""
+    c = summary["checks"]
+    bench = int(summary["placement_counts"].get("on_bench", 0))
+    out = ["`frames.json` gives each frame's `roi` `[x0, y0, x1, y1]` (x1, y1 exclusive): "
+           "the rectangle around the chassis the annotation concentrated on."]
+    several = [d for d in summary["per_desktop"]
+               if d.get("pose_segments", 1) > 1 or d.get("rois", 1) > 1]
+    if not several:
+        out.append("Each desktop here was scanned from one camera pose and has one ROI, "
+                   "shared by all its frames.")
+    else:
+        which = ", ".join(f"{desktop_dir(d['desktop'])} "
+                          f"({_n(d['pose_segments'], 'camera pose')}, {_n(d['rois'], 'ROI')})"
+                          for d in several)
+        out.append(f"An ROI is drawn once per camera pose (`pose_segment` in `frames.json`); "
+                   f"{which} {'has' if len(several) == 1 else 'have'} more than one, so "
+                   f"read `roi` frame by frame.")
+    if bench == 0:
+        out.append("Every annotation in this package is of a part in the chassis; none is "
+                   "of a part set down on the bench.")
+    else:
+        out.append(f"{_n(bench, 'annotation')} {'is' if bench == 1 else 'are'} of parts set "
+                   f"down on the bench (`placement: on_bench`), which may lie outside the "
+                   f"ROI; the others are of parts in the chassis.")
+    crossing = int(c["amodal_box_outside_roi"])
+    if crossing == 0:
+        out.append("Every amodal box lies inside its frame's ROI, so rule 3 of *clean* "
+                   "excludes nothing here.")
+    else:
+        classes = ", ".join(f"{k} {v}" for k, v in
+                            summary["amodal_box_outside_roi_by_class"].items())
+        only = int(c["clean_but_for_roi"])
+        tail = (f"; for {only} of them it is the only reason" if only
+                else "; each of them also fails another rule")
+        out.append(f"The rectangle is not a tight fit: on {_n(crossing, 'annotation')} "
+                   f"({classes}) the amodal box reaches past it, so by rule 3 "
+                   f"{'it is' if crossing == 1 else 'they are'} not clean{tail}.")
+    return "\n".join(out)
+
+
+#: What each burst-choice ``reason`` of the frame cache means.
+REASON_TEXT = {
+    "p0": "the first image",
+    "p0_dark": "the first image was a dark exposure, so the sharpest of the others",
+    "p0_saturated": "the first image was over-exposed, so the sharpest of the others",
+    "p0_outlier": "the first image differed from the rest, so the sharpest of the others",
+    "p0_missing": "the burst has no first image, so the lowest-numbered one",
+}
+
+
+def _reason_text(reason: str) -> str:
+    if reason in REASON_TEXT:
+        return REASON_TEXT[reason]
+    if reason.endswith("_kept"):
+        return "no image of the burst passed the checks, so the first was kept"
+    return reason
 
 
 def _known_issues(summary: dict) -> str:
@@ -1146,25 +1292,26 @@ def _known_issues(summary: dict) -> str:
 
 def readme_text(summary: dict) -> str:
     t, c = summary["totals"], summary["checks"]
+    noted = [d for d in summary["per_desktop"] if d.get("model_note")]
     rows = "\n".join(
-        f"| {desktop_dir(d['desktop'])} | {d['model']} | {d['frames']} | "
-        f"{d['instances_annotated']} | {d['annotations']} | {d['crowd']} | {d['clean']} | "
-        f"{d['clean_instances']} |"
+        f"| {desktop_dir(d['desktop'])} | {d['model']}{' *' if d.get('model_note') else ''} | "
+        f"{d['frames']} | {d['instances_annotated']} | {d['annotations']} | {d['crowd']} | "
+        f"{d['clean']} | {d['clean_instances']} |"
         for d in summary["per_desktop"])
+    # each note a paragraph of its own: a line right under a table is a table row
+    model_notes = "".join(f"\n\\* {desktop_dir(d['desktop'])}: {d['model_note']}.\n"
+                          for d in noted)
     classes = ", ".join(f"{k} {v}" for k, v in sorted(summary["clean_by_class"].items(),
                                                        key=lambda kv: (-kv[1], kv[0])))
     desks = ", ".join(desktop_dir(d) for d in summary["desktops"])
-    never, rarely = _class_lists(summary)
-    seldom = ", ".join(entry.split(" (")[0] for entry in never + rarely)
-    seldom_zh = (f"这些类没有或几乎没有 clean 行：{seldom}（大件上总压着螺丝、线头或卡扣）。"
-                 if seldom else "")
+    few_en, few_zh = few_clean_text(summary)
     vis = summary["visibility_counts"]
     bursts = summary["burst_sizes"]
     longest = max((int(k) for k in bursts), default=0)
     odd_bursts = sum(v for k, v in bursts.items() if int(k) < longest)
-    roi_classes = ", ".join(f"{k} {v}" for k, v in
-                            summary["amodal_box_outside_roi_by_class"].items()) or "none"
-    bench = summary["placement_counts"].get("on_bench", 0)
+    reasons = "; ".join(f"`{r}` ({_n(n, 'frame')}): {_reason_text(r)}"
+                        for r, n in summary["burst_reasons"].items())
+    width, height = summary["frame_size"]["width"], summary["frame_size"]["height"]
     full, part = _pct(OCCLUDED_FULL_RATIO), _pct(OCCLUDED_PARTIAL_RATIO)
     small, tiny = TOO_SMALL_PX, VISIBLE_TINY_PX
     excluded = ", ".join(f"{desktop_dir(e['desktop'])} {frame_name(e['step'])}"
@@ -1173,7 +1320,7 @@ def readme_text(summary: dict) -> str:
 
 ## 中文摘要
 
-本包是 {len(summary['desktops'])} 台台式机（{desks}）结构光扫描仪俯视 RGB 帧（1600×1600）的二维分割标注，
+本包是 {len(summary['desktops'])} 台台式机（{desks}）结构光扫描仪俯视 RGB 帧（{width}×{height}）的二维分割标注，
 供 3D 合作方测试"用 2D 掩码从重建点云里取出每个零件的点"。每台机器一个文件夹 `D<nn>/`：
 `images/S<nn>.png` 是标注时画掩码所用的那张原始扫描图（从原始盘逐字节拷贝），
 `labels/S<nn>.png` 是 16 位实例 id 图（0 = 背景，id 见 `instances.json`，只在本台机器内有效），
@@ -1190,7 +1337,7 @@ def readme_text(summary: dict) -> str:
 (4) amodal 就是标注的形状本身（没有被可见掩码撑大）；(5) label map 把它的每个可见像素都给了它；
 (6) 它的可见像素没有一个同时被别的确认掩码占用（`shared_px == 0`）。
 这样的零件在那一帧上没有被任何东西挡住，掩码下的点就是扫描仪看到的它的全部表面。
-{seldom_zh}
+{few_zh}
 被遮挡的零件有两条路：(1) 只取可见掩码（label map）下的点；
 (2) 用拆卸顺序：零件在第 r 步离开，取第 r-1 帧重建里有、第 r 帧重建里没有、且落在它第 r-1 帧 amodal 掩码内的点。
 完全被挡住的零件是 crowd 行（`iscrowd: 1`，可见掩码为空），那一帧上没有它的点。
@@ -1211,19 +1358,18 @@ points in your 3D reconstruction of the same scanner frame.
 |---|---|---|---|---|---|---|---|
 {rows}
 | **Total** | | {t['frames']} | | {t['annotations']} | {t['crowd']} | {t['clean']} | |
+{model_notes}
 
 *Parts* counts the instances with at least one annotation; *Clean* counts
 (frame, part) annotations, *Clean parts* the distinct parts among them.
 Frames left out of this package: {excluded} (see *Known issues*). `frames.json`,
-`instances.json` and `annotations.json` give the model name (`model`) and the
-teardown sheet's own spelling of it (`model_sheet`).
+`instances.json` and `annotations.json` give the model name (`model`), the
+teardown sheet's own spelling of it (`model_sheet`) and a caveat about the
+name where there is one (`model_note`, else null).
 
 Clean annotations by class: {classes}.
 
-**Large parts have (almost) no clean rows.** Something small -- a screw, a
-connector, a latch -- nearly always sits on them. Never clean: {', '.join(never) or 'none'}.
-Rarely clean (under {int(RARELY_CLEAN * 100)} % of their annotations): {', '.join(rarely) or 'none'}.
-For these use the visible mask or the disassembly order (*Occluded parts*).
+{few_en}
 
 ## Layout
 
@@ -1252,10 +1398,9 @@ one of them is the picture the masks were drawn on. `frames.json` names it:
 `source_folder` (below the dataset root on our scanner drive) and `file_name`,
 with `burst_choice`: `index` is its position in the burst as listed,
 `p_index` the number in its file name (`P_<p_index>.png`), `burst_size` how
-many images the burst has, `reason` why it was chosen (`p0`: the first one;
-`p0_dark`: the first was a dark exposure, so a later one) and `by` who chose
-it (`annotation_tool`: the tool that showed it to the annotator). Burst sizes
-here: {', '.join(f'{v} frames with {k} images' for k, v in sorted(bursts.items(), key=lambda kv: int(kv[0])))}{'.' if not odd_bursts else f'; in the {odd_bursts} shorter bursts an image is missing, so `index` and `p_index` can differ.'}
+many images the burst has, `reason` why it was chosen and `by` who chose it
+(`annotation_tool`: the tool that showed it to the annotator). Reasons here:
+{reasons}. Burst sizes here: {', '.join(f'{v} frames with {k} images' for k, v in sorted(bursts.items(), key=lambda kv: int(kv[0])))}{'.' if not odd_bursts else f'; in the {odd_bursts} shorter bursts an image is missing, so `index` and `p_index` can differ.'}
 `sha256`, `width`, `height` identify the file; `identical_to_annotated_copy`
 says that the annotation tool's working copy of the picture was byte for byte
 this file.
@@ -1264,7 +1409,8 @@ this file.
 
 Everything is in image pixels of the picture `frames.json` names: `(x, y)` with
 the origin at the top-left corner, x to the right (column), y down (row),
-1600 x 1600 for every frame here. Masks, boxes (`[x, y, w, h]`), the label maps
+{width} x {height} for every frame here (checked on each one when the package
+was built). Masks, boxes (`[x, y, w, h]`), the label maps
 and the ROI all use this frame, unshifted and uncropped.
 
 ## Selecting points
@@ -1311,24 +1457,29 @@ whole outline and the points under it are all of the part the scanner saw.
    `removed` for a part taken out, `displaced` for one moved aside but still in
    the picture, and `changed` for a part that never leaves but changes state
    (a connector unplugged, a latch opened). A frame left out of the package is
-   never a `before_frame` or `after_frame`.
+   never a `before_frame` or `after_frame`: they are the nearest frames in the
+   package before and at `r`, and null when there is none.
+   `leaving.same_pose_segment` is true when the two frames were taken from the
+   same camera pose (compare them directly), false when the pose changed
+   between them, and null when one of them is missing.
 
 ### Visibility labels
 
 `visibility` is one of six values. The annotation tool decides it from the
 occlusion ratio of the confirmed row and the shorter side of the visible
-mask's bounding box, in this order (an annotator may override it, and then
+mask's bounding box: the rules below are tried top to bottom and the first one
+that holds gives the label (an annotator may override it, and then
 `attributes.occluder` may give the reason: `cable` -- hidden by a cable nobody
 annotates -- or `viewpoint`):
 
-| Value | Rule | Annotations here |
+| Value | Rule (first match wins) | Annotations here |
 |---|---|---|
+| `out_of_view` | no geometry on the frame | 0 (such a row is never an annotation) |
 | `occluded_full` | occlusion ratio >= {full} | {vis.get('occluded_full', 0)} |
 | `too_small` | shorter side < {small} px | {vis.get('too_small', 0)} |
-| `visible_tiny` | shorter side {small}-{tiny - 1} px (< {tiny}) | {vis.get('visible_tiny', 0)} |
-| `occluded_partial` | occlusion ratio {part}-{full} | {vis.get('occluded_partial', 0)} |
-| `visible` | occlusion ratio < {part} | {vis.get('visible', 0)} |
-| `out_of_view` | no pixel and no shape on the frame | 0 (never an annotation) |
+| `visible_tiny` | shorter side {small} to {tiny - 1} px | {vis.get('visible_tiny', 0)} |
+| `occluded_partial` | occlusion ratio >= {part} (and < {full}) | {vis.get('occluded_partial', 0)} |
+| `visible` | everything else: occlusion ratio < {part} | {vis.get('visible', 0)} |
 
 So **a `visible` part may still be partly covered** (up to {int(float(part) * 100)} % of its
 silhouette); `clean` is the test for "not covered at all". An `occluded_full`
@@ -1349,12 +1500,7 @@ off the label map: `[{{"id": instance_id, "px": pixels}}, ...]`, largest first.
 
 ### The ROI
 
-`frames.json` gives each frame's `roi` `[x0, y0, x1, y1]` (x1, y1 exclusive):
-the rectangle the annotation concentrated on, drawn once per desktop around the
-chassis. Every annotation in this package is of a part in the chassis --
-{'none is of a part' if bench == 0 else f'{bench} annotations are of parts'} set down on the bench. The rectangle is not a tight fit: on {c['amodal_box_outside_roi']}
-annotations ({roi_classes}) the amodal box reaches past it, which by rule 3
-makes them not clean -- for {c['clean_but_for_roi']} of them it is the only reason.
+{roi_paragraph(summary)}
 
 ### Fully covered parts (crowd rows)
 
@@ -1402,7 +1548,7 @@ is kept as it was confirmed. No annotation with `shared_px > 0` is clean.
   `occluder`, `visibility_reviewed` (a person re-checked the label),
   `occlusion_ratio` (confirmed), `amodal_complete` (the drawn shape covers the
   whole part), `implied`, `tier` (the annotation standard of this camera:
-  `gold`) and `verified`. The package adds at the top of each annotation:
+  `{summary['tier']}` on every annotation here) and `verified`. The package adds at the top of each annotation:
   `instance_id`, `visibility`, `occlusion_ratio`, `occluders`,
   `occluded_unlabelled_px`, `shared_px`, `label_px`, `amodal_is_shape`,
   `clean`. Each image has `file_name` (`images/S<nn>.png`) and `label_file`
@@ -1419,7 +1565,11 @@ is kept as it was confirmed. No annotation with `shared_px > 0` is clean.
   it), `leaving` (see route 2), `frames` (annotation counts) and `states`
   (`states["<step>"]`: state and placement at every step). States:
   {', '.join(f'`{s}`' for s in summary['state_values'])}; placements:
-  {', '.join(f'`{p}`' for p in summary['placement_values'])}.
+  {', '.join(f'`{p}`' for p in summary['placement_values'])}. `attrs` carries what
+  the teardown sheet says about the part, where it says it: `role` (what a
+  screw fastens), `kind`, `of` (what a cover or latch belongs to), `captive`,
+  `sheet_no` (the part's number on the sheet), `cable_owner` (the part whose
+  cable a connector is on) and `qualifier` (further words from the sheet).
 * `sequence.json` -- `steps`: step, name (as written in the teardown log),
   step type, verbs, targets and the actions; `leaving`: every part's leaving
   step in order; `timeline`: per part, runs of `(from, to, state, placement)`.
@@ -1428,7 +1578,13 @@ is kept as it was confirmed. No annotation with `shared_px > 0` is clean.
   `height`, `roi`, `step_name`, `step_type`, `actions`, `review_status`,
   annotation counts, and `excluded` (the reason, for a frame left out).
 * `manifest.json` -- the counts above per desktop and per class, the
-  exclusions and notes, and the size and sha256 of every other file.
+  exclusions and notes, and the size and sha256 of every other file. Per
+  desktop, `confirmed_vs_today` says how every confirmed visible mask compares
+  with what today's annotation draws for that part on that frame:
+  `pixel_identical`, or `differ_within_tolerance` (inside the annotation tool's
+  re-tracing tolerance, so still the confirmed mask), with the largest such
+  difference in pixels (`largest_difference_px`); `pose_segments` and `rois`
+  count the camera poses and ROIs of its frames.
 
 ## Known issues
 
@@ -1499,7 +1655,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     for d in summary["per_desktop"]:
         print(f"[scanpack] D{d['desktop']:02d}: {d['frames']} frames, {d['instances']} parts, "
               f"{d['annotations']} annotations, {d['crowd']} crowd, {d['clean']} clean, "
-              f"truth {d['truth_check']}")
+              f"confirmed vs today {d['confirmed_vs_today']}")
     print(f"[scanpack] totals {summary['totals']}")
     print(f"[scanpack] checks {summary['checks']}")
     print(f"[scanpack] clean by class: {summary['clean_by_class']}")
