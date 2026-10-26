@@ -186,7 +186,8 @@ def test_a_clip_with_a_keyframe_is_kept_and_reported(before, tax):
     assert run.kept_for_review == 1 and run.kept_carrying_work == 1
     said = (f"D36: instance {CLIP} was the sheet's {ROW!r}, a cable event now ({NODE}), "
             f"but is kept (1 shape_keyframe, 1 state_event) - if that work is not of "
-            f"a part, undo it and delete the instance in S1")
+            f"a part, undo it (the keyframe / frame override / confirmed row / conflict "
+            f"/ relation that holds it), then run import-logs --force again")
     assert said in run.issues
     assert any(said in line for line in lines)
     # the step is the cable event all the same, and the hand-set answer stays
@@ -194,6 +195,29 @@ def test_a_clip_with_a_keyframe_is_kept_and_reported(before, tax):
     assert [(a.target, a.verb) for a in step2] == [(NODE, "remove")]
     assert [(e.step, e.new, e.auto) for e in before.events(D36) if e.target == CLIP] == \
         [(42, "closed", False)]
+
+
+def test_the_advice_works_undo_the_holding_work_and_force_again(before, tax, fresh):
+    """Round 2 (N2): S1 cannot delete it -- its hand-set event is a reference --
+    but undoing the work and re-importing drops it, event and all."""
+    from tda.core.model import FrameKey, FrameOverride
+    from tda.ui.steps_delete import check_deletable
+    from tda.ui.steps_model import StepTableData
+    from tda.ui.steps_values import EditError
+
+    held = FrameOverride(FrameKey(D36, 42, "scan"), CLIP, None, "occluded_full",
+                         occluder="cable")
+    before.set_frame_override(held)
+    run = _import(before, tax, force=True)
+    assert CLIP in before.instances(D36) and not run.dropped
+    assert any("but is kept (1 frame_override, 1 state_event)" in i for i in run.issues)
+    with pytest.raises(EditError):       # what the old advice sent the annotator to
+        check_deletable(StepTableData.load(before, D36, tax), before, CLIP)
+    before.delete_frame_override(held.frame, CLIP)
+    run = _import(before, tax, force=True)
+    assert CLIP not in before.instances(D36)
+    assert run.dropped and "1 hand-set state event(s) went with it" in run.dropped[0]
+    assert _tables(before) == fresh
 
 
 def test_an_ordinary_vanished_part_still_holds_on_its_hand_set_event(before, tax):

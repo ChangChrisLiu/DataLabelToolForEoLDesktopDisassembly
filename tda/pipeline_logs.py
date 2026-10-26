@@ -834,15 +834,17 @@ def _apply_drops(db: Db, li: LogImport, plan: DropPlan) -> tuple[list[str], list
     """Carry the plan out inside the caller's transaction; ``(dropped, issues)``.
 
     Every removal is logged to ``op_log`` with the whole stored record and the
-    derived edges that went with it, so a drop can be audited and undone one row
-    at a time -- the same promise :func:`add_implied_instances` makes for the
-    rows it creates.
+    derived edges that went with it, so a drop can be audited and, if need be,
+    rebuilt by hand from that row. Nothing replays the inverse: no command undoes
+    a ``dropped_instance`` op, and the way back from a re-import is the safety
+    backup ``import-logs --force`` takes before it writes.
 
     A clip whose row is a loose-cable event now (task U33, ``plan.cables``)
     takes its hand-set state events with it, listed in the op row under
-    ``events`` (payload and inverse); the line names the cable node. Kept
-    because of a keyframe, it gets its own line: the shapes may be of the
-    cable, and only a person can say.
+    ``events`` (payload and inverse); the line names the cable node. Kept --
+    by a keyframe, a frame override, a confirmed row, an open conflict, a layer
+    order or a constraint edge a person set -- it gets its own line: that work
+    may be of the cable, and only a person can say.
     """
     dropped: list[str] = []
     issues = [_kept_line(li.desktop, key, why, plan.cables.get(key))
@@ -901,14 +903,20 @@ def _drop_reason(rec, cable: Optional[tuple[str, str]] = None) -> str:
 
 def _kept_line(desktop: int, key: str, why: str,
                cable: Optional[tuple[str, str]] = None) -> str:
-    """The import issue of one vanished key the plan keeps."""
+    """The import issue of one vanished key the plan keeps.
+
+    A clip that is a cable event now (task U33) is not sent to S1 to be
+    deleted: its hand-set state events would make S1 refuse. Undoing the work
+    that holds it and re-importing drops it, events and all.
+    """
     if cable is None:
         return (f"D{desktop:02d}: instance {key} vanished from the sheet but is kept "
                 f"({why}) - merge or delete it in S1")
     node, name = cable
     return (f"D{desktop:02d}: instance {key} was the sheet's {name!r}, a cable event "
-            f"now ({node}), but is kept ({why}) - if that work is not of a part, "
-            f"undo it and delete the instance in S1")
+            f"now ({node}), but is kept ({why}) - if that work is not of a part, undo "
+            f"it (the keyframe / frame override / confirmed row / conflict / relation "
+            f"that holds it), then run import-logs --force again")
 
 
 # --------------------------------------------------------------------------- #
