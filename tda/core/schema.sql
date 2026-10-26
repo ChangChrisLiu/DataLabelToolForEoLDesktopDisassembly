@@ -1,4 +1,4 @@
--- TDA SQLite schema (schema_version = 4).
+-- TDA SQLite schema (schema_version = 6; see tda/core/db.py: SCHEMA_VERSION).
 -- One table per entity of design spec section 3.1. Every JSON column is TEXT
 -- holding json.dumps(..., ensure_ascii=False); RLE dicts are stored as JSON.
 -- All statements are IF NOT EXISTS so that Db.__init__ stays idempotent -- which
@@ -222,6 +222,21 @@ CREATE TABLE IF NOT EXISTS instance_frame_flags (
     instance              TEXT    NOT NULL,
     difficulty_flags_json TEXT,
     PRIMARY KEY (desktop, step, view, instance)
+);
+
+-- schema_version 6 (task U35, 「这一帧的说明」): what the annotator wrote about
+-- one frame in Review -- what is odd on it, what they decided, what the
+-- picture shows. Free text (may name parts by key), one per frame; no row = no
+-- note. Keyed by the step like frame_override, so load-index moves it with the
+-- photo; import-logs --force never touches it. Not an input of the compiler.
+CREATE TABLE IF NOT EXISTS frame_note (
+    desktop    INTEGER NOT NULL REFERENCES desktop(id) ON DELETE CASCADE,
+    view       TEXT    NOT NULL,
+    step       INTEGER NOT NULL,
+    text       TEXT    NOT NULL,
+    author     TEXT,
+    updated_at TEXT,
+    PRIMARY KEY (desktop, view, step)
 );
 
 CREATE TABLE IF NOT EXISTS compiled_mask (
