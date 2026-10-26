@@ -15,9 +15,11 @@ The script's own functions are driven:
   the inverse written back restores the order (Ctrl+Z), the payload redoes it;
 * ``steps_panel_relation`` -- Steps' instance table + Apply: U27 ``relation_fix`` ops;
 * ``fix_clip`` -- the clip's frame-2 shape committed on the last frame it is in: a
-  ``commit_keyframe`` op whose inverse removes the keyframe again;
+  ``commit_keyframe`` op whose inverse removes the keyframe again; a clip no longer on the
+  shroud is never ruled again;
 * ``settle`` -- the conflicts the changes opened accepted (``accept_new``); the frames stay
-  confirmed, except where the clip appears (a confirmed frame that gains a part is demoted).
+  confirmed, except where the clip appears (a confirmed frame that gains a part is demoted);
+  a conflict the user had open stays open, also when the app supersedes it with a new id.
 
 Then ``import-logs --force``: the layer order (``zorder`` is not rebuilt by an import: it is
 not replayed, it is simply never touched), the clip's keyframe, its relation fix (replayed,
@@ -158,7 +160,7 @@ def test_the_cage_raise_is_one_set_zorder_op_with_its_inverse(scene, tax):
     plan = U31.plan_desktop(desk, [group], lambda *_: None)
     assert [m[:2] for m in plan["moves"]] == [(CAGE, FP1)]          # one raise, no collateral
     before = desk.order(1)
-    open0 = {int(c["id"]) for c in db.conflicts(D23, VIEW)}
+    open0 = U31.open_conflicts(db, D23)
     assert U31.apply_zorder(db, truth, desk, plan, lambda *_: None) == 1
     op = last_op(db, "set_zorder")
     assert [tuple(e) for e in op["inverse"]["order"]] == before
@@ -181,7 +183,7 @@ def test_the_cage_raise_is_one_set_zorder_op_with_its_inverse(scene, tax):
 def test_the_clip_moves_to_the_heatsink_through_steps_and_gets_its_shape(scene, tax):
     db, truth = scene
     desk = U31.Desk(db, tax, truth, D23)
-    open0 = {int(c["id"]) for c in db.conflicts(D23, VIEW)}
+    open0 = U31.open_conflicts(db, D23)
     m = {"before": 2}
     done = U31.fix_clip(db, tax, truth, desk, m,
                         {"action": "reparent", "parent": HEATSINK}, None, lambda *_: None)
@@ -194,6 +196,7 @@ def test_the_clip_moves_to_the_heatsink_through_steps_and_gets_its_shape(scene, 
     assert (new["exists"], new["instance"], new["anchor_step"]) == \
         (True, CLIP, HEATSINK_LEAVES - 1)
     assert op["inverse"]["keyframes"][0]["exists"] is False      # the inverse removes it
+    assert op["payload"]["copy_of_frame"] == 2                   # where the pixels came from
     predicted = U31.clip_touches(desk, done["shape"]["frames"])
     out = U31.settle(db, truth, desk, open0, predicted, lambda *_: None)
     assert not out["unexpected"] and not out["left_mine"]
@@ -201,6 +204,50 @@ def test_the_clip_moves_to_the_heatsink_through_steps_and_gets_its_shape(scene, 
     # frames 3-7 gained a part: the app demotes them, the rest stay confirmed
     assert verified(db) == [1, 2] + list(range(HEATSINK_LEAVES, max(STEPS) + 1))
     assert visible_px(db, 3, CLIP) == 320
+    # a re-run never re-rules it, whatever a re-measure says: its parent is no longer the
+    # shroud (U31 review N4)
+    n_ops = int(db.conn.execute("SELECT COUNT(*) FROM op_log").fetchone()[0])
+    again = U31.fix_clip(db, tax, truth, desk, {"before": HEATSINK_LEAVES - 1},
+                         {"action": "unparent", "parent": None}, None, lambda *_: None)
+    assert again["relation"] is None and again["shape"] is None
+    assert "not re-ruled" in again["skipped"]
+    assert int(db.conn.execute("SELECT COUNT(*) FROM op_log").fetchone()[0]) == n_ops
+    assert (db.instances(D23)[CLIP].parent, db.instances(D23)[CLIP].attached) == \
+        (HEATSINK, True)
+
+
+def test_a_conflict_the_user_left_open_stays_open_when_a_move_supersedes_it(scene, tax):
+    """U31 review N2: the user's open questions are kept by their (frame, part) keys.
+
+    The raise moves the connector's row on frames 1-8, so the app closes the user's
+    conflict there as superseded and opens a new one (one open conflict per row): a new id
+    on a key the plan predicted -- which an exclusion by id alone would have accepted.
+    """
+    db, truth = scene
+    # the user's question: the connector redrawn, grown above the cage, after the frames
+    # were confirmed -- a conflict on every frame it is drawn on, left open
+    shape = db.keyframes(D23, VIEW, FP1)[0]
+    shape.parts = [ShapePart("main", masks.encode_rle(rect(100, 150, 120, 170)
+                                                      | rect(100, 120, 120, 140)))]
+    db.update_keyframe(shape)
+    truth.refresh_range(D23, VIEW, STEPS, ignore_digest=True)
+    users = U31.open_conflicts(db, D23)
+    keys = set(users.values())
+    assert {k for _s, k in keys} == {FP1} and {s for s, _k in keys} >= set(range(1, CAGE_MOVES))
+    desk = U31.Desk(db, tax, truth, D23)
+    group = U31.Group(D23, "cage", [CAGE], [FP1], qa_last=CAGE_MOVES - 1)
+    plan = U31.plan_desktop(desk, [group], lambda *_: None)
+    assert U31.apply_zorder(db, truth, desk, plan, lambda *_: None) == 1
+    predicted = {(s, k) for item in plan["groups"] for k, v in item["cand"]["sim"].items()
+                 for s in v}
+    assert {(s, FP1) for s in range(1, CAGE_MOVES)} <= predicted
+    out = U31.settle(db, truth, desk, users, predicted, lambda *_: None)
+    assert sorted(out["accepted"]) == [(s, CAGE) for s in range(1, CAGE_MOVES)]
+    assert not out["unexpected"] and not out["left_mine"]
+    still = U31.open_conflicts(db, D23)
+    assert set(still.values()) == keys                         # every one of them open ...
+    assert out["users_open"]["reopened"] == [(s, FP1) for s in range(1, CAGE_MOVES)]
+    assert {i for i, k in still.items() if k[0] < CAGE_MOVES}.isdisjoint(users)  # ... new ids
 
 
 def test_a_forced_re_import_keeps_every_change(scene, tax, tmp_path):

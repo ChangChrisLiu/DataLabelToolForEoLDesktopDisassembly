@@ -50,11 +50,14 @@ B. **HP cable clip** (D23-D26, D29-D33): is ``cable_clip.01`` still in its place
    then its frame-2 shape is committed on the last frame it is in (``commit_edit``, scope
    keyframe: one ``commit_keyframe`` op) so those frames have its geometry.  D23 keeps the
    user's ruling (leaves with the shroud) whatever the numbers say; an ambiguous measure is
-   left alone and reported.
+   left alone and reported.  Only a clip still parented to the shroud (``cover.*``) is
+   ruled: once moved, a re-run measures it for the record and leaves it alone.
 
 C. **Conflicts**: the whole scan view is refreshed and every conflict the changes opened is
-   accepted (``accept_new``); the ones that were open before (D22's 22 on
-   ``connector.front_panel.04``, D27's chassis) and anything else on those rows are left open.
+   accepted (``accept_new``).  The conflicts open before the run are the user's: their
+   (frame, part) keys are read from the database before anything changes, and every conflict
+   on one of those keys stays open -- also the new id the app gives one it supersedes (today
+   D22's 22 on ``connector.front_panel.04`` and D27's chassis).
 
 D. **Before / after sheets** (``<out>/before_after/D<nn>.jpg``) of the worst six affected
    (frame, part) crops, and the clip evidence (``<out>/clip_D<nn>.jpg``).
@@ -68,19 +71,26 @@ Without ``--apply`` it is a dry run: the whole thing is carried out on a backup-
 ``--db`` in ``--out`` (``dryrun_<stamp>.sqlite``), never on ``--db`` itself.  ``--db``
 defaults to the LIVE database; ``--apply`` on it first takes the app's own safety backup
 (``backup_dir`` of ``paths.yaml``) and refuses while the annotator app is running or holds
-the lock.  Every run writes ``<out>/u31_<mode>_<stamp>.log`` and ``u31_summary_*.json``.
-Idempotent: a group already satisfied plans no move, a clip already moved is not edited
-again, a shape already there is kept.
+the lock.  Every run writes ``<out>/u31_<mode>_<stamp>.log`` (with the safety backup's
+path) and ``u31_summary_*.json``.  Idempotent: a group already satisfied plans no move, a
+clip whose parent is no longer the shroud is not ruled again, a shape already there is kept.
+
+**If a ``--apply`` run fails part-way, restore the safety backup the log names; do not
+re-run on top of it**: the conflicts the half-done run queued would then read as the user's
+open questions and never be accepted.
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
+import io
 import json
 import os
 import sqlite3
 import sys
 import time
+import traceback
 from collections import defaultdict
 from pathlib import Path
 from typing import Iterable, Optional
@@ -102,7 +112,6 @@ from tda.core.truth_inputs import InputCache, gather, pose_segment_of, state_of 
 from tda.core.zorder_floor import FLOOR_CLASSES, floor_inversions  # noqa: E402
 
 LIVE = r"D:\DataSet\annotations\tda.sqlite"
-BACKUP = r"G:\PHD Data Backup\Desktop Dataset\TDA_backups\tda_pre_u31_20261025.sqlite"
 QA_DIR = r"D:\DataSet\.cache\tmp\u30qa"
 OUT_DIR = r"D:\DataSet\.cache\tmp\u31"
 VIEW = "scan"
@@ -113,8 +122,6 @@ MAIN = "main"
 OFF_LIMITS = frozenset({2})
 DELL = frozenset(range(2, 22))
 HP = frozenset(range(22, 34))
-#: Conflicts that were open before this script and are not its business (U30-QA 1.3).
-NOT_MINE = {22: frozenset({"connector.front_panel.04"}), 27: frozenset({"chassis"})}
 #: Where the clip's ruling is measured; D23 keeps the user's ruling (leaves with the shroud).
 CLIP_DESKTOPS = (23, 24, 25, 26, 29, 30, 31, 32, 33)
 CLIP_KEEP_RULING = frozenset({23})
@@ -127,6 +134,9 @@ CLIP_CHANGE_MAX = 0.2
 #: QA item 29: the single screws drawn over a latch / lever / heatsink.
 ITEM29_DESKTOPS = frozenset({3, 8, 16})
 SHROUD_CLASSES = frozenset({"cover", "cooler_latch"})
+#: The clip is ruled only while it still hangs on the shroud (its parent ``cover.*``, the
+#: state before U31): a clip some ruling already moved is never re-ruled by a re-run.
+CLIP_SHROUD_PREFIX = "cover."
 
 KINDS = ("cage", "screw_cover", "dell_shroud", "hp_shroud", "item29")
 #: Looked at by the controller's worker (U31) and added to a QA group:
@@ -136,7 +146,12 @@ EXTRA_MOVERS = {(21, "dell_shroud"): ["screw.cpu_cooler.04"]}
 #: ... and to a QA group's targets: parts under the cover on the QA frames by eye where
 #: the change map undersells it.  D24 frame 8 vs 9: ram_latch.06 lies under the cage's
 #: bright metal rail (the white latch only shows on 9); bright on bright reads 33 %.
-EXTRA_TARGETS = {(24, "cage"): ["ram_latch.06"]}
+#: D23 frames 1-2 vs 3 (U31 review B1): where connector.fan.01 is drawn the photo shows the
+#: shroud's flat black plastic with its ridge running straight through the box; the 4-pin
+#: header only appears on frame 3, once the shroud is out -- it lies under the shroud, and
+#: the 8 % the change map reads is black on black, not evidence that it is on top.
+EXTRA_TARGETS = {(24, "cage"): ["ram_latch.06"],
+                 (23, "hp_shroud"): ["connector.fan.01"]}
 
 
 # --------------------------------------------------------------------------- #
@@ -998,18 +1013,32 @@ def clip_frames(db, tax, d: int, steps: list[int]) -> list[int]:
 
 
 def fix_clip(db, tax, truth, desk: Desk, m: dict, ruling: dict, cache_dir: str, log) -> dict:
-    """B: the clip's parent through Steps, then its frame-2 shape where it now stays."""
+    """B: the clip's parent through Steps, then its frame-2 shape where it now stays.
+
+    Only while the clip still hangs on the shroud (parent ``cover.*``): once a ruling --
+    this script's or the user's -- has moved it, a re-run measures it again for the record
+    and leaves it alone (``done["skipped"]``), so a re-measure that reads a later frame
+    differently can never re-rule it.
+    """
     from tda.ui import session_api as api
     from tda.ui import session_edit as edit
     from tda.ui.session_ops import REVERSE
 
     d = desk.d
     done: dict = {"relation": None, "shape": None}
+    rec = db.instances(d).get(CLIP)
+    if rec is None:
+        done["skipped"] = f"no {CLIP} on this desktop"
+        return done
+    if not str(rec.parent or "").startswith(CLIP_SHROUD_PREFIX):
+        done["skipped"] = (f"its parent is {rec.parent} (attached {bool(rec.attached)}), not "
+                           f"the shroud: already ruled -- not re-ruled")
+        log(f"  D{d:02d}: {CLIP} skipped: {done['skipped']}")
+        return done
     if ruling["action"] not in ("reparent", "unparent"):
         return done
     parent = ruling.get("parent")
     attached = parent is not None
-    rec = db.instances(d)[CLIP]
     if rec.parent != parent or bool(rec.attached) != attached:
         status = steps_panel_relation(db, tax, d, CLIP, parent, attached, cache_dir)
         done["relation"] = {"from": [rec.parent, rec.attached], "to": [parent, attached]}
@@ -1034,8 +1063,15 @@ def fix_clip(db, tax, truth, desk: Desk, m: dict, ruling: dict, cache_dir: str, 
             mask = pm if mask is None else (mask | pm)
     if mask is None or not mask.any():
         raise RuntimeError(f"D{d:02d}: the clip's frame-{m['before']} shape has no pixels")
+    # The row says source 'manual' -- commit_edit stamps 'manual' or 'ls_adopted' and
+    # nothing else, and writing the column past it would leave the op's redo payload
+    # disagreeing with the row -- so where the pixels came from goes in the op's payload.
     r = edit.commit_edit(db, truth, FrameKey(d, last, VIEW), CLIP, mask, api.SCOPE_KEYFRAME,
-                         REVERSE, ANNOTATOR)
+                         REVERSE, ANNOTATOR,
+                         extra={"u31": "controller U31-fix: the clip's own shape copied, "
+                                       "unchanged, onto the frames it now stays on",
+                                "copy_of_keyframe": int(src.id),
+                                "copy_of_frame": int(m["before"])})
     done["shape"] = {"from_keyframe": src.id, "keyframe": r.get("keyframe_id"),
                      "anchor": r.get("anchor_step"), "frames": after, "px": int(mask.sum())}
     log(f"  D{d:02d}: {CLIP} shape of keyframe {src.id} (frame {m['before']}) committed on "
@@ -1061,13 +1097,27 @@ def clip_touches(desk: Desk, frames: list[int]) -> set[tuple[int, str]]:
     return out
 
 
-def settle(db, truth, desk: Desk, before_open: set[int], predicted: set[tuple[int, str]],
-           log) -> dict:
-    """Refresh the scan view; accept every conflict the changes opened (accept_new)."""
+def open_conflicts(db, d: int) -> dict[int, tuple[int, str]]:
+    """The scan view's open conflicts: id -> (frame, part)."""
+    return {int(c["id"]): (int(c["step"]), c["instance"])
+            for c in db.conflicts(d, VIEW, open_only=True)}
+
+
+def settle(db, truth, desk: Desk, before_open: dict[int, tuple[int, str]],
+           predicted: set[tuple[int, str]], log) -> dict:
+    """Refresh the scan view; accept every conflict the changes opened (accept_new).
+
+    ``before_open`` is :func:`open_conflicts` read before the run touched the desktop.
+    Those questions are the user's: every conflict on one of their (frame, part) keys is
+    left open, whatever its id -- a change that moves such a row makes the app close the
+    old one as superseded and open a new one (one open conflict per row, U7), and that new
+    id must not be swallowed (U31 review N2).
+    """
     from tda.core.truth import ACCEPT_NEW
     from tda.core.truth_resolve import StaleConflictError
 
     d = desk.d
+    users = set(before_open.values())
     tot = truth.refresh_range(d, VIEW, desk.steps, ignore_digest=True)
     truth.run_pending_rechecks(d, VIEW)
     accepted, left_mine, unexpected = [], [], []
@@ -1077,8 +1127,8 @@ def settle(db, truth, desk: Desk, before_open: set[int], predicted: set[tuple[in
         todo = []
         for c in new:
             key = (int(c["step"]), c["instance"])
-            if c["instance"] in NOT_MINE.get(d, ()):
-                continue                        # the pre-existing question: left open
+            if key in users:
+                continue                        # the user's question, superseded: left open
             if key not in predicted:
                 if c not in unexpected:
                     unexpected.append(c)
@@ -1092,12 +1142,15 @@ def settle(db, truth, desk: Desk, before_open: set[int], predicted: set[tuple[in
                 accepted.append((int(c["step"]), c["instance"]))
             except StaleConflictError as exc:
                 log(f"  D{d:02d}: conflict {c['id']} stale, re-queued: {exc}")
-    still = db.conflicts(d, VIEW, open_only=True)
-    left_mine = [(int(c["step"]), c["instance"]) for c in still
-                 if int(c["id"]) not in before_open and c["instance"] not in NOT_MINE.get(d, ())]
+    still = open_conflicts(db, d)
+    left_mine = sorted(k for i, k in still.items() if i not in before_open and k not in users)
+    reopened = sorted(k for i, k in still.items() if i not in before_open and k in users)
     return {"accepted": accepted, "unexpected": [(int(c["step"]), c["instance"])
                                                  for c in unexpected],
             "left_mine": left_mine,
+            "users_open": {"before": len(before_open),
+                           "after": sum(1 for k in still.values() if k in users),
+                           "reopened": reopened},
             "refresh": {k: tot.get(k) for k in ("updated", "conflicts", "standing", "closed",
                                                  "overtaken")}}
 
@@ -1271,6 +1324,8 @@ def main(argv=None) -> int:
     except RuntimeError as exc:
         log(f"locked: {exc} -- nothing touched")
         return 2
+    # what a failure part-way through has to say (U31 review N3)
+    run = {"backup": None, "writing": False, "desktop": None}
     try:
         db = P.open_db(dict(config, db_path=target), target)
         try:
@@ -1281,8 +1336,20 @@ def main(argv=None) -> int:
             return 2
         if args.apply and is_live:
             from tda.cli_common import safety_backup
-            if not safety_backup(config, db, "u31", "U31-fix"):
+            said = io.StringIO()
+            with contextlib.redirect_stdout(said):      # it prints the path; keep it in the log
+                ok = safety_backup(config, db, "u31", "U31-fix")
+            for line in said.getvalue().splitlines():
+                log(line)
+            if not ok:
                 return 1
+            run["backup"] = said.getvalue().strip().rsplit("-> ", 1)[-1].strip() or None
+            log(f"SAFETY BACKUP: {run['backup']}")
+            log("  on ANY error from here on: restore this backup over the live database and "
+                "do not re-run on top of the half-done run")
+        elif args.apply:
+            log(f"no safety backup: {target} is not the live database")
+        run["writing"] = True
         tax = load_taxonomy()
         truth = TruthService(db, tax, cache_dir=cache_dir)
         items, reach = load_qa(args.qa)
@@ -1293,10 +1360,20 @@ def main(argv=None) -> int:
             by_d[g.desktop].append(g)
         desks = sorted((set(by_d) | {d for d in CLIP_DESKTOPS
                                       if wanted is None or d in wanted}) - OFF_LIMITS)
+        # The conflicts open before the run are the user's questions: their (frame, part)
+        # keys, read here before anything changes, are left open whatever ids they carry
+        # by the end (U31 review N2).
+        users_open = {d: open_conflicts(db, d) for d in desks}
         summary: dict = {"target": target, "before": before_path, "apply": args.apply,
-                         "stamp": stamp, "desktops": {}}
+                         "stamp": stamp, "safety_backup": run["backup"],
+                         "users_open_before": {d: len(v) for d, v in users_open.items() if v},
+                         "desktops": {}}
+        log("open conflicts before the run, left open: " + (", ".join(
+            f"D{d:02d} {len(v)} ({', '.join(sorted({k for _s, k in v.values()}))})"
+            for d, v in users_open.items() if v) or "none"))
         before_conn = sqlite3.connect(f"file:{before_path}?mode=ro", uri=True)
         for d in desks:
+            run["desktop"] = d
             t0 = time.time()
             desk = Desk(db, tax, truth, d)
             if not desk.verified():
@@ -1304,10 +1381,10 @@ def main(argv=None) -> int:
                 continue
             rec: dict = {"groups": [], "moves": [], "clip": None}
             ver0 = desk.verified()
-            open0 = {int(c["id"]) for c in db.conflicts(d, VIEW, open_only=True)}
+            open0 = users_open[d]
             op0 = int(db.conn.execute("SELECT COALESCE(MAX(id), 0) FROM op_log").fetchone()[0])
             log(f"D{d:02d}: {len(desk.steps)} frames, {len(ver0)} verified, "
-                f"{len(open0)} open conflict(s)")
+                f"{len(open0)} open conflict(s) of the user's")
             predicted: set[tuple[int, str]] = set()
             plan = None
             if by_d.get(d):
@@ -1360,7 +1437,10 @@ def main(argv=None) -> int:
                        open_after=len(db.conflicts(d, VIEW, open_only=True)))
             log(f"  D{d:02d}: ops {rec['ops']}; conflicts accepted {len(st['accepted'])}, "
                 f"unexpected (left open) {st['unexpected']}, still open of mine "
-                f"{st['left_mine']}; open {rec['open_before']} -> {rec['open_after']}; "
+                f"{st['left_mine']}; the user's {st['users_open']['before']} -> "
+                f"{st['users_open']['after']} (superseded and reopened by the app: "
+                f"{len(st['users_open']['reopened'])}); "
+                f"open {rec['open_before']} -> {rec['open_after']}; "
                 f"verified {len(ver0)} -> {len(ver1)}"
                 f"{' demoted ' + str(rec['demoted']) if rec['demoted'] else ''} "
                 f"({time.time() - t0:.0f} s)")
@@ -1383,6 +1463,21 @@ def main(argv=None) -> int:
         with open(summary_path, "w", encoding="utf-8") as fh:
             json.dump(summary, fh, indent=1, default=str)
         log(f"summary -> {summary_path}")
+    except BaseException:
+        log(traceback.format_exc())
+        where = f" (on D{run['desktop']:02d})" if run["desktop"] is not None else ""
+        if not run["writing"]:
+            log(f"FAILED before anything was written{where}")
+        elif args.apply and is_live:
+            log(f"FAILED part-way through{where}: the live database is half done. Restore the "
+                f"safety backup {run['backup']} over it; do NOT re-run on top -- the "
+                f"conflicts already queued would be taken for the user's and never accepted")
+        elif args.apply:
+            log(f"FAILED part-way through{where}: {target} is half done; start again from a "
+                f"fresh copy")
+        else:
+            log(f"FAILED part-way through{where}: only the dry-run copy {target} is spoiled")
+        raise
     finally:
         release_lock_file(target)
         logf.close()
