@@ -263,8 +263,9 @@ def test_change_target_accepts_a_virtual_cable_node(data):
 
 
 def test_change_target_validates_the_new_verb_against_the_new_class(data):
+    # "unscrew" never applies to a cable node ("remove" does since U33)
     with pytest.raises(EditError):
-        data.change_target(42, target="cable:psu", verb="remove")
+        data.change_target(42, target="cable:psu", verb="unscrew")
     assert data.row(42).actions[0].target == "motherboard.01"  # unchanged
 
 

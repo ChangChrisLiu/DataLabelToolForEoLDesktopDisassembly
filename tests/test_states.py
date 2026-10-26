@@ -231,7 +231,9 @@ def test_a_cable_node_enters_the_snapshot_only_once_mentioned(instances, cooler_
 def test_unknown_or_virtual_targets_are_ignored(instances, tax):
     actions = [
         _act(3, 0, "phantom.99", "remove"),
-        _act(3, 1, CABLE, "remove"),  # "remove" does not apply to a cable node
+        # "open" does not apply to a cable node ("remove" does since U33: a
+        # loose cable taken out whole, routed -> removed)
+        _act(3, 1, CABLE, "open"),
     ]
     assert events_from_actions(instances, actions, tax) == []
 
