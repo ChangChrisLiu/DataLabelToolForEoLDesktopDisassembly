@@ -42,6 +42,7 @@ KINDS: frozenset[str] = frozenset(
         "review_visibility",  # 可见性审查: a verdict on one part's label, and its stamp (U24)
         "sync_visibility",  # 同步到其他视角: a run's verdict onto the other views (U36)
         "absent_from_start",  # 这台没有这个零件: a logged part removed from step 0 (U34)
+        "set_frame_note",  # 这一帧的说明: the annotator's note on one frame (U35)
     }
 )
 
@@ -210,6 +211,11 @@ class UndoStack:
     def ops(self) -> list[Op]:
         """The applied ops, oldest first (a copy; do not mutate the stack)."""
         return list(self._done)
+
+    @property
+    def undone_ops(self) -> list[Op]:
+        """The ops a redo would re-apply, the next one last (a copy)."""
+        return list(self._undone)
 
     def __len__(self) -> int:
         return len(self._done)

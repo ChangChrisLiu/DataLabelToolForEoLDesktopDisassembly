@@ -25,7 +25,7 @@ from tda.ui import app_actions as A
 from tda.ui import app_compat as compat
 from tda.ui import app_support as S
 
-__all__ = ["FLASH_UNNAMED", "KEY_SWALLOWED", "KeysMixin"]
+__all__ = ["FLASH_UNNAMED", "KEY_SWALLOWED", "KeysMixin", "NOTE_KEY_SWALLOWED"]
 
 #: ``_flashing`` when a neighbour is on screen but its step number is unknown.
 FLASH_UNNAMED = -1
@@ -36,6 +36,11 @@ FLASH_UNNAMED = -1
 #: (task U1, report 1, ruling R1).
 KEY_SWALLOWED = ("快捷键没生效：焦点在输入框里，先点一下画布 / that key went into "
                  "a text field, not the canvas -- click the canvas first")
+#: ... when that field is Review's 「这一帧的说明」 and the key types nothing
+#: (``PgDn``, ``Ctrl+S``, an F key; U35 round 2, N4). ``Tab`` there goes back
+#: to the canvas.
+NOTE_KEY_SWALLOWED = ("快捷键没生效：焦点在说明框里，按 Tab 回到画布 / that key went into "
+                      "the note box -- press Tab to get back to the canvas")
 
 
 class KeysMixin:
@@ -82,12 +87,16 @@ class KeysMixin:
             # ``action_for`` first: ``_warn_swallowed_once`` *consumes* the
             # once-per-episode marker, so asking it about an unbound key spent
             # the budget and the ``B`` that followed said nothing (round 3).
+            # ... except a key that types in a box made for writing (「这一帧的
+            # 说明」, U35): a ``Q`` there is the letter the annotator meant. A
+            # window key that types nothing (``PgDn``) still says it (round 2, N4)
             if (event.type() == QEvent.Type.KeyPress
                     and not event.isAutoRepeat()
+                    and not A.typed_into(focus, event)
                     and A.action_for(event.key(), event.modifiers(),
                                      self.mode) is not None
                     and self._warn_swallowed_once(focus)):
-                self.report(KEY_SWALLOWED)
+                self.report(NOTE_KEY_SWALLOWED if A.is_typing_box(focus) else KEY_SWALLOWED)
             return False
         self._swallow_warned = None
         if A.navigates_a_list(focus, event.key()):

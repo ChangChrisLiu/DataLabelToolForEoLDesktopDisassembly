@@ -115,9 +115,10 @@ class DeleteMixin:
             )
 
     #: Tables a human writes about one frame: a frame holding any of them is
-    #: annotated, and :meth:`delete_unannotated_frame` will not drop it.
+    #: annotated, and :meth:`delete_unannotated_frame` will not drop it. A
+    #: frame's note (``frame_note``, task U35) is one too.
     FRAME_WORK_TABLES = ("frame_override", "occluder_mask", "instance_frame_flags",
-                         "conflict")
+                         "conflict", "frame_note")
     #: Per-frame caches the truth service rebuilds: dropped with their frame.
     FRAME_CACHE_TABLES = ("compiled_mask", "frame_digest", "recheck_queue",
                           "frame_transform")

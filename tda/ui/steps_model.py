@@ -35,6 +35,7 @@ from tda.core.model import (
     machine_only,
 )
 from tda.core.captive_replay import record_captive_fixes
+from tda.core.frame_notes import notes_by_step
 from tda.core.relation_replay import record_relation_fixes
 from tda.core.states import (
     CABLE_CLASS,
@@ -258,6 +259,10 @@ class StepTableData:
     #: ``key -> label before`` of the context objects renamed since the last
     #: load or save; :meth:`save` writes them (one ``op_log`` row each).
     relabelled: dict[str, str] = field(default_factory=dict)
+    #: 「这一帧的说明」 (task U35): ``{step: notes of that step's frames}``, any
+    #: sequence view -- read-only here, written in Review; the Steps table
+    #: marks the step with a ✎ next to its thumbnail.
+    notes: dict[int, list[dict]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.relations is None:
@@ -279,7 +284,8 @@ class StepTableData:
                    declined=set(db.declined_implied(desktop)),
                    annotator=str(annotator or ANNOTATOR),
                    stored_initial=_stored_initial(db, desktop),
-                   stored_manual=[e for e in db.events(desktop) if not e.auto])
+                   stored_manual=[e for e in db.events(desktop) if not e.auto],
+                   notes=notes_by_step(db, desktop))
         data.relations.reload(db)
         data.refresh_issues()
         return data

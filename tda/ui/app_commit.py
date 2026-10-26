@@ -711,7 +711,22 @@ class CommitMixin:
         under a short cap; if even that fails the step is recorded as "not
         analysed" rather than as "nothing unexplained", which would quietly
         claim the frame had been checked.
+
+        A 这一帧的说明 saved on the way (task U35) is said in the confirmation's
+        own line: the one ``Enter`` on a queue entry saved while opening that
+        frame (held meanwhile -- the confirmation steps the frame again, which
+        would clear it; round 2, N3), and the one saved before confirming.
         """
+        hold = getattr(self, "hold_note_line", None)
+        if callable(hold):
+            hold(True)
+        try:
+            return self._confirm_frame()
+        finally:
+            if callable(hold):
+                hold(False)
+
+    def _confirm_frame(self) -> bool:
         if self.refuse_under_shape():
             return False      # the half-drawn shape would go with the frame (U5a)
         if self.refuse_under_ghost():
@@ -720,23 +735,35 @@ class CommitMixin:
             return False      # confirming steps the frame back: same gate
         if not self._open_the_selected_entry():
             return False
+        # confirming steps the frame on: a 这一帧的说明 typed and not saved is
+        # saved first (task U35), and said with the confirmation
+        flush = getattr(self, "flush_frame_note", None)
+        noted = flush() if callable(flush) else None
         step = self.session.current().step
         blobs = self.unexplained_at_confirm()
         ok = self.task_card.confirm()
         self.logger.info("confirm step %s: %s", step, "ok" if ok else "refused")
+        # left only when the confirmation stepped the frame on (the last frame
+        # of the walk stays put): the same test as leave_frame's
+        here = self.session.current() if compat.is_open(self.session) else None
+        said = (self.note_saved_text(noted, left=here != noted.key)
+                if noted is not None else "")
+        take = getattr(self, "take_note_line", None)
+        opened = take() if callable(take) else ""     # saved opening the entry's frame
+        tail = "".join(f"；{line}" for line in (opened, said) if line)
         if ok:
             self.hand_over_unexplained(step, blobs)
             # One more frame is done: both places that count say so.
             self.timeline.refresh_statuses()
             self.refresh_desktop_counts()
-            self.report(f"{self.frame_word(step)} confirmed")
+            self.report(f"{self.frame_word(step)} confirmed{tail}")
         else:
             # One line, whatever the frame is missing.  A real start frame has
             # 60+ missing shapes, which put 2,550 characters into the one-line
             # status bar and asked the window to be 30,612 px wide.
             count = self.task_card.problem_count()
             self.report(f"{self.frame_word(step)} is not complete: {count} problem(s) — "
-                        f"见任务卡 / see the task card")
+                        f"见任务卡 / see the task card{tail}")
             self.refresh_guidance()      # the pane now says what blocks Space
         return bool(ok)
 
@@ -855,11 +882,18 @@ class CommitMixin:
     # ------------------------------------------------------------------ undo
     @S.guard
     def act_undo(self) -> None:
-        self._history(self.session.undo(), "undo")
+        # a frame's note (task U35) is named: it may be another frame's than this
+        said = self._note_history(undo=True)
+        self._history(self.session.undo(), said or "undo")
 
     @S.guard
     def act_redo(self) -> None:
-        self._history(self.session.redo(), "redo")
+        said = self._note_history(undo=False)
+        self._history(self.session.redo(), said or "redo")
+
+    def _note_history(self, undo: bool) -> str:
+        texts = getattr(self, "note_op_text", None)
+        return texts(undo) if callable(texts) else ""
 
     def _history(self, moved: bool, what: str) -> None:
         if not moved:

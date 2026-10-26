@@ -12,8 +12,8 @@ frame rows, moves everything keyed by that photo's step:
 * the frame row's human columns (``review_status``, the hand/tool, in-progress,
   quality and bench flags);
 * the frame-keyed inputs -- visibility overrides, instance flags, occluder
-  masks, similarity transforms -- and the view's pose breaks and pose-segment
-  reference / range steps;
+  masks, similarity transforms, the frame's note (「这一帧的说明」, U35) -- and
+  the view's pose breaks and pose-segment reference / range steps;
 * the derived rows (compiled masks, digests, the re-check queue, conflicts),
   which are dropped for a moved frame: the compiler rebuilds them.
 
@@ -22,7 +22,9 @@ photographed predecessor, kept inside the new step range, so a keyframe
 anchored on D18's old missing step 50 lands on step 48 next to the photo it was
 drawn beside. When two old steps land on one (a ``dupli`` row's frame became an
 extra shot), the one whose photo is the new step's own frame keeps its rows; a
-keyed row of the other is dropped and counted, its keyframes are kept unless
+keyed row of the other is dropped and counted -- a note is not: it is appended
+to the main photo's note after a marker naming its old step (U35) -- its
+keyframes are kept unless
 they would duplicate a non-draft shape of the same part -- or, for a Label
 Studio draft, a draft of the same label from the step's own photo (U25 round 2:
 D24's oak1 step 36 would otherwise show the part twice). Of its frame row's
@@ -50,6 +52,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
+from tda.core.frame_notes import when_text
 from tda.core.model import LS_PREFIX, VIEWS, FrameKey
 
 __all__ = ["FRAME_WORK_COLUMNS", "LOADED_DUPLI_KEY", "PHOTO_COLUMNS", "PhotoMoveConflict",
@@ -64,8 +67,15 @@ FRAME_WORK_COLUMNS = ("review_status", "hand_or_tool_in_frame", "in_progress",
 #: never move from a photo that became an extra shot onto the step's own photo.
 PHOTO_COLUMNS = ("hand_or_tool_in_frame", "in_progress", "image_quality", "bench_annotated")
 #: Inputs keyed by ``(desktop, step, view, ...)``: they move with the photo.
+#: The frame's note (``frame_note``, task U35) too -- it is no compiler input,
+#: but it is about the photo; two landing on one step are joined, not dropped
+#: (:data:`NOTE_JOIN`).
 _KEYED_INPUTS = ("frame_override", "instance_frame_flags", "occluder_mask",
-                 "frame_transform")
+                 "frame_transform", "frame_note")
+#: How the note of a second old step is appended to the note of the step it
+#: lands on (the main photo's, kept first): a marker line naming the old step,
+#: who wrote it and when, then its text.
+NOTE_JOIN = "\n\n[load-index：以下是原第 {old} 步的说明（{author}，{when}）]\n"
 #: Derived from the inputs: dropped for a moved frame, rebuilt by the compiler.
 _DERIVED = ("compiled_mask", "frame_digest", "recheck_queue")
 #: The view whose rows the step table follows: the sheet's rows are the
@@ -140,6 +150,9 @@ class ViewMove:
     dropped_breaks: int = 0
     #: Hand-written state events renumbered with the step table (oak1 only, B3).
     events: int = 0
+    #: Notes of a second old step appended to the note of the step they
+    #: landed on (task U35); counted among :attr:`keyed_rows` as well.
+    merged_notes: int = 0
 
     def touched(self) -> set[int]:
         """The old steps that move, and the new steps whose own photo changes."""
@@ -171,6 +184,9 @@ class ViewMove:
                          f"shot: {', '.join(self.left_columns)}")
         if self.dropped_breaks:
             extra.append(f"{self.dropped_breaks} pose break(s) landed on one already there")
+        if self.merged_notes:
+            extra.append(f"{self.merged_notes} frame note(s) landed on a step that has one: "
+                         f"appended to it with a [load-index] marker")
         if self.derived_rows:
             extra.append(f"{self.derived_rows} compiled/derived row(s) to rebuild")
         return (f"{self.view}: {self.photos} photo(s) moved step ({span}{more}); "
@@ -404,6 +420,9 @@ class PhotoMoveMixin:
                           f"AND step IN ({','.join('?' * len(olds))})",
                           (desktop, view, *olds))
         order = {old: i for i, old in enumerate(olds)}
+        if table == "frame_note":
+            self._move_notes(rows, moves, vm)
+            return
         pk = [r[1] for r in self.conn.execute(f"PRAGMA table_info({table})") if r[5]]
         seen: set[tuple] = set()
         for row in sorted(rows, key=lambda r: order[int(r["step"])]):
@@ -423,6 +442,44 @@ class PhotoMoveMixin:
                 f"INSERT INTO {table} ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})",
                 tuple(row.values()))
             vm.keyed_rows += 1
+
+    def _move_notes(self, rows: list[dict], moves: dict[int, int], vm: ViewMove) -> None:
+        """Re-insert the moving notes at their new steps, joining the ones that meet (U35).
+
+        Per new step: the moving notes, plus the note it already has (an old
+        step whose number does not change -- which may be the step's own photo,
+        or a photo that just became its extra shot). The one written on the
+        step's **own** photo (:attr:`ViewMove.main_source`; the step itself
+        when no other photo is its own) leads, whatever the old step numbers
+        (round 2, N10); the others follow by old step, each after a
+        :data:`NOTE_JOIN` marker. Author and time stay the leading note's.
+        """
+        groups: dict[tuple, list[tuple[int, dict]]] = {}
+        for row in rows:
+            old = int(row["step"])
+            groups.setdefault((row["desktop"], row["view"], moves[old]), []).append(
+                (old, dict(row)))
+        for ident, items in groups.items():
+            vm.keyed_rows += len(items)
+            found = self.conn.execute(
+                "SELECT * FROM frame_note WHERE desktop=? AND view=? AND step=?",
+                ident).fetchone()
+            if found is not None:
+                items.append((ident[2], dict(found)))      # stays where it is
+            main = vm.main_source.get(ident[2], ident[2])
+            items.sort(key=lambda item: (item[0] != main, item[0]))
+            lead = dict(items[0][1], step=ident[2])
+            for old, row in items[1:]:
+                lead["text"] = str(lead["text"]) + NOTE_JOIN.format(
+                    old=old, author=row.get("author") or "-",
+                    when=when_text(row.get("updated_at"))) + str(row["text"])
+                vm.merged_notes += 1
+            self.conn.execute(
+                "INSERT INTO frame_note(desktop, view, step, text, author, updated_at) "
+                "VALUES(?, ?, ?, ?, ?, ?) ON CONFLICT(desktop, view, step) DO UPDATE SET "
+                "text=excluded.text, author=excluded.author, updated_at=excluded.updated_at",
+                (lead["desktop"], lead["view"], lead["step"], lead["text"], lead["author"],
+                 lead["updated_at"]))
 
     def _move_keyframes(self, desktop: int, view: str, olds: list[int],
                         moves: dict[int, int], vm: ViewMove) -> None:

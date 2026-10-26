@@ -515,6 +515,10 @@ class EditMixin:
         """
         if not self.can_leave_edit():
             return False
+        # 这一帧的说明 typed and not saved (task U35): saved before the frame
+        # goes -- onto the undo stack of the view it is about -- and said after
+        flush = getattr(self, "flush_frame_note", None)
+        noted = flush() if callable(flush) else None
         try:
             move()
         except self.refusal as refused:      # the session's own backstop
@@ -525,6 +529,11 @@ class EditMixin:
         # covers the moves that repaint; this covers the ones that do not,
         # including a view with no image at this step.
         self.disarm_bench()
+        if noted is not None:
+            # said from the event loop: a confirmation that follows this move
+            # (Enter on a queue entry) steps the frame again and clears the line
+            here = self.session.current() if compat.is_open(self.session) else None
+            self.say_note_later(self.note_saved_text(noted, left=here != noted.key))
         return True
 
     @S.guard

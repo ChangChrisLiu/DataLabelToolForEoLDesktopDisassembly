@@ -39,6 +39,12 @@ what every view says on the same steps, the suggested reason, and two more
 buttons without keys that only report: 「从这帧起另算」
 (:attr:`ReviewPanel.sigSplitRun`) and 「同步到其他视角」
 (:attr:`ReviewPanel.sigSyncViews`).
+Below them, 「这一帧的说明」 (task U35, :mod:`tda.ui.panels.frame_note`): the
+annotator's note on the frame on screen.  Its 「保存」 / 「清除」 report too
+(:attr:`ReviewPanel.sigNoteSave`, :attr:`ReviewPanel.sigNoteClear`); when the
+frame changes under a box that was typed in and not saved, the panel reports
+the text with the frame it was about (:attr:`ReviewPanel.sigNoteLeft`) before
+it shows the new frame's note -- the window saves it and says so.
 """
 from __future__ import annotations
 
@@ -64,6 +70,7 @@ from tda.ui import session_api as api
 from tda.ui import visreview_text as VT
 from tda.ui.panels import session_is_open
 from tda.ui.panels.visruns import RunDetail, RunSummary
+from tda.ui.panels.frame_note import FrameNoteBox
 
 __all__ = ["ReviewPanel", "QUEUE_TITLES", "REFREEZE_ALL", "REFREEZE_FRAME"]
 
@@ -138,6 +145,15 @@ class ReviewPanel(QWidget):
     sigSplitRun = Signal()
     #: 「同步到其他视角」 was clicked (task U36): the sync the window offered.
     sigSyncViews = Signal()
+    #: 「这一帧的说明」 (task U35): ``(frame key, text)`` -- 「保存」 was clicked.
+    sigNoteSave = Signal(object, str)
+    #: ... the frame key -- 「清除」 was clicked on a frame that has a note.
+    sigNoteClear = Signal(object)
+    #: ... ``(frame key, text)`` -- the frame changed under a box typed in and
+    #: not saved; emitted before the new frame's note is shown.
+    sigNoteLeft = Signal(object, str)
+    #: ... ``Tab`` in the box: the keyboard goes back to the canvas.
+    sigNoteTabOut = Signal()
 
     def __init__(self, session: Optional[api.SessionLike] = None,
                  parent: Optional[QWidget] = None) -> None:
@@ -212,11 +228,18 @@ class ReviewPanel(QWidget):
             resign.addWidget(button)
         resign.addStretch(1)
 
+        # 「这一帧的说明」 (task U35): the note on the frame on screen
+        self.note_box = FrameNoteBox()
+        self.note_box.sigSave.connect(self.sigNoteSave)
+        self.note_box.sigClear.connect(self.sigNoteClear)
+        self.note_box.sigTabOut.connect(self.sigNoteTabOut)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(3)
         layout.addWidget(self._tabs, 1)
         layout.addLayout(resign)
+        layout.addWidget(self.note_box)
         layout.addWidget(self._problems_label)
         layout.addWidget(self._problems_list)
 
@@ -230,11 +253,18 @@ class ReviewPanel(QWidget):
         if self._session is not None:
             self._session.sigFrameChanged.disconnect(self._on_frame_changed)
             self._session.sigProblems.disconnect(self._on_problems)
+            changed = getattr(self._session, "sigNoteChanged", None)
+            if changed is not None:
+                changed.disconnect(self._on_note_changed)
         self._session = session
         if session is not None:
             session.sigFrameChanged.connect(self._on_frame_changed)
             session.sigProblems.connect(self._on_problems)
+            changed = getattr(session, "sigNoteChanged", None)
+            if changed is not None:
+                changed.connect(self._on_note_changed)
         self.refresh()
+        self._follow_note()
 
     def tabs(self) -> QTabWidget:
         """The tab widget, for the main window's layout and for tests."""
@@ -650,7 +680,42 @@ class ReviewPanel(QWidget):
 
     def _on_frame_changed(self, _key: object) -> None:
         self._activated = None      # the move happened: there is nothing to put back
+        self._follow_note()
         self.refresh()
+
+    # -- 这一帧的说明 (task U35) ------------------------------------------------
+    def _note_of(self, key) -> Optional[dict]:
+        """The stored note of the frame ``key``, or ``None``."""
+        finder = getattr(self._session, "frame_note", None)
+        if key is None or not callable(finder):
+            return None
+        try:
+            return finder(key=key)
+        except Exception:  # noqa: BLE001 - a note is never worth a failure here
+            return None
+
+    def _follow_note(self) -> None:
+        """Show the note of the frame on screen; hand on what was typed for the last one.
+
+        A box typed in and not saved, about a frame that is no longer on
+        screen, is reported first (:attr:`sigNoteLeft`) -- the window saves
+        it synchronously -- and only then replaced.  On the same frame the
+        typing is kept.
+        """
+        key = self._session.current() if session_is_open(self._session) else None
+        box = self.note_box
+        old = box.key()
+        if key is not None and old == key:
+            box.note_changed(self._note_of(key))
+            return
+        if old is not None and box.is_dirty():
+            self.sigNoteLeft.emit(old, box.text())
+        box.show_frame(key, self._note_of(key))
+
+    def _on_note_changed(self, key: object) -> None:
+        """The session wrote (or an undo put back) the note of ``key``."""
+        if key is not None and key == self.note_box.key():
+            self.note_box.note_changed(self._note_of(key))
 
     def _on_problems(self, problems: list) -> None:
         self._problems = [str(p) for p in problems]

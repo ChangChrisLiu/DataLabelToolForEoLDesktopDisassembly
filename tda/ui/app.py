@@ -47,6 +47,7 @@ from tda.ui.app_gallery import GalleryMixin
 from tda.ui.app_guide import GuideMixin
 from tda.ui.app_keys import FLASH_UNNAMED, KeysMixin
 from tda.ui.app_locator import LocatorMixin
+from tda.ui.app_notes import NOTE_HOLD_MS, NotesWindowMixin
 from tda.ui.app_pose import PoseMixin
 from tda.ui.app_rawdata import NO_IMAGE_TEXT, RawDataMixin
 from tda.ui.app_refreeze import RefreezeWindowMixin
@@ -85,7 +86,7 @@ STEPS_UNSAVED = ("Steps 里有没 Apply 的修改（例如刚加的零件）：�
 class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateMixin,
                  VerbMixin, AssistMixin, GuideMixin, KeysMixin, RawDataMixin, GalleryMixin,
                  CableMixin, ContextMixin, LocatorMixin, VisReviewMixin, RefreezeWindowMixin,
-                 ToolsMixin, StatusMixin, ShellMixin, QMainWindow):
+                 NotesWindowMixin, ToolsMixin, StatusMixin, ShellMixin, QMainWindow):
     """One annotator, one desktop/view, three modes."""
 
     def __init__(self, session, paths: dict, annotator: str, *,
@@ -133,6 +134,7 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateM
         self._init_context()    # 框外零件 (task U18): the canvas' right-click menu
         self._init_visreview()  # 可见性审查 (task U24): Review's fifth tab
         self._init_refreeze()   # 重签 (task U32): Review's two buttons
+        self._init_notes()      # 这一帧的说明 (task U35): Review's note box
         self._init_guide()      # last: it reads the bars and the raw-drive state
         self._connect_session()
 
@@ -333,6 +335,10 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateM
         if self.mode == A.MODE_STEPS and not self.settle_steps_edits():
             self._sync_mode_tab()
             return
+        # 这一帧的说明 (U35): the box goes out of sight with Review -- what was
+        # typed in it is saved first, and said below
+        noted = self.note_saved_text(self.flush_frame_note()) if self.mode == A.MODE_REVIEW \
+            else ""
         self.mode = mode
         # the state combo is T's twin: annotate mode only (U8 round 2)
         self.instances.set_state_editable(mode == A.MODE_ANNOTATE)
@@ -344,12 +350,15 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateM
         self.reset_prompt_rank()
         if mode == A.MODE_STEPS:
             self.refresh_stale_steps()   # a Shift+T in Annotate rewrote a verb (U9)
+            self.steps_panel.refresh_notes()   # the ✎ of a note written in Review (U35)
             self.stack.setCurrentWidget(self.steps_panel)
         else:
             self.stack.setCurrentWidget(
                 self.canvas if self.tools_enabled else self.placeholder_label
             )
         self.review_dock.setVisible(mode == A.MODE_REVIEW)
+        # the note is the box's in Review, the card's read-only line elsewhere (U35)
+        self.task_card.set_note_line_enabled(mode != A.MODE_REVIEW)
         self.follow_visibility_mode()   # 可见性审查 (U24): listed while Review shows it
         if mode == A.MODE_REVIEW:
             self.review_dock.raise_()
@@ -358,6 +367,8 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateM
         self._sync_mode_tab()
         self.focus_canvas()
         self.update_status()
+        if noted:
+            self.report(noted, hold_ms=NOTE_HOLD_MS)
 
     def _sync_mode_tab(self) -> None:
         index = [m for _t, m in MODE_TITLES].index(self.mode)

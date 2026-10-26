@@ -373,7 +373,8 @@ def test_a_v4_file_without_the_column_opens_and_gains_it(tmp_path):
         fo = db.frame_overrides(FrameKey(DESKTOP, 3, VIEW))[CHASSIS]
         assert (fo.visibility, fo.occluder) == ("occluded_full", None)   # a bare label
         assert db.conn.execute("SELECT value FROM meta WHERE key='schema_version'"
-                               ).fetchone()[0] == str(SCHEMA_VERSION) == "5"
+                               ).fetchone()[0] == str(SCHEMA_VERSION)
+        assert SCHEMA_VERSION >= 5          # 5 here; 6 since U35 (frame_note)
         db.set_frame_override(FrameOverride(FrameKey(DESKTOP, 3, VIEW), CHASSIS, None,
                                             FULL, OCCLUDER_CABLE))
         assert db.frame_overrides(FrameKey(DESKTOP, 3, VIEW))[CHASSIS].occluder == "cable"

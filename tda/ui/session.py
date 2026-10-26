@@ -26,6 +26,7 @@ from tda.core import masks
 from tda.core.compiler import CompiledFrame
 from tda.core.db import Db
 from tda.core.context import context_label
+from tda.core.frame_notes import OP_KIND as NOTE_OP
 from tda.core.model import FrameKey, is_component_view, is_context_key
 from tda.core.taxonomy import Taxonomy
 from tda.core.truth import TruthService
@@ -58,6 +59,7 @@ from tda.ui.session_visruns import OP_SYNC as VIS_SYNC_OP
 from tda.ui.session_visruns import VisRunsMixin, apply_sync
 from tda.ui.session_absent import OP_KIND as ABSENT_OP
 from tda.ui.session_absent import AbsentMixin, apply_absent
+from tda.ui.session_notes import NotesMixin
 
 __all__ = ["AnnotationSession"]
 
@@ -65,7 +67,7 @@ log = logging.getLogger("tda.session")
 
 class AnnotationSession(CommitMixin, ReviewMixin, ResignMixin, StateMixin, VerbMixin,
                         CaptiveMixin, ReclassMixin, CableMixin, ContextMixin, VisReviewMixin,
-                        VisRunsMixin, AbsentMixin, TruthCacheMixin, QObject):
+                        VisRunsMixin, AbsentMixin, NotesMixin, TruthCacheMixin, QObject):
     """One annotator's working set: a desktop, a view, and the frame in hand."""
 
     #: The current frame changed; payload is a :class:`~tda.core.model.FrameKey`.
@@ -89,6 +91,9 @@ class AnnotationSession(CommitMixin, ReviewMixin, ResignMixin, StateMixin, VerbM
     sigSweepError = Signal(int, str)
     #: Something the review queues show has changed.
     sigQueuesChanged = Signal()
+    #: The note of a frame (「这一帧的说明」, task U35) was written, cleared, or
+    #: put back by an undo; payload is its :class:`~tda.core.model.FrameKey`.
+    sigNoteChanged = Signal(object)
 
     def __init__(self, db: Db, tax: Taxonomy, truth: TruthService, cache_dir: str,
                  annotator: str) -> None:
@@ -191,6 +196,9 @@ class AnnotationSession(CommitMixin, ReviewMixin, ResignMixin, StateMixin, VerbM
             self._announce()
 
         self.undo_stack.register(VIS_SYNC_OP, vis_sync_handler, vis_sync_handler)
+        # 这一帧的说明 (task U35): no input of the compiler -- the row, and the
+        # panels told; nothing compiled, nothing announced
+        self.undo_stack.register(NOTE_OP, self._apply_note_op, self._apply_note_op)
         # a brush stroke is undone in the same history, but it touches nothing
         # but the editing layer: no database write, no recompilation
         self.undo_stack.register(

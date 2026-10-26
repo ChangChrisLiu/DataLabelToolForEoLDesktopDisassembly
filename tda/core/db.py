@@ -37,6 +37,7 @@ from tda.core.dbdelete import DeleteMixin
 from tda.core.db_digest import DigestMixin
 from tda.core.db_truthraw import RawTruthMixin
 from tda.core.db_moves import PhotoMoveMixin
+from tda.core.db_notes import FrameNotesMixin
 from tda.core.db_visreview import VisReviewRowsMixin
 from tda.core.model import (
     OCCLUDERS,
@@ -57,7 +58,10 @@ from tda.core.model import (
 #: 5: ``frame_override.occluder`` (task U15, 「被线挡住」) -- an older build
 #: would rewrite a label and leave the reason standing beside it, so it is
 #: refused the file rather than allowed to.
-SCHEMA_VERSION = 5
+#: 6: ``frame_note`` (task U35, 「这一帧的说明」) -- an older build would not
+#: know the notes are there: load-index would leave them on the old step
+#: numbers while the photos moved, so it is refused the file as well.
+SCHEMA_VERSION = 6
 #: ``desktop`` meta key holding the classes whose implied instance the annotator
 #: has deleted (:meth:`Db.declined_implied`). Meta rather than a table: it is one
 #: short list per desktop and it has to survive a ``--force`` re-import, which
@@ -71,7 +75,7 @@ RESOLUTIONS = ("keep_old", "accept_new", "edited", "superseded")
 
 class Db(ConnectionMixin, PoseSegmentMixin, StatusMixin, DeleteMixin,
          RecheckMixin, DigestMixin, RawTruthMixin, VisReviewRowsMixin, PhotoMoveMixin,
-         BackupLockMixin):
+         FrameNotesMixin, BackupLockMixin):
     """Repository over the TDA SQLite file. Every write commits immediately --
     unless it runs inside :meth:`~tda.core.dbconn.ConnectionMixin.transaction`;
     :mod:`tda.core.db_pose` and :mod:`tda.core.db_status` mix in more readers,
@@ -80,7 +84,8 @@ class Db(ConnectionMixin, PoseSegmentMixin, StatusMixin, DeleteMixin,
     :mod:`tda.core.db_digest` the per-frame input digests,
     :mod:`tda.core.db_truthraw` truth rows read and put back verbatim (U32),
     :mod:`tda.core.db_visreview` the per-(frame, part) flags the visibility
-    review stamps (task U24) and :mod:`tda.core.db_backup` the verified safety
+    review stamps (task U24), :mod:`tda.core.db_notes` the annotator's notes
+    on a frame (task U35) and :mod:`tda.core.db_backup` the verified safety
     copy and the single-user lock."""
 
     def __init__(self, path: str):

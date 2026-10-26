@@ -467,6 +467,19 @@ class ShellMixin:
         if not self._settle_uncommitted_edit():
             event.ignore()
             return
+        # 这一帧的说明 typed and not saved (task U35): kept, not dropped -- and
+        # when the write fails, its text goes into the log (round 2, N6): the
+        # window closes either way
+        flush = getattr(self, "flush_frame_note", None)
+        typed = getattr(self, "note_text_typed", lambda: "")()
+        try:
+            if callable(flush) and flush() is not None:
+                self.logger.info("closing: an unsaved frame note was saved")
+        except Exception as exc:  # noqa: BLE001 - closing must never hang
+            box = getattr(getattr(self, "review", None), "note_box", None)
+            where = box.key() if box is not None else None
+            self.report_error(f"saving the frame note failed: {exc}; frame {where}, "
+                              f"its text: {typed!r}")
         self.flush_sidecar()
         self.save_window_state()
         # threads first, then the database; the log stays open for the backup

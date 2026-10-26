@@ -58,6 +58,7 @@ from PySide6.QtWidgets import (
 
 from tda.core import context as C
 from tda.core.db import Db
+from tda.core.frame_notes import notes_by_step
 from tda.core.taxonomy import Taxonomy, load_taxonomy
 from tda.ui.panels.add_parts import BUTTON as ADD_PARTS_BUTTON
 from tda.ui.panels.add_parts import HINT as ADD_PARTS_HINT
@@ -323,6 +324,16 @@ class StepTablePanel(MergeIntoMixin, ReclassMenuMixin, AbsentMenuMixin, QWidget)
         self.instances_model.set_data(self.data)
         self.relations_tab.set_data(self.data)
         self._refresh_issues()
+
+    def refresh_notes(self) -> None:
+        """Re-read 「这一帧的说明」 (task U35): the ✎ next to a step's thumbnail.
+
+        Notes are written in Review, never here, so this is not an edit: no
+        ``dataChanged`` (which would mark the table unsaved) -- the view just
+        repaints from the data it asks for.
+        """
+        self.data.notes = notes_by_step(self.db, self.desktop)
+        self.steps_view.viewport().update()
 
     # -- what moved since the last load / Apply (task U9) ------------------ #
     def _remember(self) -> None:

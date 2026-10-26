@@ -214,10 +214,13 @@ class GuideMixin:
 
     def on_canvas_focus(self) -> None:
         """The canvas has the keyboard again: a "快捷键没生效" line is now stale."""
-        from tda.ui.app_keys import KEY_SWALLOWED
+        from tda.ui.app_keys import KEY_SWALLOWED, NOTE_KEY_SWALLOWED
 
-        if self.status_message() == KEY_SWALLOWED:
+        if self.status_message() in (KEY_SWALLOWED, NOTE_KEY_SWALLOWED):
             self.report("")
+        # a focus episode ends here: back in the same field, a missed key is
+        # said again (U35 round 2: the note box is the field one returns to)
+        self._swallow_warned = None
 
     def flash_visibility_note(self, text: str) -> None:
         """Show ``text`` across the canvas for a few seconds (round 3, item 5)."""

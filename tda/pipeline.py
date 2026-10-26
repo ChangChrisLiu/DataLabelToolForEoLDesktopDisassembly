@@ -676,9 +676,13 @@ def settle_gallery(db: Db, desktop: int) -> dict:
                 row = db.get_frame(key)
                 if row is None:
                     continue
-                if db.frame_is_annotated(key):
+                work = db.frame_work(key)
+                if work:
+                    # all that holds it may be a 这一帧的说明 (U35 round 2, N9): say so
+                    only_note = all(w.endswith("frame_note row(s)") for w in work)
+                    what = "has a frame note" if only_note else "has annotations"
                     moved.append(f"step {step} ({view}) is a photo of the laid-out parts "
-                                 f"but has annotations; left in the sequence")
+                                 f"but {what}; left in the sequence")
                     continue
                 target = GALLERY_OF.get(view)
                 if target is not None and row.get("path") and not row.get("missing"):
@@ -885,9 +889,13 @@ def status_rows(db: Db, desktops: Optional[set[int]] = None) -> list[dict]:
     Review's 「可见性审查」 (task U24) -- confirmed rows whose label is not plain
     ``visible`` or was set by hand, and how many of them are stamped reviewed
     -- and ``vis_runs``, the runs of them still to review (task U36).
+    The desktop carries ``notes``: ``{view: n}`` of Review's 「这一帧的说明」
+    (task U35).
     """
     totals = {name: db.count_per_desktop(name) for name in STATUS_TOTALS}
     per_view = {name: db.count_per_view(name) for name in VIEW_COUNTERS}
+    # Review's 「这一帧的说明」 (task U35): {desktop: {view: n}}
+    notes = db.note_counts()
     ids = set(db.desktop_ids()) | set(totals["steps"]) | {d for d, _v in per_view["frames"]}
     out = []
     for desktop in sorted(d for d in ids if wanted(d, desktops)):
@@ -906,5 +914,7 @@ def status_rows(db: Db, desktops: Optional[set[int]] = None) -> list[dict]:
             **{name: totals[name].get(desktop, 0) for name in STATUS_TOTALS},
             # the sequence's four views and the components gallery's three
             "views": views,
+            # the frames' notes per view (U35); {} for none
+            "notes": dict(notes.get(desktop, {})),
         })
     return out

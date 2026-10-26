@@ -24,6 +24,9 @@ Per desktop ``D<nn>/`` this writes:
   the parts covered completely as crowd rows) with, per annotation,
   ``instance_id``, ``occluders``, ``clean`` and the rest of :data:`ANN_FIELDS`;
 * ``frames.json``, ``instances.json``, ``sequence.json``;
+* ``notes.json`` -- only where there is any: what the annotator wrote about a
+  packed frame in Review (「这一帧的说明」, ``frame_note``): step, frame, text,
+  time (task U35);
 
 and at the top ``README.md``, ``clean_parts.csv``, ``LICENSE_NOTE.txt`` and
 ``manifest.json`` (counts and the sha256 of every other file).
@@ -977,6 +980,13 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
     write_json(ddir / "instances.json", dict(head, steps=steps_all, instances=instances_out))
     write_json(ddir / "sequence.json", dict(head, steps=steps_out, leaving=leaving_order,
                                             timeline=timeline))
+    # what the annotator wrote about a packed frame while checking it (the
+    # app's 「这一帧的说明」): only where there is any, nothing else on it
+    frame_notes = [{"step": n["step"], "frame": frame_name(n["step"]), "text": n["text"],
+                    "updated_at": n["updated_at"]}
+                   for n in db.frame_notes(desktop, VIEW) if n["step"] in images]
+    if frame_notes:
+        write_json(ddir / "notes.json", dict(head, notes=frame_notes))
 
     by_class = defaultdict(Counter)
     clean_rows = []
@@ -1002,6 +1012,8 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
         "clean": len(clean_rows),
         "clean_instances": len({r["instance_id"] for r in clean_rows}),
         "amodal_widened_rows": int(stats["amodal_widened"]),
+        # frames with an annotator's note (notes.json)
+        "frame_notes": len(frame_notes),
         "overlap_frames": int(stats["overlap_frames"]),
         "overlap_px": int(stats["overlap_px"]),
         # of which no per-frame mask is involved: confirmed rows alone
@@ -1483,6 +1495,14 @@ def readme_text(summary: dict) -> str:
                          for e in summary["exclusions"])
     excluded = (f"Frames left out of this package: {excluded} (see *Known issues*)."
                 if excluded else "No frame is left out of this package.")
+    # the annotator's notes on frames: said only where a desktop has any
+    with_notes = [d for d in summary["per_desktop"] if d.get("frame_notes")]
+    notes_layout = ("  notes.json         the annotator's notes on some frames (only where "
+                    "there are any)\n" if with_notes else "")
+    notes_files = ("* `notes.json` (" + ", ".join(desktop_dir(d["desktop"]) for d in with_notes)
+                   + ") -- what the annotator wrote about a frame while checking it: `notes`: "
+                   "`step`, `frame`,\n  `text` (free text, often Chinese; it may name parts by "
+                   "`key`), `updated_at`.\n" if with_notes else "")
     if t["overlap_frames"]:
         overlap_zh = (f"确认的可见掩码在 {t['overlap_frames']} 帧上有重叠，`segmentation` 保持确认时的原样，"
                       f"重叠像素在 label map 里只归一个零件。")
@@ -1594,7 +1614,7 @@ D<nn>/
   frames.json        per step: source file, sha256, size, ROI, step name, actions
   instances.json     per part: id, key, class, relations, states per step, leaving step
   sequence.json      the step table and the state timeline per part
-```
+{notes_layout}```
 
 ## Steps and pictures
 
@@ -1778,7 +1798,7 @@ is kept as it was confirmed. No annotation with `shared_px > 0` is clean.
   `file_name`, `burst_choice`, `frame_record_file`, `sha256`, `width`,
   `height`, `roi`, `step_name`, `step_type`, `actions`, `review_status`,
   annotation counts, and `excluded` (the reason, for a frame left out).
-* `manifest.json` -- the counts above per desktop and per class, the
+{notes_files}* `manifest.json` -- the counts above per desktop and per class, the
   exclusions and notes, and the size and sha256 of every other file. Per
   desktop, `confirmed_vs_today` says how every confirmed visible mask compares
   with what today's annotation draws for that part on that frame:

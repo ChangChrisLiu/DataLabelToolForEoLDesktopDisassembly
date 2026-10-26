@@ -55,7 +55,9 @@ MIGRATIONS: dict[str, dict[str, str]] = {
 #: * version 3: ``recheck_queue``
 #: * version 4: ``pose_break`` (per-view pose breaks, spec 2.5 v1.5)
 #: * version 5: no table -- ``frame_override.occluder`` (:data:`MIGRATIONS`)
-ADDED_TABLES: dict[int, tuple[str, ...]] = {3: ("recheck_queue",), 4: ("pose_break",)}
+#: * version 6: ``frame_note`` (「这一帧的说明」, task U35)
+ADDED_TABLES: dict[int, tuple[str, ...]] = {3: ("recheck_queue",), 4: ("pose_break",),
+                                            6: ("frame_note",)}
 
 
 class ConnectionMixin:
