@@ -193,11 +193,22 @@ def frozen_disagreements(db, key: FrameKey, compiled: CompiledFrame,
     the order ``verify_frame`` has always queued them in.  A row carrying this
     compilation's own ``input_hash`` *is* this compilation and is skipped
     without decoding anything.
+
+    A row 「重签」 wrote is measured against the row **a person signed** before
+    it (:func:`tda.core.truth_anchor.human_rows`, task U32 round 2): the
+    tolerance is not transitive, and measured against the re-signed row a part
+    could drift one tolerance per re-signing without a conflict ever opening.
+    The conflict still shows the stored row as its old side.
     """
+    from tda.core.truth_anchor import human_rows
+
     if stored is None:
         stored = db.compiled(key)
     if overrides is None:
         overrides = db.frame_overrides(key)
+    behind = [i for i in sorted(set(stored) & set(compiled.instances))
+              if stored[i]["status"] == VERIFIED and stored[i]["input_hash"] != compiled.input_hash]
+    signed = human_rows(db, key, behind) if behind else {}
     out: list[Blocker] = []
     for instance in sorted(set(stored) - set(compiled.instances)):
         if stored[instance]["status"] != VERIFIED:
@@ -210,11 +221,14 @@ def frozen_disagreements(db, key: FrameKey, compiled: CompiledFrame,
         if row["status"] != VERIFIED or row["input_hash"] == compiled.input_hash:
             continue
         compiled_inst = compiled.instances[instance]
-        diff = disagreement(row, compiled_inst)
-        labels = label_changes(row, compiled_inst, overrides.get(instance))
+        reference = signed.get(instance, row)
+        diff = disagreement(reference, compiled_inst)
+        labels = label_changes(reference, compiled_inst, overrides.get(instance))
         if diff is None and not labels:
             continue
         what = label_text(labels) if labels else f"{diff} px differ"
+        if instance in signed:
+            what += ", against the row signed before re-signing"
         values = row_values(compiled_inst)
         out.append(Blocker(
             FROZEN, f"{FROZEN_DISAGREEMENT}{instance}",

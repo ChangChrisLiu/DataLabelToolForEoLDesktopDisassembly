@@ -19,11 +19,16 @@ acts.  Opening another frame can be refused, and a resolution has three
 possible outcomes; neither answer is the panel's to give.  The queues are then
 re-read, never patched locally.
 
-It has **no buttons** of its own (task U2b round 1b): the "Keep old K" / "Take
-new N" pair duplicated the tool palette's 保留旧的 / 采用新的, and two places for
-one thing is the confusion the second trial reported.  The panel says which
-conflict is selected (:meth:`ReviewPanel.selected_conflict`); the palette's
-buttons and the keys resolve it through the window.
+It has **no resolution buttons** of its own (task U2b round 1b): the "Keep old
+K" / "Take new N" pair duplicated the tool palette's 保留旧的 / 采用新的, and two
+places for one thing is the confusion the second trial reported.  The panel
+says which conflict is selected (:meth:`ReviewPanel.selected_conflict`); the
+palette's buttons and the keys resolve it through the window.
+
+The two buttons it does have (task U32), 「重签这一帧」 and 「重签全部」, are
+nowhere else and have no key: they only **report**
+(:attr:`ReviewPanel.sigRefreeze`, ``"frame"`` or ``"all"``), and the window
+plans, asks -- naming the frame count -- and writes.
 """
 from __future__ import annotations
 
@@ -46,7 +51,7 @@ from tda.ui import session_api as api
 from tda.ui import visreview_text as VT
 from tda.ui.panels import session_is_open
 
-__all__ = ["ReviewPanel", "QUEUE_TITLES"]
+__all__ = ["ReviewPanel", "QUEUE_TITLES", "REFREEZE_ALL", "REFREEZE_FRAME"]
 
 STEP_ROLE = int(Qt.ItemDataRole.UserRole)
 CID_ROLE = int(Qt.ItemDataRole.UserRole) + 1
@@ -68,6 +73,12 @@ VIS_KEYS = ("选中的一行整段生效：Space 确认（按计算） · 数字
             "只改一帧：切到「按帧」")
 #: The two listings of the 可见性审查 tab: a line per run, a line per frame.
 BY_RUN, BY_FRAME = "按段", "按帧"
+
+#: 「重签」 (task U32): what :attr:`ReviewPanel.sigRefreeze` carries.
+REFREEZE_FRAME, REFREEZE_ALL = "frame", "all"
+REFREEZE_FRAME_TEXT, REFREEZE_ALL_TEXT = "重签这一帧", "重签全部"
+REFREEZE_TIP = ("把已确认帧里和今天的编译只差容差以内的行（不算冲突、一直存着旧像素）改成今天的编译；"
+                "帧仍是已确认，超出容差的行不动（它们是冲突）。先列出要改几帧再问。没有快捷键。")
 
 
 def _entry_text(queue: str, entry: dict) -> str:
@@ -101,6 +112,8 @@ class ReviewPanel(QWidget):
     #: the window opens that frame -- through the gate -- and selects the part.
     #: Never emitted by a refresh putting a selection back.
     sigVisibilityPicked = Signal(int, str)
+    #: 「重签这一帧」 (``"frame"``) or 「重签全部」 (``"all"``) was clicked (task U32).
+    sigRefreeze = Signal(str)
 
     def __init__(self, session: Optional[api.SessionLike] = None,
                  parent: Optional[QWidget] = None) -> None:
@@ -146,13 +159,31 @@ class ReviewPanel(QWidget):
             "R: rework it in Annotate mode\n"
             "K: keep the frozen shape    N: take the edit\n"
             "(左边工具面板上的「接受这一帧 / 返工 / 保留旧的 / 采用新的」是同样的键)\n"
-            f"可见性审查：{VIS_KEYS}"
+            f"可见性审查：{VIS_KEYS}\n"
+            "下方「重签这一帧 / 重签全部」：容差以内的旧行改成今天的编译（按钮，没有键）"
         )
+
+        # 「重签」 (task U32): two buttons, no key, nothing else does it
+        self.refreeze_frame_button = QToolButton()
+        self.refreeze_all_button = QToolButton()
+        resign = QHBoxLayout()
+        resign.setContentsMargins(0, 0, 0, 0)
+        for button, text, scope in ((self.refreeze_frame_button, REFREEZE_FRAME_TEXT,
+                                     REFREEZE_FRAME),
+                                    (self.refreeze_all_button, REFREEZE_ALL_TEXT,
+                                     REFREEZE_ALL)):
+            button.setText(text)
+            button.setToolTip(REFREEZE_TIP)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.clicked.connect(lambda _checked=False, s=scope: self.sigRefreeze.emit(s))
+            resign.addWidget(button)
+        resign.addStretch(1)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(3)
         layout.addWidget(self._tabs, 1)
+        layout.addLayout(resign)
         layout.addWidget(self._problems_label)
         layout.addWidget(self._problems_list)
 

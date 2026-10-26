@@ -410,10 +410,11 @@ def test_the_spec_has_v1_22_on_top_with_the_whole_table():
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
     # on top when it landed; U23's v1.23, U24's v1.24, U25's v1.25 and U26's
     # v1.26, U27's v1.27 and U28's v1.28 and U29's v1.29 and L6's v1.30 have gone above it since
+    # (and U32's v1.31)
     assert entries[0].startswith(("- **v1.22", "- **v1.23", "- **v1.24", "- **v1.25",
                                   "- **v1.26", "- **v1.27",
-                                  "- **v1.28", "- **v1.29", "- **v1.30"))
-    [first] = [e for e in entries[:9] if e.startswith("- **v1.22")]
+                                  "- **v1.28", "- **v1.29", "- **v1.30", "- **v1.31"))
+    [first] = [e for e in entries[:10] if e.startswith("- **v1.22")]
     assert first.startswith("- **v1.22（2026-10-23）**：**左手键**（U22，§4.6）")
     for name, keys in MAP.items():
         if name in ("confirm", "tool_eraser", "flash_compare", "review_rework",

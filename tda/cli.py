@@ -13,6 +13,7 @@
     python -m tda.cli scan-align  --desktop N         # scanner folders vs OAK steps (2.2)
     python -m tda.cli backup                          # SQLite backup API -> backup_dir
     python -m tda.cli status      [--desktop N]       # what the database holds
+    python -m tda.cli refreeze    --desktop N [--dry-run]  # 重签 rows within tolerance (U32)
 
 Those four import commands must run in that order: ``load-index`` needs the
 index file, ``import-logs`` needs the index for its step durations, and
@@ -64,6 +65,7 @@ from tda.cli_common import (
 )
 from tda.cli_graph import _add_constraints
 from tda.cli_pose import _add_pose_breaks
+from tda.cli_refreeze import _add_refreeze
 from tda.cli_relations import _add_adopt_relations, _add_infer_relations
 from tda.cli_scan_align import _add_scan_align
 from tda.core import rawroot
@@ -748,6 +750,7 @@ SUBCOMMANDS: tuple[Callable[[argparse._SubParsersAction], None], ...] = (
     _add_backup,
     _add_status,
     *_APP_SUBCOMMANDS,
+    _add_refreeze,       # 「重签」 (U32): after check, whose counter says what it would do
 )
 
 

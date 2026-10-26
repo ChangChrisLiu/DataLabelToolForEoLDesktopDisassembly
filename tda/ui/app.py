@@ -49,6 +49,7 @@ from tda.ui.app_keys import FLASH_UNNAMED, KeysMixin
 from tda.ui.app_locator import LocatorMixin
 from tda.ui.app_pose import PoseMixin
 from tda.ui.app_rawdata import NO_IMAGE_TEXT, RawDataMixin
+from tda.ui.app_refreeze import RefreezeWindowMixin
 from tda.ui.app_roi import RoiMixin
 from tda.ui.app_state import StateMixin
 from tda.ui.app_verb import VerbMixin
@@ -83,8 +84,8 @@ STEPS_UNSAVED = ("Steps 里有没 Apply 的修改（例如刚加的零件）：�
 
 class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateMixin,
                  VerbMixin, AssistMixin, GuideMixin, KeysMixin, RawDataMixin, GalleryMixin,
-                 CableMixin, ContextMixin, LocatorMixin, VisReviewMixin, ToolsMixin,
-                 StatusMixin, ShellMixin, QMainWindow):
+                 CableMixin, ContextMixin, LocatorMixin, VisReviewMixin, RefreezeWindowMixin,
+                 ToolsMixin, StatusMixin, ShellMixin, QMainWindow):
     """One annotator, one desktop/view, three modes."""
 
     def __init__(self, session, paths: dict, annotator: str, *,
@@ -131,6 +132,7 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateM
         self._init_gallery()
         self._init_context()    # 框外零件 (task U18): the canvas' right-click menu
         self._init_visreview()  # 可见性审查 (task U24): Review's fifth tab
+        self._init_refreeze()   # 重签 (task U32): Review's two buttons
         self._init_guide()      # last: it reads the bars and the raw-drive state
         self._connect_session()
 
