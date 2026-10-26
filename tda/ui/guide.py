@@ -171,6 +171,11 @@ class GuideFacts:
     #: rows are still to review (``-1``: not known).
     vis_review: bool = False
     vis_pending: int = -1
+    #: The verdict the other views point at for the selected line (task U36):
+    #: its palette action (the border goes there) and the sentence saying
+    #: why; ``""`` when they point at nothing.
+    vis_suggest: str = ""
+    vis_suggest_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -241,6 +246,8 @@ VIS_REVIEW = ("可见性审查：选一条（一段帧；跳到那一帧、选�
               "都作用于这一整段，Ctrl+Z 撤销；只改一帧：面板切到「按帧」")
 #: ... and with nothing left to review in this view.
 VIS_REVIEW_DONE = "可见性审查完成：这个视角没有要审的了（换视角 F1–F4 继续）"
+#: After a suggestion from the other views (task U36): it is only a default.
+VIS_SUGGEST_NOTE = "只是建议，还是你按键决定"
 
 
 def steps_text(steps) -> str:
@@ -360,6 +367,11 @@ def plan_for(facts: GuideFacts) -> GuidePlan:
                          f"翻到有图像的帧")
     if facts.mode == "review":
         if facts.vis_review:
+            if facts.vis_pending != 0 and facts.vis_suggest:
+                # the other views' reason (U36): a default, the key is still theirs
+                return GuidePlan(PHASE_REVIEW, "复查 Review",
+                                 f"{facts.vis_suggest_text}（{VIS_SUGGEST_NOTE}）；{VIS_REVIEW}",
+                                 action=facts.vis_suggest)
             return GuidePlan(PHASE_REVIEW, "复查 Review",
                              VIS_REVIEW_DONE if facts.vis_pending == 0 else VIS_REVIEW,
                              action="" if facts.vis_pending == 0 else "vis_review_computed")

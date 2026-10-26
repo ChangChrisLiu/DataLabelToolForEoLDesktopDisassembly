@@ -882,6 +882,11 @@ class CommitMixin:
             self.queue_sidecar(self.session.current(), instance, mask)
         self.timeline.refresh_statuses()   # it takes back other frames too
         self.forget_card_hints()
+        # 「同步到其他视角」 (U36 round 2, N8): the verdict it offers to copy may
+        # just have been taken back -- or the sync itself
+        recheck = getattr(self, "recheck_sync_offer", None)
+        if callable(recheck):
+            recheck()
         self.update_status()
         self.report(what)
 

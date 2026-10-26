@@ -70,12 +70,14 @@ def open_conflicts(session) -> list[tuple[int, str]]:
 # the queue
 # --------------------------------------------------------------------------- #
 def test_the_queue_lists_every_label_to_audit_one_line_per_run(scene):
+    # task U36: a run says how many frames it is and 「全程」 when it is every
+    # confirmed frame of the part; the longest runs first
     assert lines(scene) == [
-        "connector.03 第 10–14 帧 · too_small（自动）",
+        "connector.03 第 10–14 帧（5 帧） · too_small（自动） · 全程",
+        "ram_latch.03 第 10–14 帧（5 帧） · occluded_full（被螺丝挡住，自动） · 全程",
+        "ram_module.01 第 10–14 帧（5 帧） · occluded_partial（被螺丝挡住，自动） · 全程",
         "cpu.01 第 13 帧 · occluded_full（原因: 线缆，手动）",
         "psu.01 第 12 帧 · out_of_view（手动）",
-        "ram_latch.03 第 10–14 帧 · occluded_full（被螺丝挡住，自动）",
-        "ram_module.01 第 10–14 帧 · occluded_partial（被螺丝挡住，自动）",
     ]
     hidden = entry(scene, V.HIDDEN)
     assert hidden["steps"] == STEPS and hidden["occluded_by"] == [V.COVER]
@@ -112,9 +114,11 @@ def test_runs_compress_over_steps_without_an_image():
     # frame not in the queue, so 6 and 8 are not
     runs = VR.runs_of(rows, [1, 2, 3, 5, 6, 7, 8])
     assert [r.steps for r in runs] == [[3, 5, 6], [8]]
+    # task U36: the parts hiding it no longer cut a run -- the run collects
+    # them and says where they change (「从这帧起另算」 cuts it there)
     named = VR.runs_of(rows, [3, 5, 6, 8], {(5, "a.01"): ("b.01",)})
-    assert [(r.steps, r.occluded_by) for r in named] == [([3], ()), ([5], ("b.01",)),
-                                                        ([6, 8], ())]
+    assert [(r.steps, r.occluded_by, r.changes) for r in named] == [
+        ([3, 5, 6, 8], ("b.01",), [5, 6])]
 
 
 def test_the_occluders_are_named_off_the_stored_rows_without_compiling(scene, monkeypatch):

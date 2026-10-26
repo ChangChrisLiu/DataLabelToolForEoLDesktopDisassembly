@@ -1,5 +1,5 @@
 """Task U33: the spec says it where the states (§6.2) and the verbs (§6.3) are,
-and v1.32 is on top of §14."""
+and v1.32 is near the top of §14."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -71,11 +71,13 @@ def test_the_verb_and_the_rule_are_in_6_3():
     assert "delete the instance in S1" not in para
 
 
-def test_v1_32_is_on_top_of_14():
+def test_v1_32_is_near_the_top_of_14():
     changes = _body().split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
-    assert entries[0].startswith("- **v1.32（2026-10-26）**：**日志里拿走一根松线不是卡扣**"
-                                 "（U33，§6.2、§6.3）")
+    # U34-U36 landed v1.33-v1.35 the same day; the controller ordered them at the merges
+    [entry] = [e for e in entries[:4] if e.startswith("- **v1.32")]
+    assert entry.startswith("- **v1.32（2026-10-26）**：**日志里拿走一根松线不是卡扣**"
+                            "（U33，§6.2、§6.3）")
     for needed in ("`cable_clip.01` + `release`", "42 行 `missing_shape:cable_clip.01`",
                    "`configs/taxonomy.yaml`", "`cable_removed`", "`cable:isolated.NN`",
                    "`tda/core/logs.py`", "53 组", "35 行只有 D36 第 2 步变了",
@@ -86,6 +88,6 @@ def test_v1_32_is_on_top_of_14():
                    "D22–D33、D50–D60、D65", "帧覆盖（`` ` `` / `` Ctrl+` `` 的「被线挡住」等）",
                    "已确认的行、开着的冲突、层级、人定的约束边",
                    "then run import-logs --force again", "V4 ×2、V5、V6"):
-        assert needed in entries[0], needed
-    assert "delete the instance in S1" not in entries[0]
+        assert needed in entry, needed
+    assert "delete the instance in S1" not in entry
     assert changes.index("- **v1.32") < changes.index("- **v1.31")

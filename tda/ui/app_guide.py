@@ -35,6 +35,7 @@ from tda.ui import app_compat as compat
 from tda.ui import app_support as S
 from tda.ui import guide as G
 from tda.ui import session_api as api
+from tda.ui import visreview_text as VT
 from tda.ui.app_edit import SHAPE_BUSY
 from tda.ui.app_roi import BENCH_NEEDS_ITEM, ON_BENCH
 from tda.ui.canvas import overlay_style as _OS
@@ -557,7 +558,22 @@ class GuideMixin:
                             and self.review.current_queue() == api.QUEUE_VISIBILITY),
             vis_pending=(self.review.list_for(api.QUEUE_VISIBILITY).count()
                          if opened else -1),
+            # ... and the reason the other views point at for the line (U36)
+            **self._vis_suggestion(opened),
         )
+
+    def _vis_suggestion(self, opened: bool) -> dict:
+        """``vis_suggest`` / ``vis_suggest_text`` of the selected 可见性审查 line (U36)."""
+        if not (opened and self.mode == A.MODE_REVIEW
+                and self.review.current_queue() == api.QUEUE_VISIBILITY):
+            return {}
+        found = getattr(self.review, "selected_suggestion", None)
+        suggestion = found() if callable(found) else None
+        entry = self.review.selected_visibility()
+        if not suggestion or entry is None:
+            return {}
+        return {"vis_suggest": str(suggestion.get("action") or ""),
+                "vis_suggest_text": VT.suggestion_text(suggestion, entry)}
 
     def _card_cut_copy(self, instance: Optional[str]) -> bool:
         """Is ``instance``'s card row an open ✂ over a cut copy (U11 round 2)?"""

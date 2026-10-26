@@ -17,6 +17,14 @@ toggle):
 * after an answer the selection moves to the next line and its frame.
 
 On the other Review tabs ``Space`` still accepts the frame, as it did.
+
+Task U36 adds two buttons under the list, no keys: 「从这帧起另算」 cuts the
+selected run at the frame on screen (the keys then answer the part from that
+frame on), and 「同步到其他视角」 copies the run just answered onto the same
+steps of the other views where the part is hidden the same way and nobody has
+answered -- offered after an answer when there is something to copy (the
+status line says how many frames), one op, one ``Ctrl+Z``. The other views'
+suggested reason is the palette's default (its border) and the guide's line.
 """
 from __future__ import annotations
 
@@ -50,6 +58,11 @@ class VisReviewMixin:
 
     def _init_visreview(self) -> None:
         self.review.sigVisibilityPicked.connect(self.on_visibility_picked)
+        self.review.sigSplitRun.connect(self.act_split_run)
+        self.review.sigSyncViews.connect(self.act_sync_views)
+        #: ``(desktop, view, part, steps)`` of the run last answered, while a
+        #: sync of it to the other views is on offer (task U36).
+        self._vis_sync: Optional[tuple] = None
         self.follow_visibility_mode()
 
     def follow_visibility_mode(self) -> None:
@@ -148,6 +161,7 @@ class VisReviewMixin:
         self.logger.info("visibility review %s %s %s %s: %s", instance, steps, verdict, label,
                          {k: result.get(k) for k in ("moved", "accepted", "withheld",
                                                      "conflicts")})
+        note += self._offer_sync(instance, steps)
         self.review.refresh()
         if not self._walk_on(row):
             note += f"；{VT.DONE}"
@@ -155,6 +169,115 @@ class VisReviewMixin:
         self.timeline.refresh_statuses()
         self.update_status()
         self.report(note)
+        self.refresh_guidance()
+
+    # -- 同步到其他视角 / 从这帧起另算 (task U36) ----------------------------------------
+    def _offer_sync(self, instance: str, steps: list[int]) -> str:
+        """After an answer: offer its sync when another view has frames for it.
+
+        Returns what the status line adds (``""`` when there is nothing to copy).
+        """
+        plan_of = getattr(self.session, "sync_visibility_plan", None)
+        plan = plan_of(instance, steps) if callable(plan_of) else {"count": 0}
+        if not plan.get("count"):
+            self._vis_sync = None
+            self.review.set_sync_offer(None)
+            return ""
+        key = self.session.current()
+        self._vis_sync = (key.desktop, key.view, str(instance), [int(s) for s in steps])
+        self.review.set_sync_offer(self._offer_text(instance, steps, plan))
+        return VT.SYNC_OFFER.format(n=plan["count"])
+
+    def _offer_text(self, instance: str, steps, plan: dict) -> str:
+        """「零件 第 a–b 帧 → oak1 n 帧」: what the button would copy, for its tooltip."""
+        where = "、".join(f"{view} {len(found)} 帧"
+                         for view, found in sorted(plan["views"].items()))
+        name = self._label_of(instance)[0] or instance_label(instance)
+        return f"{name} 第 {VT.steps_text(steps)} 帧 → {where}"
+
+    def recheck_sync_offer(self) -> None:
+        """The button of the run last answered, lit while there is something to copy.
+
+        Asked after a sync and after every ``Ctrl+Z`` / ``Ctrl+Y`` (round 2,
+        N8 and R2-a): the run stays the one on offer until another is answered
+        or the view changes, and the plan is asked again -- the sync done:
+        dark; the sync undone: lit; its verdict undone (no stamp to copy): dark;
+        redone: lit again.
+        """
+        offer = getattr(self, "_vis_sync", None)
+        if offer is None:
+            return
+        key = self.session.current() if compat.is_open(self.session) else None
+        plan_of = getattr(self.session, "sync_visibility_plan", None)
+        if key is None or (offer[0], offer[1]) != (key.desktop, key.view) or not callable(plan_of):
+            self._vis_sync = None
+            self.review.set_sync_offer(None)
+            return
+        # the run stays the one on offer (a redo of its verdict lights it again);
+        # the button follows what there is to copy now
+        plan = plan_of(offer[2], offer[3])
+        if not plan.get("count"):
+            self.review.set_sync_offer(None)
+            return
+        self.review.set_sync_offer(self._offer_text(offer[2], offer[3], plan))
+
+    @S.guard
+    def act_sync_views(self) -> None:
+        """「同步到其他视角」: the run last answered, onto the other views (one op)."""
+        offer = getattr(self, "_vis_sync", None)
+        if (offer is None or self.mode != A.MODE_REVIEW or not compat.is_open(self.session)
+                or (offer[0], offer[1]) != (self.session.current().desktop,
+                                            self.session.current().view)):
+            self._vis_sync = None
+            self.review.set_sync_offer(None)
+            self.report(VT.SYNC_IDLE)
+            return
+        _desktop, _view, instance, steps = offer
+        try:
+            result = self.session.sync_visibility(instance, steps)
+        except SessionRefusal as refused:
+            self.report(f"可见性审查：{refused}")
+            return
+        finally:
+            # the run stays the one on offer: done, it has nothing left to copy
+            # and the button goes dark; Ctrl+Z of the sync lights it again (R2-a)
+            self.recheck_sync_offer()
+        name = self._label_of(instance)[0] or instance_label(instance)
+        self.logger.info("visibility sync %s %s: %s", instance, steps,
+                         {k: result.get(k) for k in ("written", "skipped", "accepted",
+                                                     "withheld", "conflicts")})
+        self.review.refresh()
+        self.update_status()
+        self.report(VT.sync_note(name, result))
+        self.refresh_guidance()
+
+    @S.guard
+    def act_split_run(self) -> None:
+        """「从这帧起另算」: the selected run, cut at the frame on screen."""
+        if self.mode != A.MODE_REVIEW or not compat.is_open(self.session):
+            self.report(NOT_IN_REVIEW)
+            return
+        entry = self.review.selected_visibility()
+        if entry is None:
+            self.report(VT.PICK_A_ROW)
+            return
+        step = int(self.session.current().step)
+        instance = str(entry["instance"])
+        try:
+            result = self.session.split_visibility_run(instance, step, entry.get("steps") or ())
+        except SessionRefusal as refused:
+            self.report(f"可见性审查：{refused}")
+            return
+        # the refresh keeps the part selected at the frame on screen: the line
+        # that now starts there (or, merged, the whole run again)
+        self.review.refresh()
+        picked = self.review.selected_visibility() or {}
+        name = self._label_of(instance)[0] or instance_label(instance)
+        if result.get("merged"):
+            self.report(VT.MERGED.format(step=step))
+        else:
+            self.report(VT.SPLIT_DONE.format(step=step, label=name,
+                                             steps=VT.steps_text(picked.get("steps") or [step])))
         self.refresh_guidance()
 
     def _walk_on(self, row: int) -> bool:
