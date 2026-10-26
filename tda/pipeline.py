@@ -884,9 +884,13 @@ def status_rows(db: Db, desktops: Optional[set[int]] = None) -> list[dict]:
     (task U2c). A sequence view also carries ``vis_reviewed`` / ``vis_total``:
     Review's 「可见性审查」 (task U24) -- confirmed rows whose label is not plain
     ``visible`` or was set by hand, and how many of them are stamped reviewed.
+    The desktop carries ``notes``: ``{view: n}`` of Review's 「这一帧的说明」
+    (task U35).
     """
     totals = {name: db.count_per_desktop(name) for name in STATUS_TOTALS}
     per_view = {name: db.count_per_view(name) for name in VIEW_COUNTERS}
+    # Review's 「这一帧的说明」 (task U35): {desktop: {view: n}}
+    notes = db.note_counts()
     ids = set(db.desktop_ids()) | set(totals["steps"]) | {d for d, _v in per_view["frames"]}
     out = []
     for desktop in sorted(d for d in ids if wanted(d, desktops)):
@@ -905,5 +909,7 @@ def status_rows(db: Db, desktops: Optional[set[int]] = None) -> list[dict]:
             **{name: totals[name].get(desktop, 0) for name in STATUS_TOTALS},
             # the sequence's four views and the components gallery's three
             "views": views,
+            # the frames' notes per view (U35); {} for none
+            "notes": dict(notes.get(desktop, {})),
         })
     return out

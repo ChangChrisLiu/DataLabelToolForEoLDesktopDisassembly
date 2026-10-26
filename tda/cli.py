@@ -13,6 +13,7 @@
     python -m tda.cli scan-align  --desktop N         # scanner folders vs OAK steps (2.2)
     python -m tda.cli backup                          # SQLite backup API -> backup_dir
     python -m tda.cli status      [--desktop N]       # what the database holds
+    python -m tda.cli notes       --desktop N [--view V] [--format md]  # 这一帧的说明 (U35)
     python -m tda.cli refreeze    --desktop N [--dry-run]  # 重签 rows within tolerance (U32)
 
 Those four import commands must run in that order: ``load-index`` needs the
@@ -64,6 +65,7 @@ from tda.cli_common import (
     session as _session,
 )
 from tda.cli_graph import _add_constraints
+from tda.cli_notes import _add_notes
 from tda.cli_pose import _add_pose_breaks
 from tda.cli_refreeze import _add_refreeze
 from tda.cli_relations import _add_adopt_relations, _add_infer_relations
@@ -580,8 +582,29 @@ def format_status(rows: list[dict]) -> str:
         # export (spec 3.4). `cli check` holds the lock and drains them.
         lines.append(f"re-checks pending: {pending}")
     lines.extend(format_vis_review(rows))
+    lines.extend(format_notes(rows))
     lines.extend(format_gallery(rows))
     return "\n".join(lines)
+
+
+#: Review's 「这一帧的说明」 (task U35): the heading of ``status``'s count.
+NOTES_HEAD = "这一帧的说明 / frame notes"
+
+
+def notes_cell(notes: dict) -> str:
+    """``3 (scan 2, oak1 1)`` -- a desktop's notes, per view."""
+    total = sum(int(n) for n in notes.values())
+    return f"{total} (" + ", ".join(f"{v} {n}" for v, n in sorted(notes.items())) + ")"
+
+
+def format_notes(rows: list[dict]) -> list[str]:
+    """One line per desktop with notes, and the command that reads them; nothing when none."""
+    found = [r for r in rows if r.get("notes")]
+    if not found:
+        return []
+    lines = ["", f"{NOTES_HEAD} (python -m tda.cli notes --desktop N)"]
+    lines += [f"D{r['desktop']:02d}{'':<5} {notes_cell(r['notes'])}" for r in found]
+    return lines
 
 
 #: Review's 「可见性审查」 (task U24): ``reviewed/total`` of one view.
@@ -701,6 +724,10 @@ def format_desktop(db: Db, row: dict) -> str:
             for s in db.pose_segments(row["desktop"], view)
         )
         lines.append(f"  pose {view:<5} {rendered or 'none'}")
+    if row.get("notes"):
+        # Review's 「这一帧的说明」 (task U35): how many, and how to read them
+        lines.append(f"  {NOTES_HEAD}: {notes_cell(row['notes'])} -- "
+                     f"python -m tda.cli notes --desktop {row['desktop']}")
     issues = (db.get_desktop(row["desktop"]) or {}).get("pose_issues") or []
     lines.extend(f"  ! {text}" for text in issues)
     return "\n".join(lines)
@@ -749,6 +776,7 @@ SUBCOMMANDS: tuple[Callable[[argparse._SubParsersAction], None], ...] = (
     _add_scan_align,
     _add_backup,
     _add_status,
+    _add_notes,          # 「这一帧的说明」 (U35): what status counts, to read
     *_APP_SUBCOMMANDS,
     _add_refreeze,       # 「重签」 (U32): after check, whose counter says what it would do
 )
