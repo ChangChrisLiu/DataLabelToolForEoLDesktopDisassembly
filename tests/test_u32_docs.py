@@ -22,6 +22,7 @@ def test_the_rule_is_in_3_4():
     for needed in ("**两个确认掩码重叠**", "5 227 px", "**谁的都不是**", "`TruthService.refreeze`",
                    "`cli refreeze --desktop N --view scan", "`--dry-run`", "--undo last|<run>",
                    "仍是 `verified`", "超出容差的、有开着冲突的仍是冲突", "只报告不代签",
+                   "**等冲突处理完**（`deferred`", "D22",
                    "`refreeze_frame` op", "逐列逐字节", "再跑一遍什么都不写",
                    "`stale_within_tolerance: n`", "不影响退出码", "D2–D21"):
         assert needed in para, needed
