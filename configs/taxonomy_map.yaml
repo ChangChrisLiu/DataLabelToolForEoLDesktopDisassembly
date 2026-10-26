@@ -231,6 +231,21 @@ rules:
     attrs: {kind: sata_data}
     canon_group: "connector: SATA (endpoint unspecified)"
 
+  # --- a loose cable taken out whole (task U33) -------------------------------
+  # "Remove 1 isolated cable from motherboard" (D36 step 2) takes a cable off,
+  # it opens no clip: no part, no mask -- the virtual node `cable` (cls "",
+  # `virtual`), verb `remove`. A name that also says what held the cable stays a
+  # clip below: clip / locker / holder / tie, or the cover or shroud a clip is
+  # moulded into (D63 "Remove cable from heatsink cover", spec 3.2 / U27); one
+  # that names a connector or plug is a connector row, not a cable. The canon
+  # group is the csv's for these rows, so the 53 groups stay 53.
+  - name: cable_removed
+    pattern: '^(?:remove|take|pull)\b(?!.*\b(?:clips?|lockers?|holders?|ties?|covers?|shrouds?|connectors?|plugs?)\b).*\bcables?\b'
+    cls: ""
+    virtual: cable
+    verb: remove
+    canon_group: "cable routing (cable clip/locker)"
+
   # --- cable routing (before covers: "remove cable from heatsink cover") -----
   - name: cable_routing
     pattern: 'cable locker|cables? from|isolated cable'

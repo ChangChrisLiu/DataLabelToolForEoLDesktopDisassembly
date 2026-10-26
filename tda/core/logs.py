@@ -17,7 +17,11 @@ pre-fills:
   implicit ``chassis``, with ordinals in order of first operation. Every row
   that names a target is a new instance unless one of the two reuse tests in
   :mod:`tda.core.log_identity` says otherwise, so the annotators' restarted
-  numbering never merges two physical parts.
+  numbering never merges two physical parts;
+* no instance at all for a row that takes a loose cable out whole (task U33,
+  :func:`is_cable_event`): its action targets the virtual node
+  ``cable:isolated.NN`` (:func:`loose_cable_key`), like a reorient targets the
+  implicit chassis -- a step, never a part to draw.
 
 Nothing here guesses what a human must decide: unresolved targets keep a ``?``
 in the key, and every one of them is reported in ``issues`` for stage S1.
@@ -48,6 +52,7 @@ from .log_identity import (
     reuse_candidates,
 )
 from .model import ActionRec, InstanceRec, StepRec
+from .states import CABLE_CLASS, CABLE_PREFIX
 from .taxonomy import (
     FALLBACK_RULE,
     ParsedTarget,
@@ -238,6 +243,34 @@ def _is_chassis(parsed: ParsedTarget, step_type: str) -> bool:
     return step_type == "reorient" or parsed.cls == CHASSIS_KEY
 
 
+#: The owner token of a cable a row takes out whole (task U33): spec 3.1's
+#: 「独立」. A lead moulded into a part (a fan's, the PSU harness) only ever
+#: unplugs, so a cable that comes off by itself belongs to nobody -- and
+#: :func:`tda.core.graph_rules.cable_owner` finds no part behind the token.
+LOOSE_CABLE_OWNER = "isolated"
+
+
+def loose_cable_key(ordinal: int) -> str:
+    """``cable:isolated.01`` -- the ``ordinal``-th loose cable a sheet takes out.
+
+    The connectors' ``cable:<owner>`` scheme with an ordinal, because two such
+    rows are two cables: one shared node would be removed twice.
+    """
+    return f"{CABLE_PREFIX}{LOOSE_CABLE_OWNER}.{ordinal:02d}"
+
+
+def is_cable_event(parsed: ParsedTarget) -> bool:
+    """Does this row take a loose cable out -- a virtual node, no part (task U33)?
+
+    ``taxonomy_map.yaml``'s ``cable_removed`` rule: a name that says a cable is
+    removed / taken / pulled out and names nothing that held it. Such a row
+    names the virtual node (``virtual: cable``) and **no class**, which is how
+    it differs from ``cable_routing`` ("remove the cable from the case fan
+    clip"), whose target is the clip it opens.
+    """
+    return parsed.virtual == CABLE_CLASS and not parsed.cls
+
+
 class _Importer:
     """One desktop's import; kept private so the module API stays functional."""
 
@@ -250,6 +283,8 @@ class _Importer:
         self.ledger = InstanceLedger()
         self._seen_seq: dict[int, int] = {}
         self._prev_seq: Optional[int] = None
+        #: How many loose cables the sheet has taken out so far (task U33).
+        self._cables = 0
 
     # -- issues ----------------------------------------------------------- #
     def issue(self, step: Optional[int | str], text: str) -> None:
@@ -339,7 +374,12 @@ class _Importer:
     def _action(
         self, step: int, raw_name: str, parsed: ParsedTarget, step_type: str, row: dict
     ) -> ActionRec:
-        cls = CHASSIS_KEY if _is_chassis(parsed, step_type) else parsed.cls
+        if _is_chassis(parsed, step_type):
+            cls = CHASSIS_KEY
+        elif is_cable_event(parsed):
+            cls = CABLE_CLASS   # the verb is judged against the virtual node
+        else:
+            cls = parsed.cls
         drafted = parsed.verb or _default_verb(cls)
         verb = sheet_verb(cls, raw_name, drafted, self.tax)
         result = "failed" if step_type == "failed" else "success"
@@ -379,6 +419,11 @@ class _Importer:
                 f"- needs manual target resolution",
             )
             return _placeholder_key(parsed.cls, parsed.attrs)
+        if is_cable_event(parsed):
+            # a loose cable taken out whole (task U33): a step with no part,
+            # like a reorient -- no instance row, so no card ever asks for it
+            self._cables += 1
+            return loose_cable_key(self._cables)
         if not parsed.cls:
             if not fallback:
                 self.issue(step, f"{raw_name!r} names no target class - needs manual target")
@@ -565,7 +610,7 @@ class _Importer:
             desktop=self.desktop,
             cls=cls,
             attrs=own,
-            cable=f"cable:{owner}" if owner else None,
+            cable=f"{CABLE_PREFIX}{owner}" if owner else None,
         )
 
     def _resolve_socket_hosts(self) -> None:
