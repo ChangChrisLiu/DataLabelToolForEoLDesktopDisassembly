@@ -50,10 +50,10 @@ def test_the_spec_has_the_paragraph_in_4_5_and_v1_23_on_top():
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
     # on top when it landed; U24's v1.24, U25's v1.25 and U26's v1.26 have gone
     # above it since
-    # (and U27's v1.27, U28's v1.28, U29's v1.29 and L6's v1.30)
+    # (and U27's v1.27, U28's v1.28, U29's v1.29, L6's v1.30 and U32's v1.31)
     assert entries[0].startswith(("- **v1.23", "- **v1.24", "- **v1.25", "- **v1.26",
                                   "- **v1.27",
-                                  "- **v1.28", "- **v1.29", "- **v1.30"))
-    [first] = [e for e in entries[:8] if e.startswith("- **v1.23")]
+                                  "- **v1.28", "- **v1.29", "- **v1.30", "- **v1.31"))
+    [first] = [e for e in entries[:9] if e.startswith("- **v1.23")]
     assert first.startswith("- **v1.23（2026-10-23）**：**主视角**（U23，§4.5）")
     assert changes.index("- **v1.23") < changes.index("- **v1.21")

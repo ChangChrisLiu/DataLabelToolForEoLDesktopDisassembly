@@ -12,6 +12,9 @@
   accepting the new value or pinning the frozen one.
 * :meth:`TruthService.affected_steps` -- which frames one shape reaches, for
   the canvas' "affects N frames" strip (spec 4.3).
+* :meth:`TruthService.refreeze` -- 「重签」: write today's compile into the
+  frozen rows that differ from it only within the tolerance, the one change
+  nothing else ever writes (task U32, :mod:`tda.core.truth_refreeze`).
 
 Geometry, the frozen-vs-recompiled comparison and the conflict payloads live
 next door in :mod:`tda.core.truth_conflicts`; reading the inputs out of the
@@ -29,7 +32,9 @@ The rules the table lives by (spec 3.4)
   differing pixels -- and the row keeps its frozen value until a human resolves
   it with :meth:`TruthService.resolve_conflict`. Nothing is ever silently
   overwritten, and a disagreement already sitting in the open queue is not
-  queued twice.
+  queued twice.  A difference *within* the tolerance is left as it is by every
+  pass; only a human's explicit 「重签」 (:meth:`TruthService.refreeze`, U32)
+  writes the compile into such a row, as an op with the old row as its inverse.
 * **One open conflict per frozen row** (task U7): ``(frame, instance)`` has at
   most one. A newer disagreement about the same row *replaces* the open one
   -- closed ``superseded`` with the reason :data:`OVERTAKEN` -- instead of
@@ -70,6 +75,7 @@ from tda.core.model import (
 from tda.core.states import needs_geom
 from tda.core.taxonomy import Taxonomy
 from tda.core.truth_fresh import FreshMixin, digest_of
+from tda.core.truth_refreeze import RefreezeMixin
 from tda.core.truth_resolve import ResolveMixin, StaleConflictError
 from tda.core.truth_verify import BLOCKING_PROBLEMS, VerifyMixin, usable
 from tda.core.truth_conflicts import (
@@ -130,8 +136,13 @@ SYSTEM = "system"
 REFRESH_COUNTERS = ("updated", "conflicts", "standing", "closed", "overtaken", "skipped")
 
 
-class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
-    """Reads the annotations, compiles frames and owns the ``compiled_mask`` table."""
+class TruthService(FreshMixin, ResolveMixin, VerifyMixin, RefreezeMixin):
+    """Reads the annotations, compiles frames and owns the ``compiled_mask`` table.
+
+    「重签」 -- re-signing the frozen rows that trail the inputs *within* the
+    tolerance, which nothing else ever rewrites -- is
+    :meth:`~tda.core.truth_refreeze.RefreezeMixin.refreeze` (task U32).
+    """
 
     def __init__(self, db: Db, tax: Taxonomy, compiler_version: str = "1",
                  cache_dir: object = _CONFIGURED):
@@ -512,7 +523,8 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
         return reopened
 
     def refresh_range(self, desktop: int, view: str, steps: Iterable[int],
-                      per_step: bool = False, ignore_digest: bool = False) -> dict:
+                      per_step: bool = False, ignore_digest: bool = False,
+                      on_frame=None) -> dict:
         """:meth:`refresh` every step of one view, with the totals summed up.
 
         ``problems`` is the concatenation of the per-step problem lists in the
@@ -528,14 +540,21 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin):
         reason the visible mask is empty -- which ``cli check`` needs to tell a
         part covered completely (expected) from one with nothing drawn (task
         U26). ``problems`` itself is unchanged.
+
+        ``on_frame(key, result)`` is called after each frame with its
+        :meth:`refresh` result -- ``cli check`` counts the rows 「重签」 would
+        rewrite off the compilation in it (task U32) instead of compiling the
+        view a second time.
         """
         cache = InputCache()
         total: dict = {counter: 0 for counter in REFRESH_COUNTERS}
         total["problems"] = {} if per_step else []
         total["empty_visible"] = []
         for step in steps:
-            one = self.refresh(FrameKey(desktop, int(step), view), cache,
-                               ignore_digest=ignore_digest)
+            key = FrameKey(desktop, int(step), view)
+            one = self.refresh(key, cache, ignore_digest=ignore_digest)
+            if on_frame is not None:
+                on_frame(key, one)
             for counter in REFRESH_COUNTERS:
                 total[counter] += one[counter]
             if per_step:

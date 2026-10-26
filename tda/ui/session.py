@@ -42,6 +42,7 @@ from tda.ui.session_images import ImageCache
 from tda.ui.session_layer import EditingLayer
 from tda.ui import session_rows as rows
 from tda.ui.session_queues import ReviewState
+from tda.ui.session_refreeze import ResignMixin
 from tda.ui.session_review import ReviewMixin
 from tda.ui.session_state import StateMixin, apply_assert_state
 from tda.ui.session_truth import TruthCacheMixin
@@ -58,8 +59,8 @@ __all__ = ["AnnotationSession"]
 
 log = logging.getLogger("tda.session")
 
-class AnnotationSession(CommitMixin, ReviewMixin, StateMixin, VerbMixin, CaptiveMixin,
-                        ReclassMixin, CableMixin, ContextMixin, VisReviewMixin,
+class AnnotationSession(CommitMixin, ReviewMixin, ResignMixin, StateMixin, VerbMixin,
+                        CaptiveMixin, ReclassMixin, CableMixin, ContextMixin, VisReviewMixin,
                         TruthCacheMixin, QObject):
     """One annotator's working set: a desktop, a view, and the frame in hand."""
 

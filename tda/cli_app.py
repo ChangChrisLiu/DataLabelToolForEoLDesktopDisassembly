@@ -231,7 +231,8 @@ def _call_export(export, *args, allow_conflicts: bool, **kw):
 
 
 def _prepare_truth(db, tax, desktops: Sequence[int], view: str,
-                   refresh: bool = True, ignore_digest: bool = False) -> dict:
+                   refresh: bool = True, ignore_digest: bool = False,
+                   on_frame=None) -> dict:
     """Bring the compiled truth of ``desktops`` up to date before it is read.
 
     Three commands read the truth table and all three were reading it raw:
@@ -257,6 +258,9 @@ def _prepare_truth(db, tax, desktops: Sequence[int], view: str,
     compiling, and a skipped frame reports no problems -- so the second
     ``check`` of an untouched view printed ``problems: 0`` and exited 0 over
     hundreds of missing shapes. The exports keep the digest shortcut.
+
+    ``on_frame`` is handed on to ``refresh_range`` (``check``'s count of the
+    rows 「重签」 would rewrite, U32).
 
     Returns ``{"truth", "desktops", "view", "steps", "updated", "conflicts",
     "closed", "overtaken", "problems", "empty_visible", "pending"}``;
@@ -285,7 +289,8 @@ def _prepare_truth(db, tax, desktops: Sequence[int], view: str,
             steps = [int(row["step"]) for row in db.frames_for(int(desktop), str(view))
                      if not row.get("missing")]
             stats = truth.refresh_range(int(desktop), str(view), steps,
-                                        ignore_digest=ignore_digest)
+                                        ignore_digest=ignore_digest,
+                                        **({} if on_frame is None else {"on_frame": on_frame}))
             total["steps"] += len(steps)
             total["updated"] += int(stats.get("updated", 0))
             total["conflicts"] += int(stats.get("conflicts", 0))
@@ -353,6 +358,11 @@ def cmd_check(args: argparse.Namespace) -> int:
     layers should give, and it is one summary line, 「n 个零件完全被挡住（正常）」.
     An empty visible mask with no such reason -- nothing drawn -- still is
     (:mod:`tda.core.empty_visible`).
+
+    The last line, ``stale_within_tolerance: n`` (task U32), counts the
+    confirmed rows 「重签」 would rewrite: they differ from today's compile
+    only within the tolerance, so they open no conflict and keep their old
+    pixels.  A counter for the audit, not a problem: the exit code ignores it.
     """
     with session(args, lock=True) as (_paths, db):
         desktop = int(args.desktop)
@@ -365,9 +375,23 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 def _check_one(db, tax, args: argparse.Namespace, desktop: int, view: str) -> int:
     """Recompile one ``(desktop, view)`` and report it; the exit code is its own."""
+    # 「重签」 (U32): confirmed rows that differ from today's compile only within
+    # the tolerance -- no conflict, and no pass ever rewrites them -- counted off
+    # the compilation each frame's refresh just made
+    from tda.core.truth_refreeze import plan_frame
+
+    resign: list[tuple[int, str]] = []
+
+    def count_resign(key, one: dict) -> None:
+        compiled = one.get("compiled")
+        if compiled is None or (db.get_frame(key) or {}).get("review_status") != "verified":
+            return
+        resign.extend((key.step, c.instance) for c in plan_frame(db, key, compiled).changes)
+
     # every frame compiled, as on a first run: a digest-skipped frame reports
     # no problems, and a check has to see them all every time
-    stats = _prepare_truth(db, tax, [desktop], view, refresh=True, ignore_digest=True)
+    stats = _prepare_truth(db, tax, [desktop], view, refresh=True, ignore_digest=True,
+                           on_frame=count_resign)
     # a part covered completely is what the layers should give, not a problem
     # (U26): one summary line; an empty mask with no reason stays listed
     from tda.core.empty_visible import split_problems
@@ -441,12 +465,20 @@ def _check_one(db, tax, args: argparse.Namespace, desktop: int, view: str) -> in
               f"not in its place with a shape -- no shape, taken out, or on the bench "
               f"({OCCLUDER_WITHOUT_SHAPE}): 按 ` 键撤回（或从零件还在的帧按 Ctrl+` 撤回）: "
               + ", ".join(f"{instance}@{step}" for step, instance in lost[:10]))
+    if resign:
+        frames = len({step for step, _instance in resign})
+        print(f"[check] {len(resign)} 条已确认行（{frames} 帧）和今天的编译只差容差以内：不算冲突，"
+              f"存的仍是旧像素（stale_within_tolerance；cli refreeze 或 Review 的「重签」改成"
+              f"今天的编译）: " + ", ".join(f"{instance}@{step}" for step, instance in resign[:10]))
     for text in problems[: int(args.limit)]:
         print(f"  - {text}")
     if len(problems) > int(args.limit):
         print(f"  ... {len(problems) - int(args.limit)} more")
     print(f"problems: {len(problems)}")
     print(f"open conflicts: {standing}")
+    # a counter for the audit, not a problem: the rows are the same annotation
+    # by the app's own tolerance, and the exit code stays what it was
+    print(f"stale_within_tolerance: {len(resign)}")
     return EXIT_ERROR if (problems or standing or stats["pending"]) else EXIT_OK
 
 
