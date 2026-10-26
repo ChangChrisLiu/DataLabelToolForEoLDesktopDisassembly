@@ -71,24 +71,70 @@ def _table(columns: int, headers) -> QTableWidget:
     return table
 
 
+#: The summary shows at most this many parts before it scrolls (round 2, N2:
+#: the list under it keeps its rows in the dock's default 320 px).
+SUMMARY_ROWS = 3
+
+
 class RunSummary(QWidget):
-    """Per part: 看不见 frames / stretches in every view (the top of the queue)."""
+    """Per part: 看不见 frames / stretches in every view (the top of the queue).
+
+    Its title line is a toggle (round 2, N2): open, the table -- at most
+    :data:`SUMMARY_ROWS` parts high, then it scrolls; folded, the title alone,
+    which still says how the queue is ordered.
+    """
 
     #: A row was clicked: that part's first line, please.
     sigPartPicked = Signal(str)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
+        self.toggle = QToolButton()
+        self.toggle.setCheckable(True)
+        self.toggle.setChecked(True)
+        self.toggle.setAutoRaise(True)
+        self.toggle.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toggle.setArrowType(Qt.ArrowType.DownArrow)
+        self.toggle.setText(VT.ORDER_CAPTION)
+        self.toggle.setToolTip("点一下折叠 / 展开各视角的汇总表")
+        self.toggle.setStyleSheet("color: gray; font-size: 8pt")
+        self.toggle.toggled.connect(self._on_toggled)
         self.table = _table(1 + len(VIEWS), ("零件", *VIEWS))
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setMaximumHeight(84)
         self.table.setToolTip("看不见的帧数 / 段数（每个视角；— 没标注，未确认 = 只有草稿）。"
                               "点一行选中这个零件的第一段")
         self.table.cellClicked.connect(self._clicked)
+        self.table.verticalHeader().setDefaultSectionSize(16)
         box = QVBoxLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(0)
+        box.addWidget(self.toggle)
         box.addWidget(self.table)
+        self._fit()
+
+    def _fit(self) -> None:
+        """The table as tall as its header and :data:`SUMMARY_ROWS` rows (fewer if fewer)."""
+        rows = max(1, min(SUMMARY_ROWS, self.table.rowCount()))
+        head = self.table.horizontalHeader().sizeHint().height()
+        self.table.setFixedHeight(head + rows * self.table.verticalHeader().defaultSectionSize()
+                                  + 2 * self.table.frameWidth() + 2)
+
+    def _on_toggled(self, shown: bool) -> None:
+        self.toggle.setArrowType(Qt.ArrowType.DownArrow if shown else Qt.ArrowType.RightArrow)
+        self.table.setVisible(shown)
+
+    def expanded(self) -> bool:
+        """Is the table shown (not folded to its title)?"""
+        return self.toggle.isChecked()
+
+    def set_expanded(self, shown: bool) -> None:
+        self.toggle.setChecked(bool(shown))
+
+    def caption(self) -> str:
+        """The title line: what the numbers are and how the queue is ordered."""
+        return self.toggle.text()
 
     def set_rows(self, rows: list[dict]) -> None:
         """Show :meth:`~tda.ui.session_visruns.VisRunsMixin.visibility_summary`'s rows."""
@@ -113,6 +159,7 @@ class RunSummary(QWidget):
                 if value is not None and int(value[0]):
                     cell.setToolTip(f"{view}：看不见 {value[0]} 帧，{value[1]} 段，最长 {value[2]} 帧")
                 self.table.setItem(i, j, cell)
+        self._fit()
         self.setVisible(bool(rows))
 
     def rows(self) -> list[tuple[str, ...]]:
@@ -184,13 +231,14 @@ class RunDetail(QWidget):
         buttons.addWidget(self.split_button)
         buttons.addWidget(self.sync_button)
         buttons.addStretch(1)
-        # the most needed first: a short dock shows the suggestion and the
-        # buttons, then the views, and scrolls to the pictures
+        # the most needed first: the default dock (320 px high, the list keeping
+        # five lines) shows the two buttons; the suggestion (also the guide's
+        # line), the views and the pictures are a scroll or a drag away
         box = QVBoxLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(2)
-        box.addWidget(self._suggestion)
         box.addLayout(buttons)
+        box.addWidget(self._suggestion)
         box.addWidget(self.views)
         box.addWidget(self._changes)
         box.addLayout(strip)

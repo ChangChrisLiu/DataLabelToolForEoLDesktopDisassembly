@@ -24,7 +24,7 @@ import vis_review_scene as V
 import vis_runs_scene as S
 from app_scene import StubSamQueue, close_window, make_paths
 from test_app_actions import key_event
-from tda.core.model import OCCLUDER_CABLE, OCCLUDER_VIEWPOINT
+from tda.core.model import OCCLUDER_VIEWPOINT
 from tda.ui import app_actions as A
 from tda.ui import session_api as api
 from tda.ui import visreview_text as T
@@ -97,7 +97,16 @@ def test_the_summary_sits_on_top_of_the_queue_in_its_order(window):
     assert marked[1:] == ("5/1", "4/1", "—", "未确认")
     row = [r[0] for r in rows].index(S.MARKED)
     assert summary.bold(row, "scan") and not summary.bold(row, "oak1")
-    assert "零件按最长的一段排，最长的在前" in window.review._vis_order.text()
+    assert "零件按最长的一段排，最长的在前" in summary.caption()
+    # round 2 (N2): folded to its title, which still says the order
+    assert summary.expanded() and summary.table.isVisible()
+    summary.toggle.click()
+    QApplication.processEvents()
+    assert not summary.expanded() and not summary.table.isVisible()
+    assert summary.toggle.isVisible() and "最长的在前" in summary.caption()
+    summary.toggle.click()
+    QApplication.processEvents()
+    assert summary.table.isVisible()
     # a click on a summary row selects that part's line and opens its frame
     summary._clicked([r[0] for r in rows].index(S.ANGLE), 0)
     QApplication.processEvents()
@@ -154,28 +163,41 @@ def test_split_here_cuts_the_line_and_the_keys_answer_the_rest(window):
 
 
 def test_sync_is_offered_after_an_answer_and_taken_back_by_one_ctrl_z(window):
+    """Space on the latch a screw hides here and in oak1: the computed stamp
+    goes to oak1's five frames; one Ctrl+Z takes all five back."""
     review(window)
     sync = window.review.run_detail.sync_button
     assert not sync.isEnabled()
-    pick(window, S.MARKED)
-    assert press(window, "Z")
-    assert "其他视角还有 3 帧同样看不见、还没审" in window.status_message()
-    assert sync.isEnabled() and "oak1 3 帧" in sync.toolTip()
+    pick(window, V.HIDDEN)
+    assert press(window, "Space")
+    assert "其他视角还有 5 帧同样看不见、还没审" in window.status_message()
+    assert sync.isEnabled() and "oak1 5 帧" in sync.toolTip()
     QTest.mouseClick(sync, Qt.MouseButton.LeftButton)
     QApplication.processEvents()
     said = window.status_message()
-    assert said.startswith("已同步到其他视角：") and "oak1 第 10–12 帧，共 3 帧" in said
-    assert "已有判定 1 帧" in said and "其中 3 帧原来手动标的原因换成了这个判定" in said
+    assert said.startswith("已同步到其他视角：") and "oak1 第 10–14 帧，共 5 帧" in said
+    assert "手动标的原因换成了" not in said
     assert not sync.isEnabled()
-    for step in (10, 11, 12):
-        assert window.db.frame_overrides(S.key(step, S.OTHER))[S.MARKED].occluder == \
-            OCCLUDER_VIEWPOINT
-    assert press(window, "Ctrl+Z")                     # the sync, all three frames
-    for step in (10, 11, 12):
-        assert window.db.frame_overrides(S.key(step, S.OTHER))[S.MARKED].occluder == \
-            OCCLUDER_CABLE
-        assert window.db.instance_flags(S.key(step, S.OTHER), S.MARKED) is None
-    assert window.db.instance_flags(S.key(10), S.MARKED)["verdict"] == "viewpoint"
+    assert all(window.db.instance_flags(S.key(s, S.OTHER), V.HIDDEN)["verdict"] == "computed"
+               and window.db.frame_overrides(S.key(s, S.OTHER)).get(V.HIDDEN) is None
+               for s in range(10, 15))
+    assert press(window, "Ctrl+Z")                     # the sync, all five frames
+    assert all(window.db.instance_flags(S.key(s, S.OTHER), V.HIDDEN) is None
+               for s in range(10, 15))
+    assert window.db.instance_flags(S.key(10), V.HIDDEN)["verdict"] == "computed"
+
+
+def test_the_offer_goes_out_when_its_verdict_is_undone(window):
+    """Round 2 (N8): Ctrl+Z of the verdict leaves nothing to copy -- the button goes dark."""
+    review(window)
+    sync = window.review.run_detail.sync_button
+    pick(window, V.HIDDEN)
+    assert press(window, "Space")
+    assert sync.isEnabled()
+    assert press(window, "Ctrl+Z")
+    assert not sync.isEnabled()
+    assert press(window, "Ctrl+Y")                     # the verdict back: so is the offer
+    assert sync.isEnabled()
 
 
 def test_no_offer_when_the_other_views_have_nothing_to_take(window):
@@ -186,6 +208,36 @@ def test_no_offer_when_the_other_views_have_nothing_to_take(window):
     assert not window.review.run_detail.sync_button.isEnabled()
     window.act_sync_views()
     assert window.status_message() == T.SYNC_IDLE
+    # the cable marks of oak1 are a person's: Z on connector.04 offers nothing either
+    pick(window, S.MARKED)
+    assert press(window, "Z")
+    assert not window.review.run_detail.sync_button.isEnabled()
+
+
+def test_the_default_dock_keeps_five_lines_of_the_list(qapp, tmp_path):
+    """Round 2 (N2): a fresh app folder, 1920 x 1000 -- the list keeps five
+    lines under the summary (three parts high) and the detail's buttons show."""
+    session = S.build(tmp_path)
+    paths = make_paths(tmp_path)
+    paths["app_dir"] = str(tmp_path / "fresh_app")
+    win = MainWindow(session, paths, "tester", sam_queue=StubSamQueue())
+    try:
+        win.resize(1920, 1000)
+        win.show()
+        QApplication.processEvents()
+        if win.roi_editing:
+            win.act_clear_edit()
+        review(win)
+        lw = vis_list(win)
+        lw.setCurrentRow(0)
+        QApplication.processEvents()
+        assert lw.viewport().height() >= 5 * lw.sizeHintForRow(0) - 1
+        assert win.review.run_summary.table.height() <= (
+            win.review.run_summary.table.horizontalHeader().height() + 3 * 16 + 8)
+        assert win.review.run_detail.split_button.isVisible()
+    finally:
+        close_window(win)
+        session.close(force=True)
 
 
 def test_no_new_key():

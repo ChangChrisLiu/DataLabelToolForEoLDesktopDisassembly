@@ -87,9 +87,12 @@ VIS_KEYS = ("选中的一行整段生效：Space 确认（按计算） · 数字
             "只改一帧：切到「按帧」")
 #: ... as the line under the progress says it (task U36: the dock is shared
 #: with the summary and the selected line's detail; the whole text is its tooltip).
-VIS_KEYS_SHORT = "整段生效：Space 对 · 数字 手动 · ` 线 · Z 角度（Shift 部分）· Ctrl+Z 撤销"
+VIS_KEYS_SHORT = "整段：Space 对 · 数字 手动 · ` 线 · Z 角度 · Shift 部分 · Ctrl+Z 撤销"
 #: The two listings of the 可见性审查 tab: a line per run, a line per frame.
 BY_RUN, BY_FRAME = "按段", "按帧"
+#: The 可见性审查 list keeps at least this many lines (U36 round 2, N2: the
+#: summary and the detail share the dock with it).
+LIST_MIN_ROWS = 5
 
 #: 「重签」 (task U32): what :attr:`ReviewPanel.sigRefreeze` carries.
 REFREEZE_FRAME, REFREEZE_ALL = "frame", "all"
@@ -281,29 +284,30 @@ class ReviewPanel(QWidget):
         self._vis_keys.setToolTip(VIS_KEYS)
         self._vis_keys.setWordWrap(True)
         self._vis_keys.setStyleSheet("color: gray; font-size: 8pt")
-        # task U36: per part, how long it is 看不见 in every view; the order
+        # task U36: per part, how long it is 看不见 in every view, under a title
+        # that says the order and folds the table away (round 2, N2)
         self.run_summary = RunSummary()
         self.run_summary.setVisible(False)
         self.run_summary.sigPartPicked.connect(self._on_summary_part)
-        self._vis_order = QLabel(VT.ORDER_CAPTION)
-        self._vis_order.setWordWrap(True)
-        self._vis_order.setStyleSheet("color: gray; font-size: 8pt")
         # ... and under the list, the selected line across the views; the two
-        # halves share the dock's height through a splitter, the detail scrolls
+        # halves share the dock's height through a splitter, the list keeps
+        # LIST_MIN_ROWS lines whatever the detail wants, the detail scrolls
         self.run_detail = RunDetail()
         self.run_detail.sigSplit.connect(self.sigSplitRun)
         self.run_detail.sigSync.connect(self.sigSyncViews)
+        lw.setMinimumHeight(LIST_MIN_ROWS * (lw.fontMetrics().height() + 2)
+                            + 2 * lw.frameWidth() + 6)
         queue = QWidget()
         top = QVBoxLayout(queue)
         top.setContentsMargins(0, 0, 0, 0)
-        top.setSpacing(2)
+        top.setSpacing(1)
         top.addWidget(self.run_summary)
-        top.addWidget(self._vis_order)
         top.addWidget(lw, 1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(self.run_detail)
+        scroll.setMinimumHeight(32)
         self._vis_split = QSplitter(Qt.Orientation.Vertical)
         self._vis_split.setChildrenCollapsible(False)
         self._vis_split.addWidget(queue)

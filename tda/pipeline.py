@@ -47,8 +47,7 @@ from tda.core.model import (
     is_component_view,
 )
 from tda.core.truth_inputs import HW_INFERRED, TRUTH_AUX_KEYS, infer_hw
-from tda.core.vis_review import progress as vis_review_progress
-from tda.core.vis_runs import pending_run_count as vis_review_runs
+from tda.core.vis_runs import review_counts as vis_review_counts
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PATHS_PATH = "configs/paths.yaml"
@@ -898,9 +897,8 @@ def status_rows(db: Db, desktops: Optional[set[int]] = None) -> list[dict]:
         for view in VIEWS:
             # a view nobody confirmed a frame of has nothing to audit: no query
             counts = views[view]
-            reviewed, total = (vis_review_progress(db, desktop, view)
-                               if counts.get("verified") else (0, 0))
-            runs = vis_review_runs(db, desktop, view) if total > reviewed else 0
+            reviewed, total, runs = (vis_review_counts(db, desktop, view)
+                                     if counts.get("verified") else (0, 0, 0))
             counts.update(vis_reviewed=reviewed, vis_total=total, vis_runs=runs)
         out.append({
             "desktop": desktop,

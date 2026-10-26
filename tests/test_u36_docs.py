@@ -32,7 +32,11 @@ def test_the_paragraph_is_in_4_4_after_u24s():
                    "「—」没标注", "「未确认」只有草稿", "**帧条**", "第一、中间、最后一帧",
                    "**其他视角表**", "只比**已确认帧**", "绿底", "**建议**", "「角度看不到」（`Z` / `Shift+Z`）",
                    "「被挡住」", "**键还是标注员按**", "没有快捷键", "**「从这帧起另算」**", "不写库",
-                   "**「同步到其他视角」**", "**从不覆盖判定**", "那边编译说有零件挡着的帧",
+                   "**「同步到其他视角」**", "**从不覆盖判定**",
+                   # round 2: a person's work there is never touched; layers cover too
+                   "也没有任何手动标注**", "只为那一帧手画的掩码，哪怕和判定相同", "只盖「按计算」的戳",
+                   "**零件或遮挡层**（手、工具、线缆层）", "有手动标注", "表最多三行高",
+                   "列表至少留五行",
                    "`sync_visibility`", "一次 `Ctrl+Z`", "U15 的路子", "`cli check --visibility`",
                    "`visibility_run <零件> a= b= n= label=", "verdict=yes|no",
                    "「可见性审查 r/t（待审 k 段）」"):
@@ -50,7 +54,8 @@ def test_v1_35_is_near_the_top_of_14():
     for needed in ("`changes`", "「第 a–b 帧（n 帧）」", "「全程」", "「从这帧起另算」",
                    "「同步到其他视角」", "`sync_visibility`", "`cli check --visibility`",
                    "「可见性审查 r/t（待审 k 段）」", "`tda/core/vis_runs.py`",
-                   "库结构不变（仍为 v5）", "830 段 / 8 692 帧", "D13 / D24 / D33 的草稿"):
+                   "库结构不变（仍为 v5）", "830 段 / 8 692 帧", "D13 / D24 / D33 的草稿",
+                   "评审第二轮", "`has_override`", "零件或遮挡层", "0.319 s → 0.155 s"):
         assert needed in entry, needed
     assert changes.index("- **v1.35") < changes.index("- **v1.31")
 
@@ -61,7 +66,7 @@ def test_the_quickstart_says_it_in_two_sentences():
     assert len(section) < 1000
     for needed in ("「第 a–b 帧（n 帧）」", "最长的一段排最前", "各视角看不见几帧 / 几段",
                    "首、中、尾三帧", "**其他视角同样这几步**", "绿底", "键还是你按",
-                   "「从这帧起另算」", "「同步到其他视角」", "不覆盖审过的"):
+                   "「从这帧起另算」", "「同步到其他视角」", "审过的、手动标的都不碰"):
         assert needed in section, needed
 
 

@@ -185,11 +185,38 @@ class VisReviewMixin:
             return ""
         key = self.session.current()
         self._vis_sync = (key.desktop, key.view, str(instance), [int(s) for s in steps])
+        self.review.set_sync_offer(self._offer_text(instance, steps, plan))
+        return VT.SYNC_OFFER.format(n=plan["count"])
+
+    def _offer_text(self, instance: str, steps, plan: dict) -> str:
+        """「零件 第 a–b 帧 → oak1 n 帧」: what the button would copy, for its tooltip."""
         where = "、".join(f"{view} {len(found)} 帧"
                          for view, found in sorted(plan["views"].items()))
         name = self._label_of(instance)[0] or instance_label(instance)
-        self.review.set_sync_offer(f"{name} 第 {VT.steps_text(steps)} 帧 → {where}")
-        return VT.SYNC_OFFER.format(n=plan["count"])
+        return f"{name} 第 {VT.steps_text(steps)} 帧 → {where}"
+
+    def recheck_sync_offer(self) -> None:
+        """After ``Ctrl+Z`` / ``Ctrl+Y``: keep the offer only while it still copies something.
+
+        The verdict it would copy may have been taken back (no stamp left), or
+        the sync done and undone; the plan is asked again (round 2, N8).
+        """
+        offer = getattr(self, "_vis_sync", None)
+        if offer is None:
+            return
+        key = self.session.current() if compat.is_open(self.session) else None
+        plan_of = getattr(self.session, "sync_visibility_plan", None)
+        if key is None or (offer[0], offer[1]) != (key.desktop, key.view) or not callable(plan_of):
+            self._vis_sync = None
+            self.review.set_sync_offer(None)
+            return
+        # the run stays the one on offer (a redo of its verdict lights it again);
+        # the button follows what there is to copy now
+        plan = plan_of(offer[2], offer[3])
+        if not plan.get("count"):
+            self.review.set_sync_offer(None)
+            return
+        self.review.set_sync_offer(self._offer_text(offer[2], offer[3], plan))
 
     @S.guard
     def act_sync_views(self) -> None:

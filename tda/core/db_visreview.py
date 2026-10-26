@@ -49,6 +49,9 @@ _ALL_ROWS = (
     "SELECT c.step AS step, c.instance AS instance, c.visibility AS visibility, "
     "c.placement AS placement, c.input_hash AS input_hash, "
     "o.visibility AS hand_visibility, o.occluder AS occluder, "
+    # any override row -- a label, a reason, or a mask drawn by hand for this
+    # frame only: what a person wrote there (U36 round 2, B1)
+    "o.instance IS NOT NULL AS has_override, "
     "g.difficulty_flags_json AS flags_json "
     "FROM compiled_mask c "
     "JOIN frame f ON f.desktop = c.desktop AND f.step = c.step AND f.view = c.view "
@@ -133,7 +136,9 @@ class VisReviewRowsMixin:
     def vis_view_rows(self, desktop: int, view: str) -> list[dict]:
         """Every row of the view's confirmed frames, ``visible`` ones too (task U36).
 
-        The same keys as :meth:`vis_review_rows` but ``geom_type``: the other
+        The same keys as :meth:`vis_review_rows` but ``geom_type``, plus
+        ``has_override`` -- the frame has an override row for the part (a hand
+        label, a reason, or only a single-frame mask drawn by hand): the other
         views' side of the visibility review, and the frames a part is on.
         """
         return self._vis_rows(_ALL_ROWS, desktop, view)
@@ -145,6 +150,8 @@ class VisReviewRowsMixin:
             flags = R.loads(item.pop("flags_json"))
             item["flags"] = dict(flags) if isinstance(flags, dict) else {}
             item["step"] = int(item["step"])
+            if "has_override" in item:
+                item["has_override"] = bool(item["has_override"])
             out.append(item)
         return out
 
@@ -163,6 +170,33 @@ class VisReviewRowsMixin:
                 "ORDER BY c.instance, c.step", (int(desktop), str(view))).fetchall():
             out.setdefault(str(row["instance"]), []).append(int(row["step"]))
         return out
+
+    def annotatable_frames(self, desktop: int, view: str) -> tuple[list[int], set[int]]:
+        """``(order, frames)``: the view's annotatable steps, in one query (U36 round 2).
+
+        ``frames`` is every frame of the view that has an image and whose step
+        the step table does not skip (``ignore``) -- what
+        :func:`tda.core.truth_inputs.annotatable_steps` keeps of any steps --
+        and ``order`` those of them that are steps of the table, ascending
+        (:func:`tda.core.vis_review.order_of`). ``status`` counts the runs of
+        every view with it instead of a frame read per step.
+        """
+        from tda.core.model import step_is_annotatable
+
+        order: list[int] = []
+        frames: set[int] = set()
+        for row in self.conn.execute(
+                "SELECT f.step AS step, f.missing AS missing, s.step AS listed, "
+                "s.step_type AS step_type FROM frame f LEFT JOIN step s "
+                "ON s.desktop = f.desktop AND s.step = f.step "
+                "WHERE f.desktop = ? AND f.view = ? ORDER BY f.step",
+                (int(desktop), str(view))).fetchall():
+            if row["missing"] or not step_is_annotatable(row["step_type"]):
+                continue
+            frames.add(int(row["step"]))
+            if row["listed"] is not None:
+                order.append(int(row["step"]))
+        return order, frames
 
     def view_annotation(self, desktop: int, view: str) -> tuple[int, list[int]]:
         """``(keyframes, confirmed steps)`` of one view (task U36's 「—」 / 未确认).

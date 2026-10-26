@@ -99,6 +99,34 @@ def test_the_flag_is_parsed():
     assert build_parser().parse_args(["check", "--desktop", "13"]).visibility is False
 
 
+def test_status_reads_each_view_once(scene, monkeypatch):
+    """Round 2 (N4): one read of the rows and one of the frames per view -- the
+    same counts as U24's progress and as the listing."""
+    from tda import pipeline as P
+    from tda.core import vis_runs as RU
+
+    for view in (VIEW, S.OTHER):
+        reviewed, total = VR.progress(scene.db, DESKTOP, view)
+        left = sum(1 for run in RU.view_runs(scene.db, DESKTOP, view) if not run.reviewed)
+        assert RU.review_counts(scene.db, DESKTOP, view) == (reviewed, total, left)
+    calls = {"rows": 0, "frames": 0, "get_frame": 0}
+    real_rows, real_frames, real_get = (scene.db.vis_review_rows, scene.db.annotatable_frames,
+                                        scene.db.get_frame)
+
+    def count(name, real):
+        def wrapped(*args, **kwargs):
+            calls[name] += 1
+            return real(*args, **kwargs)
+        return wrapped
+
+    monkeypatch.setattr(scene.db, "vis_review_rows", count("rows", real_rows))
+    monkeypatch.setattr(scene.db, "annotatable_frames", count("frames", real_frames))
+    monkeypatch.setattr(scene.db, "get_frame", count("get_frame", real_get))
+    P.status_rows(scene.db, {DESKTOP})
+    # two views have confirmed frames (scan, oak1): each read once, no frame read per step
+    assert calls == {"rows": 2, "frames": 2, "get_frame": 0}
+
+
 def test_status_counts_the_runs_still_to_review(scene):
     from tda import pipeline as P
     from tda.cli import format_desktop, format_status

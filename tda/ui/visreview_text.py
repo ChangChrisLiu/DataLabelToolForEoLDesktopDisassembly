@@ -112,7 +112,7 @@ def entry_text(entry: dict) -> str:
 WHOLE = "全程"
 WHOLE_TIP = "这一段是它在这个视角（已确认帧里）出现的全部帧：这个视角从来看不到它"
 #: The caption over the summary and the list: what the numbers are, and the order.
-ORDER_CAPTION = "上表：各视角看不见的帧数 / 段数（— 没标注）；零件按最长的一段排，最长的在前"
+ORDER_CAPTION = "各视角看不见 帧/段；零件按最长的一段排，最长的在前"
 #: The other-views table's columns.
 VIEW_COLUMNS = ("视角", "看得见", "看不见", "原因")
 #: Where the parts hiding a run change along it.
@@ -128,14 +128,16 @@ MERGED = "第 {step} 帧并回前一段"
 #: 「同步到其他视角」, and what it says.
 SYNC_BUTTON = "同步到其他视角"
 SYNC_TIP = ("把刚答的这一段的判定（标签 + 原因）写到其他视角同样的帧上：只写那边标签一样（同样看不见）、"
-            "还没审的帧，不覆盖任何判定；那边有零件挡着的不写「角度 / 线缆」。一次 Ctrl+Z 撤销。没有快捷键")
+            "还没审、也没有任何手动标注（标签、原因、单帧手画）的帧，不覆盖任何判定和手动标注；"
+            "那边有零件或遮挡层挡着的不写「角度 / 线缆」。一次 Ctrl+Z 撤销。没有快捷键")
 SYNC_IDLE = "先答一段；答完如果其他视角同样的帧也看不见、还没审，这个按钮可以把判定同步过去"
 SYNC_REFUSED = {
     "no_verdict": "这一段还没有判定：先按键回答它，再同步到其他视角",
     "not_hidden": "同步只用于看不见的标签（完全 / 部分遮挡、画面外）",
 }
-SKIP_ZH = {"verdict": "已有判定", "different": "那边的标签不一样", "covered": "那边有零件挡着它",
-           "unconfirmed": "那边没确认", "absent": "那边没有它", "no_shape": "那边没形状"}
+SKIP_ZH = {"verdict": "已有判定", "different": "那边的标签不一样", "manual": "那边有手动标注",
+           "covered": "那边有零件或遮挡层挡着它", "unconfirmed": "那边没确认",
+           "absent": "那边没有它", "no_shape": "那边没形状"}
 SYNC_OFFER = "；其他视角还有 {n} 帧同样看不见、还没审：可以点「同步到其他视角」"
 
 
@@ -156,8 +158,6 @@ def sync_note(label: str, result: dict) -> str:
                      for view, steps in sorted((result.get("written") or {}).items()))
     note = (f"已同步到其他视角：{label} {where}，共 {result.get('count', 0)} 帧，"
             f"记为审过（Ctrl+Z 撤销）")
-    if result.get("replaced"):
-        note += f"；其中 {result['replaced']} 帧原来手动标的原因换成了这个判定"
     left = skipped_text(result.get("skipped") or {})
     if left:
         note += f"；没动：{left}"

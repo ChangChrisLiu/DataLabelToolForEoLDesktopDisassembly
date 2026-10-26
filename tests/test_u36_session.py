@@ -21,9 +21,10 @@ import pytest
 
 import vis_review_scene as V
 import vis_runs_scene as S
-from session_scene import DESKTOP, VIEW
+from session_scene import DESKTOP, VIEW, rect
+from tda.core import masks
 from tda.core import vis_review as VR
-from tda.core.model import OCCLUDER_CABLE, OCCLUDER_VIEWPOINT
+from tda.core.model import OCCLUDER_VIEWPOINT, FrameOverride
 from tda.core.occluder import FULL
 from tda.ui import visreview_text as T
 from tda.ui.session_api import SessionRefusal
@@ -208,60 +209,124 @@ def test_nothing_to_sync_before_a_verdict(scene):
     assert sync_ops(scene) == 0
 
 
-def test_the_sync_copies_the_verdict_and_never_overwrites_one(scene):
-    """Z on the scanner's 被线挡住 run of connector.04, then the sync: oak1's
-    10-12 (cable marks, no verdict) take 角度看不到; 13 (answered in oak1) and
-    14 (seen there) are left alone. One op; the frames stay confirmed."""
-    scene.goto(10, force=True)
-    scene.review_visibility(S.MARKED, VR.VERDICT_VIEWPOINT, FULL, steps=STEPS)
-    answered = scene.db.instance_flags(S.key(13, S.OTHER), S.MARKED)
-    plan = scene.sync_visibility_plan(S.MARKED, STEPS)
-    assert sorted(plan["views"][S.OTHER]) == [10, 11, 12] and plan["replaced"] == 3
-    assert plan["skipped"]["verdict"] == 1 and plan["skipped"]["different"] == 1
-    result = scene.sync_visibility(S.MARKED, STEPS)
-    assert result["written"] == {S.OTHER: [10, 11, 12]} and result["count"] == 3
-    assert sync_ops(scene) == 1
-    for step in (10, 11, 12):
-        k = S.key(step, S.OTHER)
-        fo = scene.db.frame_overrides(k)[S.MARKED]
-        assert (fo.visibility, fo.occluder) == (FULL, OCCLUDER_VIEWPOINT)
-        stamp = scene.db.instance_flags(k, S.MARKED)
-        assert (stamp["verdict"], stamp["visibility"], stamp["occluder"]) == (
-            "viewpoint", FULL, OCCLUDER_VIEWPOINT)
-        assert scene.db.get_frame(k)["review_status"] == "verified"
-        assert scene.db.compiled(k)[S.MARKED]["status"] == "verified"
-    assert scene.db.instance_flags(S.key(13, S.OTHER), S.MARKED) == answered
-    assert scene.db.frame_overrides(S.key(14, S.OTHER)).get(S.MARKED) is None
-    assert open_conflicts(scene, S.OTHER) == []
-    # nothing left to sync: a second press has nothing to copy
-    with pytest.raises(SessionRefusal, match="没有可以同步的帧"):
-        scene.sync_visibility(S.MARKED, STEPS)
-    assert T.sync_note("接口", result).startswith(
-        "已同步到其他视角：接口 oak1 第 10–12 帧，共 3 帧，记为审过（Ctrl+Z 撤销）")
-
-
-def test_the_sync_is_undone_and_redone_as_one_op(scene):
-    scene.goto(10, force=True)
-    scene.review_visibility(S.MARKED, VR.VERDICT_VIEWPOINT, FULL, steps=STEPS)
-    before = {s: (scene.db.frame_overrides(S.key(s, S.OTHER)).get(S.MARKED),
-                  scene.db.instance_flags(S.key(s, S.OTHER), S.MARKED)) for s in STEPS}
-    scene.sync_visibility(S.MARKED, STEPS)
-    assert scene.undo()
+def other_state(scene, instance: str) -> dict:
+    """oak1's overrides (all three columns) and flags of ``instance`` on 10-14."""
+    out = {}
     for step in STEPS:
-        fo, flags = before[step]
-        now = scene.db.frame_overrides(S.key(step, S.OTHER)).get(S.MARKED)
-        assert (now is None) == (fo is None)
-        if fo is not None:
-            assert (now.visibility, now.occluder) == (fo.visibility, fo.occluder)
-        assert scene.db.instance_flags(S.key(step, S.OTHER), S.MARKED) == flags
-        assert scene.db.get_frame(S.key(step, S.OTHER))["review_status"] == "verified"
-    assert scene.db.frame_overrides(S.key(10, S.OTHER))[S.MARKED].occluder == OCCLUDER_CABLE
-    assert open_conflicts(scene, S.OTHER) == []
-    # the scanner's own verdict is the op before: still there
-    assert scene.db.instance_flags(S.key(10), S.MARKED)["verdict"] == "viewpoint"
+        k = S.key(step, S.OTHER)
+        fo = scene.db.frame_overrides(k).get(instance)
+        out[step] = (None if fo is None else (fo.visibility, fo.occluder, fo.visible_rle),
+                     scene.db.instance_flags(k, instance))
+    return out
+
+
+def test_the_sync_never_touches_what_a_person_wrote_in_the_other_view(scene):
+    """Round 2 (B1). Z on the scanner's 被线挡住 run of connector.04: oak1's
+    10-12 are cable marks (a person's), 13 is answered there, 14 is seen --
+    nothing to write at all, and not a byte of oak1 moves."""
+    scene.goto(10, force=True)
+    scene.review_visibility(S.MARKED, VR.VERDICT_VIEWPOINT, FULL, steps=STEPS)
+    before = other_state(scene, S.MARKED)
+    plan = scene.sync_visibility_plan(S.MARKED, STEPS)
+    assert plan["count"] == 0 and "replaced" not in plan
+    assert (plan["skipped"]["manual"], plan["skipped"]["verdict"],
+            plan["skipped"]["different"]) == (3, 1, 1)
+    with pytest.raises(SessionRefusal) as refused:
+        scene.sync_visibility(S.MARKED, STEPS)
+    assert str(refused.value) == ("其他视角没有可以同步的帧（已有判定 1 帧、那边的标签不一样 1 帧、"
+                                  "那边有手动标注 3 帧）")
+    assert other_state(scene, S.MARKED) == before and sync_ops(scene) == 0
+
+
+def test_a_hand_reason_equal_to_the_verdict_and_a_hand_drawn_mask_are_left_alone(scene):
+    """The two negative cases of round 2: oak1 11 says 完全 by hand with no
+    reason -- the very label a digit gives here -- and oak1 12 holds only a 4 px
+    mask drawn for that frame (its stored row still 完全). The digit's verdict
+    goes to 10, 13 and 14 as the computed stamp; 11 and 12 keep every byte."""
+    hand = FrameOverride(S.key(11, S.OTHER), V.HIDDEN, None, FULL, None)
+    scene.db.set_frame_override(hand)
+    tiny = masks.encode_rle(rect(60, 60, 62, 62, S.HW))
+    scene.db.set_frame_override(FrameOverride(S.key(12, S.OTHER), V.HIDDEN, tiny, None, None))
+    assert masks.rle_area(tiny) == 4
+    assert scene.db.compiled(S.key(12, S.OTHER))[V.HIDDEN]["visibility"] == FULL
+    before = other_state(scene, V.HIDDEN)
+    scene.goto(10, force=True)
+    scene.review_visibility(V.HIDDEN, VR.VERDICT_LABEL, FULL, steps=STEPS)
+    plan = scene.sync_visibility_plan(V.HIDDEN, STEPS)
+    assert sorted(plan["views"][S.OTHER]) == [10, 13, 14] and plan["skipped"]["manual"] == 2
+    result = scene.sync_visibility(V.HIDDEN, STEPS)
+    assert result["written"] == {S.OTHER: [10, 13, 14]}
+    after = other_state(scene, V.HIDDEN)
+    assert after[11] == before[11] and after[12] == before[12]
+    for step in (10, 13, 14):
+        # N1: no hand label written there, the computed stamp only
+        assert scene.db.frame_overrides(S.key(step, S.OTHER)).get(V.HIDDEN) is None
+        stamp = scene.db.instance_flags(S.key(step, S.OTHER), V.HIDDEN)
+        assert (stamp["verdict"], stamp["visibility"], stamp["occluder"]) == (
+            "computed", FULL, None)
+    assert "那边有手动标注 2 帧" in T.sync_note("内存卡扣", result)
+
+
+def test_the_sync_is_one_op_undone_and_redone(scene):
+    """Space on the hidden latch here, the sync: oak1's five computed rows take
+    the computed stamp -- one op; Ctrl+Z takes all five back and leaves the
+    scanner's own verdict; Ctrl+Y again. The frames stay confirmed."""
+    scene.goto(10, force=True)
+    scene.review_visibility(V.HIDDEN, VR.VERDICT_COMPUTED, steps=STEPS)
+    before = other_state(scene, V.HIDDEN)
+    result = scene.sync_visibility(V.HIDDEN, STEPS)
+    assert result["written"] == {S.OTHER: STEPS} and result["count"] == 5
+    assert sync_ops(scene) == 1
+    assert all(scene.db.instance_flags(S.key(s, S.OTHER), V.HIDDEN)["verdict"] == "computed"
+               and scene.db.get_frame(S.key(s, S.OTHER))["review_status"] == "verified"
+               for s in STEPS)
+    assert T.sync_note("内存卡扣", result).startswith(
+        "已同步到其他视角：内存卡扣 oak1 第 10–14 帧，共 5 帧，记为审过（Ctrl+Z 撤销）")
+    with pytest.raises(SessionRefusal, match="已有判定 5 帧"):
+        scene.sync_visibility(V.HIDDEN, STEPS)        # a second press: nothing left
+    assert scene.undo()
+    assert other_state(scene, V.HIDDEN) == before
+    assert scene.db.instance_flags(S.key(10), V.HIDDEN)["verdict"] == "computed"
     assert scene.redo()
-    assert scene.db.frame_overrides(S.key(11, S.OTHER))[S.MARKED].occluder == OCCLUDER_VIEWPOINT
+    assert all(scene.db.instance_flags(S.key(s, S.OTHER), V.HIDDEN)["verdict"] == "computed"
+               for s in STEPS)
     assert open_conflicts(scene, S.OTHER) == []
+
+
+def test_a_hand_occluder_layer_over_it_there_keeps_the_reason_out(tmp_path):
+    """Round 2 (B2): oak1 has nothing but a hand layer over psu_latch.01 -- a
+    computed 完全 with no part above it. 角度看不到 does not go there."""
+    session = S.build(tmp_path, hand_over="psu_latch.01")
+    try:
+        session.set_visibility_live(True)
+        assert session.db.compiled(S.key(12, S.OTHER))["psu_latch.01"]["visibility"] == FULL
+        session.goto(10, force=True)
+        session.review_visibility("psu_latch.01", VR.VERDICT_VIEWPOINT, FULL, steps=STEPS)
+        plan = session.sync_visibility_plan("psu_latch.01", STEPS)
+        assert plan["count"] == 0 and plan["skipped"]["covered"] == 5
+        with pytest.raises(SessionRefusal, match="那边有零件或遮挡层挡着它 5 帧"):
+            session.sync_visibility("psu_latch.01", STEPS)
+    finally:
+        session.close(force=True)
+
+
+def test_a_frame_the_write_refuses_is_counted_under_its_own_reason(scene):
+    """Round 2 (N7): not 「没形状」 for everything."""
+    why = scene._why_not_synced
+    assert why(S.key(9, S.OTHER), V.HIDDEN) == "unconfirmed"
+    assert why(S.key(14, S.OTHER), "connector.fan.01") == "absent"      # on 10-11 only
+    assert why(S.key(13, S.OTHER), S.MARKED) == "verdict"
+    assert why(S.key(10, S.OTHER), S.MARKED) == "manual"
+    import tda.ui.session_visruns as SR
+
+    original = SR.shape_applies
+    try:
+        SR.shape_applies = lambda *a, **k: "bench"
+        assert why(S.key(10, S.OTHER), V.HIDDEN) == "no_shape"
+        SR.shape_applies = lambda *a, **k: "removed"
+        assert why(S.key(10, S.OTHER), V.HIDDEN) == "absent"
+    finally:
+        SR.shape_applies = original
 
 
 def test_no_reason_goes_where_a_part_covers_it_but_the_computed_verdict_does(scene):
@@ -269,7 +334,7 @@ def test_no_reason_goes_where_a_part_covers_it_but_the_computed_verdict_does(sce
     scene.review_visibility(V.HIDDEN, VR.VERDICT_VIEWPOINT, FULL, steps=STEPS)
     plan = scene.sync_visibility_plan(V.HIDDEN, STEPS)
     assert plan["count"] == 0 and plan["skipped"]["covered"] == 5
-    with pytest.raises(SessionRefusal, match="那边有零件挡着它 5 帧"):
+    with pytest.raises(SessionRefusal, match="那边有零件或遮挡层挡着它 5 帧"):
         scene.sync_visibility(V.HIDDEN, STEPS)
     assert scene.undo()
     scene.review_visibility(V.HIDDEN, VR.VERDICT_COMPUTED, steps=STEPS)

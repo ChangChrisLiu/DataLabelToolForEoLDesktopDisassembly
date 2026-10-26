@@ -22,8 +22,9 @@ the session:
   annotator still presses the key;
 * **the sync** -- :func:`sync_plan`: which frames of the other views a run's
   verdict may be copied onto -- the same steps, the part as hidden there as
-  here, no verdict yet. It never overwrites a verdict, never puts a reason
-  where the compiler has a part covering it, and says how many it left and why.
+  here, no verdict yet, nothing written there by hand. It never overwrites a
+  verdict or a person's override, never puts a reason where the compiler has
+  a part or an occluder layer over it, and says how many it left and why.
 
 "See" is the label's: :data:`INVISIBLE` (``occluded_full``, ``out_of_view``)
 is 看不见; every other label has pixels of the part on the frame (``too_small``
@@ -65,6 +66,7 @@ __all__ = [
     "hidden_stretches",
     "pending_run_count",
     "read_side",
+    "review_counts",
     "sample_steps",
     "suggest",
     "sync_plan",
@@ -145,16 +147,33 @@ def view_runs(db, desktop: int, view: str) -> list[Run]:
     rows = [dict(r, reviewed=_covered(r)) for r in db.vis_review_rows(desktop, view)]
     if not rows:
         return []
-    order = order_of(db, desktop, view)
-    keep = set(order)
-    runs = runs_of([r for r in rows if r["step"] in keep], order)
+    order, frames = db.annotatable_frames(desktop, view)
+    runs = runs_of([r for r in rows if r["step"] in frames], order)
     mark_whole(runs, db.vis_presence(desktop, view), order)
     return runs
 
 
+def review_counts(db, desktop: int, view: str) -> tuple[int, int, int]:
+    """``(reviewed, total, runs left)`` of one view -- ``status``'s cell, in one read.
+
+    The rows :func:`~tda.core.vis_review.progress` counts (the same filter:
+    annotatable frames) and the runs of the unreviewed ones, off one query of
+    the rows and one of the frames (round 2, N4: ``status`` read every row
+    twice and every frame once per step).
+    """
+    rows = db.vis_review_rows(desktop, view)
+    if not rows:
+        return 0, 0, 0
+    order, frames = db.annotatable_frames(desktop, view)
+    kept = [dict(r, reviewed=_covered(r)) for r in rows if r["step"] in frames]
+    reviewed = sum(1 for r in kept if r["reviewed"])
+    left = sum(1 for run in runs_of(kept, order) if not run.reviewed)
+    return reviewed, len(kept), left
+
+
 def pending_run_count(db, desktop: int, view: str) -> int:
-    """How many runs are still to review in one view (``status``)."""
-    return sum(1 for run in view_runs(db, desktop, view) if not run.reviewed)
+    """How many runs are still to review in one view."""
+    return review_counts(db, desktop, view)[2]
 
 
 # --------------------------------------------------------------------------- #
@@ -321,7 +340,8 @@ def suggest(entry: dict, views: list[dict], here: str) -> Optional[dict]:
 # 同步到其他视角
 # --------------------------------------------------------------------------- #
 #: Why a frame of another view is left alone by the sync (the counts it reports).
-SKIP_REASONS = ("verdict", "different", "covered", "unconfirmed", "absent", "no_shape")
+SKIP_REASONS = ("verdict", "different", "manual", "covered", "unconfirmed", "absent",
+                "no_shape")
 
 
 def source_verdicts(db, desktop: int, view: str, instance: str,
@@ -346,43 +366,52 @@ def source_verdicts(db, desktop: int, view: str, instance: str,
     return out
 
 
-def _target(source: dict) -> tuple[Optional[str], Optional[str]]:
-    """``(visibility, occluder)`` a verdict leaves on a frame it is copied to."""
-    verdict = source["verdict"]
-    if verdict == VERDICT_COMPUTED:
-        return None, None                  # the frame's own computed label, stamped
-    if verdict == VERDICT_LABEL:
-        return source["visibility"], None
-    return source["visibility"], source["occluder"]
+#: ``shape_applies``'s answer (:func:`tda.core.occluder.shape_applies`) as the
+#: sync counts it: taken out -> not there; on the bench, no shape -> no shape.
+SHAPE_SKIP = {"removed": "absent", "bench": "no_shape", "no_shape": "no_shape"}
+
+
+def _copied(verdict: dict) -> dict:
+    """What a verdict becomes on a frame of another view (U36 round 2, N1).
+
+    A label set by hand here goes only to frames whose **computed** label is
+    already that one (the label check, and no override row there): writing a
+    hand label there would freeze it against later redraws, so the frame gets
+    the computed stamp alone. 角度 / 线缆 carry their reason as they are.
+    """
+    if verdict["verdict"] == VERDICT_LABEL:
+        return dict(verdict, verdict=VERDICT_COMPUTED, occluder=None)
+    return dict(verdict)
 
 
 def sync_plan(db, desktop: int, view: str, instance: str, steps: Iterable[int],
-              shape_ok: Optional[Callable[[FrameKey, str], bool]] = None,
+              shape_why: Optional[Callable[[FrameKey, str], str]] = None,
               covered: Optional[Callable[[str, int, str, dict], bool]] = None) -> dict:
     """Which frames of the other views the run's verdict may go to, and which not.
 
     For each step the run (in ``view``) was answered on with a hidden label
     (:data:`SYNC_LABELS`), each other sequence view with confirmed frames:
     the same step's row of the part qualifies when it carries **no stamp** (a
-    verdict is never overwritten) and has **the same label** as the answered
-    frame (as hidden there, in the same way). A hand mark there without a
-    verdict -- the 看不见 the annotator said while drawing -- is what the
-    review is for, so it takes the verdict (counted in ``replaced`` when its
-    reason changes). And by verdict:
+    verdict is never overwritten), has **the same label** as the answered
+    frame (as hidden there, in the same way) and **nothing a person wrote**
+    there: no override row at all -- no hand label, no reason, not even a
+    mask drawn for that frame alone (round 2, B1: the sync does not review
+    another view's hand work for it; each view is annotated on its own). So
+    the frames it writes are computed ones, and by verdict:
 
-    * ``computed`` (as the compiler has it) goes only where the label there
-      is computed too;
+    * ``computed`` and a hand label: the computed stamp (:func:`_copied`);
     * 角度看不到 / 被线挡住 need a shape of it in its place there
-      (``shape_ok(key, instance)``) and do not go where the compiler has a
-      part covering it there (``covered(view, step, instance, row)``) -- a
-      reason that is false there.
+      (``shape_why(key, instance)``, ``""`` when it has one) and do not go
+      where the compiler has a part **or an occluder layer** (a hand, a tool,
+      a cable layer) over it there (``covered(view, step, instance, row)``)
+      -- a reason that is false there.
 
-    ``{"source": {step: verdict}, "views": {view: {step: verdict}}, "count",
-    "replaced", "skipped": {reason: frames}, "refused": str}`` -- ``refused``
-    is why nothing can be planned at all (no verdict yet, a label that is not
-    hidden), ``""`` otherwise.
+    ``{"source": {step: verdict}, "views": {view: {step: what it writes}},
+    "count", "skipped": {reason: frames}, "refused": str}`` -- the reasons are
+    :data:`SKIP_REASONS`; ``refused`` is why nothing can be planned at all (no
+    verdict yet, a label that is not hidden), ``""`` otherwise.
     """
-    plan = {"source": {}, "views": {}, "count": 0, "replaced": 0,
+    plan = {"source": {}, "views": {}, "count": 0,
             "skipped": {k: 0 for k in SKIP_REASONS}, "refused": ""}
     # the other views with confirmed frames: the only ones a verdict can go to
     sides = [side for side in (read_side(db, desktop, other) for other in VIEWS
@@ -414,24 +443,20 @@ def sync_plan(db, desktop: int, view: str, instance: str, steps: Iterable[int],
             if str(row.get("visibility") or "") != str(verdict["visibility"] or ""):
                 plan["skipped"]["different"] += 1        # not hidden the same way there
                 continue
-            label, occluder = _target(verdict)
-            hand = (row.get("hand_visibility"), row.get("occluder") or None)
-            has_hand = hand != (None, None)
-            if verdict["verdict"] == VERDICT_COMPUTED and has_hand:
-                plan["skipped"]["different"] += 1        # not the compiler's label there
+            if (row.get("has_override") or row.get("hand_visibility") is not None
+                    or row.get("occluder") is not None):
+                plan["skipped"]["manual"] += 1           # a person's work there: theirs to review
                 continue
             if verdict["verdict"] in (VERDICT_CABLE, VERDICT_VIEWPOINT):
-                if shape_ok is not None and not shape_ok(FrameKey(int(desktop), step, other),
-                                                         str(instance)):
-                    plan["skipped"]["no_shape"] += 1
+                why = (shape_why(FrameKey(int(desktop), step, other), str(instance))
+                       if shape_why is not None else "")
+                if why:
+                    plan["skipped"][SHAPE_SKIP.get(why, "no_shape")] += 1
                     continue
-                if (not has_hand and covered is not None
-                        and covered(other, step, str(instance), row)):
-                    plan["skipped"]["covered"] += 1      # a part over it there: not this reason
+                if covered is not None and covered(other, step, str(instance), row):
+                    plan["skipped"]["covered"] += 1      # a part or a layer over it there
                     continue
-            if has_hand and verdict["verdict"] != VERDICT_COMPUTED and hand != (label, occluder):
-                plan["replaced"] += 1
-            chosen[step] = verdict
+            chosen[step] = _copied(verdict)
         if chosen:
             plan["views"][other] = chosen
             plan["count"] += len(chosen)

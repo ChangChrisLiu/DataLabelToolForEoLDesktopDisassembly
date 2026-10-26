@@ -22,6 +22,7 @@ draft); ``oak2`` has nothing (「—」).
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -30,7 +31,7 @@ import vis_review_scene as V
 from session_scene import DESKTOP, VIEW, cell, chassis_instances, make_session, rect, seed_shapes
 from tda.core import masks
 from tda.core.cache import VIEW_EXT, cache_path
-from tda.core.model import FrameKey, ShapeKeyframe, ShapePart, ZOrderRec
+from tda.core.model import FrameKey, OccluderMask, ShapeKeyframe, ShapePart, ZOrderRec
 from tda.core.occluder import FULL
 from tda.core.vis_review import VERDICT_VIEWPOINT
 
@@ -72,8 +73,13 @@ def seed_view(session, view: str, keys: list[str], cover_hidden: bool = True) ->
     session.db.set_zorder(ZOrderRec(DESKTOP, view, 1, [(k, "main") for k in keys]))
 
 
-def build(tmp_path: Path):
-    """The two-camera session, the sweeper off, standing on the scanner's frame 10."""
+def build(tmp_path: Path, hand_over: Optional[str] = None):
+    """The two-camera session, the sweeper off, standing on the scanner's frame 10.
+
+    ``hand_over`` (a part of the scene; round 2, B2): set 完全遮挡 by hand on the
+    scanner's 10-14, and in oak1 covered wholly by a hand occluder layer on
+    10-14 -- a computed 完全 there with no part over it, only the layer.
+    """
     session = make_session(tmp_path, hw=HW)
     session.sweeper_enabled = False
     keys = seed_shapes(session, 1, grid=8, refresh=False)
@@ -96,6 +102,8 @@ def build(tmp_path: Path):
     for step in STEPS:
         session.goto(step, force=True)
         session.set_visibility(ANGLE, "occluded_full")
+        if hand_over:
+            session.set_visibility(hand_over, "occluded_full")
     session.goto(14, force=True)
     session.set_cable_range(MARKED, FULL, 10)
     for step in reversed(STEPS):
@@ -105,7 +113,12 @@ def build(tmp_path: Path):
     # the second camera, on the same steps
     cache_dir = Path(session.cache_dir)
     write_frames(session.db, cache_dir, OTHER, range(1, 15))
-    seed_view(session, OTHER, chassis_instances(session, 1))
+    others = chassis_instances(session, 1)
+    seed_view(session, OTHER, others)
+    if hand_over:
+        hand = masks.encode_rle(cell(others.index(hand_over), HW))
+        for step in STEPS:
+            session.db.set_occluder(OccluderMask(key(step, OTHER), "hand", hand))
     session.open(DESKTOP, OTHER, force=True)
     session.refresh_all()
     session.goto(13, force=True)

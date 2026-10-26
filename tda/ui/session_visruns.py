@@ -18,7 +18,8 @@ account. On top of task U24's queue (:mod:`tda.ui.session_visreview`):
   frames cut around the part's whole shape;
 * :meth:`VisRunsMixin.sync_visibility` -- 「同步到其他视角」: the verdict a run
   was given, copied to the same steps of the other views where the part is
-  hidden the same way and nobody has answered yet
+  hidden the same way, nobody has answered yet and nobody wrote anything by
+  hand -- each view's own hand work is reviewed in that view
   (:func:`~tda.core.vis_runs.sync_plan`). One op, ``sync_visibility``, with
   its inverse: per view, the frames' stamps and overrides before and after;
   the U15 safeguards of a verdict hold there frame by frame -- a frame that
@@ -34,9 +35,10 @@ import numpy as np
 
 from tda.core.model import FrameKey
 from tda.core.occluder import shape_applies
+from tda.core.truth import VERIFIED
 from tda.core.truth_inputs import InputCache
 from tda.core.vis_review import VERDICT_COMPUTED, amodal_box
-from tda.core.vis_runs import cross_view, sample_steps, suggest, sync_plan
+from tda.core.vis_runs import SHAPE_SKIP, cross_view, sample_steps, suggest, sync_plan
 from tda.ui import visreview_text as T
 from tda.ui.commands import Op
 from tda.ui.session_api import SessionRefusal
@@ -236,24 +238,43 @@ class VisRunsMixin:
                     "refused": "no_verdict"}
         cache = InputCache()
 
-        def shape_ok(key: FrameKey, part: str) -> bool:
-            return not shape_applies(self.db, self.tax, key, part, cache)
+        def shape_why(key: FrameKey, part: str) -> str:
+            return shape_applies(self.db, self.tax, key, part, cache)
 
         def covered(view: str, step: int, part: str, row: dict) -> bool:
-            return any(not name.startswith("@")
-                       for name in self.review.names_in(view, step, part, row))
+            # a part or any occluder layer (a hand, a tool, a cable layer) over
+            # it there -- as :func:`suggest` reads them (round 2, B2)
+            return bool(self.review.names_in(view, step, part, row))
 
-        return sync_plan(self.db, self.desktop, self.view, str(instance), steps, shape_ok,
+        return sync_plan(self.db, self.desktop, self.view, str(instance), steps, shape_why,
                          covered)
+
+    def _why_not_synced(self, key: FrameKey, instance: str) -> str:
+        """Which :data:`~tda.core.vis_runs.SKIP_REASONS` a frame the write refused falls under.
+
+        The plan has already sorted the frames; this is for one whose state
+        moved between the plan and the write (round 2, N7).
+        """
+        if (self.db.get_frame(key) or {}).get("review_status") != VERIFIED:
+            return "unconfirmed"
+        if self.db.compiled_label(key, instance) is None:
+            return "absent"
+        flags = self.db.instance_flags(key, instance) or {}
+        if flags.get("vis_reviewed"):
+            return "verdict"
+        if self.db.frame_overrides(key).get(instance) is not None:
+            return "manual"
+        return SHAPE_SKIP.get(shape_applies(self.db, self.tax, key, instance), "no_shape")
 
     def sync_visibility(self, instance: str, steps: Iterable[int]) -> dict:
         """「同步到其他视角」: the run's verdict onto the same steps of the other views.
 
         Only the frames :func:`~tda.core.vis_runs.sync_plan` lets through --
-        hidden the same way there, no verdict yet, no other reason given there
-        by hand. **One op** (``sync_visibility``), one ``Ctrl+Z``; the other
-        views' confirmed frames stay confirmed as a verdict leaves them (a
-        frame already in dispute is not signed, revealed pixels never are).
+        hidden the same way there, no verdict yet, nothing a person wrote there
+        (no override row: each view's hand work is reviewed in that view).
+        **One op** (``sync_visibility``), one ``Ctrl+Z``; the other views'
+        confirmed frames stay confirmed as a verdict leaves them (a frame
+        already in dispute is not signed, revealed pixels never are).
 
         Returns ``{"op", "count", "written": {view: steps}, "skipped",
         "accepted", "withheld", "conflicts"}``; refused (nothing written) when
@@ -284,7 +305,8 @@ class VisRunsMixin:
                     state, back = self._verdict_frame(here, instance, verdict["verdict"],
                                                       label, cache, shapes)
                 except SessionRefusal:
-                    skipped["no_shape"] = skipped.get("no_shape", 0) + 1
+                    why = self._why_not_synced(here, instance)
+                    skipped[why] = skipped.get(why, 0) + 1
                     continue
                 frames.append(state)
                 before.append(back)
@@ -317,7 +339,6 @@ class VisRunsMixin:
             self.db.log_op(key.desktop, key.view, OP_SYNC, payload, inverse, self.annotator)
         out = {"op": op, "count": sum(len(p["frames"]) for p in parts),
                "written": {p["view"]: list(p["steps"]) for p in parts},
-               "replaced": int(plan.get("replaced") or 0),
                "skipped": skipped, "accepted": {}, "withheld": {}, "conflicts": 0}
         for view, steps_ in moved.items():
             if not steps_:

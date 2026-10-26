@@ -261,27 +261,43 @@ def patched(monkeypatch):
     monkeypatch.setattr(RU, "order_of", lambda db, d, v: list(range(1, 20)))
 
 
-def test_the_sync_goes_where_the_part_is_hidden_the_same_way_and_unanswered(patched):
+def hand_row(step, **kwargs) -> dict:
+    """A row of a frame with an override row (``has_override``) for the part."""
+    return row(step, has_override=True, **kwargs)
+
+
+def test_the_sync_goes_only_where_nobody_answered_or_wrote_anything(patched):
+    """Round 2 (B1): a person's override of any kind there is never touched."""
     here = {s: {"visibility": FULL, "occluder": "viewpoint",
-                "flags": stamp("viewpoint", FULL, "viewpoint")} for s in range(1, 8)}
+                "flags": stamp("viewpoint", FULL, "viewpoint")} for s in range(1, 9)}
     oak1 = [
         row(1),                                                   # computed 完全, free: goes
-        row(2, hand=FULL, occluder="cable"),                      # a cable mark: replaced
-        row(3, flags=stamp("cable", FULL, "cable"), hand=FULL, occluder="cable"),  # a verdict
+        hand_row(2, hand=FULL, occluder="cable"),                 # a cable mark: theirs
+        hand_row(3, flags=stamp("cable", FULL, "cable"), hand=FULL, occluder="cable"),  # verdict
         row(4, vis="visible"),                                    # seen there
         row(5, vis=PARTIAL),                                      # hidden differently
         row(6),                                                   # a part over it there
+        hand_row(8, hand=FULL, occluder="viewpoint"),             # the very same reason, by hand
     ]
     for r in oak1:
         r.setdefault("flags", {})
-    db = FakeDb(here, {"oak1": {"rows": oak1, "confirmed": {1, 2, 3, 4, 5, 6}}},
+    db = FakeDb(here, {"oak1": {"rows": oak1, "confirmed": {1, 2, 3, 4, 5, 6, 8}}},
                 frames={("oak1", 7)})
-    plan = RU.sync_plan(db, 13, "scan", "a.01", range(1, 8), shape_ok=lambda k, p: True,
+    plan = RU.sync_plan(db, 13, "scan", "a.01", range(1, 9), shape_why=lambda k, p: "",
                         covered=lambda view, step, part, r: step == 6)
-    assert sorted(plan["views"]["oak1"]) == [1, 2]
-    assert plan["count"] == 2 and plan["replaced"] == 1
-    assert plan["skipped"] == {"verdict": 1, "different": 2, "covered": 1, "unconfirmed": 1,
-                               "absent": 0, "no_shape": 0}
+    assert sorted(plan["views"]["oak1"]) == [1]
+    assert plan["count"] == 1 and "replaced" not in plan
+    assert plan["skipped"] == {"verdict": 1, "different": 2, "manual": 2, "covered": 1,
+                               "unconfirmed": 1, "absent": 0, "no_shape": 0}
+
+
+def test_a_mask_drawn_by_hand_alone_is_a_persons_work_too(patched):
+    """Only a single-frame mask, no label and no reason (4 px, stored 完全): left alone."""
+    here = {1: {"visibility": FULL, "flags": stamp("computed", FULL)}}
+    oak1 = [hand_row(1, flags={})]                     # hand None, occluder None
+    db = FakeDb(here, {"oak1": {"rows": oak1, "confirmed": {1}}})
+    plan = RU.sync_plan(db, 13, "scan", "a.01", [1])
+    assert plan["count"] == 0 and plan["skipped"]["manual"] == 1
 
 
 def test_the_sync_refuses_without_a_verdict_or_for_a_label_that_is_not_hidden(patched):
@@ -295,18 +311,36 @@ def test_the_sync_refuses_without_a_verdict_or_for_a_label_that_is_not_hidden(pa
     assert RU.sync_plan(FakeDb(seen, {}), 13, "scan", "a.01", [1])["refused"] == "not_hidden"
 
 
-def test_a_computed_verdict_goes_only_where_the_label_is_computed_too(patched):
+def test_a_computed_verdict_goes_where_the_label_is_computed_whatever_covers_it(patched):
     here = {1: {"visibility": FULL, "flags": stamp("computed", FULL)},
             2: {"visibility": FULL, "flags": stamp("computed", FULL)}}
-    oak1 = [row(1, flags={}), row(2, hand=FULL, occluder="cable", flags={})]
+    oak1 = [row(1, flags={}), hand_row(2, hand=FULL, occluder="cable", flags={})]
     db = FakeDb(here, {"oak1": {"rows": oak1, "confirmed": {1, 2}}})
     plan = RU.sync_plan(db, 13, "scan", "a.01", [1, 2], covered=lambda *a: True)
     assert sorted(plan["views"]["oak1"]) == [1]          # a part over it: computed is right
-    assert plan["skipped"]["different"] == 1 and plan["skipped"]["covered"] == 0
+    assert plan["skipped"]["manual"] == 1 and plan["skipped"]["covered"] == 0
 
 
-def test_no_shape_there_leaves_the_frame(patched):
-    here = {1: {"visibility": FULL, "occluder": "cable", "flags": stamp("cable", FULL, "cable")}}
+def test_a_hand_label_goes_over_as_the_computed_stamp(patched):
+    """Round 2 (N1): no hand label is written there -- its computed label is
+    already the one, and a hand label would stop following its redraws."""
+    here = {1: {"visibility": FULL, "flags": stamp("label", FULL)}}
     db = FakeDb(here, {"oak1": {"rows": [row(1, flags={})], "confirmed": {1}}})
-    plan = RU.sync_plan(db, 13, "scan", "a.01", [1], shape_ok=lambda k, p: False)
-    assert plan["count"] == 0 and plan["skipped"]["no_shape"] == 1
+    plan = RU.sync_plan(db, 13, "scan", "a.01", [1])
+    assert plan["views"]["oak1"][1] == {"verdict": "computed", "visibility": FULL,
+                                        "occluder": None}
+
+
+def test_a_reason_needs_a_shape_and_nothing_over_it_there(patched):
+    here = {s: {"visibility": FULL, "occluder": "cable", "flags": stamp("cable", FULL, "cable")}
+            for s in (1, 2, 3, 4)}
+    rows = [row(s, flags={}) for s in (1, 2, 3, 4)]
+    db = FakeDb(here, {"oak1": {"rows": rows, "confirmed": {1, 2, 3, 4}}})
+    why = {1: "no_shape", 2: "removed", 3: "bench", 4: ""}
+    plan = RU.sync_plan(db, 13, "scan", "a.01", [1, 2, 3, 4],
+                        shape_why=lambda k, p: why[k.step],
+                        covered=lambda view, step, part, r: True)
+    # the shape's own reasons sorted (round 2, N7); a hand / a layer over it is covered (B2)
+    assert plan["count"] == 0
+    assert (plan["skipped"]["no_shape"], plan["skipped"]["absent"],
+            plan["skipped"]["covered"]) == (2, 1, 1)
