@@ -270,11 +270,13 @@ classes:
 
 # Virtual (non-visual) nodes. They are not taxonomy classes -- they never carry
 # geometry -- but verbs apply to them and they have their own state machine.
+# `removed` (task U33): a loose cable taken out whole -- D36 step 2 "Remove 1
+# isolated cable from motherboard" -- is a cable event, not a part to draw.
 virtual_nodes:
   cable:
-    states: [routed, released]
+    states: [routed, released, removed]
     default_state: routed
-    needs_mask: {routed: false, released: false}
+    needs_mask: {routed: false, released: false, removed: false}
 
 # --- 6.3 动作动词 ------------------------------------------------------------
 # effect.to         : unconditional new value for effect.attr
@@ -308,11 +310,12 @@ verbs:
 
   remove:
     # ram_latch and cpu_socket_lever are moulded into the board and are never
-    # listed; the four removable brackets/latches are.
+    # listed; the four removable brackets/latches are. `cable` is the virtual
+    # node (task U33): a loose cable taken out whole, no geometry, ever.
     applies_to: [drive_cage, cover, cooler_bracket, motherboard, cpu, cpu_cooler,
                  ram_module, psu, storage_drive, optical_drive, expansion_card,
                  case_fan, misc_part, screw, connector,
-                 psu_latch, drive_latch, card_latch, cooler_latch]
+                 psu_latch, drive_latch, card_latch, cooler_latch, cable]
     effect: {attr: state, to: removed}
 
   displace:

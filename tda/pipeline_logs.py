@@ -21,7 +21,10 @@ steps is skipped unless ``force`` is given, and even a forced run
 * keeps the relational fields set in Steps' instance table -- D23's cable clip
   riding out on the fan shroud -- over the heuristic's guess
   (:mod:`tda.core.relation_replay`, task U27), and
-* leaves the hand-written (``auto=False``) state events alone.
+* leaves the hand-written (``auto=False``) state events alone -- except those
+  of a clip whose sheet row is a loose-cable event now (task U33,
+  :func:`cable_event_clips`): that part never existed, so its answers go with
+  it, logged in the drop's op row.
 
 Every drive cage of the sheet gets its own latch (task U20): adopted from the
 sheet when it opens one and never removes it, kept when S1 added one, else
@@ -60,7 +63,12 @@ from tda.core import extra as X
 from tda.core.extra import extra_keys
 from tda.core.db_moves import loaded_collapse_refusal
 from tda.core.model import ALL_VIEWS, VIEWS, StepRec, StepType, is_context, is_extra
-from tda.core.states import INITIAL_STEP, events_from_actions, initial_overrides
+from tda.core.states import (
+    CABLE_PREFIX,
+    INITIAL_STEP,
+    events_from_actions,
+    initial_overrides,
+)
 from tda.core.taxonomy import Taxonomy
 from tda.core.merge_replay import (
     OP_MERGE,
@@ -617,6 +625,33 @@ class DropPlan:
     refusal: str = ""
     #: Set when drops were found on a path that may not take them (no --force).
     deferred: int = 0
+    #: Of the vanished keys, the clips whose sheet row is a loose-cable event
+    #: now (task U33, :func:`cable_event_clips`): key -> (cable node, row name).
+    cables: dict[str, tuple[str, str]] = field(default_factory=dict)
+
+
+def cable_event_clips(stored: dict, li: LogImport) -> dict[str, tuple[str, str]]:
+    """The stored instances whose every sheet row is a cable event now (task U33).
+
+    ``key -> (cable node, sheet name)``. Before U33 "Remove 1 isolated cable
+    from motherboard" (D36 step 2) was imported as ``cable_clip.01`` + ``release``,
+    and the card asked for a clip nobody can draw; the sheet now names the
+    virtual node ``cable:isolated.01`` instead, so the old key vanishes. Matched
+    by the row's name, not its number -- a renumbered sheet still finds it --
+    and only when **every** name the instance carries is such a row: a part
+    another row still names is not a cable.
+    """
+    by_name: dict[str, str] = {}
+    names = {s.step: s.raw_name.strip() for s in li.steps}
+    for action in sorted(li.actions, key=lambda a: (a.step, a.idx)):
+        if action.target.startswith(CABLE_PREFIX) and action.step in names:
+            by_name.setdefault(names[action.step], action.target)
+    found: dict[str, tuple[str, str]] = {}
+    for key, rec in stored.items():
+        rows = [str(n).strip() for n in (rec.raw_names or [])]
+        if rows and all(n in by_name for n in rows):
+            found[key] = (by_name[rows[0]], rows[0])
+    return found
 
 
 def _would_exist(db: Db, li: LogImport, tax: Taxonomy) -> set[str]:
@@ -641,7 +676,8 @@ def _would_exist(db: Db, li: LogImport, tax: Taxonomy) -> set[str]:
             | _cage_keys(db, li, tax))
 
 
-def _hold_reasons(db: Db, desktop: int, vanished: set[str]) -> tuple[dict[str, str], int]:
+def _hold_reasons(db: Db, desktop: int, vanished: set[str],
+                  cables: Optional[set[str]] = None) -> tuple[dict[str, str], int]:
     """Which vanished keys stay, and why -- including the ones they point at.
 
     A key carrying a human's work stays. So does any *other* vanished key that a
@@ -652,16 +688,25 @@ def _hold_reasons(db: Db, desktop: int, vanished: set[str]) -> tuple[dict[str, s
     a vanished key -- the importer has just rewritten every one of its
     relational fields from the sheet -- so only the vanished set is walked.
 
+    ``cables`` are the vanished clips whose row is a cable event now (task
+    U33). Their hand-set state events are not a reason to keep them: they
+    answered a card that should never have asked (D36: the clip set ``closed``
+    on step 42), about a part that does not exist, and :func:`_apply_drops`
+    takes them along into the op row. Everything with pixels or a signature --
+    a keyframe above all -- still keeps one, and the reason then lists them all.
+
     Returns ``(key -> why, how many are held by work of their own)``. The second
     number is the one a human has to act on; the rest are along for the ride.
     """
     stored = db.instances(desktop)
-    holding = {
-        key: ", ".join(f"{n} {table}" for table, n in sorted(counts.items()))
-        for key in sorted(vanished)
-        for counts in [_references(db, desktop, key)]
-        if counts
-    }
+    cables = cables or set()
+    holding: dict[str, str] = {}
+    for key in sorted(vanished):
+        counts = _references(db, desktop, key)
+        deciding = ({table: n for table, n in counts.items() if table != "state_event"}
+                    if key in cables else counts)
+        if deciding:
+            holding[key] = ", ".join(f"{n} {table}" for table, n in sorted(counts.items()))
     carrying_work = len(holding)
     # an instance S1 added is never dropped (see `_plan_drops`), so whatever it
     # rides on stays too -- its parent is what takes it out of the chassis
@@ -723,18 +768,22 @@ def _plan_drops(db: Db, li: LogImport, tax: Taxonomy, previous: list[StepRec],
                 and not is_context(rec)}
     if not vanished:
         return DropPlan()
-    holding, carrying = _hold_reasons(db, li.desktop, vanished)
+    # a clip whose row is a loose-cable event now (task U33): it goes with its
+    # hand-set state events unless it has pixels or a signature of its own
+    cables = cable_event_clips({key: stored[key] for key in vanished}, li)
+    holding, carrying = _hold_reasons(db, li.desktop, vanished, set(cables))
     dropping = sorted(vanished - set(holding))
     if not dropping:
-        return DropPlan(holding=holding, carrying_work=carrying)
+        return DropPlan(holding=holding, carrying_work=carrying, cables=cables)
     if not force:
         return DropPlan(holding=holding, carrying_work=carrying,
-                        deferred=len(dropping))
+                        deferred=len(dropping), cables=cables)
     if not force_drop:
         refusal = _implausible(li, previous, stored, dropping)
         if refusal:
             return DropPlan(refusal=refusal)
-    return DropPlan(dropping=dropping, holding=holding, carrying_work=carrying)
+    return DropPlan(dropping=dropping, holding=holding, carrying_work=carrying,
+                    cables=cables)
 
 
 def _implausible(li: LogImport, previous: list[StepRec], stored: dict,
@@ -788,13 +837,16 @@ def _apply_drops(db: Db, li: LogImport, plan: DropPlan) -> tuple[list[str], list
     derived edges that went with it, so a drop can be audited and undone one row
     at a time -- the same promise :func:`add_implied_instances` makes for the
     rows it creates.
+
+    A clip whose row is a loose-cable event now (task U33, ``plan.cables``)
+    takes its hand-set state events with it, listed in the op row under
+    ``events`` (payload and inverse); the line names the cable node. Kept
+    because of a keyframe, it gets its own line: the shapes may be of the
+    cable, and only a person can say.
     """
     dropped: list[str] = []
-    issues = [
-        f"D{li.desktop:02d}: instance {key} vanished from the sheet but is kept "
-        f"({why}) - merge or delete it in S1"
-        for key, why in sorted(plan.holding.items())
-    ]
+    issues = [_kept_line(li.desktop, key, why, plan.cables.get(key))
+              for key, why in sorted(plan.holding.items())]
     if plan.deferred:
         issues.append(
             f"D{li.desktop:02d}: {plan.deferred} instances are no longer in the "
@@ -814,24 +866,49 @@ def _apply_drops(db: Db, li: LogImport, plan: DropPlan) -> tuple[list[str], list
                  and row["source"] == RULE_SOURCE]
         for row in edges:
             db.delete_relation(li.desktop, row["type"], row["target"], row["blocker"])
+        cable = plan.cables.get(key)
+        events: list[dict] = []
+        if cable is not None:
+            # its hand-set events answered a card about a part that does not
+            # exist (U33): they go with it, and the op row keeps them
+            events = [asdict(e) for e in db.events(li.desktop)
+                      if e.target == key and not e.auto]
+            db.delete_manual_events(li.desktop, key)
         db.delete_instance(li.desktop, key)
         record = asdict(rec) if rec is not None else {"key": key}
-        db.log_op(
-            li.desktop, OP_VIEW, DROP_OP_KIND,
-            {"instance": key, "record": record, "relations": edges,
-             "reason": _drop_reason(rec)},
-            {"instance": key, "record": record, "relations": edges},
-            IMPLIED_ANNOTATOR,
-        )
-        dropped.append(f"dropped instance {key} ({_drop_reason(rec)})")
+        reason = _drop_reason(rec, cable)
+        payload = {"instance": key, "record": record, "relations": edges, "reason": reason}
+        inverse = {"instance": key, "record": record, "relations": edges}
+        if cable is not None:
+            payload.update(cable=cable[0], events=events)
+            inverse["events"] = events
+        db.log_op(li.desktop, OP_VIEW, DROP_OP_KIND, payload, inverse, IMPLIED_ANNOTATOR)
+        went = (f"; {len(events)} hand-set state event(s) went with it"
+                if events else "")
+        dropped.append(f"dropped instance {key} ({reason}{went})")
     return dropped, issues
 
 
-def _drop_reason(rec) -> str:
+def _drop_reason(rec, cable: Optional[tuple[str, str]] = None) -> str:
     """Why this key went, in the words the annotator needs to hear."""
+    if cable is not None:
+        node, name = cable
+        return f"the sheet's {name!r} is a cable event now ({node}), not a part"
     if rec is not None and is_implied(rec):
         return "implied instance no longer warranted"
     return "no longer in the sheet"
+
+
+def _kept_line(desktop: int, key: str, why: str,
+               cable: Optional[tuple[str, str]] = None) -> str:
+    """The import issue of one vanished key the plan keeps."""
+    if cable is None:
+        return (f"D{desktop:02d}: instance {key} vanished from the sheet but is kept "
+                f"({why}) - merge or delete it in S1")
+    node, name = cable
+    return (f"D{desktop:02d}: instance {key} was the sheet's {name!r}, a cable event "
+            f"now ({node}), but is kept ({why}) - if that work is not of a part, "
+            f"undo it and delete the instance in S1")
 
 
 # --------------------------------------------------------------------------- #
