@@ -475,7 +475,11 @@ def test_a_part_ruled_not_clean_leaves_the_clean_set(built, tmp_path):
                     if r["instance_key"] == NEIGHBOR and int(r["step"]) in (1, 2)]
     readme = (tmp_path / "pack" / "README.md").read_text(encoding="utf-8")
     assert f"D{desktop:02d} S01-S02 `{NEIGHBOR}` (2 annotations)" in readme
-    assert "`clean_note`" in readme.split("## What this is")[0]
+    zh = readme.split("## What this is")[0]
+    assert "`clean_note`" in zh
+    # F-N2: the Chinese summary lists them in Chinese
+    assert f"D{desktop:02d} 的 S01–S02 帧上的 `{NEIGHBOR}`（共 2 条）" in zh
+    assert "annotations)" not in zh and "Known issues）" not in zh
 
 
 def test_a_not_clean_rule_must_match(built, tmp_path):
@@ -802,6 +806,10 @@ def test_a_model_note_is_a_paragraph_below_the_table_not_a_row_of_it():
     assert "No two confirmed visible masks claim the same pixel in this package." in text
     assert "No frame is left out of this package." in text and "none (see" not in text
     assert 'desk = "D30"' in text
+    # F-N1: no "0 annotations" sentences
+    assert "here the two are equal on every annotation." in text
+    assert "here no shape had to be widened" in text
+    assert "0 annotations" not in text
     desk["model_note"] = None
     plain = S.readme_text(summary)
     total_row = next(line for line in plain.splitlines() if line.startswith("| **Total**"))
@@ -871,7 +879,41 @@ def test_the_roi_paragraph_reads_right_in_every_branch():
         {"desktop": 4, "pose_segments": 2, "rois": 2},
         {"desktop": 13, "pose_segments": 1, "rois": 1}]))
     assert "D04 (2 camera poses, 2 ROIs) has more than one" in poses
-    assert "one camera pose and has one ROI" not in poses
+    assert "D13 was scanned from one camera pose and has one ROI" in poses
+    assert "Each desktop here" not in poses
+
+    # F-B3: no ROI stored is said, never counted as one ROI
+    none = S.roi_paragraph(_summary(per_desktop=[
+        {"desktop": 27, "pose_segments": 1, "rois": 0, "frames_without_roi": 43},
+        {"desktop": 4, "pose_segments": 1, "rois": 1, "frames_without_roi": 0},
+        {"desktop": 13, "pose_segments": 1, "rois": 1, "frames_without_roi": 0}]))
+    assert "(x1, y1 exclusive; null where none is stored)" in none
+    assert "D04, D13 were each scanned from one camera pose and have one ROI each" in none
+    assert ("No ROI is stored for D27 (43 frames): `roi` is null there, and rule 3 of "
+            "*clean* is not applied to those frames.") in none
+    assert "Each desktop here" not in none
+
+
+def test_a_desktop_without_an_roi_counts_no_roi_and_skips_rule_3(tmp_path):
+    """F-B3: D27 had no ROI; `rois` was 1 and the README said every desktop had one."""
+    db_path = build_scene(tmp_path, 13)
+    db = Db(str(db_path))
+    db.set_pose_segment_roi(13, VIEW, 1, None)
+    db.close()
+    summary = make_pack(tmp_path, db_path, 13)
+    (desk,) = summary["per_desktop"]
+    assert desk["rois"] == 0 and desk["frames_without_roi"] == desk["frames"] > 0
+    frames = json.loads((tmp_path / "pack" / "D13" / "frames.json").read_text(encoding="utf-8"))
+    assert all(f["roi"] is None for f in frames["frames"].values())
+    readme = (tmp_path / "pack" / "README.md").read_text(encoding="utf-8")
+    assert f"No ROI is stored for D13 ({desk['frames']} frames)" in readme
+    assert "has one ROI" not in readme
+    # rule 3 is not applied: the part drawn below the old ROI is clean now
+    coco = json.loads((tmp_path / "pack" / "D13" / "annotations.json").read_text(encoding="utf-8"))
+    first = next(i["id"] for i in coco["images"] if i["extra"]["step"] == 1)
+    outside = next(a for a in coco["annotations"]
+                   if a["image_id"] == first and a["attributes"]["instance_key"] == OUTSIDE)
+    assert outside["clean"] and summary["checks"]["amodal_box_outside_roi"] == 0
 
 
 # --------------------------------------------------------------------------- #

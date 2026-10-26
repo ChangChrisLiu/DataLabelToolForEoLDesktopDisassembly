@@ -657,6 +657,7 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
     other_image: list[dict] = []
     segments: set = set()
     rois: set = set()
+    no_roi = 0
     for frame in frames:
         step = int(frame["step"])
         key = FrameKey(desktop, step, VIEW)
@@ -707,7 +708,10 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
         stats[f"burst_{int(source['choice']['burst_size'] or 0)}"] += 1
         stats[f"burst_reason:{source['choice']['reason'] or 'frame_record'}"] += 1
         segments.add(entry["pose_segment"])
-        rois.add(None if roi is None else tuple(roi))
+        if roi is None:
+            no_roi += 1                          # no ROI stored: not "one ROI" (F-B3)
+        else:
+            rois.add(tuple(roi))
         # -- the picture: copied from the raw drive, compared with the cache's
         raw = resolve(source["recorded"])
         if not raw or not Path(raw).is_file():
@@ -981,7 +985,7 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
         "desktop": desktop, "brand": head["brand"], "model": model, "model_sheet": sheet,
         "model_note": note,
         "frames": len(images), "frames_in_view": len(frames),
-        "pose_segments": len(segments), "rois": len(rois),
+        "pose_segments": len(segments), "rois": len(rois), "frames_without_roi": no_roi,
         "excluded": [{"step": s, "reason": r} for s, r in sorted(excluded.items())],
         "instances": len(key_to_id),
         "instances_annotated": sum(1 for k in key_to_id if per_inst[k]["annotations"]),
@@ -1308,20 +1312,37 @@ def roi_paragraph(summary: dict) -> str:
     """The README's ROI section body, every sentence from the data (R2-N2, R2-N3)."""
     c = summary["checks"]
     bench = int(summary["placement_counts"].get("on_bench", 0))
-    out = ["`frames.json` gives each frame's `roi` `[x0, y0, x1, y1]` (x1, y1 exclusive): "
-           "the rectangle around the chassis the annotation concentrated on."]
-    several = [d for d in summary["per_desktop"]
+    desks = summary["per_desktop"]
+    # a frame with no ROI stored is not "one ROI" (F-B3): it is said, and rule 3
+    # is not applied there (the build checks a box only against a stored ROI)
+    missing = [d for d in desks if d.get("frames_without_roi", 0)]
+    several = [d for d in desks
                if d.get("pose_segments", 1) > 1 or d.get("rois", 1) > 1]
-    if not several:
+    plain = [d for d in desks if d not in missing and d not in several]
+    out = ["`frames.json` gives each frame's `roi` `[x0, y0, x1, y1]` (x1, y1 exclusive"
+           f"{'; null where none is stored' if missing else ''}): the rectangle around the "
+           "chassis the annotation concentrated on."]
+    if plain and not several and not missing:
         out.append("Each desktop here was scanned from one camera pose and has one ROI, "
                    "shared by all its frames.")
-    else:
+    elif plain:
+        names = ", ".join(desktop_dir(d["desktop"]) for d in plain)
+        out.append(f"{names} was scanned from one camera pose and has one ROI, shared by "
+                   f"all its frames." if len(plain) == 1 else
+                   f"{names} were each scanned from one camera pose and have one ROI each, "
+                   f"shared by all their frames.")
+    if several:
         which = ", ".join(f"{desktop_dir(d['desktop'])} "
                           f"({_n(d['pose_segments'], 'camera pose')}, {_n(d['rois'], 'ROI')})"
                           for d in several)
         out.append(f"An ROI is drawn once per camera pose (`pose_segment` in `frames.json`); "
                    f"{which} {'has' if len(several) == 1 else 'have'} more than one, so "
                    f"read `roi` frame by frame.")
+    if missing:
+        which = ", ".join(f"{desktop_dir(d['desktop'])} "
+                          f"({_n(d['frames_without_roi'], 'frame')})" for d in missing)
+        out.append(f"No ROI is stored for {which}: `roi` is null there, and rule 3 of "
+                   f"*clean* is not applied to those frames.")
     if bench == 0:
         out.append("Every annotation in this package is of a part in the chassis; none is "
                    "of a part set down on the bench.")
@@ -1467,6 +1488,16 @@ def readme_text(summary: dict) -> str:
         overlap_en = ("No two confirmed masks overlap in this package, so the label map and the "
                       "annotations'\n`segmentation` give the same pixels; the label map is the "
                       "simpler to read.")
+    # no "0 annotations" sentences (F-N1)
+    differ = int(c["occlusion_ratio_differs_from_confirmed"])
+    ratio_text = ("here the two are equal on every annotation." if not differ else
+                  f"the two differ on {_n(differ, 'annotation')}, where today's amodal shape "
+                  f"is not the one the row was confirmed against.")
+    widened = int(t["amodal_widened_rows"])
+    widened_text = ("here no shape had to be widened to hold a confirmed visible mask." if not
+                    widened else
+                    f"on {_n(widened, 'annotation')} the shape is widened to hold the "
+                    f"confirmed visible mask (`amodal_is_shape: false`).")
     # the example runs as shipped: on a desktop the package has
     ruled = [r for r in summary.get("not_clean", []) if r["annotations"]]
     ruled_n = sum(r["were_clean"] for r in ruled)
@@ -1477,9 +1508,14 @@ def readme_text(summary: dict) -> str:
                 f"{ruled_list}. They have `clean: false` and the reason in `clean_note` "
                 f"(null everywhere else), and are not in `clean_parts.csv`; {ruled_n} of them "
                 f"pass all six rules (*Known issues*)." if ruled else "")
-    ruled_zh = (f"\n另有人工判定为非 clean 的标注：{ruled_list}；它们 `clean: false`，原因写在 "
-                f"`clean_note`，不在 `clean_parts.csv` 里（其中 {ruled_n} 条满足六条，见 Known issues）。"
-                if ruled else "")
+    # the Chinese summary in Chinese (F-N2): no English list spliced in
+    ruled_list_zh = "；".join(
+        f"{desktop_dir(r['desktop'])} 的 {r['steps'].replace('-', '–')} 帧上的 "
+        f"{'、'.join(f'`{p}`' for p in r['parts'])}（共 {r['annotations']} 条）"
+        for r in ruled)
+    ruled_zh = (f"\n另有人工判定为非 clean 的标注：{ruled_list_zh}。它们的 `clean` 为 false，"
+                f"原因写在 `clean_note`，不在 `clean_parts.csv` 里（其中 {ruled_n} 条本来满足六条，"
+                f"见文末已知问题）。" if ruled else "")
     example = README_EXAMPLE.replace('desk = "D02"',
                                      f'desk = "{desktop_dir(summary["desktops"][0])}"')
     return f"""# Scanner-view segmentation package (scanpack v{summary['pack_version']})
@@ -1499,7 +1535,7 @@ def readme_text(summary: dict) -> str:
 {overlap_zh}
 
 建议先用 `clean_parts.csv`（共 {t['clean']} 条）。`clean` 要同时满足六条：
-(1) 可见掩码与完整形状逐像素相同；(2) 标签为 `visible`；(3) amodal 框在 ROI 内；
+(1) 可见掩码与完整形状逐像素相同；(2) 标签为 `visible`；(3) amodal 框在 ROI 内（没有存 ROI 的帧不查这一条）；
 (4) amodal 就是标注的形状本身（没有被可见掩码撑大）；(5) label map 把它的每个可见像素都给了它；
 (6) 它的可见像素没有一个同时被别的确认掩码占用（`shared_px == 0`）。{ruled_zh}
 这样的零件在那一帧上没有被任何东西挡住，掩码下的点就是扫描仪看到的它的全部表面。
@@ -1597,7 +1633,7 @@ whole outline and the points under it are all of the part the scanner saw.
 
 1. the visible mask equals the amodal mask to the pixel (0 px difference);
 2. its label (`visibility`) is `visible`;
-3. the amodal box lies inside the frame's ROI;
+3. the amodal box lies inside the frame's ROI (not applied on a frame with no ROI stored);
 4. the amodal shape is the annotated shape itself (`amodal_is_shape`);
 5. the label map gives the part every pixel of its visible mask (`label_px == area`);
 6. no other confirmed mask claims any of its pixels (`shared_px == 0`).{ruled_en}
@@ -1651,9 +1687,7 @@ part may keep a sliver of visible pixels (*Known issues*).
 `occlusion_ratio` (top level) is `1 - area / amodal_area`, measured on the two
 masks in the file: the share of the part's silhouette hidden on that frame.
 `attributes.occlusion_ratio` is the value recorded when the row was confirmed
-(the one `visibility` was decided from); the two differ on
-{c['occlusion_ratio_differs_from_confirmed']} annotations, where today's amodal shape is not the one the
-row was confirmed against. `occluders` lists who takes the hidden pixels, read
+(the one `visibility` was decided from); {ratio_text} `occluders` lists who takes the hidden pixels, read
 off the label map: `[{{"id": instance_id, "px": pixels}}, ...]`, largest first.
 `occluded_unlabelled_px` is the rest -- hidden pixels no labelled part shows
 (a cable, a part nobody annotates, a hand). The three add up:
@@ -1686,9 +1720,7 @@ is kept as it was confirmed. No annotation with `shared_px > 0` is clean.
   `attributes`: `visibility`, `occlusion_ratio`, `occluder`, `placement`,
   `verified`.
 * **Derived from today's annotation** (the part's drawn shape on that frame):
-  `amodal_segmentation`, `amodal_bbox`, `amodal_area`; on {t['amodal_widened_rows']}
-  annotations the shape is widened to hold the confirmed visible mask
-  (`amodal_is_shape: false`).
+  `amodal_segmentation`, `amodal_bbox`, `amodal_area`; {widened_text}
 * **Computed for this package** from the two: the label maps, the top-level
   `occlusion_ratio`, `occluders`, `occluded_unlabelled_px`, `shared_px`,
   `label_px`, `amodal_is_shape`, `clean`; and from the teardown log and the
