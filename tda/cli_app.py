@@ -359,10 +359,12 @@ def cmd_check(args: argparse.Namespace) -> int:
     An empty visible mask with no such reason -- nothing drawn -- still is
     (:mod:`tda.core.empty_visible`).
 
-    The last line, ``stale_within_tolerance: n`` (task U32), counts the
-    confirmed rows 「重签」 would rewrite: they differ from today's compile
-    only within the tolerance, so they open no conflict and keep their old
-    pixels.  A counter for the audit, not a problem: the exit code ignores it.
+    The last line, ``stale_within_tolerance: n (deferred m)`` (task U32),
+    counts the confirmed rows 「重签」 would rewrite now (``n``) and those as
+    far behind that wait for a neighbour's open conflict (``m``): they differ
+    from today's compile only within the tolerance, so they open no conflict
+    and keep their old pixels.  A counter for the audit, not a problem: the
+    exit code ignores it.
     """
     with session(args, lock=True) as (_paths, db):
         desktop = int(args.desktop)
@@ -381,12 +383,19 @@ def _check_one(db, tax, args: argparse.Namespace, desktop: int, view: str) -> in
     from tda.core.truth_refreeze import plan_frame
 
     resign: list[tuple[int, str]] = []
+    waiting: list[tuple[int, str]] = []
 
     def count_resign(key, one: dict) -> None:
         compiled = one.get("compiled")
         if compiled is None or (db.get_frame(key) or {}).get("review_status") != "verified":
             return
-        resign.extend((key.step, c.instance) for c in plan_frame(db, key, compiled).changes)
+        plan = plan_frame(db, key, compiled)
+        resign.extend((key.step, c.instance) for c in plan.changes)
+        # behind the compile as well, but waiting for a neighbour's conflict (U32 N1).
+        # A row drifted from what a person signed needs no line of its own: the
+        # refresh that just ran measured it against that row and queued its
+        # conflict, so it is among the open conflicts below
+        waiting.extend((key.step, instance) for instance in plan.deferred)
 
     # every frame compiled, as on a first run: a digest-skipped frame reports
     # no problems, and a check has to see them all every time
@@ -470,6 +479,9 @@ def _check_one(db, tax, args: argparse.Namespace, desktop: int, view: str) -> in
         print(f"[check] {len(resign)} 条已确认行（{frames} 帧）和今天的编译只差容差以内：不算冲突，"
               f"存的仍是旧像素（stale_within_tolerance；cli refreeze 或 Review 的「重签」改成"
               f"今天的编译）: " + ", ".join(f"{instance}@{step}" for step, instance in resign[:10]))
+    if waiting:
+        print(f"[check] 另有 {len(waiting)} 条同样落后、但挨着开着的冲突，等冲突处理完再重签: "
+              + ", ".join(f"{instance}@{step}" for step, instance in waiting[:10]))
     for text in problems[: int(args.limit)]:
         print(f"  - {text}")
     if len(problems) > int(args.limit):
@@ -477,8 +489,9 @@ def _check_one(db, tax, args: argparse.Namespace, desktop: int, view: str) -> in
     print(f"problems: {len(problems)}")
     print(f"open conflicts: {standing}")
     # a counter for the audit, not a problem: the rows are the same annotation
-    # by the app's own tolerance, and the exit code stays what it was
-    print(f"stale_within_tolerance: {len(resign)}")
+    # by the app's own tolerance, and the exit code stays what it was.  The
+    # rows waiting for a neighbour's conflict are counted apart (U32 N1)
+    print(f"stale_within_tolerance: {len(resign)} (deferred {len(waiting)})")
     return EXIT_ERROR if (problems or standing or stats["pending"]) else EXIT_OK
 
 

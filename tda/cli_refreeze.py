@@ -18,8 +18,11 @@ that changed and the pixels two confirmed masks shared before and after.
 Safety as for the other destructive commands: the single-user lock (exit 3
 while somebody else holds it), and a backup into ``backup_dir`` before the
 first write.  ``--dry-run`` takes the lock too but writes nothing, not even the
-backup.  Every frame is one ``refreeze_frame`` op whose inverse is the old rows
-byte for byte; ``--undo last`` (or the run tag a run printed) puts a run back.
+backup -- with ``--undo`` as well, where it lists the frames the undo would put
+back.  Every frame is one ``refreeze_frame`` op whose inverse is the old rows
+byte for byte; ``--undo last`` (or the run tag a run printed) puts a run back
+(a whole run: ``--undo`` takes no ``--steps``).  The Review buttons back up
+through the same helper (:func:`tda.cli_common.safety_backup`).
 """
 from __future__ import annotations
 
@@ -53,9 +56,15 @@ def frame_line(plan) -> str:
         removed = plan.overlap_before - (plan.overlap_after or 0)
         parts.append(f"overlap {_n(plan.overlap_before)} -> {_n(plan.overlap_after)} px"
                      f" ({_n(removed)} removed)")
+    flips = [f"{c.instance} {c.label[0]} -> {c.label[1]}" for c in plan.flips]
+    if flips:
+        parts.append("label crosses seen/unseen: " + ", ".join(flips))
     left = []
     if plan.disputed:
         left.append(f"{len(plan.disputed)} beyond the tolerance ({', '.join(plan.disputed[:NAMED])})")
+    if plan.drifted:
+        left.append(f"{len(plan.drifted)} drifted beyond the tolerance from the row a person "
+                    f"signed ({', '.join(plan.drifted[:NAMED])}): a conflict, not re-signed again")
     if plan.open_conflicts:
         left.append(f"{len(plan.open_conflicts)} with an open conflict")
     if plan.deferred:
@@ -75,7 +84,7 @@ def frame_line(plan) -> str:
 def _report(desktop: int, view: str, result: dict) -> None:
     for plan in result["frames"]:
         if plan.changes or plan.disputed or plan.open_conflicts or plan.missing \
-                or plan.unsigned or plan.deferred or plan.moved:
+                or plan.unsigned or plan.deferred or plan.drifted or plan.moved:
             print(frame_line(plan))
     verb = "would re-sign" if result["dry_run"] else "re-signed"
     print(f"[refreeze] D{desktop:02d} {view}: {result['considered']} confirmed frames, "
@@ -86,9 +95,19 @@ def _report(desktop: int, view: str, result: dict) -> None:
     if stood:
         print(f"[refreeze] {stood} confirmed row(s) differ beyond the tolerance or have an "
               f"open conflict: left alone (Review > Conflicts; cli check queues them)")
+    if result.get("drifted"):
+        print(f"[refreeze] {result['drifted']} re-signed row(s) are within the tolerance of "
+              f"what they hold but beyond it from the row a person signed: not re-signed "
+              f"again; the refresh (cli check, the app) opens their conflicts")
     if result.get("deferred"):
         print(f"[refreeze] {result['deferred']} row(s) within the tolerance touch those rows: "
               f"they wait for the conflicts (settle them, then run refreeze again)")
+    flips = result.get("flips") or []
+    if flips:
+        listed = ", ".join(f"{inst}@{step} {old} -> {new}" for step, inst, old, new in flips[:20])
+        more = f", ... +{len(flips) - 20}" if len(flips) > 20 else ""
+        print(f"[refreeze] {len(flips)} label(s) cross seen/unseen (look at them in 可见性审查): "
+              f"{listed}{more}")
     gained = result["missing"] + result["unsigned"]
     if gained:
         print(f"[refreeze] {gained} part(s) in today's compile were never confirmed on their "
@@ -103,8 +122,17 @@ def _report(desktop: int, view: str, result: dict) -> None:
               f"undo with --undo last")
 
 
-def _undo(db, desktop: int, view: str, run: str, annotator: str) -> int:
-    from tda.core.truth_refreeze import refreeze_ops, undo_refreeze
+def _undo(db, desktop: int, view: str, run: str, annotator: str,
+          dry_run: bool = False) -> int:
+    """``--undo``: put a run back, newest frame first -- or, with ``--dry-run``, list it.
+
+    The dry run asks :func:`tda.core.truth_refreeze.undo_status` the same two
+    questions the undo asks (undone already? changed since?) and writes
+    nothing (round 2, B2: it used to undo, without the backup a dry run skips).
+    """
+    from tda.core.truth_refreeze import (
+        UNDONE_ALREADY, refreeze_ops, undo_refreeze, undo_status,
+    )
 
     ops = refreeze_ops(db, desktop, view, run)
     if not ops:
@@ -115,6 +143,14 @@ def _undo(db, desktop: int, view: str, run: str, annotator: str) -> int:
     refused = []
     for op in reversed(ops):
         try:
+            if dry_run:
+                key, status, instances = undo_status(db, int(op["id"]))
+                if status == UNDONE_ALREADY:
+                    already += 1
+                else:
+                    undone += 1
+                    print(f"  step {key.step}: would put back {', '.join(instances)}")
+                continue
             made = undo_refreeze(db, int(op["id"]), annotator)
         except ValueError as exc:
             refused.append(str(exc))
@@ -125,8 +161,11 @@ def _undo(db, desktop: int, view: str, run: str, annotator: str) -> int:
             undone += 1
     for text in refused:
         print(f"  refused: {text}")
-    print(f"[refreeze] D{desktop:02d} {view}: run {tag}: {undone} frame(s) put back, "
+    verb = "would put back" if dry_run else "put back"
+    print(f"[refreeze] D{desktop:02d} {view}: run {tag}: {undone} frame(s) {verb}, "
           f"{already} already undone, {len(refused)} refused")
+    if dry_run:
+        print("[refreeze] dry run: nothing was written")
     return EXIT_ERROR if refused else EXIT_OK
 
 
@@ -136,6 +175,10 @@ def cmd_refreeze(args: argparse.Namespace) -> int:
     from tda.core.truth import TruthService
 
     views = _view_list(args.views)
+    if args.undo and args.steps:
+        # an undo takes back a whole run, whatever frames it touched
+        print("[refreeze] --undo puts back a whole run; it takes no --steps")
+        return EXIT_ERROR
     steps = P.parse_desktops(args.steps) if args.steps else None   # same "1-3,7" syntax
     with session(args, lock=True) as (paths, db):
         desktop = int(args.desktop)
@@ -146,7 +189,8 @@ def cmd_refreeze(args: argparse.Namespace) -> int:
             if not safety_backup(paths, db, "refreeze", why):
                 return EXIT_ERROR
         if args.undo:
-            return max(_undo(db, desktop, view, str(args.undo), annotator) for view in views)
+            return max(_undo(db, desktop, view, str(args.undo), annotator,
+                             dry_run=bool(args.dry_run)) for view in views)
         truth = TruthService(db, load_taxonomy())
         for view in views:
             result = truth.refreeze(desktop, view, steps=steps, annotator=annotator,
@@ -166,10 +210,11 @@ def _add_refreeze(sub) -> None:
     p.add_argument("--steps", default=None,
                    help="only these confirmed frames, e.g. 17-37 or 3,7 (default: all)")
     p.add_argument("--dry-run", action="store_true",
-                   help="plan and print, write nothing (no backup either)")
+                   help="plan and print, write nothing (no backup either); with --undo, "
+                        "list the frames the undo would put back")
     p.add_argument("--annotator", default=None,
                    help=f"who signs the re-signed rows (default {DEFAULT_ANNOTATOR})")
     p.add_argument("--undo", default=None, metavar="last|RUN",
                    help="put back the rows of the newest run ('last') or of the run tag a "
-                        "run printed, byte for byte")
+                        "run printed, byte for byte (a whole run: no --steps)")
     p.set_defaults(func=cmd_refreeze)

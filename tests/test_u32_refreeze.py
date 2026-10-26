@@ -373,6 +373,125 @@ def test_a_plan_is_written_as_planned_and_replanned_when_the_rows_moved(db, svc)
     assert db.compiled(key(1))[BOARD]["verified_by"] == "somebody"   # left as it was
 
 
+# --------------------------------------------------------------------------- #
+# round 2, B1: re-signing again and again does not walk away from a signature
+# --------------------------------------------------------------------------- #
+def set_screw(db: Db, kf: ShapeKeyframe, columns: int) -> None:
+    """The far screw, ``columns`` columns wider than confirmed (3 columns: at the threshold)."""
+    retrace(db, kf, (150, 150, 170 + columns, 170))
+
+
+def screw_drift(db: Db, original: np.ndarray, step: int = 2) -> int:
+    """Tolerant difference between what is stored for the screw and what was confirmed."""
+    stored = masks.decode_rle(db.compiled(key(step))[SCREW]["visible_rle"])
+    return masks.tolerant_sym_diff(original, stored)
+
+
+def test_repeated_resigning_does_not_drift(db, svc):
+    """The review's ratchet: five re-traces of 3 columns each, a refresh and a re-sign after each.
+
+    Before round 2 the stored screw went 400 -> 700 px with no conflict at
+    all (260 px of tolerant difference from what was confirmed, 13 times the
+    threshold).  Now the stored row stays within one tolerance of the
+    confirmed one and the conflict opens in the second round.
+    """
+    kfs = build(db)
+    svc.refresh_range(DESKTOP, VIEW, STEPS)
+    confirm_all(svc)
+    original = masks.decode_rle(db.compiled(key(2))[SCREW]["visible_rle"]).copy()
+    threshold = max(0.02 * original.sum(), 20)
+    per_round, resigned = [], []
+    for i in range(1, 6):
+        set_screw(db, kfs[SCREW], 3 * i)
+        per_round.append(svc.refresh_range(DESKTOP, VIEW, STEPS)["conflicts"])
+        done = svc.refreeze(DESKTOP, VIEW)
+        resigned.append(sum(SCREW in f.rows for f in done["frames"]))
+        assert screw_drift(db, original) <= threshold          # at most one tolerance, unseen
+    assert per_round[0] == 0 and resigned[0] == 3              # round 1: within, re-signed
+    assert per_round[1] == 3                                   # round 2: the conflict opens
+    assert resigned[1:] == [0, 0, 0, 0]
+    opened = [c for c in db.conflicts(DESKTOP, VIEW, open_only=True) if c["instance"] == SCREW]
+    assert len(opened) == 3                                    # one per frozen row (U7)
+
+
+@pytest.mark.parametrize("past", [False, True])
+def test_the_threshold_is_the_refreshs_own(db, svc, past):
+    """The review's 3.3: at the threshold re-signed, one pixel past it a conflict, as refresh."""
+    kfs = build(db)
+    svc.refresh_range(DESKTOP, VIEW, STEPS)
+    confirm_all(svc)
+    shape = rect(150, 150, 173, 170)
+    if past:
+        shape[160, 176] = True
+    kfs[SCREW].parts = [ShapePart("main", masks.encode_rle(shape))]
+    db.update_keyframe(kfs[SCREW])
+    before = {s: db.compiled_raw(key(s))[SCREW] for s in STEPS}
+    done = svc.refreeze(DESKTOP, VIEW)
+    for plan in done["frames"]:
+        assert (SCREW in plan.disputed) is past and (SCREW in plan.rows) is not past
+    if past:
+        assert all(db.compiled_raw(key(s))[SCREW] == before[s] for s in STEPS)
+    assert svc.refresh_range(DESKTOP, VIEW, STEPS)["conflicts"] == (3 if past else 0)
+
+
+def test_without_resigning_the_same_edits_raise_a_conflict(db, svc):
+    """The review's control: the same five edits, no re-signing -- conflicts as before."""
+    kfs = build(db)
+    svc.refresh_range(DESKTOP, VIEW, STEPS)
+    confirm_all(svc)
+    conflicts = 0
+    for i in range(1, 6):
+        set_screw(db, kfs[SCREW], 3 * i)
+        conflicts += svc.refresh_range(DESKTOP, VIEW, STEPS)["conflicts"]
+    assert conflicts >= 3
+
+
+def test_a_drifted_row_is_listed_and_left_and_a_person_resets_the_anchor(db, svc):
+    kfs = build(db)
+    svc.refresh_range(DESKTOP, VIEW, STEPS)
+    confirm_all(svc)
+    set_screw(db, kfs[SCREW], 3)
+    first = svc.refreeze(DESKTOP, VIEW)
+    assert [f.rows for f in first["frames"]] == [[BOARD, SCREW]] * 3   # the board gives way
+    set_screw(db, kfs[SCREW], 6)                  # no refresh yet: nothing is queued
+    before = {s: db.compiled_raw(key(s))[SCREW] for s in STEPS}
+    plan = svc.refreeze(DESKTOP, VIEW, dry_run=True)
+    assert [f.drifted for f in plan["frames"]] == [[SCREW]] * 3 and plan["drifted"] == 3
+    assert all(f.stands and SCREW not in f.rows for f in plan["frames"])
+    svc.refreeze(DESKTOP, VIEW)
+    assert {s: db.compiled_raw(key(s))[SCREW] for s in STEPS} == before
+    # the ordinary refresh raises it -- measured against what the person signed
+    assert svc.refresh_range(DESKTOP, VIEW, STEPS)["conflicts"] == 3
+    assert {c["instance"] for c in db.conflicts(DESKTOP, VIEW, open_only=True)} == {SCREW}
+    # accepting it is a person's signature: the next small move re-signs again
+    assert accept_all(db, svc, SCREW) == 3
+    set_screw(db, kfs[SCREW], 9)
+    assert svc.refresh_range(DESKTOP, VIEW, STEPS)["conflicts"] == 0
+    last = svc.refreeze(DESKTOP, VIEW)
+    assert all(SCREW in f.rows for f in last["frames"])
+
+
+def test_a_label_crossing_seen_and_unseen_is_listed(db, svc):
+    """Review N3: a sliver the cover now hides -- within the band, but the label flips."""
+    kfs = build(db, cover=(20, 20, 168, 172), screw=FAR_SCREW, order=(BOARD, SCREW, COVER))
+    svc.refresh_range(DESKTOP, VIEW, STEPS)
+    confirm_all(svc)
+    shown = db.compiled(key(1))[SCREW]["visibility"]
+    retrace(db, kfs[COVER], (20, 20, 170, 172))   # the last two screw columns covered too
+    assert svc.refresh_range(DESKTOP, VIEW, STEPS)["conflicts"] == 0
+    plan = svc.refreeze(DESKTOP, VIEW, dry_run=True)
+    assert shown != "occluded_full"
+    assert plan["flips"] == [(s, SCREW, shown, "occluded_full") for s in STEPS]
+    from tda.cli_refreeze import frame_line
+    from tda.ui.app_refreeze import refreeze_question
+
+    assert f"label crosses seen/unseen: {SCREW} {shown} -> occluded_full" \
+        in frame_line(plan["frames"][0])
+    assert any(line.startswith("标签在看得见 / 看不见之间翻转") and
+               f"第 1 帧 {SCREW}：{shown} → occluded_full" in line
+               for line in refreeze_question(plan, (DESKTOP, VIEW)))
+
+
 def test_overlap_counts_every_pair_once():
     a, b, c = (masks.encode_rle(rect(*box)) for box in
                ((0, 0, 10, 10), (5, 0, 15, 10), (8, 0, 20, 10)))
@@ -390,8 +509,7 @@ def test_plan_frame_is_what_cli_check_counts(db, svc):
 # --------------------------------------------------------------------------- #
 # the command line
 # --------------------------------------------------------------------------- #
-@pytest.fixture
-def env(tmp_path: Path) -> dict:
+def _make_env(tmp_path: Path, accept: bool = True) -> dict:
     db_path = tmp_path / "annotations" / "tda.sqlite"
     db_path.parent.mkdir(parents=True)
     (tmp_path / "backups").mkdir()
@@ -400,11 +518,23 @@ def env(tmp_path: Path) -> dict:
     (tmp_path / "paths.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
     made = Db(str(db_path))
     try:
-        overlap_scene(made, TruthService(made, load_taxonomy()))
+        overlap_scene(made, TruthService(made, load_taxonomy()), accept=accept)
     finally:
         made.close()
     return {"paths": str(tmp_path / "paths.yaml"), "db": db_path,
             "backups": tmp_path / "backups"}
+
+
+@pytest.fixture
+def env(tmp_path: Path) -> dict:
+    """The overlap scene (the cover's conflicts accepted) behind a paths.yaml."""
+    return _make_env(tmp_path)
+
+
+@pytest.fixture
+def env_open(tmp_path: Path) -> dict:
+    """The same with the cover's three conflicts still open."""
+    return _make_env(tmp_path, accept=False)
 
 
 def run(env: dict, *argv: str) -> int:
@@ -422,14 +552,25 @@ def test_cli_check_counts_the_rows_refreeze_would_rewrite(env, capsys):
 
     assert run(env, "check", "--desktop", str(DESKTOP), "--view", VIEW) == EXIT_OK
     out = capsys.readouterr().out
-    assert "stale_within_tolerance: 3" in out
     assert "motherboard.01@1" in out and "cli refreeze" in out
-    assert out.strip().splitlines()[-1] == "stale_within_tolerance: 3"
+    assert out.strip().splitlines()[-1] == "stale_within_tolerance: 3 (deferred 0)"
 
     assert run(env, "refreeze", "--desktop", str(DESKTOP)) == EXIT_OK
     capsys.readouterr()
     assert run(env, "check", "--desktop", str(DESKTOP), "--view", VIEW) == EXIT_OK
-    assert "stale_within_tolerance: 0" in capsys.readouterr().out
+    assert capsys.readouterr().out.strip().splitlines()[-1] == \
+        "stale_within_tolerance: 0 (deferred 0)"
+
+
+def test_cli_check_counts_the_rows_waiting_for_a_conflict_apart(env_open, capsys):
+    """Review N1: the board waits for the cover's open conflicts -- counted, apart."""
+    from tda.cli_common import EXIT_ERROR
+
+    assert run(env_open, "check", "--desktop", str(DESKTOP), "--view", VIEW) == EXIT_ERROR
+    out = capsys.readouterr().out
+    assert out.strip().splitlines()[-1] == "stale_within_tolerance: 0 (deferred 3)"
+    assert "open conflicts: 3" in out
+    assert "另有 3 条同样落后、但挨着开着的冲突" in out and "motherboard.01@1" in out
 
 
 def test_cli_dry_run_writes_nothing(env, capsys):
@@ -470,6 +611,34 @@ def test_cli_run_backs_up_then_undo_last_puts_it_back(env, capsys):
         assert {s: made.compiled_raw(key(s)) for s in STEPS} == raw
     finally:
         made.close()
+
+
+def test_cli_undo_dry_run_lists_and_writes_nothing(env, capsys):
+    """Review B2: ``--undo last --dry-run`` used to undo -- without the backup."""
+    from tda.cli_common import EXIT_ERROR, EXIT_OK
+
+    assert run(env, "refreeze", "--desktop", str(DESKTOP), "--view", VIEW) == EXIT_OK
+    capsys.readouterr()
+    backups = len(list(env["backups"].glob("*.sqlite")))
+    before = sha(env["db"])
+
+    assert run(env, "refreeze", "--desktop", str(DESKTOP), "--view", VIEW,
+               "--undo", "last", "--dry-run") == EXIT_OK
+    out = capsys.readouterr().out
+    assert sha(env["db"]) == before
+    assert len(list(env["backups"].glob("*.sqlite"))) == backups
+    for step in STEPS:
+        assert f"  step {step}: would put back motherboard.01" in out
+    assert "3 frame(s) would put back, 0 already undone, 0 refused" in out
+    assert "dry run: nothing was written" in out
+    # an undo takes back a whole run: --steps is refused, nothing written
+    assert run(env, "refreeze", "--desktop", str(DESKTOP), "--undo", "last",
+               "--steps", "1") == EXIT_ERROR
+    assert "takes no --steps" in capsys.readouterr().out
+    assert sha(env["db"]) == before
+    # the real undo still works afterwards
+    assert run(env, "refreeze", "--desktop", str(DESKTOP), "--undo", "last") == EXIT_OK
+    assert "3 frame(s) put back" in capsys.readouterr().out
 
 
 def test_cli_refreeze_refuses_while_the_lock_is_held(env, capsys):

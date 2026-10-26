@@ -34,6 +34,10 @@ by whoever asked.  Nothing else moves:
   the conflict's answer then removes) or give up pixels the disputed row does
   not hold yet (a hole); found on D22, whose drive cage was raised over the
   front-panel connector with that connector's 22 conflicts still open;
+* a row a re-signing wrote is measured against the row **a person signed**
+  before it (:mod:`tda.core.truth_anchor`, round 2): beyond the tolerance from
+  that one it is a conflict for the ordinary refresh, and ``drifted`` here --
+  re-signing again and again cannot walk a row away from a signature;
 * an instance the compile has and the frozen set lacks (or holds only as an
   ``auto`` row) is **reported, not written**: the frame then shows a different
   set of parts than the one confirmed, which the app's rule answers by sending
@@ -60,10 +64,19 @@ from tda.core import dbrows as R
 from tda.core import masks
 from tda.core.compiler import CompiledFrame, CompiledInstance
 from tda.core.model import FrameKey
+from tda.core.truth_anchor import (
+    REFREEZE_OP,
+    anchor_history,
+    human_rows,
+    rows_differ as _rows_differ,
+    signed_by_hand,
+)
 from tda.core.truth_conflicts import (
     GEOM_BOX,
     GEOM_MASK,
     box_sym_diff,
+    disagreement,
+    label_changes,
     rounded_box,
     row_values,
 )
@@ -72,17 +85,21 @@ from tda.core.truth_inputs import InputCache, gather
 from tda.core.truth_refusals import frozen_disagreements
 
 __all__ = [
-    "OP_KIND", "RESTORE_KIND", "UNDO_KIND", "FramePlan", "RefreezeMixin", "RowChange",
-    "overlap_px", "plan_frame", "refreeze_ops", "undo_refreeze",
+    "OP_KIND", "RESTORE_KIND", "UNDO_KIND", "UNSEEN", "FramePlan", "RefreezeMixin",
+    "RowChange", "overlap_px", "plan_frame", "refreeze_history", "refreeze_ops",
+    "signed_by_hand", "undo_refreeze", "undo_status", "UNDONE_ALREADY", "WOULD_RESTORE",
 ]
 
 #: The op of one re-signed frame, and the op of putting it back.
-OP_KIND = "refreeze_frame"
+OP_KIND = REFREEZE_OP
 UNDO_KIND = "undo_refreeze"
 #: What either op's inverse does: write these raw rows (and this digest) back.
 RESTORE_KIND = "restore_rows"
 
 VERIFIED = "verified"
+#: The labels that say a part cannot be seen at all; a re-signed label moving
+#: into or out of these is listed on its own (U32 review N3).
+UNSEEN = frozenset({"occluded_full", "out_of_view"})
 
 
 # --------------------------------------------------------------------------- #
@@ -104,6 +121,21 @@ class RowChange:
     #: What differs: ``pixels``, ``geometry`` (mask <-> box), ``visibility``,
     #: ``occlusion_ratio``.
     fields: list[str] = field(default_factory=list)
+
+    @property
+    def label(self) -> Optional[tuple[Optional[str], Optional[str]]]:
+        """``(old visibility, new visibility)`` when the label changes, else ``None``."""
+        if "visibility" not in self.fields:
+            return None
+        return (self.old.get("visibility"), self.new.get("visibility"))
+
+    @property
+    def flips(self) -> bool:
+        """Does the label cross 看得见 / 看不见 (e.g. ``too_small`` -> ``occluded_full``)?"""
+        label = self.label
+        if label is None or None in label:
+            return False
+        return (label[0] in UNSEEN) != (label[1] in UNSEEN)
 
 
 @dataclass
@@ -128,6 +160,11 @@ class FramePlan:
     #: Rows within the tolerance whose changing pixels touch a disputed (or
     #: open-conflict) row: they wait for that conflict; re-signed by a later run.
     deferred: list[str] = field(default_factory=list)
+    #: Rows a re-signing wrote whose compile is within the tolerance of the
+    #: stored row but **beyond** it from the row a person signed before the
+    #: re-signings (:func:`~tda.core.truth_anchor.signed_by_hand`): never
+    #: re-signed again; the ordinary refresh queues each as a conflict (round 2, B1).
+    drifted: list[str] = field(default_factory=list)
     #: Pixels shared by two frozen visible masks (every pair counted), before
     #: and after; ``None`` unless measured.
     overlap_before: Optional[int] = None
@@ -149,7 +186,12 @@ class FramePlan:
     def stands(self) -> bool:
         """Does anything stay in disagreement on this frame once it is re-signed?"""
         return bool(self.disputed or self.open_conflicts or self.missing or self.unsigned
-                    or self.leftover or self.deferred)
+                    or self.leftover or self.deferred or self.drifted)
+
+    @property
+    def flips(self) -> list[RowChange]:
+        """The re-signed rows whose label crosses 看得见 / 看不见."""
+        return [c for c in self.changes if c.flips]
 
 
 def _union(a, b):
@@ -315,8 +357,18 @@ def _defer_near_conflicts(plan: FramePlan, stored: dict, compiled: CompiledFrame
     plan.changes = keep
 
 
+def refreeze_history(db, desktop: int, view: str) -> dict[int, list[dict]]:
+    """The ``refreeze_frame`` ops of one view, per step, oldest first (cached).
+
+    :func:`tda.core.truth_anchor.anchor_history`, under the name this module
+    has always exported.
+    """
+    return anchor_history(db, desktop, view)
+
+
 def plan_frame(db, key: FrameKey, compiled: CompiledFrame,
-               overrides: Optional[dict] = None, measure: bool = False) -> FramePlan:
+               overrides: Optional[dict] = None, measure: bool = False,
+               history: Optional[list[dict]] = None) -> FramePlan:
     """The frozen rows of one frame that today's compile would re-sign, and why the rest not.
 
     Writes nothing.  ``compiled`` must be what the frame's current inputs
@@ -330,15 +382,43 @@ def plan_frame(db, key: FrameKey, compiled: CompiledFrame,
     a row left to its conflict, when it waits (``deferred``,
     :func:`_defer_near_conflicts`).  ``measure`` also counts the pixels shared
     by two frozen visible masks before and after (:func:`overlap_px`).
+
+    **The reference is the row a person signed** (round 2, B1).  The
+    tolerance is not transitive: re-signing a row moves what the next
+    comparison is made against, so a row re-signed again and again could walk
+    any distance from what anybody confirmed without a conflict ever opening.
+    :func:`~tda.core.truth_refusals.frozen_disagreements` therefore measures a
+    row a re-signing wrote against the row a person signed before it
+    (:mod:`tda.core.truth_anchor`) -- for the refresh, ``verify_frame`` and
+    this plan alike -- and such a row beyond the tolerance from that one is a
+    conflict the ordinary refresh queues.  The plan lists it as ``drifted``
+    (rather than ``disputed``) when only the person's row, not the stored one,
+    is beyond the tolerance from the compile: never re-signed again.  A stored
+    row is never more than one tolerance from a person's signature, and the
+    compile cannot move further than one tolerance from it unnoticed.
+    ``history`` is the frame's ``refreeze_frame`` ops (read here when left out).
     """
     stored = db.compiled(key)
     raw = db.compiled_raw(key)
     if overrides is None:
         overrides = db.frame_overrides(key)
+    if history is None:
+        history = refreeze_history(db, key.desktop, key.view).get(int(key.step), [])
     plan = FramePlan(step=int(key.step), input_hash=str(compiled.input_hash))
     plan.open_conflicts = sorted({str(inst) for _cid, inst in db.open_conflicts_at(key)})
     disputed = {b.instance for b in frozen_disagreements(db, key, compiled, overrides, stored)}
-    plan.disputed = sorted(disputed - set(plan.open_conflicts))
+    signed = human_rows(db, key, disputed) if history else {}
+    for instance in sorted(signed):
+        # beyond the tolerance from what a person signed, within it from what
+        # the last re-signing wrote: the drift a re-signing must not carry on
+        compiled_inst = compiled.instances.get(instance)
+        row = stored.get(instance)
+        if compiled_inst is not None and row is not None and disagreement(
+                row, compiled_inst) is None and not label_changes(
+                row, compiled_inst, overrides.get(instance)):
+            plan.drifted.append(instance)
+    plan.disputed = sorted(disputed - set(plan.open_conflicts) - set(plan.drifted))
+    plan.drifted = sorted(set(plan.drifted) - set(plan.open_conflicts))
     plan.leftover = sorted(inst for inst, row in stored.items()
                            if inst not in compiled.instances and row["status"] != VERIFIED)
     for instance in sorted(compiled.instances):
@@ -360,7 +440,8 @@ def plan_frame(db, key: FrameKey, compiled: CompiledFrame,
             continue
         plan.changes.append(RowChange(instance, dict(raw[instance]),
                                       _new_raw(values, compiled.input_hash), px, fields))
-    _defer_near_conflicts(plan, stored, compiled, disputed | set(plan.open_conflicts))
+    _defer_near_conflicts(plan, stored, compiled,
+                          disputed | set(plan.open_conflicts) | set(plan.drifted))
     if measure:
         frozen = {inst: row.get("visible_rle") for inst, row in stored.items()
                   if row["status"] == VERIFIED and (row.get("geom_type") or GEOM_MASK) == GEOM_MASK}
@@ -409,10 +490,6 @@ class _Moved(Exception):
     """The inputs or the rows changed after the plan was made."""
 
 
-def _rows_differ(now: Optional[dict], wanted: dict) -> bool:
-    return now is None or any(now.get(c) != wanted.get(c) for c in wanted)
-
-
 def refreeze_ops(db, desktop: int, view: str, run: Optional[str] = None) -> list[dict]:
     """The ``refreeze_frame`` ops of one view, oldest first; one run's, or the newest run's.
 
@@ -426,6 +503,35 @@ def refreeze_ops(db, desktop: int, view: str, run: Optional[str] = None) -> list
     if tag in (None, "", "last"):
         tag = (ops[-1].get("payload") or {}).get("run")
     return [op for op in ops if (op.get("payload") or {}).get("run") == tag]
+
+
+#: :func:`undo_status`'s two answers (a refusal is a ``ValueError``).
+WOULD_RESTORE, UNDONE_ALREADY = "restore", "undone"
+
+
+def undo_status(db, op_id: int) -> tuple[FrameKey, str, list[str]]:
+    """What :func:`undo_refreeze` would do with one op -- and nothing is written.
+
+    ``(frame, WOULD_RESTORE or UNDONE_ALREADY, the instances it puts back)``;
+    ``ValueError`` for an op that is not a re-signing or its undo, or whose
+    rows somebody changed since (the refusals :func:`undo_refreeze` raises).
+    What ``refreeze --undo --dry-run`` lists (round 2, B2).
+    """
+    op = db.get_op(int(op_id))
+    if op is None or op["kind"] not in (OP_KIND, UNDO_KIND):
+        raise ValueError(f"op {op_id} is not a {OP_KIND} (or {UNDO_KIND}) row")
+    payload, inverse = op.get("payload") or {}, op.get("inverse") or {}
+    key = FrameKey(int(op["desktop"]), int(payload["step"]), str(op["view"]))
+    written, wanted = dict(payload.get("rows") or {}), dict(inverse.get("rows") or {})
+    now = db.compiled_raw(key)
+    if all(not _rows_differ(now.get(i), row) for i, row in wanted.items()):
+        return key, UNDONE_ALREADY, sorted(wanted)
+    changed = sorted(i for i, row in written.items() if _rows_differ(now.get(i), row))
+    if changed:
+        raise ValueError(
+            f"frame {key.desktop}/{key.view}/step {key.step}: {', '.join(changed)} changed "
+            f"after op {op_id} re-signed it; not undone")
+    return key, WOULD_RESTORE, sorted(wanted)
 
 
 def undo_refreeze(db, op_id: int, annotator: str) -> Optional[int]:
@@ -442,22 +548,14 @@ def undo_refreeze(db, op_id: int, annotator: str) -> Optional[int]:
     review status is not touched either way.
 
     An ``undo_refreeze`` op is undone the same way (it puts the re-signed rows
-    back).
+    back).  :func:`undo_status` asks the same questions without writing.
     """
+    key, status, _instances = undo_status(db, op_id)
+    if status == UNDONE_ALREADY:
+        return None
     op = db.get_op(int(op_id))
-    if op is None or op["kind"] not in (OP_KIND, UNDO_KIND):
-        raise ValueError(f"op {op_id} is not a {OP_KIND} (or {UNDO_KIND}) row")
     payload, inverse = op.get("payload") or {}, op.get("inverse") or {}
-    key = FrameKey(int(op["desktop"]), int(payload["step"]), str(op["view"]))
     written, wanted = dict(payload.get("rows") or {}), dict(inverse.get("rows") or {})
-    now = db.compiled_raw(key)
-    if all(not _rows_differ(now.get(i), row) for i, row in wanted.items()):
-        return None                                      # undone already
-    changed = sorted(i for i, row in written.items() if _rows_differ(now.get(i), row))
-    if changed:
-        raise ValueError(
-            f"frame {key.desktop}/{key.view}/step {key.step}: {', '.join(changed)} changed "
-            f"after op {op_id} re-signed it; not undone")
     with db.transaction():
         for instance, row in sorted(wanted.items()):
             db.put_compiled_raw(key, instance, row)
@@ -505,7 +603,8 @@ class RefreezeMixin:
         a frame with nothing to re-sign writes nothing at all.  Returns
         ``{"frames": [FramePlan], "considered", "frames_rewritten", "rewritten",
         "px", "disputed", "open_conflicts", "missing", "unsigned", "deferred",
-        "moved", "overlap_before", "overlap_after", "ops", "run", "dry_run"}``.
+        "drifted", "flips", "moved", "overlap_before", "overlap_after", "ops",
+        "run", "dry_run"}``.
         """
         tag = run or f"{R.now_iso()}#{uuid.uuid4().hex[:6]}"
         cache = InputCache()
@@ -592,6 +691,10 @@ class RefreezeMixin:
             "missing": sum(len(f.missing) for f in frames),
             "unsigned": sum(len(f.unsigned) for f in frames),
             "deferred": sum(len(f.deferred) for f in frames),
+            "drifted": sum(len(f.drifted) for f in frames),
+            # (step, instance, old label, new label) of the labels crossing
+            # 看得见 / 看不见 (review N3), in frame order
+            "flips": [(f.step, c.instance, *c.label) for f in changed for c in f.flips],
             "moved": sum(1 for f in frames if f.moved),
             "overlap_before": total("overlap_before"), "overlap_after": total("overlap_after"),
             "ops": [f.op for f in frames if f.op is not None], "run": run,

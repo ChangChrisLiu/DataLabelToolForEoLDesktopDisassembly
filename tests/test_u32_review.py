@@ -122,7 +122,12 @@ def test_resign_all_plans_asks_with_the_frame_count_and_resigns(window):
     assert len(asked) == 1
     assert asked[0][0].startswith("重签 2 帧（2 行，"), asked[0]
     assert asked[0][1] == "帧：12–13"
+    # undone on the command line, not with Ctrl+Z (review N7)
+    assert asked[0][-1] == ("撤销不能用 Ctrl+Z：关掉应用后 python -m tda.cli refreeze "
+                            f"--desktop {DESKTOP} --view {VIEW} --undo last")
     assert window.status_message().startswith("已重签 2 帧、2 行"), window.status_message()
+    # backed up first, like the command line (review B2)
+    assert list(Path(window.paths["backup_dir"]).glob("tda_*.sqlite"))
     for step in (12, 13):
         compiled = window.session.truth.compile(key(step))
         row = db.compiled(key(step))[CHASSIS]
@@ -149,6 +154,23 @@ def test_answering_no_writes_nothing(window):
 
     assert len(asked) == 1
     assert "重签已取消" in window.status_message()
+    assert {s: db.compiled_raw(key(s)) for s in (12, 13)} == raw
+    assert db.ops_of_kind(DESKTOP, OP_KIND) == []
+
+
+def test_no_backup_no_resign(window, tmp_path):
+    """The buttons' path backs up with the command line's helper; no copy, nothing written."""
+    _stale_rows(window)
+    window.set_mode(A.MODE_REVIEW)
+    db = window.session.db
+    raw = {s: db.compiled_raw(key(s)) for s in (12, 13)}
+    window.paths = dict(window.paths, backup_dir=str(tmp_path / "nowhere"))
+    asked = _answer(window, yes=True)
+
+    window.review.refreeze_all_button.click()
+
+    assert len(asked) == 1
+    assert "备份失败，什么都没写" in window.status_message(), window.status_message()
     assert {s: db.compiled_raw(key(s)) for s in (12, 13)} == raw
     assert db.ops_of_kind(DESKTOP, OP_KIND) == []
 
