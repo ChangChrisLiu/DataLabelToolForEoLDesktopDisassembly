@@ -52,6 +52,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
+from tda.core.frame_notes import when_text
 from tda.core.model import LS_PREFIX, VIEWS, FrameKey
 
 __all__ = ["FRAME_WORK_COLUMNS", "LOADED_DUPLI_KEY", "PHOTO_COLUMNS", "PhotoMoveConflict",
@@ -420,7 +421,7 @@ class PhotoMoveMixin:
                           (desktop, view, *olds))
         order = {old: i for i, old in enumerate(olds)}
         if table == "frame_note":
-            self._move_notes(rows, moves, order, vm)
+            self._move_notes(rows, moves, vm)
             return
         pk = [r[1] for r in self.conn.execute(f"PRAGMA table_info({table})") if r[5]]
         seen: set[tuple] = set()
@@ -442,42 +443,43 @@ class PhotoMoveMixin:
                 tuple(row.values()))
             vm.keyed_rows += 1
 
-    def _move_notes(self, rows: list[dict], moves: dict[int, int], order: dict[int, int],
-                    vm: ViewMove) -> None:
-        """Re-insert the moving notes at their new steps, joining two that meet (U35).
+    def _move_notes(self, rows: list[dict], moves: dict[int, int], vm: ViewMove) -> None:
+        """Re-insert the moving notes at their new steps, joining the ones that meet (U35).
 
-        The rows come in source order -- the old step whose photo is the new
-        step's own frame first -- so the main photo's note leads; a note the
-        new step already has (its photo does not move) leads as well. Every
-        later one is appended after a :data:`NOTE_JOIN` marker; the author and
-        time stay the leading note's.
+        Per new step: the moving notes, plus the note it already has (an old
+        step whose number does not change -- which may be the step's own photo,
+        or a photo that just became its extra shot). The one written on the
+        step's **own** photo (:attr:`ViewMove.main_source`; the step itself
+        when no other photo is its own) leads, whatever the old step numbers
+        (round 2, N10); the others follow by old step, each after a
+        :data:`NOTE_JOIN` marker. Author and time stay the leading note's.
         """
-        placed: dict[tuple, dict] = {}
-        for row in sorted(rows, key=lambda r: order[int(r["step"])]):
+        groups: dict[tuple, list[tuple[int, dict]]] = {}
+        for row in rows:
             old = int(row["step"])
-            ident = (row["desktop"], row["view"], moves[old])
-            here = placed.get(ident)
-            if here is None:
-                found = self.conn.execute(
-                    "SELECT * FROM frame_note WHERE desktop=? AND view=? AND step=?",
-                    ident).fetchone()
-                here = None if found is None else dict(found)
-            if here is None:
-                placed[ident] = dict(row, step=moves[old])
-            else:
-                here["text"] = str(here["text"]) + NOTE_JOIN.format(
+            groups.setdefault((row["desktop"], row["view"], moves[old]), []).append(
+                (old, dict(row)))
+        for ident, items in groups.items():
+            vm.keyed_rows += len(items)
+            found = self.conn.execute(
+                "SELECT * FROM frame_note WHERE desktop=? AND view=? AND step=?",
+                ident).fetchone()
+            if found is not None:
+                items.append((ident[2], dict(found)))      # stays where it is
+            main = vm.main_source.get(ident[2], ident[2])
+            items.sort(key=lambda item: (item[0] != main, item[0]))
+            lead = dict(items[0][1], step=ident[2])
+            for old, row in items[1:]:
+                lead["text"] = str(lead["text"]) + NOTE_JOIN.format(
                     old=old, author=row.get("author") or "-",
-                    when=row.get("updated_at") or "-") + str(row["text"])
-                placed[ident] = here
+                    when=when_text(row.get("updated_at"))) + str(row["text"])
                 vm.merged_notes += 1
-            vm.keyed_rows += 1
-        for row in placed.values():
             self.conn.execute(
                 "INSERT INTO frame_note(desktop, view, step, text, author, updated_at) "
                 "VALUES(?, ?, ?, ?, ?, ?) ON CONFLICT(desktop, view, step) DO UPDATE SET "
                 "text=excluded.text, author=excluded.author, updated_at=excluded.updated_at",
-                (row["desktop"], row["view"], row["step"], row["text"], row["author"],
-                 row["updated_at"]))
+                (lead["desktop"], lead["view"], lead["step"], lead["text"], lead["author"],
+                 lead["updated_at"]))
 
     def _move_keyframes(self, desktop: int, view: str, olds: list[int],
                         moves: dict[int, int], vm: ViewMove) -> None:

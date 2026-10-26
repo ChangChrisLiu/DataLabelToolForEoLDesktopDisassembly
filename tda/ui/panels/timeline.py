@@ -621,19 +621,17 @@ class TimelinePanel(QWidget):
         self._list.viewport().update()
 
     def _notes(self) -> dict[int, str]:
-        """``{step: first line}`` of the frames of this view that carry a note (U35)."""
+        """``{step: first line}`` of the frames of this view that carry a note (U35).
+
+        One read of the view's notes (``session.frame_notes()``), not one per step.
+        """
         if not session_is_open(self._session):
             return {}
-        noted = getattr(self._session, "noted_steps", None)
-        finder = getattr(self._session, "frame_note", None)
-        if not callable(noted) or not callable(finder):
+        finder = getattr(self._session, "frame_notes", None)
+        if not callable(finder):
             return {}
-        out: dict[int, str] = {}
-        for step in sorted(noted()):
-            note = finder(step)
-            if note:
-                out[int(step)] = first_line(note.get("text") or "", limit=80)
-        return out
+        return {int(note["step"]): first_line(note.get("text") or "", limit=80)
+                for note in finder()}
 
     def noted_steps(self) -> list[int]:
         """The steps whose rows carry :data:`NOTE_GLYPH`, ascending."""

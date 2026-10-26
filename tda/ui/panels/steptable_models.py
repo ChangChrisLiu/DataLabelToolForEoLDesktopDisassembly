@@ -67,6 +67,14 @@ THUMB_VIEW = "scan"
 BLANK = ""
 #: A step one of whose frames carries a note (「这一帧的说明」, task U35).
 NOTE_GLYPH = "✎"
+#: How much of each note the step's tooltip shows (round 2, N7).
+NOTE_TIP_CHARS = 120
+
+
+def _cut(text: str, limit: int = NOTE_TIP_CHARS) -> str:
+    """A note for a tooltip: at most ``limit`` characters, then 「…」."""
+    text = str(text or "")
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
 
 Choices = Callable[[Taxonomy], Sequence[str]]
 
@@ -345,7 +353,7 @@ class StepTableModel(_TableModel):
         if role == Qt.ToolTipRole:
             lines = [*row.issues, *row.ls_notes]
             if notes:
-                lines += [f"{NOTE_GLYPH} {n['view']}：{n['text']}" for n in notes]
+                lines += [f"{NOTE_GLYPH} {n['view']}：{_cut(n['text'])}" for n in notes]
             return "\n".join(lines) or None
         if role == Qt.DisplayRole and notes:
             return NOTE_GLYPH

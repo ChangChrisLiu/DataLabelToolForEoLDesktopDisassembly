@@ -43,6 +43,12 @@ class NotesMixin:
         key = key if key is not None else self._note_key(step)
         return None if key is None else self.db.frame_note(key)
 
+    def frame_notes(self) -> list[dict]:
+        """Every note of the open view, by step -- one read (the timeline's ✎)."""
+        if not self.is_open:
+            return []
+        return self.db.frame_notes(int(self.desktop), str(self.view))
+
     def noted_steps(self) -> set[int]:
         """The steps of the open view that carry a note (the timeline's ✎)."""
         if not self.is_open:

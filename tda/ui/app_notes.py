@@ -7,7 +7,8 @@ on the status line:
 
 * 「保存」 / 「清除」 (:attr:`~tda.ui.panels.review.ReviewPanel.sigNoteSave`,
   :attr:`~tda.ui.panels.review.ReviewPanel.sigNoteClear`); the keyboard goes
-  back to the canvas afterwards, where the Review keys work;
+  back to the canvas afterwards, where the Review keys work -- and so does
+  ``Tab`` in the box (:attr:`~tda.ui.panels.review.ReviewPanel.sigNoteTabOut`);
 * **leaving the frame** with the box changed and not saved: every move that
   goes through :meth:`~tda.ui.app_edit.EditMixin.leave_frame`, a confirmation
   (which steps the frame on), leaving Review and closing the window save it
@@ -16,11 +17,15 @@ on the status line:
   frame it was about (:attr:`~tda.ui.panels.review.ReviewPanel.sigNoteLeft`)
   and it is saved there.
 
-The task card's 「说明：…」 line and the timeline's ✎ follow the session's
-``sigNoteChanged`` themselves.
+The line promises ``Ctrl+Z`` only while the op is still on the undo stack:
+opening another view or machine (and the other moves that re-open the
+session) clears the stack after the note was saved, and the line says that
+instead (review round 2, N1).  The task card's 「说明：…」 line and the
+timeline's ✎ follow the session's ``sigNoteChanged`` themselves.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Optional
 
 from PySide6.QtCore import QTimer
@@ -29,13 +34,20 @@ from tda.core.frame_notes import OP_KIND
 from tda.core.model import FrameKey, is_component_view
 from tda.ui import app_compat as compat
 from tda.ui import app_support as S
+from tda.ui.commands import Op
 
-__all__ = ["NOTE_CLEARED", "NOTE_HOLD_MS", "NOTE_LEFT", "NOTE_SAVED", "NotesWindowMixin"]
+__all__ = ["NOTE_CLEARED", "NOTE_HOLD_MS", "NOTE_LEFT", "NOTE_LEFT_NO_UNDO", "NOTE_SAVED",
+           "NOTE_SAVED_NO_UNDO", "NotesWindowMixin", "SavedNote"]
 
 NOTE_SAVED = "{frame}的说明已保存（Ctrl+Z 撤销）"
 NOTE_CLEARED = "{frame}的说明已清除（Ctrl+Z 撤销）"
 #: Leaving a frame with the box changed: saved, and said.
 NOTE_LEFT = "{frame}的说明改过没保存：离开时已自动保存（Ctrl+Z 撤销）"
+#: ... when the move opened another view (or machine) and the undo stack went
+#: with it: ``Ctrl+Z`` is not promised (review round 2, N1).
+NOTE_LEFT_NO_UNDO = ("{frame}的说明改过没保存：离开时已自动保存（换了视角，撤销记录已清空；"
+                     "要改回在复查里改）")
+NOTE_SAVED_NO_UNDO = "{frame}的说明已保存（撤销记录已清空；要改回在复查里改）"
 #: How long that line holds against the arrival's own lines.
 NOTE_HOLD_MS = 3000
 
@@ -47,6 +59,14 @@ def _frame(key: FrameKey) -> str:
     return f"第 {key.step} 帧"
 
 
+@dataclass(frozen=True)
+class SavedNote:
+    """A note the window wrote: its frame, and the op it pushed (``None``: none)."""
+
+    key: FrameKey
+    op: Optional[Op] = None
+
+
 class NotesWindowMixin:
     """The note box's buttons, and the note saved on the way out of a frame."""
 
@@ -54,24 +74,45 @@ class NotesWindowMixin:
         self.review.sigNoteSave.connect(self.on_note_save)
         self.review.sigNoteClear.connect(self.on_note_clear)
         self.review.sigNoteLeft.connect(self.on_note_left)
+        self.review.sigNoteTabOut.connect(self.focus_canvas)
 
-    def _write_note(self, key: Optional[FrameKey], text: str) -> Optional[FrameKey]:
-        """One write through the session; the frame, or ``None`` when nothing changed."""
+    def _undo_ops(self) -> list:
+        stack = getattr(self.session, "undo_stack", None)
+        return list(getattr(stack, "ops", None) or [])
+
+    def _write_note(self, key: Optional[FrameKey], text: str) -> Optional[SavedNote]:
+        """One write through the session; what was saved, or ``None`` when nothing changed.
+
+        Raises what the session raises: the caller decides whether a failed
+        write stops it (a slot's guard reports it; closing the window does not stop).
+        """
         writer = getattr(self.session, "set_frame_note", None)
         if key is None or not callable(writer) or not compat.is_open(self.session):
             return None
+        before = self._undo_ops()
         written = writer(text, key=key)
-        if written is not None:
-            self.logger.info("frame note %s D%s/%s step %s (%d chars)",
-                             "set" if text else "cleared", key.desktop, key.view, key.step,
-                             len(text or ""))
-        return written
+        if written is None:
+            return None
+        self.logger.info("frame note %s D%s/%s step %s (%d chars)",
+                         "set" if text else "cleared", key.desktop, key.view, key.step,
+                         len(text or ""))
+        after = self._undo_ops()
+        top = after[-1] if after else None
+        pushed = (top if top is not None and top.kind == OP_KIND
+                  and not (before and before[-1] is top) else None)
+        return SavedNote(key, pushed)
+
+    def note_undoable(self, saved: Optional[SavedNote]) -> bool:
+        """Is the op that wrote ``saved`` still on the undo stack (``Ctrl+Z`` reaches it)?"""
+        return bool(saved is not None and saved.op is not None
+                    and any(op is saved.op for op in self._undo_ops()))
 
     @S.guard
     def on_note_save(self, key: FrameKey, text: str) -> None:
         """「保存」: write what the box holds."""
-        if self._write_note(key, text) is not None:
-            self.report(NOTE_SAVED.format(frame=_frame(key)))
+        saved = self._write_note(key, text)
+        if saved is not None:
+            self.report(self.note_saved_text(saved, left=False))
         self.focus_canvas()
 
     @S.guard
@@ -83,25 +124,60 @@ class NotesWindowMixin:
 
     @S.guard
     def on_note_left(self, key: FrameKey, text: str) -> None:
-        """The frame changed under a box typed in and not saved: save it, say so.
+        """The frame changed under a box typed in and not saved: save it, say so."""
+        saved = self._write_note(key, text)
+        if saved is not None:
+            self.say_note_later(self.note_saved_text(saved, left=True))
 
-        Said from the event loop, after the arrival has cleared the status
-        line, and held a moment against what the arrival says next.
+    def say_note_later(self, line: str) -> None:
+        """Say ``line`` from the event loop, after the line the move itself ends with.
+
+        An arrival clears the status line (and a confirmation that stepped on
+        writes its own): said then, the note's line comes after it -- joined to
+        what is there -- and holds 3 s against what comes next.  While a
+        confirmation is running (:meth:`hold_note_line`) the line waits for it:
+        the confirmation steps the frame again, which would clear it, and
+        takes it into its own line instead (:meth:`take_note_line`).
         """
-        if self._write_note(key, text) is None:
+        if not line:
             return
-        line = NOTE_LEFT.format(frame=_frame(key))
+        self._note_line_pending = line
         # the window as context: a window deleted meanwhile drops the call
-        QTimer.singleShot(0, self, lambda: None if self.closed else self.report(
-            line, hold_ms=NOTE_HOLD_MS))
+        QTimer.singleShot(0, self, self._say_pending_note)
 
-    def flush_frame_note(self) -> Optional[FrameKey]:
-        """Save what the note box holds for its frame if it was changed; that frame.
+    def _say_pending_note(self) -> None:
+        if self.closed or getattr(self, "_note_line_held", False):
+            return
+        line = self.take_note_line()
+        if not line:
+            return
+        now = self.status_message()
+        self.report(line if not now or line in now else f"{now}；{line}",
+                    hold_ms=NOTE_HOLD_MS)
+
+    def take_note_line(self) -> str:
+        """The note line waiting to be said (``""``: none); it is not said again."""
+        line = getattr(self, "_note_line_pending", "") or ""
+        self._note_line_pending = ""
+        return line
+
+    def hold_note_line(self, held: bool) -> None:
+        """While ``held``, a waiting note line is not said (a confirmation is running).
+
+        Released, a line nobody took is said from the event loop as usual.
+        """
+        self._note_line_held = bool(held)
+        if not held and getattr(self, "_note_line_pending", ""):
+            QTimer.singleShot(0, self, self._say_pending_note)
+
+    def flush_frame_note(self) -> Optional[SavedNote]:
+        """Save what the note box holds for its frame if it was changed.
 
         ``None`` when there was nothing to save.  Called before every way out
         of a frame the window controls, so the op lands on the undo stack of
         the view it is about; the caller says it (:meth:`note_saved_text`)
-        once it knows whether the frame was left after all.
+        once it knows whether the frame was left -- and whether the stack still
+        holds the op.
         """
         review = getattr(self, "review", None)
         box = getattr(review, "note_box", None)
@@ -109,15 +185,26 @@ class NotesWindowMixin:
             return None
         return self._write_note(box.key(), box.text())
 
-    def note_saved_text(self, key: Optional[FrameKey], left: bool = True) -> str:
-        """The status line for a note :meth:`flush_frame_note` saved (``""``: none).
+    def note_text_typed(self) -> str:
+        """What the note box holds right now (``""``: no box) -- for an error that loses it."""
+        box = getattr(getattr(self, "review", None), "note_box", None)
+        return box.text() if box is not None else ""
+
+    def note_saved_text(self, saved: Optional[SavedNote], left: bool = True) -> str:
+        """The status line for a note the window saved (``""``: none).
 
         ``left``: the frame (or Review) was left, so it was saved on the way
-        out; otherwise the plain 「已保存」.
+        out; otherwise the plain 「已保存」.  ``Ctrl+Z`` is promised only while
+        the op is on the undo stack (:meth:`note_undoable`).
         """
-        if key is None:
+        if saved is None:
             return ""
-        return (NOTE_LEFT if left else NOTE_SAVED).format(frame=_frame(key))
+        undoable = self.note_undoable(saved)
+        if left:
+            line = NOTE_LEFT if undoable else NOTE_LEFT_NO_UNDO
+        else:
+            line = NOTE_SAVED if undoable else NOTE_SAVED_NO_UNDO
+        return line.format(frame=_frame(saved.key))
 
     def note_op_text(self, undo: bool) -> str:
         """「撤销：第 12 帧的说明」 when the op ``Ctrl+Z`` / ``Ctrl+Y`` is about to replay is a note's."""

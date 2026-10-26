@@ -711,7 +711,22 @@ class CommitMixin:
         under a short cap; if even that fails the step is recorded as "not
         analysed" rather than as "nothing unexplained", which would quietly
         claim the frame had been checked.
+
+        A 这一帧的说明 saved on the way (task U35) is said in the confirmation's
+        own line: the one ``Enter`` on a queue entry saved while opening that
+        frame (held meanwhile -- the confirmation steps the frame again, which
+        would clear it; round 2, N3), and the one saved before confirming.
         """
+        hold = getattr(self, "hold_note_line", None)
+        if callable(hold):
+            hold(True)
+        try:
+            return self._confirm_frame()
+        finally:
+            if callable(hold):
+                hold(False)
+
+    def _confirm_frame(self) -> bool:
         if self.refuse_under_shape():
             return False      # the half-drawn shape would go with the frame (U5a)
         if self.refuse_under_ghost():
@@ -728,9 +743,14 @@ class CommitMixin:
         blobs = self.unexplained_at_confirm()
         ok = self.task_card.confirm()
         self.logger.info("confirm step %s: %s", step, "ok" if ok else "refused")
-        # left only when the confirmation stepped the frame on
-        said = self.note_saved_text(noted, left=bool(ok)) if noted is not None else ""
-        tail = f"；{said}" if said else ""
+        # left only when the confirmation stepped the frame on (the last frame
+        # of the walk stays put): the same test as leave_frame's
+        here = self.session.current() if compat.is_open(self.session) else None
+        said = (self.note_saved_text(noted, left=here != noted.key)
+                if noted is not None else "")
+        take = getattr(self, "take_note_line", None)
+        opened = take() if callable(take) else ""     # saved opening the entry's frame
+        tail = "".join(f"；{line}" for line in (opened, said) if line)
         if ok:
             self.hand_over_unexplained(step, blobs)
             # One more frame is done: both places that count say so.

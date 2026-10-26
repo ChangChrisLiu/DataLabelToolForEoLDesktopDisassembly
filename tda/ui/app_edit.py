@@ -530,11 +530,10 @@ class EditMixin:
         # including a view with no image at this step.
         self.disarm_bench()
         if noted is not None:
-            from tda.ui.app_notes import NOTE_HOLD_MS
-
+            # said from the event loop: a confirmation that follows this move
+            # (Enter on a queue entry) steps the frame again and clears the line
             here = self.session.current() if compat.is_open(self.session) else None
-            self.report(self.note_saved_text(noted, left=here != noted),
-                        hold_ms=NOTE_HOLD_MS)
+            self.say_note_later(self.note_saved_text(noted, left=here != noted.key))
         return True
 
     @S.guard

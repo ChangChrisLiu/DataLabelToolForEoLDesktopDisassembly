@@ -95,6 +95,8 @@ __all__ = [
     "short_parts",
     "shortcut_markdown",
     "tool_key",
+    "typed_into",
+    "types_text",
 ]
 
 MODE_STEPS = "steps"
@@ -675,14 +677,53 @@ def blocks_shortcuts(widget: Optional[QWidget]) -> bool:
 
 #: Qt property of a text box where typing is the whole point (the Review
 #: panel's 「这一帧的说明」, task U35): its keystrokes are kept from the window
-#: like any text field's, but the window does not say 「快捷键没生效」 about
-#: them -- a ``Q`` there is the letter the annotator meant.
+#: like any text field's, and the ones that *type* -- letters, digits,
+#: ``Space``, ``Enter``, the editing keys (:func:`types_text`) -- are not
+#: called a missed shortcut: a ``Q`` there is the letter the annotator meant.
+#: A window key that types nothing (``PgDn``, ``Ctrl+S``, an F key) still is
+#: (review round 2, N4).
 TYPING_PROPERTY = "tdaTyping"
+
+#: Keys a text box uses on its own text, with or without ``Shift``.
+_EDITING_KEYS = frozenset(int(k) for k in (
+    Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Backspace,
+    Qt.Key.Key_Delete, Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down,
+    Qt.Key.Key_Home, Qt.Key.Key_End, Qt.Key.Key_Tab, Qt.Key.Key_Backtab))
+#: ... and with ``Ctrl``: the box's own undo / redo / select all / clipboard.
+_EDITING_CTRL_KEYS = frozenset(int(k) for k in (
+    Qt.Key.Key_Z, Qt.Key.Key_Y, Qt.Key.Key_A, Qt.Key.Key_C, Qt.Key.Key_V, Qt.Key.Key_X))
 
 
 def is_typing_box(widget: Optional[QWidget]) -> bool:
     """Is ``widget`` a text box made for writing in (:data:`TYPING_PROPERTY`)?"""
     return widget is not None and bool(widget.property(TYPING_PROPERTY))
+
+
+def types_text(key, modifiers, text: str = "") -> bool:
+    """Does this key press type into (or edit) a text box rather than ask the window?
+
+    A printable character without ``Ctrl`` / ``Alt`` (``Shift`` is a capital),
+    the editing keys, and ``Ctrl`` + the box's own undo / redo / select-all /
+    clipboard keys.  ``PgUp`` / ``PgDn``, the F keys, ``Esc`` and every other
+    ``Ctrl`` / ``Alt`` combination do not.
+    """
+    mods = _as_int(modifiers)
+    ctrl = bool(mods & _as_int(Qt.KeyboardModifier.ControlModifier))
+    alt = bool(mods & (_as_int(Qt.KeyboardModifier.AltModifier)
+                       | _as_int(Qt.KeyboardModifier.MetaModifier)))
+    key = _as_int(key)
+    if ctrl:
+        return not alt and key in _EDITING_CTRL_KEYS
+    if alt:
+        return False
+    if key in _EDITING_KEYS:
+        return True
+    return bool(text) and text.isprintable()
+
+
+def typed_into(widget: Optional[QWidget], event) -> bool:
+    """A key press that types into a box made for writing: no 「快捷键没生效」 for it."""
+    return is_typing_box(widget) and types_text(event.key(), event.modifiers(), event.text())
 
 
 #: Keys a focused list or table must keep for moving its own selection.  Page

@@ -676,9 +676,13 @@ def settle_gallery(db: Db, desktop: int) -> dict:
                 row = db.get_frame(key)
                 if row is None:
                     continue
-                if db.frame_is_annotated(key):
+                work = db.frame_work(key)
+                if work:
+                    # all that holds it may be a 这一帧的说明 (U35 round 2, N9): say so
+                    only_note = all(w.endswith("frame_note row(s)") for w in work)
+                    what = "has a frame note" if only_note else "has annotations"
                     moved.append(f"step {step} ({view}) is a photo of the laid-out parts "
-                                 f"but has annotations; left in the sequence")
+                                 f"but {what}; left in the sequence")
                     continue
                 target = GALLERY_OF.get(view)
                 if target is not None and row.get("path") and not row.get("missing"):

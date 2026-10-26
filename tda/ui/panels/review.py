@@ -129,6 +129,8 @@ class ReviewPanel(QWidget):
     #: ... ``(frame key, text)`` -- the frame changed under a box typed in and
     #: not saved; emitted before the new frame's note is shown.
     sigNoteLeft = Signal(object, str)
+    #: ... ``Tab`` in the box: the keyboard goes back to the canvas.
+    sigNoteTabOut = Signal()
 
     def __init__(self, session: Optional[api.SessionLike] = None,
                  parent: Optional[QWidget] = None) -> None:
@@ -198,6 +200,7 @@ class ReviewPanel(QWidget):
         self.note_box = FrameNoteBox()
         self.note_box.sigSave.connect(self.sigNoteSave)
         self.note_box.sigClear.connect(self.sigNoteClear)
+        self.note_box.sigTabOut.connect(self.sigNoteTabOut)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)

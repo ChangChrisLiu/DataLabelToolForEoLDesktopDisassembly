@@ -30,7 +30,7 @@ from tda.core.frame_notes import OP_KIND
 from tda.core.model import FrameKey
 from tda.ui import app_actions as A
 from tda.ui.app import MainWindow
-from tda.ui.app_keys import KEY_SWALLOWED
+from tda.ui.app_keys import KEY_SWALLOWED, NOTE_KEY_SWALLOWED
 from tda.ui.panels.frame_note import CLEAR_TEXT, SAVE_TEXT, TITLE, UNSAVED, FrameNoteBox
 from tda.ui.panels.review import ReviewPanel
 from tda.ui.panels.steptable_models import NOTE_GLYPH as STEPS_GLYPH
@@ -172,7 +172,8 @@ def test_pgdn_saves_what_was_typed_and_says_so(window):
     now = int(window.session.current().step)
     assert now < step
     assert stored(window, step)["text"] == NOTE
-    assert window.status_message() == f"第 {step} 帧的说明改过没保存：离开时已自动保存（Ctrl+Z 撤销）"
+    assert window.status_message().endswith(
+        f"第 {step} 帧的说明改过没保存：离开时已自动保存（Ctrl+Z 撤销）")
     assert box(window).key() == key(now) and box(window).edit.toPlainText() == ""
     assert not box(window).is_dirty()
     # the op is on this view's stack: Ctrl+Z takes it back from the next frame
@@ -185,9 +186,28 @@ def test_a_move_that_goes_nowhere_saves_it_without_saying_it_was_left(window):
     assert step == max(window.session.available_steps())       # PgUp has nowhere to go
     type_into(window, "最后一帧")
     window.act_step(1)
+    QApplication.processEvents()
     assert int(window.session.current().step) == step
     assert stored(window, step)["text"] == "最后一帧"
-    assert window.status_message() == f"第 {step} 帧的说明已保存（Ctrl+Z 撤销）"
+    assert window.status_message().endswith(f"第 {step} 帧的说明已保存（Ctrl+Z 撤销）")
+
+
+def test_another_view_clears_the_undo_stack_so_ctrl_z_is_not_promised(window):
+    """Round 2, N1: the note is saved before the view is left; opening the other
+    view empties the stack -- the line must not promise Ctrl+Z."""
+    step = review(window)
+    type_into(window, "换视角前写的")
+    window.act_set_view("oak1")
+    QApplication.processEvents()
+    assert window.session.view == "oak1"
+    assert stored(window, step)["text"] == "换视角前写的"
+    assert not [op for op in window.session.undo_stack.ops if op.kind == OP_KIND]
+    said = window.status_message()
+    assert said.endswith(f"第 {step} 帧的说明改过没保存：离开时已自动保存（换了视角，撤销记录已清空；"
+                         f"要改回在复查里改）")
+    assert "Ctrl+Z" not in said
+    window.act_undo()                                     # nothing of the note's to undo
+    assert stored(window, step)["text"] == "换视角前写的"
 
 
 def test_a_timeline_click_saves_it_too(window):
@@ -207,7 +227,9 @@ def test_a_move_the_window_did_not_make_is_saved_by_the_panel(window):
     window.session.goto(other, force=True)                # not through leave_frame
     assert stored(window, step)["text"] == "后台"
     QApplication.processEvents()                          # the line is said from the loop
-    assert window.status_message().startswith(f"第 {step} 帧的说明改过没保存")
+    # after whatever the arrival said (the card's problems here), joined
+    assert window.status_message().endswith(
+        f"第 {step} 帧的说明改过没保存：离开时已自动保存（Ctrl+Z 撤销）")
 
 
 def test_enter_confirms_and_saves_the_note_first(window):
@@ -223,6 +245,48 @@ def test_enter_confirms_and_saves_the_note_first(window):
     assert stored(window, 13)["text"] == "确认前写的"
     assert session.current().step == 12 and session.frame_status(13) == "verified"
     assert window.status_message().endswith("；第 13 帧的说明改过没保存：离开时已自动保存（Ctrl+Z 撤销）")
+
+
+def _confirmable(window, steps=(12, 13)) -> None:
+    session = window.session
+    session.sweeper_enabled = False
+    session.goto(min(steps))
+    app_scene.seed_shapes(session, min(steps))
+
+
+def test_enter_on_a_queue_entry_says_the_note_after_the_confirmation(window, monkeypatch):
+    """Round 2, N3: Enter on a selected entry opens its frame (through leave_frame,
+    which saves the note) and then confirms -- a second frame change; the note's
+    line comes after the confirmation's, from the event loop."""
+    _confirmable(window)
+    window.session.goto(13)
+    review(window)
+    type_into(window, "队列确认前")
+    monkeypatch.setattr(window.review, "selected_step", lambda: 12)
+    window.canvas.setFocus()
+    assert window.act_confirm()
+    assert stored(window, 13)["text"] == "队列确认前"
+    assert window.session.frame_status(12) == "verified"
+    QApplication.processEvents()
+    assert window.status_message() == ("step 12 confirmed；第 13 帧的说明改过没保存：离开时已自动保存"
+                                       "（Ctrl+Z 撤销）")
+
+
+def test_confirming_the_last_frame_of_the_walk_does_not_say_it_was_left(window):
+    """Round 2, N3: the first step has nowhere to go back to -- Space confirms in place."""
+    session = window.session
+    session.sweeper_enabled = False
+    first = min(session.available_steps())
+    session.goto(first)
+    app_scene.seed_shapes(session, first)
+    review(window)
+    type_into(window, "第一帧")
+    window.canvas.setFocus()
+    assert window.act_confirm()
+    assert session.current().step == first
+    assert stored(window, first)["text"] == "第一帧"
+    assert window.status_message() == (f"step {first} confirmed；第 {first} 帧的说明已保存"
+                                       f"（Ctrl+Z 撤销）")
 
 
 def test_leaving_review_saves_it(window):
@@ -274,6 +338,87 @@ def test_q_w_s_typed_into_the_box_are_letters_in_review_and_in_annotate(window):
     assert window._tool_name == "eraser"
     field.deleteLater()
     window.mode = A.MODE_REVIEW
+
+
+def test_a_window_key_that_types_nothing_says_where_the_focus_is(window):
+    """Round 2, N4: PgDn, Ctrl+S, an F key in the box are not text -- said once
+    (Tab gets back to the canvas); letters, digits, Space and Enter are text."""
+    step = review(window)
+    edit = box(window).edit
+    edit.setFocus()
+    QApplication.processEvents()
+    window.report("")
+    QTest.keyClicks(edit, "a1 b")
+    QTest.keyClick(edit, Qt.Key.Key_Return)
+    assert window.status_message() == ""                  # typing: nothing said
+    QTest.keyClick(edit, Qt.Key.Key_PageDown)
+    assert window.status_message() == NOTE_KEY_SWALLOWED
+    assert int(window.session.current().step) == step     # the frame did not move
+    assert edit.toPlainText() == "a1 b\n"
+
+    # once per focus episode; back in the box, Ctrl+S says it again
+    window.canvas.setFocus()
+    QApplication.processEvents()
+    assert window.status_message() == ""                  # stale once the canvas has the keys
+    edit.setFocus()
+    QApplication.processEvents()
+    QTest.keyClick(edit, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)
+    assert window.status_message() == NOTE_KEY_SWALLOWED
+    for key_, mods, text in ((Qt.Key.Key_F2, Qt.KeyboardModifier.NoModifier, ""),
+                             (Qt.Key.Key_PageUp, Qt.KeyboardModifier.NoModifier, ""),
+                             (Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier, "")):
+        assert not A.types_text(key_, mods, text), key_
+    for key_, mods, text in ((Qt.Key.Key_Q, Qt.KeyboardModifier.NoModifier, "q"),
+                             (Qt.Key.Key_Q, Qt.KeyboardModifier.ShiftModifier, "Q"),
+                             (Qt.Key.Key_1, Qt.KeyboardModifier.NoModifier, "1"),
+                             (Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier, " "),
+                             (Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier, "\r"),
+                             (Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier, "")):
+        assert A.types_text(key_, mods, text), key_
+
+
+def test_tab_in_the_box_goes_back_to_the_canvas_and_the_focus_is_shown(window):
+    review(window)
+    edit = box(window).edit
+    assert ":focus" in edit.styleSheet() and "border: 2px" in edit.styleSheet()
+    edit.setFocus()
+    QApplication.processEvents()
+    QTest.keyClicks(edit, "x")
+    QTest.keyClick(edit, Qt.Key.Key_Tab)
+    QApplication.processEvents()
+    assert window.focusWidget() is window.canvas
+    assert edit.toPlainText() == "x"                      # no tab typed
+
+
+def test_a_note_that_cannot_be_saved_on_close_goes_into_the_log(qapp, tmp_path, monkeypatch):
+    """Round 2, N6: the window closes; the error and the text are in the log."""
+    session = app_scene.make_session(tmp_path)
+    win = MainWindow(session, app_scene.make_paths(tmp_path), "tester",
+                     sam_queue=app_scene.StubSamQueue())
+    win.show()
+    QApplication.processEvents()
+    if win.roi_editing:
+        win.act_clear_edit()
+    win.set_mode(A.MODE_REVIEW)
+    type_into(win, "关窗前没存的说明")
+
+    def refuse(*_args, **_kwargs):
+        raise RuntimeError("disk gone")
+
+    monkeypatch.setattr(session, "set_frame_note", refuse)
+    errors: list[str] = []
+    real = win.report_error
+    monkeypatch.setattr(win, "report_error", lambda text: (errors.append(text), real(text)))
+    win.close()
+    assert win.closed is True
+    [line] = [e for e in errors if "frame note" in e]
+    assert "disk gone" in line and "关窗前没存的说明" in line
+    logged = "".join(p.read_text(encoding="utf-8", errors="replace")
+                     for p in Path(tmp_path).rglob("tda_app.log*"))
+    assert "关窗前没存的说明" in logged
+    win.hide()
+    win.deleteLater()
+    QApplication.processEvents()
 
 
 def test_no_key_was_added():
@@ -334,3 +479,9 @@ def test_the_steps_table_marks_the_step_next_to_its_thumbnail(window):
     other = model.first_row_of(step - 1)
     assert model.data(model.index(other, after), Qt.ItemDataRole.DisplayRole) is None
     assert not window._steps_dirty                        # a note is no Steps edit
+
+    # round 2, N7: a long note is cut to 120 characters in the tooltip
+    window.session.set_frame_note("长" * 200, step=step - 1)
+    window.steps_panel.refresh_notes()
+    tip = model.data(model.index(other, after), Qt.ItemDataRole.ToolTipRole)
+    assert f"{STEPS_GLYPH} scan：{'长' * 120}…" in tip and "长" * 121 not in tip

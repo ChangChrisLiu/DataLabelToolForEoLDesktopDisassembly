@@ -13,15 +13,20 @@ undoable op.  What it shows comes in through :meth:`FrameNoteBox.show_frame`.
 
 Typing here is the point, so the window's keys do not fire while the box has
 the focus (:func:`tda.ui.app_actions.blocks_shortcuts` holds for any text
-box) and the window does not say 「快捷键没生效」 about it either
-(:data:`tda.ui.app_actions.TYPING_PROPERTY`).  ``Tab`` leaves the box rather
-than typing a tab; no key of the window's map is added.
+box), and a letter, a digit, ``Space`` or ``Enter`` typed here is not called
+a missed shortcut (:data:`tda.ui.app_actions.TYPING_PROPERTY`); a window key
+that types nothing -- ``PgDn``, ``Ctrl+S``, an F key -- still says, once,
+that the focus is in the note box and ``Tab`` gets back to the canvas
+(review round 2, N4).  ``Tab`` / ``Shift+Tab`` in the box report
+(:attr:`FrameNoteBox.sigTabOut`) and the window puts the keyboard on the
+canvas; while the box has the focus its frame is highlighted, so stray
+typing is seen.  No key of the window's map is added.
 """
 from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -44,8 +49,12 @@ SAVE_TEXT, CLEAR_TEXT = "保存", "清除"
 PLACEHOLDER = ("这一帧有什么要说明的：奇怪的地方、你怎么定的、画面里是什么（可以写零件键，"
                "如 screw.psu.03）。写完点「保存」；换帧时没保存的也会自动保存。")
 TIP = ("写给之后读数据的人：这一帧的怪处、你的决定、画面内容。「保存」写入（Ctrl+Z 可撤），"
-       "「清除」删掉；换帧时改过没保存的自动保存。在框里打字时快捷键不生效，点一下画面再用键。")
+       "「清除」删掉；换帧时改过没保存的自动保存。在框里打字时快捷键不生效：按 Tab 回到画布。")
 UNSAVED = "未保存"
+#: The box's frame while it has the keyboard (round 2, N4): stray typing goes
+#: here, so it has to be visible where the keys are going.
+EDIT_STYLE = ("QPlainTextEdit { border: 1px solid #b8b8b8; } "
+              "QPlainTextEdit:focus { border: 2px solid #2f7de1; background: #f5f9ff; }")
 
 
 class FrameNoteBox(QWidget):
@@ -55,6 +64,8 @@ class FrameNoteBox(QWidget):
     sigSave = Signal(object, str)
     #: 「清除」: the frame key -- the window takes the note off.
     sigClear = Signal(object)
+    #: ``Tab`` / ``Shift+Tab`` in the box: the window puts the keyboard on the canvas.
+    sigTabOut = Signal()
 
     #: Height of the text box: three or four lines, the queue keeps the rest.
     EDIT_HEIGHT = 74
@@ -75,8 +86,10 @@ class FrameNoteBox(QWidget):
         self.edit.setTabChangesFocus(True)
         self.edit.setFixedHeight(self.EDIT_HEIGHT)
         self.edit.setProperty(TYPING_PROPERTY, True)
+        self.edit.setStyleSheet(EDIT_STYLE)
         self.edit.setEnabled(False)          # no frame yet: nothing to write about
         self.edit.textChanged.connect(self._sync)
+        self.edit.installEventFilter(self)
         self.save_button = QToolButton()
         self.clear_button = QToolButton()
         for button, text, slot in ((self.save_button, SAVE_TEXT, self._on_save),
@@ -143,6 +156,14 @@ class FrameNoteBox(QWidget):
         return self._key is not None and self.text() != self._stored
 
     # -- internals ----------------------------------------------------------
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802 - Qt API
+        """``Tab`` / ``Shift+Tab`` in the box: back to the canvas, not to the next widget."""
+        if (obj is self.edit and event.type() == QEvent.Type.KeyPress
+                and event.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab)):
+            self.sigTabOut.emit()
+            return True
+        return super().eventFilter(obj, event)
+
     def _sync(self) -> None:
         dirty = self.is_dirty()
         self.save_button.setEnabled(dirty)

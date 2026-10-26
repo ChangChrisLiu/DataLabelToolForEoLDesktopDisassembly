@@ -1,8 +1,9 @@
 """Task U35: the docs say what 「这一帧的说明」 is -- the data model row, the Review
-paragraph, v1.34 on top of §14, two sentences in the quickstart's Review section.
+paragraph, v1.34 on top of §14, sentences in the quickstart's Review section.
 
-The guide is left alone: its prose is at the 7700 limit and the box explains
-itself (the title, the placeholder, the tooltip, the status line).
+Round 2 (N8): the guide gets one sentence at the end of §6, paid for by
+tightening four lines elsewhere -- its prose stays within 7700 characters and
+the key table is untouched.
 """
 from __future__ import annotations
 
@@ -43,7 +44,16 @@ def test_review_says_where_the_box_is_and_what_it_does():
                    "「说明：<第一行>…」", "复查模式不显示", "缩略图旁带 ✎", "「After (k)」",
                    "不是编译器的输入", "`python -m tda.cli notes --desktop N [--view V] "
                    "[--format md] [--out FILE]`", "UTF-8",
-                   "「这一帧的说明 / frame notes: n (scan a, oak1 b)」", "§3.1 `FrameNote`"):
+                   "「这一帧的说明 / frame notes: n (scan a, oak1 b)」", "§3.1 `FrameNote`",
+                   # round 2
+                   "**不承诺 `Ctrl+Z`**",
+                   "「…离开时已自动保存（换了视角，撤销记录已清空；要改回在复查里改）」",
+                   "从事件循环里说", "走不动的帧上确认——写「已保存」",
+                   "关窗口时写不进去，文字连同错误进日志，窗口照关",
+                   "「快捷键没生效：焦点在说明框里，按 Tab 回到画布」", "字母数字键不提示",
+                   "框有焦点时边框高亮", "`Tab` / `Shift+Tab` 回到画布", "**只读打开**",
+                   "从不升库结构", "「没有说明（库结构 v5，应用升级后第一次打开会建表）」",
+                   "`--out FILE` 或先 `chcp 65001`"):
         assert needed in para, needed
     assert review.index("**可见性审查**（v1.24") < review.index(head)
 
@@ -64,7 +74,10 @@ def test_v1_34_is_on_top_of_14():
                    "`[load-index：以下是原第 k 步的说明（作者，时间）]`",
                    "n frame note(s) landed on a step that has one", "整台拒绝",
                    "`import-logs --force` 不碰说明", "`D<nn>/notes.json`", "不含作者",
-                   "`frame_notes` 计数"):
+                   "`frame_notes` 计数",
+                   # round 2
+                   "评审第二轮", "状态栏不再承诺 `Ctrl+Z`", "`cli notes` 只读打开",
+                   "`chcp 65001`", "主照片的说明在前，不管旧步号大小", "手册 §6 一句"):
         assert needed in entry, needed
     assert changes.index("- **v1.34") < changes.index("- **v1.31")
 
@@ -74,13 +87,18 @@ def test_the_quickstart_says_it_in_two_sentences_of_the_review_section():
     review = quick.split("## 4. 走完之后：Review", 1)[1].split("### 冲突从哪来", 1)[0]
     item = review.split("\n4. ", 1)[1].replace("\n   ", "")
     for needed in ("「这一帧的说明」", "「保存」", "改了没保存就翻帧也会自动存", "`Ctrl+Z` 能撤",
-                   "框里打字时快捷键不生效", "时间轴上带 ✎", "「说明：…」",
-                   "`python -m tda.cli notes --desktop 13`"):
+                   "框里打字时快捷键不生效", "按 `Tab` 回到画面", "时间轴上带 ✎", "「说明：…」",
+                   "`python -m tda.cli notes --desktop 13`",
+                   # round 2, N5: PowerShell
+                   "在 PowerShell 里", "`--out notes.md`", "`chcp 65001`", "否则中文会乱码"):
         assert needed in item, needed
-    assert item.count("。") == 2
+    assert item.count("。") == 3
 
 
-def test_the_guide_prose_stays_within_its_limit():
+def test_the_guide_has_one_sentence_in_6_and_its_prose_stays_within_its_limit():
     body = GUIDE.read_text(encoding="utf-8")
+    section = body.split("## 6. 复查队列", 1)[1].split("\n---", 1)[0]
+    last = [line for line in section.splitlines() if line.strip()][-1]
+    assert last == "队列下面「这一帧的说明」：给读数据的人留话，翻帧自动存，`cli notes` 读。"
     prose = [line for line in body.splitlines() if not line.startswith("| `")]
     assert sum(len(line) for line in prose) <= 7700

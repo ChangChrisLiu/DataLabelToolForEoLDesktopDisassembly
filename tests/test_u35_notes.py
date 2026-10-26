@@ -286,6 +286,73 @@ def test_notes_text_and_markdown_of_nothing():
     assert "没有说明" in notes_markdown(2, [])
 
 
+def test_an_empty_line_of_a_note_prints_empty():
+    """Round 2, N7: no four spaces on a blank line."""
+    note = {"desktop": 2, "view": "scan", "step": 4, "text": "第一段\n\n第二段",
+            "author": "a", "updated_at": None}
+    assert "\n    第一段\n\n    第二段" in notes_text(2, [note])
+
+
+def test_cli_notes_opens_the_file_read_only_and_never_upgrades_it(env, capsys):
+    """Round 2, N2: a v5 database stays v5 (no table made); the answer says why."""
+    assert run(env, "load-index") == 0
+    path = env["db_path"]
+    conn = sqlite3.connect(path)
+    with conn:
+        conn.execute("DROP TABLE frame_note")
+        conn.execute("UPDATE meta SET value='5' WHERE key='schema_version'")
+    conn.close()
+    capsys.readouterr()
+    assert run(env, "notes", "--desktop", "13") == 0
+    out = capsys.readouterr().out
+    assert "D13: 没有说明（库结构 v5，应用升级后第一次打开会建表）" in out
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        assert conn.execute("SELECT value FROM meta WHERE key='schema_version'"
+                            ).fetchone()[0] == "5"
+        assert conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='frame_note'"
+                            ).fetchone()[0] == 0
+    finally:
+        conn.close()
+    # the same holds for --out and --format md
+    assert run(env, "notes", "--desktop", "13", "--format", "md",
+               "--out", str(env["cache"] / "n.md")) == 0
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        assert conn.execute("SELECT value FROM meta WHERE key='schema_version'"
+                            ).fetchone()[0] == "5"
+    finally:
+        conn.close()
+
+
+def test_cli_notes_help_says_how_to_keep_the_chinese(capsys):
+    from tda.cli import main
+    from tda.cli_notes import ENCODING_HINT
+
+    with pytest.raises(SystemExit):
+        main(["notes", "--help"])
+    out = " ".join(capsys.readouterr().out.split())
+    assert " ".join(ENCODING_HINT.split()) in out
+    assert "--out FILE" in ENCODING_HINT and "chcp 65001" in ENCODING_HINT
+
+
+def test_a_gallery_row_held_only_by_a_note_says_so(tmp_path):
+    """Round 2, N9: the layout photo stays in the sequence because of a note."""
+    from test_u10_gallery import _d66_like
+    from tda import pipeline as P
+
+    db = _d66_like(tmp_path)
+    try:
+        db.put_frame_note(FrameKey(66, 3, "oak1"), "零件摆好了", "alice", "t")
+        out = P.settle_gallery(db, 66)
+        assert ("step 3 (oak1) is a photo of the laid-out parts but has a frame note; "
+                "left in the sequence") in out["moved"]
+        assert db.get_frame(FrameKey(66, 3, "oak1")) is not None
+        assert db.frame_note(FrameKey(66, 3, "oak1"))["text"] == "零件摆好了"
+    finally:
+        db.close()
+
+
 def test_import_logs_force_never_touches_a_note(env):
     _notes_in(env)
     assert run(env, "import-logs") == 0
@@ -333,13 +400,14 @@ def test_load_index_moves_the_notes_and_joins_two_that_land_on_one_step(env, tmp
         got = {n["step"]: n for n in db.frame_notes(95, "scan")}
         assert sorted(got) == [2, 3, 4, 5]
         assert got[2]["text"] == "two" + NOTE_JOIN.format(
-            old=3, author="bob", when="2026-10-23T01:00:00") + "three"
+            old=3, author="bob", when="2026-10-23 01:00") + "three"
         assert (got[2]["author"], got[2]["updated_at"]) == ("alice", "2026-10-22T01:00:00")
         assert got[3]["text"] == "four" and got[3]["updated_at"] == "2026-10-24T01:00:00"
         assert got[4]["text"] == "five" + NOTE_JOIN.format(
-            old=6, author="carol", when="2026-10-26T01:00:00") + "six"
+            old=6, author="carol", when="2026-10-26 01:00") + "six"
         assert got[5]["text"] == "seven"
-        assert "[load-index：以下是原第 3 步的说明（bob，2026-10-23T01:00:00）]" in got[2]["text"]
+        # the time as cli notes writes it (round 2, N7)
+        assert "[load-index：以下是原第 3 步的说明（bob，2026-10-23 01:00）]" in got[2]["text"]
         [oak] = db.frame_notes(95, "oak1")
         assert (oak["step"], oak["text"], oak["author"]) == (4, "oak six", "bob")
     finally:
@@ -347,6 +415,33 @@ def test_load_index_moves_the_notes_and_joins_two_that_land_on_one_step(env, tmp
     capsys.readouterr()
     assert run(env, "load-index", "--index", new) == 0      # idempotent
     assert "frame note" not in capsys.readouterr().out
+
+
+def test_the_main_photos_note_leads_even_from_a_higher_old_step(env, tmp_path, capsys):
+    """Round 2, N10: row 3 is step 2's own photo, row 2 its extra shot. Old step 2
+    keeps its number (its photo is now the extra shot), old step 3 moves onto it:
+    the main photo's note (old 3) leads, old 2's follows after the marker."""
+    old = _index_file(tmp_path / "old.json", 95, {r: r for r in range(1, 6)})
+    assert run(env, "load-index", "--index", old) == 0
+    db = open_db(env)
+    try:
+        db.put_frame_note(key(2, desktop=95), "extra two", "bob", "2026-10-22T01:00:00")
+        db.put_frame_note(key(3, desktop=95), "main three", "alice", "2026-10-23T01:00:00")
+    finally:
+        db.close()
+    new = _index_file(tmp_path / "new.json", 95, {1: 1, 3: 2, 4: 3, 5: 4}, extra={2: 2})
+    capsys.readouterr()
+    assert run(env, "load-index", "--index", new) == 0
+    assert "1 frame note(s) landed on a step that has one" in capsys.readouterr().out
+    db = open_db(env)
+    try:
+        two = db.frame_note(key(2, desktop=95))
+        assert two["text"] == "main three" + NOTE_JOIN.format(
+            old=2, author="bob", when="2026-10-22 01:00") + "extra two"
+        assert (two["author"], two["updated_at"]) == ("alice", "2026-10-23T01:00:00")
+        assert db.frame_note(key(3, desktop=95)) is None
+    finally:
+        db.close()
 
 
 def test_a_note_on_a_photo_the_new_index_drops_refuses_the_desktop(env, tmp_path, capsys):

@@ -146,7 +146,9 @@ def notes_text(desktop: int, notes: list[dict]) -> str:
         for note in mine:
             lines.append(f"step {note['step']}  {note.get('author') or '-'}  "
                          f"{when_text(note.get('updated_at'))}")
-            lines += [f"    {line}" for line in str(note["text"]).splitlines()]
+            # an empty line of the note stays empty: no indent of trailing blanks
+            lines += [f"    {line}" if line.strip() else ""
+                      for line in str(note["text"]).splitlines()]
     return "\n".join(lines)
 
 
