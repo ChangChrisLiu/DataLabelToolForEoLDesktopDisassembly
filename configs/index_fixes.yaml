@@ -155,6 +155,17 @@ scan:
       RGB331 = row 34 (connector 6), RGB341 = row 35 (motherboard out).
       (U25 round 2 declared [32] by eye; corrected 2026-10-26 from the
       annotator's report and the screw crops of RGB291..RGB341.)
+  43:
+    duplicate_folders: [40]
+    reason: >-
+      48 folders for 47 rows, and every camera has 48 captures: capture 40 shows
+      the CPU socket lid closed back after the GPU came out (row 39) -- an action
+      the sheet never logged. Rows 1-39 are captures 1-39 (case fan f3, CPU fan
+      f9, optical drive out f13, SSD f16, PSU f30, locker open f37, CPU out f38,
+      GPU f39); rows 40-47 are captures 41-48 (screw 1 at f41, board out at f48).
+      The sheet carries a `dupli` row 40 for it (the annotator reported the
+      one-frame lag on 2026-10-26); the OAK/RS captures 040 are that row's
+      extra shots and RGB401 the scanner's.
   61:
     skipped_steps: [26]
     reason: >-
