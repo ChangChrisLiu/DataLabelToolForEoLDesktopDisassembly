@@ -154,7 +154,12 @@ MODEL_NAMES: dict[tuple[str, str], tuple[str, Optional[str]]] = {
     ("Dell", "Optiplex 990"): ("Dell OptiPlex 990", None),
     ("HP", "Compoq 8100 Elite Small Form Fador"): ("HP Compaq 8100 Elite SFF", None),
     ("HP", "Compoq 8300 Elite Small Form Fador"): ("HP Compaq 8300 Elite SFF", None),
+    ("HP", "Compoq 8200 Elite Small Form Fador"): ("HP Compaq 8200 Elite SFF", None),
+    # HP made no "Compaq 4300 Elite": the nearest is the Compaq Pro 4300 SFF
+    ("HP", "Compoq 4300 Elite Small Form Fador"): (
+        "HP Compaq Pro 4300 SFF", NAMEPLATE.format(sheet="Compoq 4300 Elite Small Form Fador")),
     ("HP", "EliteDesk 800 GI SFF"): ("HP EliteDesk 800 G1 SFF", None),
+    ("HP", "ProDesk 400 GI SFF"): ("HP ProDesk 400 G1 SFF", None),
     ("HP", "ProDesk 4300 GI SFF"): ("HP Compaq Pro 4300 SFF",
                                     NAMEPLATE.format(sheet="ProDesk 4300 GI SFF")),
     ("HP", "ProDesk 4300"): ("HP Compaq Pro 4300 SFF", NAMEPLATE.format(sheet="ProDesk 4300")),
@@ -866,6 +871,9 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
 
     meta = db.get_desktop(desktop) or {}
     model, sheet, note = model_names(meta)
+    if (str(meta.get("brand") or "").strip(),
+            str(meta.get("model_family") or "").strip()) not in MODEL_NAMES:
+        qa["model_names_not_normalised"].append({"desktop": desktop, "model": model})
     head = {"desktop": desktop, "brand": meta.get("brand"), "model": model,
             "model_sheet": sheet, "model_note": note, "view": VIEW}
     doc["info"] = {
@@ -972,7 +980,7 @@ QA_KEYS = ("overlapping_confirmed_masks", "occluded_full_label_with_pixels",
            "hidden_on_the_frame_before_leaving", "amodal_widened_by_visible",
            "confirmed_rows_without_annotation", "frame_row_names_other_image",
            "cache_differs_from_raw", "manifest_steps_without_frame",
-           "unconfirmed_rows_left_out")
+           "unconfirmed_rows_left_out", "model_names_not_normalised")
 
 
 def _prepare_out(out: Path, force: bool) -> None:
@@ -1359,7 +1367,25 @@ def readme_text(summary: dict) -> str:
     full, part = _pct(OCCLUDED_FULL_RATIO), _pct(OCCLUDED_PARTIAL_RATIO)
     small, tiny = TOO_SMALL_PX, VISIBLE_TINY_PX
     excluded = ", ".join(f"{desktop_dir(e['desktop'])} {frame_name(e['step'])}"
-                         for e in summary["exclusions"]) or "none"
+                         for e in summary["exclusions"])
+    excluded = (f"Frames left out of this package: {excluded} (see *Known issues*)."
+                if excluded else "No frame is left out of this package.")
+    if t["overlap_frames"]:
+        overlap_zh = (f"确认的可见掩码在 {t['overlap_frames']} 帧上有重叠，`segmentation` 保持确认时的原样，"
+                      f"重叠像素在 label map 里只归一个零件。")
+        overlap_en = (f"Use the label map, not the annotation's `segmentation`: the segmentation "
+                      f"is the confirmed mask as it was\nsigned off and, on "
+                      f"{_n(t['overlap_frames'], 'frame')}, it overlaps another part's\n"
+                      f"(*Where two confirmed masks overlap*); the label map gives every pixel "
+                      f"to one\npart. Where they do not overlap the two are identical.")
+    else:
+        overlap_zh = "本包里确认的可见掩码互不重叠，label map 与各 `segmentation` 逐像素一致。"
+        overlap_en = ("No two confirmed masks overlap in this package, so the label map and the "
+                      "annotations'\n`segmentation` give the same pixels; the label map is the "
+                      "simpler to read.")
+    # the example runs as shipped: on a desktop the package has
+    example = README_EXAMPLE.replace('desk = "D02"',
+                                     f'desk = "{desktop_dir(summary["desktops"][0])}"')
     return f"""# Scanner-view segmentation package (scanpack v{summary['pack_version']})
 
 ## 中文摘要
@@ -1374,7 +1400,7 @@ def readme_text(summary: dict) -> str:
 （S05 上第 5 步拆下的零件已经不在了）。
 
 **取点以 label map 为准**：零件的点就是 `labels/S<nn>.png == instance_id` 的像素下的点。
-确认的可见掩码在 {t['overlap_frames']} 帧上有重叠，`segmentation` 保持确认时的原样，重叠像素在 label map 里只归一个零件。
+{overlap_zh}
 
 建议先用 `clean_parts.csv`（共 {t['clean']} 条）。`clean` 要同时满足六条：
 (1) 可见掩码与完整形状逐像素相同；(2) 标签为 `visible`；(3) amodal 框在 ROI 内；
@@ -1403,10 +1429,9 @@ points in your 3D reconstruction of the same scanner frame.
 {rows}
 | **Total** | | {t['frames']} | | {t['annotations']} | {t['crowd']} | {t['clean']} | |
 {model_notes}
-
 *Parts* counts the instances with at least one annotation; *Clean* counts
 (frame, part) annotations, *Clean parts* the distinct parts among them.
-Frames left out of this package: {excluded} (see *Known issues*). `frames.json`,
+{excluded} `frames.json`,
 `instances.json` and `annotations.json` give the model name (`model`), the
 teardown sheet's own spelling of it (`model_sheet`) and a caveat about the
 name where there is one (`model_note`, else null).
@@ -1462,11 +1487,7 @@ and the ROI all use this frame, unshifted and uncropped.
 If your reconstruction keeps, for each 3D point, the pixel of this image it
 came from (an organized point cloud, or a depth map registered to this RGB
 image), then **the points of a part are the points under its pixels in the
-label map**: `labels/S<nn>.png == instance_id`. Use the label map, not the
-annotation's `segmentation`: the segmentation is the confirmed mask as it was
-signed off and, on {t['overlap_frames']} frames, it overlaps another part's
-(*Where two confirmed masks overlap*); the label map gives every pixel to one
-part. Where they do not overlap the two are identical. The scanner only
+label map**: `labels/S<nn>.png == instance_id`. {overlap_en} The scanner only
 measures surfaces it can see, so a hidden surface has no points: the
 `amodal_segmentation` is the part's full silhouette on the image (what it would
 cover if nothing were in front), not a set of points.
@@ -1638,7 +1659,7 @@ is kept as it was confirmed. No annotation with `shared_px > 0` is clean.
 Run from the package root:
 
 ```python
-{README_EXAMPLE}```
+{example}```
 """
 
 

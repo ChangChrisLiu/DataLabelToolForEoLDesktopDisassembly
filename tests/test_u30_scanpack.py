@@ -448,12 +448,14 @@ def test_model_names_are_normalised_and_the_sheet_text_kept():
         ("HP", "Compoq 8100 Elite Small Form Fador"): "HP Compaq 8100 Elite SFF",
         ("HP", "Compoq 8300 Elite Small Form Fador"): "HP Compaq 8300 Elite SFF",
         ("HP", "EliteDesk 800 GI SFF"): "HP EliteDesk 800 G1 SFF",
+        ("HP", "Compoq 8200 Elite Small Form Fador"): "HP Compaq 8200 Elite SFF",
+        ("HP", "ProDesk 400 GI SFF"): "HP ProDesk 400 G1 SFF",
     }
     for (brand, family), model in sheet.items():
         raw = f"{brand} {family}"
         assert S.model_names({"brand": brand, "model_family": family,
                               "brand_model_raw": raw}) == (model, raw, None)
-    for family in ("ProDesk 4300 GI SFF", "ProDesk 4300"):
+    for family in ("ProDesk 4300 GI SFF", "ProDesk 4300", "Compoq 4300 Elite Small Form Fador"):
         model, raw, note = S.model_names({"brand": "HP", "model_family": family})
         assert model == "HP Compaq Pro 4300 SFF"          # the name only (R2-N4)
         assert raw == f"HP {family}"
@@ -653,7 +655,8 @@ def test_the_readme_example_runs(built, monkeypatch, capsys):
     text = (built["pack"] / "README.md").read_text(encoding="utf-8")
     code = text.split("```python\n", 1)[1].split("```", 1)[0]
     assert len(code.strip().splitlines()) <= 22
-    code = code.replace('desk = "D02"', f'desk = "D{built["desktop"]:02d}"')
+    # as shipped: it names a desktop the package has (the final build had no D02)
+    assert f'desk = "D{built["desktop"]:02d}"' in code
     monkeypatch.chdir(built["pack"])
     exec(compile(code, "README example", "exec"), {})
     out = capsys.readouterr().out
@@ -737,7 +740,18 @@ def test_a_model_note_is_a_paragraph_below_the_table_not_a_row_of_it():
     assert "| D30 | HP Compaq Pro 4300 SFF * |" in text
     total_row = next(line for line in text.splitlines() if line.startswith("| **Total**"))
     after = text.split(total_row, 1)[1]
-    assert after.startswith("\n\n\\* D30: check it.\n")
+    assert after.startswith("\n\n\\* D30: check it.\n\n*Parts* counts")
+    # the final build's case: nothing overlaps, nothing is left out (no "0 frames")
+    assert "No two confirmed masks overlap in this package" in text
+    assert "本包里确认的可见掩码互不重叠" in text and "在 0 帧上" not in text
+    assert "on 0 frames" not in text and "On 0 frames" not in text
+    assert "No two confirmed visible masks claim the same pixel in this package." in text
+    assert "No frame is left out of this package." in text and "none (see" not in text
+    assert 'desk = "D30"' in text
+    desk["model_note"] = None
+    plain = S.readme_text(summary)
+    total_row = next(line for line in plain.splitlines() if line.startswith("| **Total**"))
+    assert plain.split(total_row, 1)[1].startswith("\n\n*Parts* counts")
 
 
 def test_the_overlap_cause_follows_the_counts(built):
