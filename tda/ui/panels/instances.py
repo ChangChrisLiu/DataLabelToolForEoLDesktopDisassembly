@@ -20,7 +20,10 @@ the picture disagrees with the log -- the same gesture as ``T``.  It lists the
 row's ``state_choices`` (the session offers them only for a part in the
 picture whose class has two or more states that need a mask) and is greyed
 otherwise; like the move buttons it reports, and the window writes.  It never
-takes the keyboard focus: a focused combo swallows every shortcut.
+takes the keyboard focus: a focused combo swallows every shortcut.  On the
+first frame of a part nobody has drawn anywhere it has one more entry,
+「一开始就不在（这台没有它）」 (task U34): no state, the window asks and writes
+「这台没有这个零件」 instead (a one-state part's combo shows what holds first).
 
 The **verb** button (task U9) next to it says 「其实拆下来了」 for an open cover
 or removable latch (the row's ``verb_fix``) and 「其实只是打开了」 for one in the
@@ -55,6 +58,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from tda.core.absent import CAPTION as ABSENT_CAPTION
+from tda.core.absent import CHOICE as ABSENT_CHOICE
 from tda.core.reclass_replay import CAPTION as RECLASS_CAPTION
 from tda.ui import context_text as CONTEXT_T
 from tda.ui import session_api as api
@@ -575,8 +580,13 @@ class InstanceListPanel(QWidget):
                 combo.addItem(STATE_NONE, "")
                 combo.setEnabled(False)
                 return
+            if ABSENT_CHOICE in choices and held and held not in choices:
+                # 「一开始就不在」 is the only choice of a one-state part (U34):
+                # the combo still shows what holds first
+                choices = [held, *choices]
             for state in choices:
-                combo.addItem(f"状态：{state_zh(state)}", state)
+                combo.addItem(ABSENT_CAPTION if state == ABSENT_CHOICE
+                              else f"状态：{state_zh(state)}", state)
             if held in choices:
                 combo.setCurrentIndex(choices.index(held))
             combo.setEnabled(self.state_editable())

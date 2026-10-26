@@ -17,7 +17,9 @@ or remove an action, retarget a step at a new instance, delete an instance
 nothing points at any more, merge two instances that are one part
 (「合并到…」, :mod:`tda.ui.panels.merge_into`, written through), say a drive
 latch is the cage or the other way round (「其实是硬盘架…」 / 「其实是卡扣…」,
-:mod:`tda.ui.panels.reclass_menu`, written through, task U21). The
+:mod:`tda.ui.panels.reclass_menu`, written through, task U21), say a part the
+sheet logs is not in this machine at all (「这台没有这个零件…」 / 「其实有…」,
+:mod:`tda.ui.panels.absent_menu`, written through, task U34). The
 ``＋ 添加零件 / Add parts`` button above the
 Instances table stages parts the picture shows and the log never names
 (:mod:`tda.ui.panels.add_parts`, :mod:`tda.core.extra`); its 「框外零件…」
@@ -61,6 +63,7 @@ from tda.ui.panels.add_parts import BUTTON as ADD_PARTS_BUTTON
 from tda.ui.panels.add_parts import HINT as ADD_PARTS_HINT
 from tda.ui.panels.add_parts import TIP as ADD_PARTS_TIP
 from tda.ui.panels.add_parts import AddPartsDialog
+from tda.ui.panels.absent_menu import AbsentMenuMixin
 from tda.ui.panels.merge_into import MergeIntoMixin
 from tda.ui.panels.reclass_menu import ReclassMenuMixin
 from tda.ui.panels.relations import RelationsTab
@@ -172,7 +175,7 @@ def _default_cache_dir() -> str:
         return str(Path(__file__).resolve().parents[3] / "cache")
 
 
-class StepTablePanel(MergeIntoMixin, ReclassMenuMixin, QWidget):
+class StepTablePanel(MergeIntoMixin, ReclassMenuMixin, AbsentMenuMixin, QWidget):
     """Stage S1: review one desktop's step table and instance table."""
 
     #: Emitted with the desktop id after ``Apply`` wrote the session back.
@@ -642,6 +645,7 @@ class StepTablePanel(MergeIntoMixin, ReclassMenuMixin, QWidget):
                            lambda: self.prompt_delete_context(key))
         elif key is not None:
             menu.addAction(f"Delete {key}", lambda: self.delete_instance(key))
+            self.add_absent_action(menu, key)       # 「这台没有这个零件…」 (task U34)
             self.add_merge_action(menu, key)        # 「合并到…」 (task U12)
             self.add_reclass_action(menu, key)      # 「其实是硬盘架…」 (task U21)
         return menu

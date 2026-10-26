@@ -41,6 +41,7 @@ KINDS: frozenset[str] = frozenset(
         "reclass_instance",  # 其实是硬盘架 / 其实是卡扣: a drive cage <-> its latch (U21)
         "review_visibility",  # 可见性审查: a verdict on one part's label, and its stamp (U24)
         "sync_visibility",  # 同步到其他视角: a run's verdict onto the other views (U36)
+        "absent_from_start",  # 这台没有这个零件: a logged part removed from step 0 (U34)
     }
 )
 

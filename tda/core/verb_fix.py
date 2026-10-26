@@ -130,8 +130,9 @@ def offers(tax: Taxonomy, instances: dict[str, InstanceRec], state: FrameState,
     for key, held in state.items():
         rec = instances.get(key)
         action = own.get(key)
-        if rec is None or action is None or rec.cls not in two_way or is_provisional(key):
-            continue
+        if (rec is None or action is None or rec.cls not in two_way or is_provisional(key)
+                or held.absent):
+            continue      # (absent, U34: the machine has no such part to open or take out)
         if _state_of_verb(tax, rec, action.verb) == held.state:
             out[key] = FLIP[action.verb]
     return out

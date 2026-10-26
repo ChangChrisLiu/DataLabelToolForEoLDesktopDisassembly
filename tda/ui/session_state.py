@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from tda.core.absent import CHOICE as ABSENT_CHOICE
 from tda.core.cut_follow import CutMove, cut_views, mask_states, plan_cut_moves
 from tda.core.db import Db
 from tda.core.model import FrameKey, Placement, is_context, is_provisional
@@ -309,13 +310,25 @@ class StateMixin:
                 row["state_choices"] = []   # no state on a gallery shot (U10)
             return rows
         needs = needs_geom(instances, state, self.tax)
+        # 「一开始就不在（这台没有它）」 (task U34): on the part's first frame, for
+        # a part nobody has drawn anywhere -- one more entry of the state combo
+        # (never a stop of T's cycle, round 2)
+        offers = getattr(self, "absent_offers", None)
+        absent = offers(state, instances, needs) if callable(offers) else set()
         for row in rows:
-            row["state_choices"] = gate(instances, state, self.tax,
-                                        str(row.get("key", "")), step, needs)[0]
+            key = str(row.get("key", ""))
+            row["state_choices"] = gate(instances, state, self.tax, key, step, needs)[0]
+            if key in absent:
+                row["state_choices"] = [*row["state_choices"], ABSENT_CHOICE]
         return rows
 
     def next_state(self, instance: str) -> Optional[str]:
-        """The state ``T`` moves ``instance`` to: the one after its current one."""
+        """The state ``T`` moves ``instance`` to: the one after its current one.
+
+        States only: 「一开始就不在」 (task U34) is the state combo's entry and
+        Steps' right-click, never a stop of the cycle (U34 round 2) -- two
+        presses of ``T`` on a two-state part go back where they started.
+        """
         choices, _why = self.state_gate(instance)
         if not choices:
             return None

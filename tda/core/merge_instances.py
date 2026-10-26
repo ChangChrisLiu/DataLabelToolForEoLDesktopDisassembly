@@ -86,6 +86,7 @@ from tda.core.states import (
     LEAVES_REMOVED,
     OLD_MISMATCH,
     UNKNOWN_VALUE,
+    absent_keys,
     event_problems,
     events_from_actions,
     initial_overrides,
@@ -846,6 +847,13 @@ def plan_merge(db: Db, tax: Taxonomy, desktop: int, gone: str, keep: str,
         if is_context(instances[key]):
             # task U18: not a part of the machine; it is deleted, not merged
             raise MergeError(f"{key} 是框外零件：不能合并（不要了就在实例表右键删除）")
+    # task U34 round 2 (N8): a part said absent from the start was never in the
+    # machine -- neither half of a merge until it is taken back
+    absent = absent_keys(e for e in db.events(desktop) if not e.auto)
+    for key in (gone, keep):
+        if key in absent:
+            raise MergeError(f"{key} 标着「一开始就不在」（这台没有它）：先在 Steps → Instances "
+                             f"右键「其实有…」，再合并")
     g_rec, k_rec = instances[gone], instances[keep]
     if g_rec.cls != k_rec.cls and not reclass:
         raise MergeError(f"{gone} 是 {g_rec.cls}，{keep} 是 {k_rec.cls}：只有同一类的两个实例"

@@ -462,6 +462,7 @@ def removed_rows(session: Any) -> list[dict]:
     knows about every instance the log ever mentioned, so the rows are read from
     there and marked with the state that took them out of the frame.
     """
+    from tda.core.absent import SHORT as ABSENT_SHORT
     from tda.core.states import REMOVED
     from tda.core.truth_inputs import instances_of, state_of
 
@@ -491,6 +492,13 @@ def removed_rows(session: Any) -> list[dict]:
         if held.state != REMOVED:
             continue
         rec = known.get(instance)
+        if held.absent:
+            # 「这台没有这个零件」 (task U34): listed as what it is, offered nothing
+            rows.append({"key": instance, "cls": "" if rec is None else rec.cls,
+                         "state": ABSENT_SHORT, "placement": held.placement,
+                         "visibility": "", "z": "", "hidden": False, "absent_from_start": True,
+                         "verb_fix": None, "reclass": None})
+            continue
         rows.append({"key": instance, "cls": "" if rec is None else rec.cls,
                      "state": held.state, "placement": held.placement,
                      "visibility": "", "z": "", "hidden": False,

@@ -56,6 +56,8 @@ from tda.ui.session_visreview import OP_KIND as VIS_REVIEW_OP
 from tda.ui.session_visreview import VisReviewMixin, apply_vis_review
 from tda.ui.session_visruns import OP_SYNC as VIS_SYNC_OP
 from tda.ui.session_visruns import VisRunsMixin, apply_sync
+from tda.ui.session_absent import OP_KIND as ABSENT_OP
+from tda.ui.session_absent import AbsentMixin, apply_absent
 
 __all__ = ["AnnotationSession"]
 
@@ -63,7 +65,7 @@ log = logging.getLogger("tda.session")
 
 class AnnotationSession(CommitMixin, ReviewMixin, ResignMixin, StateMixin, VerbMixin,
                         CaptiveMixin, ReclassMixin, CableMixin, ContextMixin, VisReviewMixin,
-                        VisRunsMixin, TruthCacheMixin, QObject):
+                        VisRunsMixin, AbsentMixin, TruthCacheMixin, QObject):
     """One annotator's working set: a desktop, a view, and the frame in hand."""
 
     #: The current frame changed; payload is a :class:`~tda.core.model.FrameKey`.
@@ -151,6 +153,7 @@ class AnnotationSession(CommitMixin, ReviewMixin, ResignMixin, StateMixin, VerbM
             ("correct_verb", apply_correct_verb),   # task U9
             ("captive_fix", apply_captive_fix),     # task U14
             ("reclass_instance", apply_reclass),    # task U21
+            (ABSENT_OP, apply_absent),              # task U34: 这台没有这个零件
         ):
             handler = self._make_handler(apply)
             self.undo_stack.register(kind, handler, handler)

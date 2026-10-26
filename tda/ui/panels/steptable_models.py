@@ -24,16 +24,18 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QObject, Qt, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QBrush, QColor, QPixmap
 
 from PySide6.QtWidgets import QComboBox, QSpinBox, QStyledItemDelegate
 
 from tda.core import extra as X
+from tda.core.absent import SHORT as ABSENT_SHORT
 from tda.core.implied import NOTE_ATTR as IMPLIED_NOTE
 from tda.core.implied import is_implied
 from tda.core.model import CONTEXT_LABEL, is_cage_latch, is_extra
 from tda.core.taxonomy import Taxonomy
 from tda.ui import context_text as CONTEXT_T
+from tda.ui.steps_absent import is_absent_row
 from tda.ui.steps_model import StepTableData
 from tda.ui.steps_values import (
     DIFFICULTY_MAX,
@@ -122,6 +124,10 @@ INSTANCE_COLUMNS: tuple[Column, ...] = (
            lambda tax: [BLANK, *tax.directions]),
     Column("Raw names", "raw_names", "label"),
 )
+
+#: The tooltip of a row said absent from the start (task U34).
+ABSENT_TIP = ("{key}: 一开始就不在（这台没有它）——从第 1 帧起不在机器里，任务卡、检查和导出都没有它；"
+              "日志里对它的动作留着、不再算\n右键「其实有…」改回来")
 
 #: The column a 框外零件's row (task U18) shows -- and edits -- its name in.
 CONTEXT_FIELD = "raw_names"
@@ -470,6 +476,13 @@ class InstanceTableModel(_TableModel):
             return self._context_data(index, role)
         inst = self.data_model.instances[self.keys[index.row()]]
         column = self.columns[index.column()]
+        absent = is_absent_row(self.data_model, inst.key)    # task U34
+        if absent and role == Qt.ToolTipRole:
+            return ABSENT_TIP.format(key=inst.key)
+        if absent and role == Qt.ForegroundRole:
+            return QBrush(QColor(128, 128, 132))
+        if absent and role == Qt.DisplayRole and column.field == "cls":
+            return f"{inst.cls}（{ABSENT_SHORT}）"
         if role == Qt.ToolTipRole:
             return (extra_tooltip(inst, self.data_model.staged_extra(inst.key))
                     or implied_tooltip(inst))
