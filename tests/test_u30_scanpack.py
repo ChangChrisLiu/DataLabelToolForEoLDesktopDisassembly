@@ -740,6 +740,30 @@ def test_a_model_note_is_a_paragraph_below_the_table_not_a_row_of_it():
     assert after.startswith("\n\n\\* D30: check it.\n")
 
 
+def test_the_overlap_cause_follows_the_counts(built):
+    """Final build (e): after the re-sign only per-frame masks may overlap; say which."""
+    t = built["summary"]["totals"]
+    # the scene has both: PATCHED's per-frame mask and STALE_LOWER's old row
+    assert 0 < t["overlap_px_without_per_frame_mask"] < t["overlap_px"]
+    assert t["overlap_frames_without_per_frame_mask"] == 1
+    text = (built["pack"] / "README.md").read_text(encoding="utf-8")
+    assert S.overlap_cause(built["summary"]) in text
+
+    def cause(total, plain, frames=1):
+        return S.overlap_cause({"totals": {
+            "overlap_px": total, "overlap_px_without_per_frame_mask": plain,
+            "overlap_frames_without_per_frame_mask": frames}})
+
+    only_corrected = cause(50, 0)
+    assert "every one of them is a mask corrected on that frame only" in only_corrected
+    assert "do not overlap anywhere" in only_corrected
+    assert cause(50, 50).startswith("they are rows confirmed at different times")
+    assert cause(50, 20, 2).startswith("30 of them are a mask corrected")
+    assert "20 (on 2 frames) are rows confirmed" in cause(50, 20, 2)
+    assert S.overlap_intro({"totals": {"overlap_px": 0, "overlap_frames": 0}}) == \
+        "No two confirmed visible masks claim the same pixel in this package."
+
+
 def test_the_few_clean_classes_are_named_without_a_reason():
     en, zh = S.few_clean_text(_summary())
     assert en.startswith("Classes with few or no clean rows (under 15 % of their annotations): "

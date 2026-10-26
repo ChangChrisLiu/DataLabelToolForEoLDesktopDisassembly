@@ -730,6 +730,18 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
         frame_stats = annotate_frame(anns, label, visible, hw, key_to_id, roi, compiled)
         stats.update(frame_stats)
         stats["overlap_frames"] += int(frame_stats["overlap_px"] > 0)
+        if frame_stats["overlap_px"]:
+            # which shared pixels a per-frame mask claims (the tool never takes
+            # one out of its neighbours) and which come from rows alone
+            claims = np.zeros(hw, dtype=np.uint8)
+            for mask in visible.values():
+                claims += mask
+            corrected = np.zeros(hw, dtype=bool)
+            for k in patched & set(visible):
+                corrected |= visible[k]
+            plain = int(np.count_nonzero((claims > 1) & ~corrected))
+            stats["overlap_px_plain"] += plain
+            stats["overlap_frames_plain"] += int(plain > 0)
         lpath = ddir / "labels" / f"{name}.png"
         write_label_png(lpath, label)
         entry.update({"label": f"labels/{name}.png", "label_sha256": sha256_of(lpath)})
@@ -902,6 +914,9 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
         "amodal_widened_rows": int(stats["amodal_widened"]),
         "overlap_frames": int(stats["overlap_frames"]),
         "overlap_px": int(stats["overlap_px"]),
+        # of which no per-frame mask is involved: confirmed rows alone
+        "overlap_px_without_per_frame_mask": int(stats["overlap_px_plain"]),
+        "overlap_frames_without_per_frame_mask": int(stats["overlap_frames_plain"]),
         "shared_px": int(stats["shared_px"]),
         # every confirmed row against what today's annotation draws for it
         "confirmed_vs_today": {"rows_compared": truth_rows,
@@ -1062,6 +1077,8 @@ def build_pack(db_path: str, out_dir: str, desktops: Sequence[int] = DEFAULT_DES
         "totals": {k: sum(d[k] for d in per_desktop)
                    for k in ("frames", "instances", "annotations", "crowd", "clean",
                              "amodal_widened_rows", "overlap_frames", "overlap_px",
+                             "overlap_px_without_per_frame_mask",
+                             "overlap_frames_without_per_frame_mask",
                              "shared_px")},
         "per_desktop": per_desktop,
         "clean_by_class": {c: int(by_class[c]["clean"]) for c in sorted(by_class)
@@ -1254,17 +1271,44 @@ def _reason_text(reason: str) -> str:
     return reason
 
 
+def overlap_cause(summary: dict) -> str:
+    """Why confirmed masks overlap here, from the counts (final build, item e)."""
+    t = summary["totals"]
+    total = int(t["overlap_px"])
+    plain = int(t.get("overlap_px_without_per_frame_mask", 0))
+    corrected = ("a mask corrected on that frame only (the annotation tool does not take a "
+                 "per-frame mask out of its neighbours)")
+    rows = ("rows confirmed at different times (an outline adjusted later, within the "
+            "tool's tolerance)")
+    if plain == 0:
+        return (f"every one of them is {corrected}; masks without such a correction do "
+                f"not overlap anywhere in this package")
+    if plain == total:
+        return f"they are {rows}"
+    return (f"{total - plain} of them are {corrected}, and {plain} (on "
+            f"{_n(int(t.get('overlap_frames_without_per_frame_mask', 0)), 'frame')}) are "
+            f"{rows}")
+
+
+def overlap_intro(summary: dict) -> str:
+    """The first sentence of *Where two confirmed masks overlap*, zero included."""
+    t = summary["totals"]
+    if not t["overlap_px"]:
+        return "No two confirmed visible masks claim the same pixel in this package."
+    return (f"On {_n(t['overlap_frames'], 'frame')} two confirmed visible masks claim the "
+            f"same {t['overlap_px']} pixels; {overlap_cause(summary)}.")
+
+
 def _known_issues(summary: dict) -> str:
     t, c = summary["totals"], summary["checks"]
     items = []
     if t["overlap_frames"]:
         items.append(
-            f"**Overlapping confirmed masks.** On {t['overlap_frames']} frames, "
-            f"{t['overlap_px']} pixels are claimed by two confirmed visible masks: rows "
-            f"confirmed at different times (an outline adjusted later, within the tool's "
-            f"tolerance) and masks corrected on one frame only. The label map gives each "
-            f"such pixel to one part (see *Where two confirmed masks overlap*); take points "
-            f"from the label map. Every row involved has `shared_px > 0` and none is clean.")
+            f"**Overlapping confirmed masks.** On {_n(t['overlap_frames'], 'frame')}, "
+            f"{t['overlap_px']} pixels are claimed by two confirmed visible masks: "
+            f"{overlap_cause(summary)}. The label map gives each such pixel to one part "
+            f"(see *Where two confirmed masks overlap*); take points from the label map. "
+            f"Every row involved has `shared_px > 0` and none is clean.")
     if c["occluded_full_with_pixels"]:
         items.append(
             f"**`occluded_full` with a sliver.** {c['occluded_full_with_pixels']} annotations "
@@ -1511,8 +1555,7 @@ use route 2 (or another frame) for it.
 
 ### Where two confirmed masks overlap
 
-On {t['overlap_frames']} frames two confirmed visible masks claim the same {t['overlap_px']} pixels:
-rows confirmed at different times, or a mask corrected on one frame only. The
+{overlap_intro(summary)} The
 label map gives such a pixel to the part higher in the frame's annotated layer
 order (a part whose mask was corrected on that frame is on top). Each
 annotation's `shared_px` says how many of its visible pixels another mask also
