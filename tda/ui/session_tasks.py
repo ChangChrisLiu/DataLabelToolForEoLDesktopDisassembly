@@ -28,7 +28,10 @@ chassis, to frame 35, and nothing drawn on 36 applies there.  The diff against
 frame with twelve shapes missing.  A neighbour in another segment is therefore
 no neighbour: the card is the start card, in either direction, and every row
 carries :data:`SEGMENT_START` saying where the cut is, so the panel and the
-guide can say why.
+guide can say why.  A start frame is one whatever its step type (round 2): the
+single confirmation of a ``failed`` / ``dupli`` step means "nothing changed
+next door", which only holds inside a segment.  D34 ends on a failed step, and
+that card was the only one that could ever have asked for its chassis.
 
 Bench work is asked for only where there is a bench to see.  Spec 4.2 says
 若该视角有堆放区 ROI -- *if this view has a staging-area ROI* -- and the scanner
@@ -274,6 +277,8 @@ def task_card_for(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
     segment (:func:`same_segment`) counts as none: ``step`` is where its
     segment starts in this walk, nothing drawn next door applies to it, and the
     card is the start card with :data:`SEGMENT_START` on every row (task U37).
+    Both are decided before the step type: a ``failed`` / ``dupli`` step gets
+    its one-row confirmation only against a neighbour in its own segment.
 
     A part that is ``removed`` next door and installed here has to be drawn back
     into the chassis, together with the attached children that came back in with
@@ -292,9 +297,10 @@ def task_card_for(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
     frame = db.get_frame(FrameKey(desktop, step, view)) or {}
     confirmed = frame.get("review_status") == _VERIFIED
 
-    if rec.dupli or rec.step_type in ("dupli", "failed"):
-        return [_item(rec.raw_name or f"step {step}", api.KIND_CONFIRM, {}, confirmed,
-                      None, None)]
+    # The start comes first, whatever the step's type (U37 round 2): a start
+    # frame that is a ``failed`` / ``dupli`` step still has every part to draw
+    # -- D34 ends on 「Try to remove the optical drive」 (failed), and the
+    # chassis, which never changes state, is only ever on a start card.
     if neighbour is None or neighbour not in records:
         return _start_card(db, tax, desktop, view, step, instances, cache, confirmed)
     if not same_segment(db, desktop, view, step, neighbour, cache):
@@ -302,6 +308,10 @@ def task_card_for(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
         # segment, and its shapes are drawn anew (task U37, D48 frame 35)
         return _start_card(db, tax, desktop, view, step, instances, cache, confirmed,
                            segment_cut(db, desktop, view, step, neighbour, records))
+    if rec.dupli or rec.step_type in ("dupli", "failed"):
+        # inside a segment nothing changed next door: one confirmation
+        return [_item(rec.raw_name or f"step {step}", api.KIND_CONFIRM, {}, confirmed,
+                      None, None)]
 
     span = span or [neighbour]
     bench_roi = bench_roi_of(db, FrameKey(desktop, step, view), cache)

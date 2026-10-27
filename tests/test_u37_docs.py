@@ -40,8 +40,15 @@ def test_the_paragraph_is_in_4_2_after_the_missing_frames():
                    "`split_rows_at`", "`shape_predates_state`", "和任务卡同一道门",
                    HEADER_35, "「第 k 步是位姿断点」",
                    "「第 35 帧（位姿段的起始帧：第 36 步翻转机箱）」",
-                   "仍是「起点，已经拆完的样子」", "差分热图和 `Tab` 仍对照它", "没有新快捷键"):
+                   "仍是「起点，已经拆完的样子」", "差分热图和 `Tab` 仍对照它", "没有新快捷键",
+                   # round 2: the start before the step type (D34)
+                   "**起点先于步骤类型判断**（第二轮）", "只在同一位姿段里成立",
+                   "D34 最后一步「Try to remove the optical drive」是 `failed`",
+                   "没有任何一张卡让人画机箱", "段内的 `failed` / `dupli` 帧照旧一行「确认」"):
         assert needed in para, needed
+    # ... and item 2's one-key confirmation says where it stops
+    assert ("一键确认（但可标记 `in_progress`/手入镜）。起点帧和位姿段的起始帧除外：那里照第 1 条"
+            "列出全部零件（v1.36，见下文「位姿段的起始帧」）。") in section
 
 
 def test_v1_36_is_on_top_of_14():
@@ -53,6 +60,8 @@ def test_v1_36_is_on_top_of_14():
                    "`tda.core.truth_inputs.same_segment`",
                    "`segment_start`", "`session_tasks.segment_cut`", "`split_rows_at`",
                    "第 35 帧（位姿段的起始帧：第 36 步翻转机箱）", "D64 第 16–22 步",
+                   "**第二轮**：起点先于步骤类型判断", "D34 末步「Try to remove the optical drive」",
+                   "全库只有这一处", "段内的 `failed` / `dupli` 帧照旧一行「确认」",
                    "库结构不变（仍为 v6）", "没有新快捷键"):
         assert needed in entry, needed
     assert changes.index("- **v1.36") < changes.index("- **v1.35")

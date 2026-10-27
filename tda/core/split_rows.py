@@ -59,7 +59,8 @@ KIND_STATE_ONLY = "state_only"
 REMOVED = "removed"
 IN_CHASSIS = Placement.IN_CHASSIS.value
 _VERIFIED = "verified"
-#: Step types whose card is a single "confirm" row: no ✂ is ever shown there.
+#: Step types whose card is a single "confirm" row inside a segment (a start
+#: frame of either type gets the start card, U37 round 2): no ✂ either way.
 _CONFIRM_ONLY = ("dupli", "failed")
 
 #: State transitions that keep the shape but need a new version of it here.
@@ -187,9 +188,10 @@ def split_rows_at(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
 
     The card diffed against ``neighbour`` (the frame the walk came from).
     ``only`` narrows it to one instance. No rows on a start frame (no
-    neighbour, or a neighbour in another pose segment -- task U37) and on a
-    ``dupli`` / ``failed`` step, whose card is a single confirmation -- the
-    same gates :func:`tda.ui.session_tasks.task_card_for` has.
+    neighbour, or a neighbour in another pose segment -- task U37), whose card
+    is the start card whatever the step's type, nor -- inside a segment -- on a
+    ``dupli`` / ``failed`` step, whose card is a single confirmation: the same
+    gates, in the same order, as :func:`tda.ui.session_tasks.task_card_for`.
     """
     if is_component_view(view):
         return []   # a gallery shot has no state, so no boundary (task U10)
@@ -198,13 +200,13 @@ def split_rows_at(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
     rec = records.get(step)
     if rec is None or neighbour is None or neighbour not in records:
         return []
-    if rec.dupli or rec.step_type in _CONFIRM_ONLY:
-        return []
     here_key, there_key = FrameKey(desktop, step, view), FrameKey(desktop, neighbour, view)
     seg_here = pose_segment_of(db, here_key, cache)
     seg_there = pose_segment_of(db, there_key, cache)
     if seg_here != seg_there:
         return []   # the first frame of its pose segment: a start card (task U37)
+    if rec.dupli or rec.step_type in _CONFIRM_ONLY:
+        return []   # inside a segment: one confirmation, no ✂
     instances = instances_of(db, desktop, cache)
     state_here = state_of(db, tax, desktop, step, cache)
     state_there = state_of(db, tax, desktop, neighbour, cache)
