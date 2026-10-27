@@ -20,6 +20,19 @@ needs geometry there, the open ones first -- ordered so the chassis is drawn
 before the things that sit on top of it -- and the drawn ones after them as ✔
 rows (U2b round 3).
 
+So does **the first frame of a pose segment** (task U37).  A ``reorient`` step
+or a pose break of the view starts a new segment, and no keyframe reaches
+across one (spec 2.5): on D48 the walk came down from frame 36, the flipped
+chassis, to frame 35, and nothing drawn on 36 applies there.  The diff against
+36 was empty -- a flip moves no part -- so the card said "nothing to draw" on a
+frame with twelve shapes missing.  A neighbour in another segment is therefore
+no neighbour: the card is the start card, in either direction, and every row
+carries :data:`SEGMENT_START` saying where the cut is, so the panel and the
+guide can say why.  A start frame is one whatever its step type (round 2): the
+single confirmation of a ``failed`` / ``dupli`` step means "nothing changed
+next door", which only holds inside a segment.  D34 ends on a failed step, and
+that card was the only one that could ever have asked for its chassis.
+
 Bench work is asked for only where there is a bench to see.  Spec 4.2 says
 若该视角有堆放区 ROI -- *if this view has a staging-area ROI* -- and the scanner
 looks straight down at the board, so on it the parts that have been taken out
@@ -33,7 +46,7 @@ from typing import Optional
 
 from tda.core.compiler import marked_absent, select_keyframe
 from tda.core.db import Db
-from tda.core.model import FrameKey, InstanceRec, is_component_view
+from tda.core.model import FrameKey, InstanceRec, StepType, is_component_view
 from tda.core.states import diff_states, needs_geom
 from tda.core.split_rows import (  # noqa: F401 - re-exported, the card's vocabulary
     NOTHING_VISIBLE,
@@ -47,7 +60,13 @@ from tda.core.split_rows import (  # noqa: F401 - re-exported, the card's vocabu
     stale_split_rows,
 )
 from tda.core.taxonomy import Taxonomy
-from tda.core.truth_inputs import InputCache, instances_of, pose_segment_of, state_of
+from tda.core.truth_inputs import (
+    InputCache,
+    instances_of,
+    pose_segment_of,
+    same_segment,
+    state_of,
+)
 from tda.ui import session_api as api
 from tda.ui.session_ops import (
     BENCH_KINDS,
@@ -59,12 +78,18 @@ from tda.ui.session_ops import (
     placement_of,
 )
 
-__all__ = ["LAYER_RANK", "SHAPE_PREDATES_STATE", "SPLIT_TRANSITIONS",
+__all__ = ["LAYER_RANK", "SEGMENT_START", "SHAPE_PREDATES_STATE", "SPLIT_TRANSITIONS",
            "STATE_ONLY_TRANSITIONS", "bench_roi_of", "gallery_card", "has_bench_roi",
-           "item_text", "stale_split_rows", "task_card_for"]
+           "item_text", "same_segment", "segment_cut", "stale_split_rows", "task_card_for"]
 
 REMOVED = "removed"
 _VERIFIED = "verified"
+_REORIENT = StepType.REORIENT.value
+
+#: The key a start card's rows carry when the frame is the first of its pose
+#: segment rather than the start of the walk (task U37): :func:`segment_cut`'s
+#: ``{"cut": k, "reorient": bool}``.
+SEGMENT_START = "segment_start"
 
 #: Taxonomy group -> how low it sits in a frame, so the start frame's card can
 #: be drawn from the bottom up: the chassis is behind everything, the parts
@@ -248,7 +273,12 @@ def task_card_for(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
     ``neighbour`` is the already-annotated frame the card is diffed against --
     ``step + 1`` in the reverse order annotation runs in, ``step - 1`` when the
     annotator is browsing forwards to repair something, and ``None`` on the
-    start frame, which has nobody after it.
+    start frame, which has nobody after it.  A neighbour in another pose
+    segment (:func:`same_segment`) counts as none: ``step`` is where its
+    segment starts in this walk, nothing drawn next door applies to it, and the
+    card is the start card with :data:`SEGMENT_START` on every row (task U37).
+    Both are decided before the step type: a ``failed`` / ``dupli`` step gets
+    its one-row confirmation only against a neighbour in its own segment.
 
     A part that is ``removed`` next door and installed here has to be drawn back
     into the chassis, together with the attached children that came back in with
@@ -267,11 +297,21 @@ def task_card_for(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
     frame = db.get_frame(FrameKey(desktop, step, view)) or {}
     confirmed = frame.get("review_status") == _VERIFIED
 
-    if rec.dupli or rec.step_type in ("dupli", "failed"):
-        return [_item(rec.raw_name or f"step {step}", api.KIND_CONFIRM, {}, confirmed,
-                      None, None)]
+    # The start comes first, whatever the step's type (U37 round 2): a start
+    # frame that is a ``failed`` / ``dupli`` step still has every part to draw
+    # -- D34 ends on 「Try to remove the optical drive」 (failed), and the
+    # chassis, which never changes state, is only ever on a start card.
     if neighbour is None or neighbour not in records:
         return _start_card(db, tax, desktop, view, step, instances, cache, confirmed)
+    if not same_segment(db, desktop, view, step, neighbour, cache):
+        # a reorient or a pose break between them: this frame starts its
+        # segment, and its shapes are drawn anew (task U37, D48 frame 35)
+        return _start_card(db, tax, desktop, view, step, instances, cache, confirmed,
+                           segment_cut(db, desktop, view, step, neighbour, records))
+    if rec.dupli or rec.step_type in ("dupli", "failed"):
+        # inside a segment nothing changed next door: one confirmation
+        return [_item(rec.raw_name or f"step {step}", api.KIND_CONFIRM, {}, confirmed,
+                      None, None)]
 
     span = span or [neighbour]
     bench_roi = bench_roi_of(db, FrameKey(desktop, step, view), cache)
@@ -331,9 +371,33 @@ def task_card_for(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
     return _ordered(items, instances)
 
 
+def segment_cut(db: Db, desktop: int, view: str, step: int, neighbour: int,
+                records: Optional[dict] = None) -> dict:
+    """Where ``step``'s pose segment ends towards ``neighbour`` (task U37).
+
+    ``{"cut": k, "reorient": bool}``: ``k`` is the first step after the
+    boundary next to ``step`` -- the end of ``step``'s own segment + 1 walking
+    backwards, its start walking forwards, so a skipped frame in between does
+    not move it -- and ``reorient`` says whether ``k`` is a ``reorient`` step
+    of the step table (the chassis was turned for every view) rather than a
+    pose break of this view only.
+    """
+    here = db.pose_segment_for(FrameKey(desktop, step, view)) or {}
+    if int(neighbour) > int(step):
+        end = here.get("end_step")
+        cut = int(end) + 1 if end is not None and int(end) >= int(step) else int(neighbour)
+    else:
+        start = here.get("start_step")
+        cut = int(start) if start is not None and int(start) <= int(step) else int(step)
+    if records is None:
+        records = {rec.step: rec for rec in db.steps(desktop)}
+    rec = records.get(cut)
+    return {"cut": cut, "reorient": rec is not None and rec.step_type == _REORIENT}
+
+
 def _start_card(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
                 instances: dict[str, InstanceRec], cache: InputCache,
-                confirmed: bool) -> list[dict]:
+                confirmed: bool, segment_start: Optional[dict] = None) -> list[dict]:
     """Spec 4.2 step 1: on the start frame everything present has to be drawn.
 
     Every instance that needs geometry here is listed; the ones already drawn
@@ -341,6 +405,10 @@ def _start_card(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
     items on the last frame?" -- hiding the drawn parts took a paragraph to
     explain).  With nothing that needs geometry at all the card is a single
     confirmation, as on any frame with nothing to draw.
+
+    ``segment_start`` is :func:`segment_cut`'s answer when the frame is the
+    first of its pose segment rather than of the walk (task U37); every row,
+    the lone confirmation included, carries it as :data:`SEGMENT_START`.
     """
     state = state_of(db, tax, desktop, step, cache)
     bench_roi = bench_roi_of(db, FrameKey(desktop, step, view), cache)
@@ -353,8 +421,13 @@ def _start_card(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
         kind = api.KIND_ADD_BENCH_BOX if on_bench else api.KIND_ADD_SHAPE
         items.append(_item(instance, kind, {}, done, instances.get(instance), None))
     if not items:
-        return [_item(f"step {step}", api.KIND_CONFIRM, {}, confirmed, None, None)]
-    return _bottom_up(items, instances, tax)
+        items = [_item(f"step {step}", api.KIND_CONFIRM, {}, confirmed, None, None)]
+    else:
+        items = _bottom_up(items, instances, tax)
+    if segment_start is not None:
+        for row in items:
+            row[SEGMENT_START] = dict(segment_start)
+    return items
 
 
 def gallery_card(db: Db, tax: Taxonomy, desktop: int, view: str, shot: int) -> list[dict]:

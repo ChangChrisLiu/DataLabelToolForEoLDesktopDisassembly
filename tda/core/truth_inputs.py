@@ -73,6 +73,7 @@ __all__ = [
     "infer_hw",
     "instances_of",
     "pose_segment_of",
+    "same_segment",
     "state_of",
     "view_steps",
 ]
@@ -440,6 +441,19 @@ def pose_segment_of(db: Db, key: FrameKey, cache: Optional[InputCache] = None) -
     pose = db.pose_segment_for(key)
     seg = None if pose is None else pose.get("seg")
     return DEFAULT_POSE_SEGMENT if not seg else int(seg)
+
+
+def same_segment(db: Db, desktop: int, view: str, a: int, b: int,
+                 cache: Optional[InputCache] = None) -> bool:
+    """Are steps ``a`` and ``b`` of one view in the same pose segment?
+
+    A ``reorient`` step and an accepted pose break of the view each start a new
+    segment (spec 2.5), and a keyframe never reaches across one: the frames on
+    either side are drawn separately (task U37). With no segments recorded both
+    are :data:`DEFAULT_POSE_SEGMENT`, so the answer is yes.
+    """
+    return (pose_segment_of(db, FrameKey(desktop, a, view), cache)
+            == pose_segment_of(db, FrameKey(desktop, b, view), cache))
 
 
 # --------------------------------------------------------------------------- #

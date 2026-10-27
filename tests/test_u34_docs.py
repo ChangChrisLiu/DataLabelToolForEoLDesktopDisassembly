@@ -44,7 +44,8 @@ def test_v1_33_is_on_top_of_14():
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
     # U33's v1.32 lands beside it: the controller settles the order at the merge
     # U33 / U35 / U36 landed v1.32 / v1.34 / v1.35 the same day; the controller ordered them
-    [entry] = [e for e in entries[:4] if e.startswith("- **v1.33")]
+    # (and U37's v1.36 has gone above them since)
+    [entry] = [e for e in entries[:5] if e.startswith("- **v1.33")]
     assert entry.startswith("- **v1.33（2026-10-26）**：**这台没有这个零件**（U34，§4.2）")
     for needed in ("`absent_from_start`", "`assertable_states`", "`states.absent_keys`",
                    "`events_from_actions`", "「一开始就不在（这台没有它）」",
