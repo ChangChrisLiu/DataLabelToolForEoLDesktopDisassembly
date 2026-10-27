@@ -166,6 +166,16 @@ scan:
       The sheet carries a `dupli` row 40 for it (the annotator reported the
       one-frame lag on 2026-10-26); the OAK/RS captures 040 are that row's
       extra shots and RGB401 the scanner's.
+  56:
+    duplicate_folders: [45]
+    reason: >-
+      46 folders for 45 rows, and every camera has 46 captures: RGB441 -> RGB451
+      changes nothing but the coin-cell's reflection (screw 9 is already out in
+      RGB441; RGB411 -> RGB421 still shows a screw hole appearing), and RGB461
+      has the motherboard out (row 45). So capture 45 is a second shot of the
+      state after row 44; the sheet carries a `dupli` row 45 for it (the
+      annotator reported the one-frame lag on 2026-10-27). OAK/RS captures 045
+      are that row's extra shots.
   61:
     skipped_steps: [26]
     reason: >-
