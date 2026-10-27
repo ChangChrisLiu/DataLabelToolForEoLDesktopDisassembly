@@ -24,8 +24,8 @@ from typing import Optional
 from tda.ui import session_api as api
 
 __all__ = [
-    "COMMIT_KEY", "CardItem", "DONE", "GuideFacts", "GuidePlan", "NOW", "TODO", "WARN",
-    "PHASES", "plan_for", "steps_text",
+    "COMMIT_KEY", "CardItem", "DONE", "GuideFacts", "GuidePlan", "NOW", "POSE_START", "TODO",
+    "WARN", "PHASES", "plan_for", "pose_cut_text", "segment_start_of", "steps_text",
 ]
 
 #: Marker states of one line of the numbered list.
@@ -111,6 +111,9 @@ class GuideFacts:
     #: The start frame is the *first* step (browsing forward): the machine
     #: whole, not taken apart (U2b round 2, I3).
     forward_start: bool = False
+    #: The frame is the first of its pose segment, not of the walk (task U37):
+    #: :func:`pose_cut_text`, ``第 36 步翻转机箱``; ``""`` elsewhere.
+    pose_cut: str = ""
     frame_confirmed: bool = False
     roi_stored: bool = False
     roi_editing: bool = False
@@ -267,6 +270,35 @@ def steps_text(steps) -> str:
     return "、".join(out)
 
 
+#: Where a start card that is not the walk's start comes from (task U37): the
+#: frame is the first of its pose segment, and nothing drawn across the cut
+#: applies to it. ``cut`` is :func:`pose_cut_text`.
+POSE_START = "位姿段的起始帧：{cut}，另起一段，这一段的形状要重新画"
+POSE_CUT_REORIENT = "第 {k} 步翻转机箱"
+POSE_CUT_BREAK = "第 {k} 步是位姿断点"
+
+
+def segment_start_of(rows) -> Optional[dict]:
+    """The ``segment_start`` the card's rows carry (task U37), or ``None``.
+
+    :data:`tda.ui.session_tasks.SEGMENT_START`, spelled here because this
+    module reads card rows without importing the session's.
+    """
+    for row in rows or ():
+        found = row.get("segment_start") if isinstance(row, dict) else None
+        if isinstance(found, dict) and found.get("cut") is not None:
+            return found
+    return None
+
+
+def pose_cut_text(segment_start: Optional[dict]) -> str:
+    """``第 36 步翻转机箱`` / ``第 8 步是位姿断点``; ``""`` for ``None``."""
+    if not segment_start or segment_start.get("cut") is None:
+        return ""
+    template = POSE_CUT_REORIENT if segment_start.get("reorient") else POSE_CUT_BREAK
+    return template.format(k=int(segment_start["cut"]))
+
+
 def _label(item: CardItem) -> str:
     return item.label or item.instance
 
@@ -290,6 +322,10 @@ def _title(facts: GuideFacts) -> str:
     if facts.neighbour is None:
         look = "还没开始拆的样子" if facts.forward_start else "已经拆完的样子"
         return f"第 {step} 帧（起点：{look}）"
+    if facts.pose_cut:
+        # the neighbour is across a flip or a pose break: nothing to compare
+        # with, everything to draw (task U37)
+        return f"第 {step} 帧（位姿段的起始帧：{facts.pose_cut}）"
     return f"第 {step} 帧（对照第 {facts.neighbour} 帧）"
 
 

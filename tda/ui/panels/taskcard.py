@@ -66,6 +66,7 @@ from tda.ui.gallery import (
     gallery_header,
     is_component_view,
 )
+from tda.ui.guide import POSE_START, pose_cut_text, segment_start_of
 from tda.ui.panels import session_is_open
 from tda.ui.panels.frame_note import NoteLine
 from tda.ui.session_cable import LABEL_ZH as CABLE_ZH
@@ -210,7 +211,8 @@ def _gallery_header(text: str, kinds: list[str], done: list[bool], blockers: int
 def card_header(step: Optional[int], neighbour: Optional[int],
                 kinds: Optional[list[str]] = None, first: Optional[int] = None,
                 last: Optional[int] = None, done: Optional[list[bool]] = None,
-                blockers: int = 0, confirmed: bool = False, gallery: str = "") -> str:
+                blockers: int = 0, confirmed: bool = False, gallery: str = "",
+                pose_cut: str = "") -> str:
     """The sentence above the list: what *this* frame's list is (ruling U2b-3).
 
     Built from the rows' kinds (round 2): "多了…要画回去" over rows that only
@@ -228,6 +230,10 @@ def card_header(step: Optional[int], neighbour: Optional[int],
     ``gallery`` is a components-gallery shot's sentence (task U10,
     :func:`tda.ui.gallery.gallery_header`): such a shot has no neighbour and no
     start frame, only its parts, and its header says so.
+    ``pose_cut`` (:func:`tda.ui.guide.pose_cut_text`) is a start card whose
+    frame is the first of its pose segment, not of the walk (task U37): the
+    neighbour is across a flip or a pose break, and the header says that
+    rather than "起点".
     """
     if step is None:
         return ""
@@ -237,8 +243,10 @@ def card_header(step: Optional[int], neighbour: Optional[int],
     work = [k for k in kinds if k != api.KIND_CONFIRM]
     if gallery:
         return _gallery_header(gallery, kinds, flags, blockers, confirmed)
-    if neighbour is None:
-        if last is not None and int(step) == int(last):
+    if neighbour is None or pose_cut:
+        if neighbour is not None:
+            where = POSE_START.format(cut=pose_cut)
+        elif last is not None and int(step) == int(last):
             where = "起点，已经拆完的样子"
         elif first is not None and int(step) == int(first):
             where = "起点，还没开始拆的样子"
@@ -775,7 +783,8 @@ class TaskCardPanel(QWidget):
         self._card: list[dict] = []
         self._editing: Optional[str] = None
         self._editing_bench = False
-        #: Is the frame on screen the start frame (no neighbour)?
+        #: Is the frame on screen a start frame -- no neighbour, or the first
+        #: frame of its pose segment (task U37)?
         self._start = False
         #: What the header was built from at the last refresh, so that a change
         #: in the pane can re-say it without asking the session again.
@@ -889,7 +898,9 @@ class TaskCardPanel(QWidget):
         rows = self._session.task_card() if opened else []
         self._card = [dict(r) for r in rows]
         step, neighbour = self._frame_pair() if opened else (None, None)
-        self._start = opened and neighbour is None
+        # a neighbour across a flip or a pose break is no neighbour (U37)
+        pose_cut = pose_cut_text(segment_start_of(rows)) if neighbour is not None else ""
+        self._start = opened and (neighbour is None or bool(pose_cut))
         steps = list(self._session.steps()) if opened else []
         kinds = [str(r.get("kind", api.KIND_CONFIRM)) for r in rows]
         done = [bool(r.get("done", False)) for r in rows]
@@ -900,7 +911,7 @@ class TaskCardPanel(QWidget):
                                   first=min(steps) if steps else None,
                                   last=max(steps) if steps else None, done=done,
                                   confirmed=self._confirmed,
-                                  gallery=self._gallery_text(step))
+                                  gallery=self._gallery_text(step), pose_cut=pose_cut)
                              if opened else {})
         self._blockers = self.problem_count()
         self._paint_header()

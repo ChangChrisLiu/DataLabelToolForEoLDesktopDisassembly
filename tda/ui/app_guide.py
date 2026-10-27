@@ -498,12 +498,13 @@ class GuideMixin:
         if self._edit_facts[0] != editing:
             self._note_edit_facts(refresh=False)
         _inst, pixels, dirty = self._edit_facts
+        card_rows = self.task_card.rows()
         items = tuple(
             G.CardItem(str(row.get("instance", "")), str(row.get("kind", "")),
                        bool(row.get("done", False)),
                        instance_label(str(row.get("instance", "")), row.get("cls"),
                                       row.get("attrs")))
-            for row in self.task_card.rows()
+            for row in card_rows
         )
         roi_editing = bool(self.roi_editing)
         has_image = bool(self.tools_enabled) if opened else False
@@ -515,6 +516,9 @@ class GuideMixin:
         if opened and key is not None and neighbour is None:
             steps = self.session.steps()
             forward_start = bool(steps) and int(key.step) == min(steps) != max(steps)
+        # the first frame of its pose segment: the card says where the cut is (U37)
+        pose_cut = (G.pose_cut_text(G.segment_start_of(card_rows))
+                    if opened and neighbour is not None else "")
         return G.GuideFacts(
             mode=self.mode, is_open=opened, has_image=has_image,
             raw_missing="" if has_image or not opened else self._raw_missing_reason(),
@@ -522,6 +526,7 @@ class GuideMixin:
             step=None if key is None else int(key.step),
             neighbour=neighbour,
             forward_start=forward_start,
+            pose_cut=pose_cut,
             gallery=getattr(self, "gallery_title_text", str)(),   # 零件合照 (U10)
             frame_confirmed=getattr(self, "_frame_status_seen", "") in _VERIFIED,
             roi_stored=roi_stored,

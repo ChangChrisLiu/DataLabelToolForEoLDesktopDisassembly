@@ -187,9 +187,9 @@ def split_rows_at(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
 
     The card diffed against ``neighbour`` (the frame the walk came from).
     ``only`` narrows it to one instance. No rows on a start frame (no
-    neighbour) and on a ``dupli`` / ``failed`` step, whose card is a single
-    confirmation -- the same gates :func:`tda.ui.session_tasks.task_card_for`
-    has.
+    neighbour, or a neighbour in another pose segment -- task U37) and on a
+    ``dupli`` / ``failed`` step, whose card is a single confirmation -- the
+    same gates :func:`tda.ui.session_tasks.task_card_for` has.
     """
     if is_component_view(view):
         return []   # a gallery shot has no state, so no boundary (task U10)
@@ -200,12 +200,16 @@ def split_rows_at(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
         return []
     if rec.dupli or rec.step_type in _CONFIRM_ONLY:
         return []
-    instances = instances_of(db, desktop, cache)
     here_key, there_key = FrameKey(desktop, step, view), FrameKey(desktop, neighbour, view)
+    seg_here = pose_segment_of(db, here_key, cache)
+    seg_there = pose_segment_of(db, there_key, cache)
+    if seg_here != seg_there:
+        return []   # the first frame of its pose segment: a start card (task U37)
+    instances = instances_of(db, desktop, cache)
     state_here = state_of(db, tax, desktop, step, cache)
     state_there = state_of(db, tax, desktop, neighbour, cache)
-    roi_here = db.bench_roi(desktop, view, pose_segment_of(db, here_key, cache))
-    roi_there = db.bench_roi(desktop, view, pose_segment_of(db, there_key, cache))
+    roi_here = db.bench_roi(desktop, view, seg_here)
+    roi_there = db.bench_roi(desktop, view, seg_there)
     needs_here = needs_geom(instances, state_here, tax, bench_roi=roi_here)
     needs_anywhere = needs_geom(instances, state_here, tax)
     needs_there = needs_geom(instances, state_there, tax, bench_roi=roi_there)
