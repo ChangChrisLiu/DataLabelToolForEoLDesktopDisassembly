@@ -132,6 +132,8 @@ VIEW = "scan"
 PACK_VERSION = "1"
 VERIFIED = "verified"
 VISIBLE = "visible"
+#: The label a painted part with no annotation may carry (画框外 et al., U39).
+OUT_OF_VIEW = "out_of_view"
 OCCLUDED_FULL = "occluded_full"
 #: Paint order of the compiler's placement groups in the label map (bottom first).
 GROUP_RANK = {"in_chassis": 0, "on_bench": 1, "context": 2}
@@ -431,15 +433,21 @@ def paint_order(compiled, patched: set[str], present: Sequence[str]) -> tuple[li
     return loose + layered + sorted(k for k in patched if k in present), pairs
 
 
+def _out_of_view(compiled, key: str) -> bool:
+    """Did the compiler label ``key`` ``out_of_view`` on this frame? (no annotation: U39)"""
+    found = compiled.instances.get(key)
+    return found is not None and str(found.visibility) == OUT_OF_VIEW
+
+
 def frame_label_map(anns: list[dict], hw: tuple[int, int], key_to_id: dict[str, int],
                     compiled, patched: set[str]) -> tuple[np.ndarray, dict]:
     """The 16-bit instance-id map of one frame, and the decoded masks.
 
     ``anns`` are the frame's annotations; their ``segmentation`` (the confirmed
     visible mask) is what is painted -- nothing is recompiled here. A part the
-    compiler painted with no annotation on the frame -- its shape is there but
-    the frame says 画框外, out of this camera's picture (task U39) -- has
-    nothing to paint.
+    compiler painted whose label is ``out_of_view`` has no annotation and
+    nothing to paint (task U39); any other painted part without an annotation
+    is not expected and still fails loudly (``KeyError``), as it always did.
     """
     visible = {a["attributes"]["instance_key"]: _decode(a["segmentation"], hw) for a in anns}
     order, pairs = paint_order(compiled, patched,
@@ -447,8 +455,8 @@ def frame_label_map(anns: list[dict], hw: tuple[int, int], key_to_id: dict[str, 
     label = np.zeros(hw, dtype=np.uint16)
     tail = [k for k in order if k in patched]
     for key in order[:len(order) - len(tail)]:
-        if key not in visible:
-            continue                     # painted, not annotated: 画框外 (U39)
+        if key not in visible and _out_of_view(compiled, key):
+            continue                     # painted, labelled out of the picture (U39)
         label[visible[key]] = key_to_id[key]
     for upper, lower in pairs:
         if upper in visible and lower in visible:

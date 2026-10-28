@@ -244,7 +244,8 @@ def _item(instance: str, kind: str, changes: dict, done: bool,
     return row
 
 
-def _mark_off_frame(db: Db, key: FrameKey, items: list[dict]) -> list[dict]:
+def _mark_off_frame(db: Db, tax: Taxonomy, key: FrameKey, items: list[dict],
+                    cache: Optional[InputCache] = None) -> list[dict]:
     """The rows of parts said 画框外 on ``key`` (task U39), in place.
 
     A row asking for a shape (✚) or its new version (✂) is done: there is
@@ -253,12 +254,16 @@ def _mark_off_frame(db: Db, key: FrameKey, items: list[dict]) -> list[dict]:
     compiler's :func:`~tda.core.compiler.marked_absent` -- ``out_of_view``
     with no pixels -- which also settles ``missing_shape`` and the ✂ question
     (:func:`tda.core.split_rows.split_state`), so the card agrees with ``Space``.
+    Only a part in its place can be 画框外 (round 3): one on the bench is in
+    the picture, its row is left as it is (the compiler still says
+    ``bench_missing`` for it).
     """
     try:
         overrides = db.frame_overrides(key) or {}
     except Exception:  # noqa: BLE001 - a missing table is "none set"
         return items
-    off = {name for name, fo in overrides.items() if marked_absent(fo)}
+    off = {name for name, fo in overrides.items() if marked_absent(fo)
+           and placement_of(db, tax, key, name, cache) != ON_BENCH}
     if not off:
         return items
     for row in items:
@@ -407,7 +412,7 @@ def task_card_for(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
         return [_item(f"step {step}", api.KIND_CONFIRM,
                       {"nothing": (str(neighbour), str(step))}, confirmed, None, span)]
     # 画框外 (task U39): nothing of the part to draw in this picture
-    _mark_off_frame(db, FrameKey(desktop, step, view), items)
+    _mark_off_frame(db, tax, FrameKey(desktop, step, view), items, cache)
     return _ordered(items, instances)
 
 
@@ -464,7 +469,7 @@ def _start_card(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
         items = [_item(f"step {step}", api.KIND_CONFIRM, {}, confirmed, None, None)]
     else:
         # 画框外 (task U39) is done, so after the open rows like a drawn one
-        _mark_off_frame(db, FrameKey(desktop, step, view), items)
+        _mark_off_frame(db, tax, FrameKey(desktop, step, view), items, cache)
         items = _bottom_up(items, instances, tax)
     if segment_start is not None:
         for row in items:

@@ -34,7 +34,13 @@ import numpy as np
 
 from tda.core import masks
 from tda.core.db import Db
-from tda.core.model import OCCLUDER_CABLE, FrameKey, is_component_view, is_context_key
+from tda.core.model import (
+    OCCLUDER_CABLE,
+    FrameKey,
+    Placement,
+    is_component_view,
+    is_context_key,
+)
 from tda.core.occluder import (
     FULL,
     OFF_FRAME,
@@ -73,6 +79,8 @@ __all__ = [
 
 #: The op ``Ctrl+I`` logs: one instance's override on several frames.
 OP_RANGE = "set_frame_overrides"
+#: A part lying on the staging area: never 画框外 (task U39 round 3).
+ON_BENCH_PLACEMENT = Placement.ON_BENCH.value
 #: The key both directions of a cable op carry: who said it, so that the undo
 #: and the redo re-sign a confirmed frame in the same name (:func:`apply_cable`).
 CABLE_BY = "cable_by"
@@ -499,7 +507,8 @@ class CableMixin:
         """The parts said 画框外 on the open frame (task U39); none on a gallery shot.
 
         There the same row is the gallery's own 「看不见」 (task U10), and on a
-        框外零件 it is 「不在这张里」 (task U18): neither is listed.
+        框外零件 it is 「不在这张里」 (task U18): neither is listed. Nor is a part
+        lying on the bench (round 3): the staging area is in the picture.
         """
         if self.gallery:
             return frozenset()
@@ -507,8 +516,16 @@ class CableMixin:
             found = self.db.frame_overrides(self.current()) or {}
         except Exception:  # noqa: BLE001 - a missing table is "none set"
             return frozenset()
-        return frozenset(name for name, fo in found.items()
-                         if off_frame(fo) and not is_context_key(name))
+        named = [name for name, fo in found.items()
+                 if off_frame(fo) and not is_context_key(name)]
+        if not named:
+            return frozenset()
+        try:
+            here = self.compiled().instances
+        except Exception:  # noqa: BLE001 - no image, no frame row: placement unknown
+            here = {}
+        return frozenset(name for name in named
+                         if getattr(here.get(name), "placement", None) != ON_BENCH_PLACEMENT)
 
     def cable_reasons(self) -> dict[str, str]:
         """``instance -> occluder`` of the labels :meth:`cable_labels` lists.

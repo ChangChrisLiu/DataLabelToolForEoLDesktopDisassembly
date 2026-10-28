@@ -804,10 +804,12 @@ def compile_frame(
     A ``visibility`` of ``out_of_view`` -- from an override, or from a shape
     that is missing altogether -- leaves neither a visible mask nor a box
     behind. On a sequence frame an override saying so with no pixels of its
-    own (:func:`marked_absent`, 画框外 -- task U39) also keeps the instance out
-    of step 5: the part is not in this picture, so none of its layers is
-    painted and it hides nothing; its amodal (the keyframe's shape through
-    the transform) is still reported, as the whole part's estimate.
+    own (:func:`marked_absent`, 画框外 -- task U39) also keeps an instance in
+    its place out of step 5: the part is not in this picture, so none of its
+    layers is painted and it hides nothing; its amodal (the keyframe's shape
+    through the transform) is still reported, as the whole part's estimate.
+    A part on the bench is not 画框外 (the staging area is in the picture): it
+    is painted as before and its missing box is still ``bench_missing``.
     """
     canvas = (int(hw[0]), int(hw[1]))
     problems: list[str] = []
@@ -875,8 +877,11 @@ def compile_frame(
         # 画框外 (task U39): a part said to be outside this view's picture is
         # not in it, so it takes no pixel and hides nothing -- no layer of it is
         # painted, whatever shape carries over from the segment's other frames.
-        # The shape itself stays (stored, and as this record's amodal estimate)
-        outside = not gallery and marked_absent(frame_overrides.get(inst))
+        # The shape itself stays (stored, and as this record's amodal estimate).
+        # Only a part in its place can be 画框外: the staging area is in the
+        # picture, so a part on the bench is painted as before (round 3)
+        outside = (not gallery and placement_of[inst] != ON_BENCH
+                   and marked_absent(frame_overrides.get(inst)))
         for part, here, mask in _shape_parts(kf, transform, canvas):
             if mask is None:
                 problems.append(f"shape_size_mismatch:{inst}/{part.name}")

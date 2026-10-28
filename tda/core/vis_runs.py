@@ -56,6 +56,7 @@ from tda.core.vis_review import (
     VERDICT_VIEWPOINT,
     Run,
     mark_whole,
+    off_frame_row,
     order_of,
     runs_of,
     stamp_covers,
@@ -236,8 +237,9 @@ def cross_view(entry: dict, sides: dict[str, Side], here: str,
     :data:`INVISIBLE` / is ``occluded_partial``), ``absent`` (confirmed frames
     without the part), ``unconfirmed`` (steps not confirmed there),
     ``reasons`` (``{cable|viewpoint|other_unlabeled|off_frame|manual|computed:
-    frames}`` over the frames it is not seen on; ``off_frame`` is a hand
-    ``out_of_view``, 画框外 -- task U39), ``by`` (the parts hiding it there:
+    frames}`` over the frames it is not seen on; ``off_frame`` is 画框外 --
+    task U39: a hand ``out_of_view`` with no pixels of its own,
+    :func:`~tda.core.vis_review.off_frame_row`), ``by`` (the parts hiding it there:
     the run's own here, ``names(view, step, part, row)`` on a sample of the
     other view's hidden frames) and ``highlight`` -- another view that sees it
     on these steps.
@@ -271,11 +273,11 @@ def cross_view(entry: dict, sides: dict[str, Side], here: str,
             if label == Visibility.OCCLUDED_PARTIAL.value:
                 row["partial"] += 1
             if label != Visibility.VISIBLE.value or found.get("occluder"):
-                manual = found.get("hand_visibility") is not None
+                # 画框外 is the compiler's own test of the override (round 3):
+                # by hand, out_of_view, no pixels of its own
                 why = (str(found["occluder"]) if found.get("occluder")
-                       else OFF_FRAME_REASON
-                       if manual and label == Visibility.OUT_OF_VIEW.value
-                       else "manual" if manual
+                       else OFF_FRAME_REASON if off_frame_row(found)
+                       else "manual" if found.get("hand_visibility") is not None
                        else "computed")
                 if label != Visibility.VISIBLE.value:
                     row["reasons"][why] = row["reasons"].get(why, 0) + 1

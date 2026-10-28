@@ -40,6 +40,10 @@ def test_the_paragraph_is_at_the_end_of_4_2():
                    "一次 `Ctrl+Z`", "不经过它，免得误触", "按 `` ` `` 就是撤回",
                    "「撤回（被线挡住 / 画框外）」", "不要求先有形状", "已拆下", "台面上",
                    "当作整件的估计", "U10 第二轮", "**不报 `missing_shape`**",
+                   # round 3: the compiler's own test; never on the bench; no silent skip
+                   "**第三轮**（审查员三条）", "**没有自己的像素**", "`vis_review.off_frame_row`",
+                   "`hand_pixels`", "仍写「手动」", "台面上的零件", "仍报 `bench_missing`",
+                   "照旧 `KeyError`，不静默藏起来",
                    # round 2: it takes no pixel and hides nothing
                    "**画框外的零件不参与遮挡**", "不占像素、也不挡住它下面的零件",
                    "形状仍存在库里，撤回画框外后照常生效", "开冲突交给 Review",

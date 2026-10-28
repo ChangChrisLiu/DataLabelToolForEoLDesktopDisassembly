@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Iterable, Optional
 
-from tda.core.model import OCCLUDER_CABLE, OCCLUDER_OTHER, OCCLUDER_VIEWPOINT, Visibility
+from tda.core.model import OCCLUDER_CABLE, OCCLUDER_OTHER, OCCLUDER_VIEWPOINT
 from tda.core.vis_review import LAYER_PREFIX
 from tda.core.vis_runs import OFF_FRAME_REASON
 from tda.ui.class_names import class_zh, visibility_zh
@@ -91,8 +91,11 @@ def entry_text(entry: dict) -> str:
 
     Task U36: a run says how many frames it is (a gap -- a frame with no
     image -- shows as fewer than the span), and 「全程」 when it is every
-    confirmed frame the part has in this view. Task U39: an ``out_of_view``
-    set by hand is 画框外 -- 「out_of_view（原因: 画框外，手动）」.
+    confirmed frame the part has in this view. Task U39: a run that is 画框外
+    (``off_frame``: by hand, ``out_of_view``, no pixels of its own --
+    :func:`tda.core.vis_review.off_frame_row`) says so --
+    「out_of_view（原因: 画框外，手动）」; a hand ``out_of_view`` over a mask
+    drawn by hand reads as before (round 3).
     """
     steps = entry.get("steps") or [entry.get("step", "?")]
     why: list[str] = []
@@ -100,8 +103,7 @@ def entry_text(entry: dict) -> str:
     if who:
         why.append(who)
     reason = entry.get("occluder")
-    if (not reason and entry.get("manual")
-            and entry.get("visibility") == Visibility.OUT_OF_VIEW.value):
+    if not reason and entry.get("off_frame"):
         reason = OFF_FRAME_REASON
     if reason:
         why.append(f"原因: {REASON_ZH.get(str(reason), str(reason))}")
