@@ -28,6 +28,7 @@ from tda.core.truth_refusals import (
     BLOCKING_PROBLEMS,
     CONFLICT,
     FROZEN,
+    NO_PHOTO,
     PROBLEM,
     Blocker,
     VerifyRefused,
@@ -87,10 +88,14 @@ class VerifyMixin:
         otherwise it is ignored and the frame is compiled. Passing a stale or
         wrong frame can therefore cost a recompilation and nothing else.
 
-        Raises :class:`ValueError` and writes no truth row in four cases, and
+        Raises :class:`ValueError` and writes no truth row in five cases, and
         the last two are the same rule twice: **a confirmation may never be how
         a frozen row changes**.
 
+        * the frame has **no photo**: its row is flagged ``missing`` (task
+          U38). Nothing is compiled; there is no picture to confirm anything
+          over. D61's scanner step 26 was confirmed over a cached copy of step
+          27's photo -- 23 signed rows on a step nobody photographed.
         * an **open conflict** of this frame. A disagreement is the one thing
           in the truth table only a human can settle, and until it is settled
           nobody knows which value they are confirming. Confirming anyway used
@@ -141,6 +146,8 @@ class VerifyMixin:
 
         reasons = blocking_reasons(self.db, key, frame, thorough=True)
         kind = reasons[0].kind if reasons else None
+        if kind == NO_PHOTO:
+            raise VerifyRefused(refused + reasons[0].text, reasons)
         if kind == CONFLICT:
             raise VerifyRefused(
                 refused + "conflict(s) "

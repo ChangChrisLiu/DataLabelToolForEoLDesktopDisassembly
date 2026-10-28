@@ -60,7 +60,8 @@ from tda.core.rawroot import resolve_raw
 __all__ = [
     "DbRoiLookup", "build_cache", "build_thumbs", "burst_metrics", "cache_path",
     "cached_image_path", "choose_scan_image", "configured_cache_dir", "full_frame",
-    "measure_roi", "oak_chassis_candidates", "roi_bands", "scan_bed_candidates",
+    "has_no_photo", "measure_roi", "missing_copies", "oak_chassis_candidates",
+    "prune_missing", "roi_bands", "scan_bed_candidates",
     "scan_chassis_candidates", "suggest_roi", "suggest_roi_over", "thumb_path",
     "OAK_ROI_PAD", "ROI_SAMPLE_FRAMES",
 ]
@@ -481,6 +482,27 @@ def cache_path(cache_dir, key: FrameKey, ext: str) -> str:
     return f"{root}/{key.view}/D{key.desktop:02d}/s{key.step:03d}.{ext}"
 
 
+def has_no_photo(row: Optional[dict]) -> bool:
+    """Does this ``frame`` row say the frame has **no photo of its own**?
+
+    True for a row flagged ``missing`` -- a step this view never photographed
+    (spec 4.2, 缺帧处理) -- and for a row with no stored path; whatever its
+    ``aux`` still names. Such a frame has no pixels at all: a file at its
+    cache name (:func:`cached_image_path`), or a ``cache_path`` left in its
+    ``aux``, is a copy of some *other* photo that once had this step number.
+    D61's scanner step 26 is the case (task U38): it was ``RGB261`` until the
+    index declared the step a missed shot and ``RGB261`` became step 27, and
+    the copy cached under ``s026.png`` showed the annotator step 27's picture
+    under step 26's number, and the annotator confirmed it.
+
+    ``None`` (no row at all) is not such a row: nothing says the frame is
+    missing, and the callers that pass one keep reading the cache as before.
+    """
+    if row is None:
+        return False
+    return bool(row.get("missing")) or not row.get("path")
+
+
 def cached_image_path(cache_dir, key: FrameKey) -> Optional[str]:
     """The local copy of one frame, by the convention :func:`build_cache` writes.
 
@@ -694,8 +716,12 @@ def build_cache(index: dict[int, DesktopIndex], cache_dir: str, views=("scan",),
         if wanted is not None and desktop not in wanted:
             continue
         frames = index[desktop].frames
+        # a step the index says has no photo is never copied (task U38): a copy
+        # under its number would be shown as its picture
+        absent = set(index[desktop].missing)
         for view in views:
-            keys = sorted((k for k in frames if k.view == view), key=lambda k: k.step)
+            keys = sorted((k for k in frames if k.view == view and k not in absent),
+                          key=lambda k: k.step)
             if not keys:
                 continue
             ext = VIEW_EXT.get(view, "png")
@@ -766,6 +792,125 @@ def build_cache(index: dict[int, DesktopIndex], cache_dir: str, views=("scan",),
 
     stats["elapsed_s"] = round(time.perf_counter() - started, 2)
     return stats
+
+
+# ---------------------------------------------------------------------------
+# copies of steps that have no photo (task U38)
+# ---------------------------------------------------------------------------
+def missing_rows_from_db(db_path: str, views: Iterable[str],
+                         desktops: Iterable[int]) -> set[FrameKey]:
+    """The frame rows flagged ``missing`` in the database (opened read-only)."""
+    import sqlite3
+
+    if not db_path or not os.path.isfile(db_path):
+        return set()
+    uri = "file:" + _norm(os.path.abspath(db_path)) + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    found: set[FrameKey] = set()
+    try:
+        for desktop in desktops:
+            for view in views:
+                for (step,) in conn.execute(
+                        "SELECT step FROM frame WHERE desktop=? AND view=? "
+                        "AND COALESCE(missing, 0)=1", (int(desktop), str(view))):
+                    found.add(FrameKey(int(desktop), int(step), str(view)))
+    finally:
+        conn.close()
+    return found
+
+
+def missing_copies(index: dict[int, DesktopIndex], cache_dir: str, views=("scan",),
+                   desktops=None, db_missing: Iterable[FrameKey] = ()) -> list[dict]:
+    """What the cache still holds for steps that have **no photo** (task U38).
+
+    A step is one when the index lists it as ``missing`` -- or, with
+    ``db_missing``, when its frame row is flagged ``missing`` -- and the index
+    has no frame for it. Whatever the cache holds under its number was copied
+    from another photo that had the number before the index changed: D61's
+    scanner step 26 was ``RGB261`` until U25 declared it a missed shot, and
+    ``s026.png``, its thumbnail and its manifest record stayed.
+    :func:`build_cache` never copies such a step, and nothing ever deletes what
+    an earlier run copied: this finds it.
+
+    One ``{"desktop", "step", "view", "files", "manifest"}`` per step with
+    anything left -- ``files`` the full copy and the thumbnail that exist,
+    ``manifest`` whether ``manifest.json`` still lists the step -- in
+    ``(desktop, view, step)`` order.
+    """
+    root = _norm(cache_dir).rstrip("/")
+    wanted = None if desktops is None else {int(d) for d in desktops}
+    from_db: dict[tuple[int, str], set[int]] = {}
+    for key in db_missing:
+        from_db.setdefault((int(key.desktop), str(key.view)), set()).add(int(key.step))
+    numbers = set(index) | {d for d, _v in from_db}
+    out: list[dict] = []
+    for desktop in sorted(numbers):
+        if wanted is not None and desktop not in wanted:
+            continue
+        di = index.get(desktop)
+        frames = di.frames if di is not None else {}
+        for view in views:
+            steps = set(from_db.get((desktop, view), set()))
+            if di is not None:
+                steps |= {int(k.step) for k in di.missing if k.view == view}
+            steps -= {int(k.step) for k in frames if k.view == view}
+            if not steps:
+                continue
+            ext = VIEW_EXT.get(view, "png")
+            manifest = _load_manifest(f"{root}/{view}/D{desktop:02d}/{MANIFEST_NAME}")
+            for step in sorted(steps):
+                key = FrameKey(desktop, step, view)
+                files = [p for p in (cache_path(cache_dir, key, ext), thumb_path(cache_dir, key))
+                         if os.path.isfile(p)]
+                listed = str(step) in manifest
+                if files or listed:
+                    out.append({"desktop": desktop, "step": step, "view": view,
+                                "files": files, "manifest": listed})
+    return out
+
+
+def prune_missing(found: list[dict], cache_dir: str) -> dict:
+    """Delete what :func:`missing_copies` found: the files and the manifest records.
+
+    The manifest record goes too: the manifest is the authority on which steps
+    a desktop has, and :func:`build_thumbs` would otherwise make the thumbnail
+    again from it. Returns ``{"files", "records", "failures"}`` -- what was
+    deleted, and ``{"path", "error"}`` for what could not be (a file in use is
+    left, reported, and the run goes on).
+    """
+    root = _norm(cache_dir).rstrip("/")
+    stats: dict[str, Any] = {"files": 0, "records": 0, "failures": []}
+    by_manifest: dict[str, list[int]] = {}
+    for item in found:
+        for path in item["files"]:
+            try:
+                os.remove(path)
+                stats["files"] += 1
+            except OSError as exc:
+                stats["failures"].append({"path": path, "error": f"{type(exc).__name__}: {exc}"})
+        if item["manifest"]:
+            path = f"{root}/{item['view']}/D{int(item['desktop']):02d}/{MANIFEST_NAME}"
+            by_manifest.setdefault(path, []).append(int(item["step"]))
+    for path, steps in by_manifest.items():
+        manifest = _load_manifest(path)
+        dropped = [s for s in steps if manifest.pop(str(s), None) is not None]
+        if dropped:
+            try:
+                _write_manifest(path, manifest)
+                stats["records"] += len(dropped)
+            except OSError as exc:
+                stats["failures"].append({"path": path, "error": f"{type(exc).__name__}: {exc}"})
+    return stats
+
+
+def _missing_line(item: dict) -> str:
+    """One step's leftovers, for the log."""
+    what = [os.path.basename(p) if "/thumbs/" not in _norm(p) else "thumbs/" + os.path.basename(p)
+            for p in item["files"]]
+    if item["manifest"]:
+        what.append("manifest record")
+    return (f"D{int(item['desktop']):02d} s{int(item['step']):03d} {item['view']}: "
+            f"{', '.join(what)}")
 
 
 # ---------------------------------------------------------------------------
@@ -847,8 +992,42 @@ def _configure_raw(paths_path: str = DEFAULT_PATHS_PATH):
     return rawroot.configure(cfg if isinstance(cfg, dict) else {})
 
 
+def _run_prune(args, cache_dir: str, index_path: str, views, desktops) -> int:
+    """``--prune-missing``: delete the copies of steps with no photo; 1 on a failure."""
+    index = load_index(index_path)
+    gallery_frames_from_db(index, args.db or "", views, desktops)
+    found = missing_copies(index, cache_dir, views, desktops,
+                           missing_rows_from_db(args.db or "", views, desktops))
+    log = open(args.log, "a", encoding="utf-8", buffering=1) if args.log else None
+
+    def emit(line: str) -> None:
+        print(line, flush=True)
+        if log:
+            log.write(line + "\n")
+
+    try:
+        emit(f"[{time.strftime('%H:%M:%S')}] prune-missing views={views} "
+             f"desktops={args.first}-{args.last} cache={cache_dir}: {len(found)} step(s) "
+             f"with no photo have cached copies")
+        for item in found:
+            emit(f"  prune {_missing_line(item)}")
+        stats = prune_missing(found, cache_dir)
+        emit(f"[{time.strftime('%H:%M:%S')}] deleted {stats['files']} file(s) and "
+             f"{stats['records']} manifest record(s), failures={len(stats['failures'])}")
+        for item in stats["failures"]:
+            emit(f"  FAIL {item['path']}: {item['error']}")
+        return 1 if stats["failures"] else 0
+    finally:
+        if log:
+            log.close()
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     """CLI: build the cache for a range of desktops, logging progress.
+
+    Every run also lists what the cache still holds for steps with no photo
+    (:func:`missing_copies`, task U38); ``--prune-missing`` deletes exactly
+    that and does nothing else.
 
     Returns 0, or 1 when any step could not be cached (the failures are listed
     and counted in the log, so a shell or scheduler notices a partial run).
@@ -866,6 +1045,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                     help="measure every burst again instead of reusing the stored metrics")
     ap.add_argument("--force", action="store_true",
                     help="rebuild: measure again and re-copy every file")
+    ap.add_argument("--prune-missing", action="store_true",
+                    help="delete the cached copies (image, thumbnail, manifest record) of "
+                         "every step with no photo -- the index's missing steps and, with "
+                         "--db, the database's missing rows -- and stop: nothing is copied "
+                         "and the source drive is not read")
     # ``--db`` (add_thumb_args) is read for the components gallery's frames too
     add_thumb_args(ap)
     args = ap.parse_args(argv)
@@ -874,6 +1058,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     index_path = args.index or f"{_norm(cache_dir).rstrip('/')}/index.json"
     views = tuple(v.strip() for v in args.views.split(",") if v.strip())
     desktops = [d for d in range(args.first, args.last + 1)]
+    if args.prune_missing:  # the index and the cache only: no source drive
+        return _run_prune(args, cache_dir, index_path, views, desktops)
     if args.thumbs_only:  # the tier alone needs neither the index nor the source drive
         return run_thumb_cli(args, cache_dir, views, desktops)
 
@@ -931,6 +1117,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             code = 1
             emit(f"[{time.strftime('%H:%M:%S')}] {len(stats['failures'])} step(s) could not be "
                  f"cached - see the FAIL lines above")
+        # what an earlier run copied for a step that has no photo now (U38):
+        # said on every run, deleted only when asked
+        left = missing_copies(index, cache_dir, views, desktops,
+                              missing_rows_from_db(args.db or "", views, desktops))
+        if left:
+            emit(f"  {len(left)} step(s) with no photo still have cached copies of another "
+                 f"photo (the window does not show them): python -m tda.core.cache "
+                 f"--prune-missing deletes them")
+            for item in left:
+                emit(f"  stale {_missing_line(item)}")
         code = run_thumb_cli(args, cache_dir, views, desktops, emit) or code  # no-op w/o --thumbs
     finally:
         if log:

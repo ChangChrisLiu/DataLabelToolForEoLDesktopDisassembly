@@ -402,6 +402,8 @@ def test_every_sentence_says_what_to_do():
         # U2e: the refusals that are not compiler problems
         "open_conflict:": "K 保留旧的 / N 采用新的", "frozen_disagreement:": "按 F5",
         "inputs_changed:": "再按一次 Space",
+        # U38: a step with no photo -- nothing to do here but move on
+        "frame_missing:": "PgDn / PgUp",
     }
     assert {prefix for prefix, _ in PROBLEM_SENTENCES} == set(wants)
     for prefix, fix in wants.items():

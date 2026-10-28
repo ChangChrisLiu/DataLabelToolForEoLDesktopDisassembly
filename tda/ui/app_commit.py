@@ -13,6 +13,7 @@ from typing import Optional
 
 import numpy as np
 
+from tda.core.truth_refusals import FRAME_MISSING
 from tda.ui import app_actions as A
 from tda.ui import app_compat as compat
 from tda.ui import app_priors
@@ -726,6 +727,27 @@ class CommitMixin:
             if callable(hold):
                 hold(False)
 
+    def no_photo_text(self, step: int) -> str:
+        """What a refused confirmation of a step with no photo says (task U38)."""
+        word = self.frame_word(step)
+        return (f"{word} 没有照片（漏拍），不能确认 / {word} has no photo (a missed shot) "
+                f"and cannot be confirmed")
+
+    def no_photo_here(self) -> str:
+        """:meth:`no_photo_text` when the open frame's row is flagged ``missing``, else ``""``.
+
+        ``verify_frame`` refuses such a frame before anything else (task U38),
+        and it is the one gate ``Space`` and Review's ``Enter`` both reach: the
+        key guard lets ``Space`` through to it rather than answer "这一帧没有
+        图像" first, and the greyed button gives the same words as its reason.
+        """
+        if not compat.is_open(self.session):
+            return ""
+        key = self.session.current()
+        if not (self.db.get_frame(key) or {}).get("missing"):
+            return ""
+        return self.no_photo_text(key.step)
+
     def _confirm_frame(self) -> bool:
         if self.refuse_under_shape():
             return False      # the half-drawn shape would go with the frame (U5a)
@@ -757,6 +779,12 @@ class CommitMixin:
             self.timeline.refresh_statuses()
             self.refresh_desktop_counts()
             self.report(f"{self.frame_word(step)} confirmed{tail}")
+        elif any(str(row.get("code", "")).startswith(FRAME_MISSING)
+                 for row in getattr(self.task_card, "problem_rows", list)()):
+            # a step this view has no photo of (U38): not "incomplete" -- there
+            # is nothing here to complete, and nothing to do but move on
+            self.report(self.no_photo_text(step) + tail)
+            self.refresh_guidance()
         else:
             # One line, whatever the frame is missing.  A real start frame has
             # 60+ missing shapes, which put 2,550 characters into the one-line

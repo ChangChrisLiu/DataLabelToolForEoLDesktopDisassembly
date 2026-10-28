@@ -116,7 +116,10 @@ def test_an_aux_cache_path_on_the_raw_drive_is_resolved_too(tmp_path, monkeypatc
     db = Db(str(tmp_path / "tda.sqlite"))
     try:
         key = FrameKey(13, 41, "rs")
-        db.upsert_frame(key, "", {"cache_path": recorded(tmp_path, rel)}, None)
+        # the row's own path names a file that is not there, so only the aux
+        # copy can answer -- a row with no path at all has no photo (U38)
+        gone = recorded(tmp_path, rel.replace("original_color", "gone"))
+        db.upsert_frame(key, gone, {"cache_path": recorded(tmp_path, rel)}, None)
         assert Path(ImageCache(db, str(tmp_path / "cache")).image_path(key)) == g / MARKER / rel
     finally:
         db.close()

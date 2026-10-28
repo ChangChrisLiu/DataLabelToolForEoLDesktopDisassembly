@@ -579,6 +579,8 @@ def cmd_build_cache(args: argparse.Namespace) -> int:
         extra.append("--recompute")
     if args.force:
         extra.append("--force")
+    if getattr(args, "prune_missing", False):
+        extra.append("--prune-missing")
     # the components gallery's frames come from the database (task U10): it
     # holds the sheet-row photos the index still lists as steps. ``--db``
     # wins over paths.yaml, as for every other command.
@@ -610,6 +612,9 @@ def _add_build_cache(sub) -> None:
     p.add_argument("--log", default=None)
     p.add_argument("--recompute", action="store_true")
     p.add_argument("--force", action="store_true")
+    p.add_argument("--prune-missing", action="store_true",
+                   help="delete the cached copies of steps with no photo (index missing steps, "
+                        "the database's missing rows) and stop; nothing is copied")
     p.set_defaults(func=cmd_build_cache)
 
 

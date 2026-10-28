@@ -232,7 +232,7 @@ def _measure_hw(row: Optional[dict], key: FrameKey, cache_dir: Optional[str]
 
 def _store_hw(
     db: Db, key: FrameKey, row: Optional[dict], hw: tuple[int, int], source: str,
-    measured_from: Optional[str] = None,
+    measured_from: Optional[str] = None, drop_copy: bool = False,
 ) -> None:
     """Write a size, where it came from and which file it was read off.
 
@@ -242,10 +242,15 @@ def _store_hw(
     It is also the fallback :func:`_image_path` reads when no cache directory is
     known, so a database measured once keeps working when it is opened without
     one.
+
+    ``drop_copy`` removes a ``cache_path`` the row still carries: a missing
+    row's names another photo's copy (task U38).
     """
     aux = dict((row or {}).get("aux") or {})
     aux["hw"] = [int(hw[0]), int(hw[1])]
     aux["hw_source"] = source
+    if drop_copy:
+        aux.pop("cache_path", None)
     if measured_from:
         aux["cache_path"] = str(measured_from)
     db.upsert_frame(key, (row or {}).get("path"), aux, (row or {}).get("ts"))
@@ -265,10 +270,27 @@ def frame_hw(db: Db, key: FrameKey,
     ``cache_dir`` is where the local copies live; with it the measurement is a
     fast local read instead of one off the source drive (:func:`_image_path`).
     :class:`~tda.core.truth.TruthService` carries it for every compile.
+
+    A row flagged ``missing`` is **never measured** (task U38): the step has no
+    photo, so a file at its cache name -- or a ``cache_path`` left in its
+    ``aux`` -- is a copy of another photo that once had the number. Measuring
+    it is how D61's scanner step 26 came to say ``hw_source = measured`` with
+    ``cache_path`` naming step 27's picture after ``load-index`` had cleared
+    both. Its size is the view's nominal one, stored as :data:`HW_INFERRED`
+    without a ``cache_path``; a size measured before it went missing is
+    replaced by it the same way (spec 2.2: a row that turns missing keeps only
+    an inferred size).
     """
     row = db.get_frame(key)
     stored = _read_hw(row)
     source = ((row or {}).get("aux") or {}).get("hw_source")
+    if (row or {}).get("missing"):
+        kept = stored if stored is not None and source != HW_MEASURED else None
+        if kept is not None and "cache_path" not in ((row or {}).get("aux") or {}):
+            return kept
+        hw = kept if kept is not None else infer_hw(key.view)
+        _store_hw(db, key, row, hw, HW_INFERRED, drop_copy=True)
+        return hw
     if stored is not None and source == HW_MEASURED:
         return stored
     measured = _measure_hw(row, key, cache_dir)
