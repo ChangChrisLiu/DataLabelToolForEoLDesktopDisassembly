@@ -105,6 +105,8 @@ _REFINED: dict[tuple[str, str], dict[str, str]] = {
     },
     ("storage_drive", "kind"): {"ssd": "固态硬盘", "hdd": "机械硬盘"},
     ("expansion_card", "kind"): {"gpu": "显卡", "wlan": "无线网卡"},
+    # a misc part the log names: the chassis I/O panel (D36 "The USB part on the case")
+    ("misc_part", "name"): {"front_io_module": "机箱接口面板"},
     ("drive_cage", "of"): {"ssd": "固态硬盘支架", "hdd": "硬盘支架",
                            "optical": "光驱支架"},
     ("connector", "kind"): {
