@@ -3,9 +3,9 @@
 :meth:`tda.core.truth_verify.VerifyMixin.verify_frame` refuses a frame for five
 reasons, checked in this order:
 
-0. the frame has **no photo** -- its row is flagged ``missing`` (task U38):
-   there is nothing to confirm, and a cached file at its number is another
-   photo's;
+0. the frame has **no photo** -- its row is flagged ``missing`` or has no
+   stored path (task U38): there is nothing to confirm, and a cached file at
+   its number is another photo's;
 1. an **open conflict** about the frame -- a disagreement only a human settles;
 2. a **blocking compiler problem** (:data:`BLOCKING_PROBLEMS`);
 3. a **frozen disagreement** -- a row somebody confirmed that the current inputs
@@ -43,6 +43,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from tda.core.cache import has_no_photo
 from tda.core.compiler import CompiledFrame
 from tda.core.model import FrameKey
 from tda.core.truth_conflicts import (
@@ -70,7 +71,8 @@ BLOCKING_PROBLEMS = ("missing_shape:", "zorder_cycle:", "shape_size_mismatch:")
 OPEN_CONFLICT = "open_conflict:"
 FROZEN_DISAGREEMENT = "frozen_disagreement:"
 INPUTS_CHANGED = "inputs_changed:"
-#: The frame's row is flagged ``missing``: no photo, nothing to confirm (U38).
+#: The frame's row is flagged ``missing`` or has no path: no photo, nothing to
+#: confirm (U38).
 FRAME_MISSING = "frame_missing:"
 REFUSAL_CODES = (OPEN_CONFLICT, FROZEN_DISAGREEMENT, INPUTS_CHANGED, FRAME_MISSING)
 
@@ -128,7 +130,7 @@ def inputs_changed() -> Blocker:
 
 
 def no_photo() -> Blocker:
-    """The frame has no photo: its row is flagged ``missing`` (task U38).
+    """The frame has no photo: its row is flagged ``missing``, or has no path (task U38).
 
     A step this view never photographed -- a missed shot the index declares
     (``scan.<d>.skipped_steps``), a camera that did not fire -- carries the
@@ -182,12 +184,12 @@ def blocking_reasons(db, key: FrameKey, frame: FrameSource, *, thorough: bool,
     Nothing is written: a frozen disagreement is only *queued*, by the
     confirmation or by a refresh.  The race is not here: :func:`inputs_changed`.
 
-    A frame whose row is flagged ``missing`` has one reason in either mode,
-    :func:`no_photo`, and ``frame`` is not called: there is no picture to
-    compile anything over (task U38).
+    A frame with no photo of its own -- its row flagged ``missing``, or with no
+    stored path (:func:`tda.core.cache.has_no_photo`, the test the image cache
+    reads by) -- has one reason in either mode, :func:`no_photo`, and ``frame``
+    is not called: there is no picture to compile anything over (task U38).
     """
-    row = db.get_frame(key)
-    if row is not None and row.get("missing"):
+    if has_no_photo(db.get_frame(key)):
         return [no_photo()]
     conflicts = [Blocker(CONFLICT, f"{OPEN_CONFLICT}{cid}/{instance}",
                          f"conflict {cid} ({instance}) is still open", instance, cid)

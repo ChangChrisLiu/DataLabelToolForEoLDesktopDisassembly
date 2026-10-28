@@ -126,6 +126,41 @@ def test_enter_in_review_is_the_same_gate(window):
     assert window.session.db.compiled(FrameKey(DESKTOP, GAP, VIEW)) == {}
 
 
+def test_a_missing_frame_never_sits_in_the_needs_review_queue(window):
+    """Round 2: Enter, Space and R all refuse it, so it could never leave the queue."""
+    from tda.ui import session_api as api
+
+    session = window.session
+    db = session.db
+    before = session.queues()
+    assert before[api.QUEUE_NEEDS_REVIEW] == []
+    db.set_frame_flags(FrameKey(DESKTOP, GAP, VIEW), review_status="needs_review")
+    db.set_frame_flags(FrameKey(DESKTOP, 5, VIEW), review_status="needs_review")
+    session.review.invalidate()
+    after = session.queues()
+    assert after[api.QUEUE_NEEDS_REVIEW] == [{"step": 5}]
+    for name in (api.QUEUE_CONFLICTS, api.QUEUE_MISSING_SHAPE, api.QUEUE_UNEXPLAINED):
+        assert after[name] == before[name], name
+    assert session.frame_status(GAP) == "missing"
+    window.review.refresh()
+    QApplication.processEvents()
+    assert window.review.list_for(api.QUEUE_NEEDS_REVIEW).count() == 1
+
+
+def test_space_on_a_frame_without_a_path_says_the_same(window):
+    """Round 2: no path and not flagged missing is no photo too -- same gate, same line."""
+    db = window.session.db
+    key = FrameKey(DESKTOP, 5, VIEW)
+    db.upsert_frame(key, "", {"hw": [64, 64]}, None, {"missing": False})
+    go(window, 5)
+    assert window.session.image() is None
+    window.report("")
+    press(window, "confirm")
+    assert window.status_message() == REFUSED.replace(f"step {GAP}", "step 5")
+    assert db.compiled(key) == {} or all(r["status"] != "verified"
+                                         for r in db.compiled(key).values())
+
+
 def test_the_steps_table_draws_no_thumbnail_for_it(qapp, tmp_path):
     """Steps mode reads the scanner copy by step number too: not for a missed shot."""
     from tda.ui.panels.steptable import StepTableModel

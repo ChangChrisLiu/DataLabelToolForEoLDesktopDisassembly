@@ -92,8 +92,8 @@ class VerifyMixin:
         the last two are the same rule twice: **a confirmation may never be how
         a frozen row changes**.
 
-        * the frame has **no photo**: its row is flagged ``missing`` (task
-          U38). Nothing is compiled; there is no picture to confirm anything
+        * the frame has **no photo**: its row is flagged ``missing`` or has no
+          stored path (task U38). Nothing is compiled; there is no picture to confirm anything
           over. D61's scanner step 26 was confirmed over a cached copy of step
           27's photo -- 23 signed rows on a step nobody photographed.
         * an **open conflict** of this frame. A disagreement is the one thing

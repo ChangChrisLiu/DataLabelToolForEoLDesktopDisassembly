@@ -13,6 +13,7 @@ from typing import Optional
 
 import numpy as np
 
+from tda.core.cache import has_no_photo
 from tda.core.truth_refusals import FRAME_MISSING
 from tda.ui import app_actions as A
 from tda.ui import app_compat as compat
@@ -734,7 +735,11 @@ class CommitMixin:
                 f"and cannot be confirmed")
 
     def no_photo_here(self) -> str:
-        """:meth:`no_photo_text` when the open frame's row is flagged ``missing``, else ``""``.
+        """:meth:`no_photo_text` when the open frame has no photo, else ``""``.
+
+        No photo is :func:`tda.core.cache.has_no_photo`: the row is flagged
+        ``missing`` or has no stored path -- the test the image cache and
+        ``verify_frame`` both apply.
 
         ``verify_frame`` refuses such a frame before anything else (task U38),
         and it is the one gate ``Space`` and Review's ``Enter`` both reach: the
@@ -744,7 +749,7 @@ class CommitMixin:
         if not compat.is_open(self.session):
             return ""
         key = self.session.current()
-        if not (self.db.get_frame(key) or {}).get("missing"):
+        if not has_no_photo(self.db.get_frame(key)):
             return ""
         return self.no_photo_text(key.step)
 

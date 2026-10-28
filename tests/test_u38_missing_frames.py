@@ -180,6 +180,28 @@ def test_verify_frame_refuses_a_missing_frame_in_these_words(scene):
     assert db.get_frame(key)["aux"] == before
 
 
+def test_a_row_without_a_path_is_refused_too_though_not_flagged_missing(scene):
+    """Round 2: the second gate reads what the first does (``has_no_photo``)."""
+    db, truth, _key = scene
+    key = FrameKey(A.DESKTOP, 5, A.VIEW)
+    db.upsert_frame(key, "", {"hw": [A.HW[0], A.HW[1]]}, None, {"missing": False})
+    row = db.get_frame(key)
+    assert not row["missing"] and has_no_photo(row)
+
+    def frame():
+        raise AssertionError("a frame with no photo is not compiled")
+
+    assert blocking_reasons(db, key, frame, thorough=True) == [no_photo()]
+    with pytest.raises(VerifyRefused) as refused:
+        truth.verify_frame(key, "tester")
+    assert str(refused.value).endswith(NO_PHOTO_TEXT)
+    assert db.compiled(key) == {}
+    # a photographed neighbour is not refused for it
+    assert FRAME_MISSING not in [b.code for b in blocking_reasons(
+        db, FrameKey(A.DESKTOP, 4, A.VIEW),
+        lambda: (truth.compile(FrameKey(A.DESKTOP, 4, A.VIEW)), None, None), thorough=True)]
+
+
 def test_the_refusal_is_one_reason_in_either_mode_and_nothing_is_compiled(scene):
     db, _truth, key = scene
 
