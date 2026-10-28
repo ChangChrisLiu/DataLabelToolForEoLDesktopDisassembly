@@ -28,6 +28,9 @@ _ROWS = (
     "SELECT c.step AS step, c.instance AS instance, c.visibility AS visibility, "
     "c.placement AS placement, c.input_hash AS input_hash, c.geom_type AS geom_type, "
     "o.visibility AS hand_visibility, o.occluder AS occluder, "
+    # the override keeps pixels of its own: a hand out_of_view is 画框外 only
+    # without them (task U39 round 3, :func:`tda.core.vis_review.off_frame_row`)
+    "o.visible_rle_json IS NOT NULL AS hand_pixels, "
     "g.difficulty_flags_json AS flags_json "
     "FROM compiled_mask c "
     "JOIN frame f ON f.desktop = c.desktop AND f.step = c.step AND f.view = c.view "
@@ -52,6 +55,7 @@ _ALL_ROWS = (
     # any override row -- a label, a reason, or a mask drawn by hand for this
     # frame only: what a person wrote there (U36 round 2, B1)
     "o.instance IS NOT NULL AS has_override, "
+    "o.visible_rle_json IS NOT NULL AS hand_pixels, "
     "g.difficulty_flags_json AS flags_json "
     "FROM compiled_mask c "
     "JOIN frame f ON f.desktop = c.desktop AND f.step = c.step AND f.view = c.view "
@@ -127,9 +131,10 @@ class VisReviewRowsMixin:
         """Every row the visibility review is about in one view (see the module doc).
 
         ``{"step", "instance", "visibility", "placement", "input_hash",
-        "geom_type", "hand_visibility", "occluder", "flags"}`` -- ``flags`` the
-        decoded object (``{}`` when the row has none), ``hand_visibility`` /
-        ``occluder`` the frame override's columns (``None`` without one).
+        "geom_type", "hand_visibility", "occluder", "hand_pixels", "flags"}`` --
+        ``flags`` the decoded object (``{}`` when the row has none),
+        ``hand_visibility`` / ``occluder`` the frame override's columns (``None``
+        without one), ``hand_pixels`` whether it keeps a mask of its own (U39).
         """
         return self._vis_rows(_ROWS, desktop, view)
 
@@ -150,8 +155,9 @@ class VisReviewRowsMixin:
             flags = R.loads(item.pop("flags_json"))
             item["flags"] = dict(flags) if isinstance(flags, dict) else {}
             item["step"] = int(item["step"])
-            if "has_override" in item:
-                item["has_override"] = bool(item["has_override"])
+            for flag in ("has_override", "hand_pixels"):
+                if flag in item:
+                    item[flag] = bool(item[flag])
             out.append(item)
         return out
 

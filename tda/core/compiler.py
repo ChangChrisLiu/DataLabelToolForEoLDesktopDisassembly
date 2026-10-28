@@ -78,7 +78,8 @@ Problems reported in :attr:`CompiledFrame.problems`
 * ``missing_shape:<instance>`` -- an instance inside the chassis needs geometry
   but has no keyframe for this step; this blocks confirming the frame. On a
   components-gallery shot (task U10) every part asked for is such an instance,
-  unless the annotator said it is not in that shot (:func:`marked_absent`).
+  unless the annotator said it is not in that shot (:func:`marked_absent`); on
+  a sequence frame the same label is 画框外 (task U39) and settles it too.
 * ``bench_missing:<instance>`` -- the same for an instance on the bench, which
   only makes the frame's ``bench_annotated`` false and must **not** block.
 * ``zorder_missing:<instance>/<part>`` -- that layer is absent from the z-order;
@@ -139,7 +140,10 @@ def marked_absent(override: Optional[FrameOverride]) -> bool:
 
     An ``out_of_view`` label with no pixels of its own. On a components-gallery
     shot (task U10) that settles a part with no shape: the layout was
-    re-arranged between shots and not every part is in every one.
+    re-arranged between shots and not every part is in every one. On a
+    sequence frame it is 画框外 (task U39, :data:`tda.core.occluder.OFF_FRAME`):
+    the part is in the machine but outside this view's picture, so a part in
+    its place with no shape is settled there too.
     """
     return (override is not None and override.visible_rle is None
             and str(override.visibility) == OUT_OF_VIEW)
@@ -799,7 +803,13 @@ def compile_frame(
     from every instance's visible mask, bench included (spec 3.3 step 6).
     A ``visibility`` of ``out_of_view`` -- from an override, or from a shape
     that is missing altogether -- leaves neither a visible mask nor a box
-    behind.
+    behind. On a sequence frame an override saying so with no pixels of its
+    own (:func:`marked_absent`, 画框外 -- task U39) also keeps an instance in
+    its place out of step 5: the part is not in this picture, so none of its
+    layers is painted and it hides nothing; its amodal (the keyframe's shape
+    through the transform) is still reported, as the whole part's estimate.
+    A part on the bench is not 画框外 (the staging area is in the picture): it
+    is painted as before and its missing box is still ``bench_missing``.
     """
     canvas = (int(hw[0]), int(hw[1]))
     problems: list[str] = []
@@ -848,7 +858,10 @@ def compile_frame(
                 if not marked_absent(frame_overrides.get(inst)):
                     problems.append(f"missing_shape:{inst}")
             elif placement_of[inst] != ON_BENCH:
-                problems.append(f"missing_shape:{inst}")
+                # 画框外 (task U39): in the machine, outside this view's
+                # picture -- nothing to draw, settled as 看不见 is above
+                if not marked_absent(frame_overrides.get(inst)):
+                    problems.append(f"missing_shape:{inst}")
             elif bench_roi is not None:
                 # a part on the bench is only annotated -- and only missing --
                 # where the view has a staging area to see it in (spec 4.2)
@@ -861,12 +874,22 @@ def compile_frame(
         kinds[inst] = GEOM_MASK
         amodal = np.zeros(canvas, dtype=bool, order="F")
         window: Optional[Window] = None
+        # 画框外 (task U39): a part said to be outside this view's picture is
+        # not in it, so it takes no pixel and hides nothing -- no layer of it is
+        # painted, whatever shape carries over from the segment's other frames.
+        # The shape itself stays (stored, and as this record's amodal estimate).
+        # Only a part in its place can be 画框外: the staging area is in the
+        # picture, so a part on the bench is painted as before (round 3)
+        outside = (not gallery and placement_of[inst] != ON_BENCH
+                   and marked_absent(frame_overrides.get(inst)))
         for part, here, mask in _shape_parts(kf, transform, canvas):
             if mask is None:
                 problems.append(f"shape_size_mismatch:{inst}/{part.name}")
                 continue
             layer = (inst, part.name)
-            if layer in layer_masks:  # a repeated part name is one layer
+            if outside:
+                pass                  # out of the picture: not a layer here
+            elif layer in layer_masks:  # a repeated part name is one layer
                 layer_masks[layer], layer_windows[layer] = _merge_layer(
                     layer_masks[layer], layer_windows[layer], mask, here
                 )

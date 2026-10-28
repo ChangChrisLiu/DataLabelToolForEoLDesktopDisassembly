@@ -1,6 +1,6 @@
 {
  "00-64x64": {
-  "input_hash": "18889ee9a6a7a67f8a5745c1eae5a077ee9391f6",
+  "input_hash": "cd74ff0b04f061fd8c160796bd406b466686016a",
   "instances": {
    "i00": {
     "amodal": "31fa35c222f4bd5501dc149dc9ca8a7c459fb217",
@@ -89,10 +89,6 @@
   "layers": {
    "in_chassis": [
     [
-     "i03",
-     "p0"
-    ],
-    [
      "i01",
      "p1"
     ],
@@ -124,7 +120,6 @@
   },
   "painted": {
    "in_chassis": [
-    "i03",
     "i01",
     "i00",
     "i05",

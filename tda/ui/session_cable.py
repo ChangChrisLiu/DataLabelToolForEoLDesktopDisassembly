@@ -16,6 +16,12 @@ longer carry a label it holds (the step table moved, the shape went) the next
 The components gallery has no cable label at all -- ``I`` means 「看不见」
 there (task U10).
 
+**画框外** (task U39) is ``Ctrl+I``'s fourth choice and nobody else's: the part
+is in the machine but outside this view's picture (:data:`OFF_FRAME`, the
+gallery's 「看不见」 row). It needs no shape -- only a part taken out, or one
+on the bench, is refused -- and ``I`` never sets it, only takes it back (the
+press after it is 撤回); 撤回 over a span takes it back with the cable labels.
+
 On a confirmed frame the label is the annotator's own statement about that
 frame, so the row is re-signed with it rather than queued for Review
 (:func:`accept_own_label`); the undo does the same with the old row.
@@ -28,14 +34,24 @@ import numpy as np
 
 from tda.core import masks
 from tda.core.db import Db
-from tda.core.model import OCCLUDER_CABLE, FrameKey, is_component_view
+from tda.core.model import (
+    OCCLUDER_CABLE,
+    FrameKey,
+    Placement,
+    is_component_view,
+    is_context_key,
+)
 from tda.core.occluder import (
     FULL,
+    OFF_FRAME,
     PARTIAL,
     cable_label,
+    frame_label,
     kept_mask,
     next_label,
     occluded_override,
+    off_frame,
+    off_frame_applies,
     shape_applies,
 )
 from tda.core.truth import TruthService
@@ -56,12 +72,15 @@ from tda.ui.session_ops import _write_override, frozen_among, override_state, se
 __all__ = [
     "CABLE_BY", "CABLE_EDITING", "CABLE_GALLERY", "CABLE_NEEDS_SHAPE", "CABLE_NOW_PARTIAL",
     "CABLE_ON_BENCH", "CABLE_OTHER_SEGMENT", "CABLE_REMOVED", "CableMixin", "LABEL_ZH",
+    "OFF_FRAME", "OFF_FRAME_CHOICE", "OFF_FRAME_ON_BENCH", "OFF_FRAME_TAG", "OFF_FRAME_ZH",
     "OP_RANGE", "TAG_ZH", "accept_own_label", "apply_cable", "cable_one", "cable_range",
-    "cable_reason", "open_about", "range_bounds",
+    "cable_reason", "label_reason", "open_about", "range_bounds",
 ]
 
 #: The op ``Ctrl+I`` logs: one instance's override on several frames.
 OP_RANGE = "set_frame_overrides"
+#: A part lying on the staging area: never 画框外 (task U39 round 3).
+ON_BENCH_PLACEMENT = Placement.ON_BENCH.value
 #: The key both directions of a cable op carry: who said it, so that the undo
 #: and the redo re-sign a confirmed frame in the same name (:func:`apply_cable`).
 CABLE_BY = "cable_by"
@@ -87,14 +106,40 @@ CABLE_GALLERY = GALLERY_REFUSALS["cable_range"]
 CABLE_OTHER_SEGMENT = ("第 {step} 步在另一个位姿段（这一段是第 {low}–{high} 步）："
                        "Ctrl+` 只在一个位姿段里")
 
+#: 画框外 (task U39): the word the panels and the status line use ...
+OFF_FRAME_ZH = "画框外"
+#: ... the dialog's fourth choice ...
+OFF_FRAME_CHOICE = "画框外（这个视角拍不到）"
+#: ... and the instance table's tag (the Vis column is 46 px wide).
+OFF_FRAME_TAG = "框外"
+#: 画框外 on a part lying on the staging area: the bench is in the picture.
+OFF_FRAME_ON_BENCH = "它放在台面上（台面框），在画面里：画框外只标原位的零件"
+
 _REASONS = {"removed": CABLE_REMOVED, "bench": CABLE_ON_BENCH,
             "no_shape": CABLE_NEEDS_SHAPE}
+#: 画框外 needs no shape: only these two refuse it (task U39).
+_OFF_FRAME_REASONS = {"removed": CABLE_REMOVED, "bench": OFF_FRAME_ON_BENCH}
 
 
 def cable_reason(db: Db, tax, key: FrameKey, instance: str,
                  cache: Optional[InputCache] = None) -> str:
     """Why a 完全/部分 label cannot go on ``instance`` at ``key``, ``""`` when it can."""
     return _REASONS.get(shape_applies(db, tax, key, instance, cache), "")
+
+
+def label_reason(db: Db, tax, key: FrameKey, instance: str, label: Optional[str],
+                 cache: Optional[InputCache] = None, keyframes=None) -> str:
+    """Why ``label`` cannot go on ``instance`` at ``key``, ``""`` when it can.
+
+    完全 / 部分 want a shape in its place (:func:`cable_reason`); 画框外 (task
+    U39) only the part in its place (:func:`~tda.core.occluder.off_frame_applies`);
+    撤回 is never refused.
+    """
+    if label is None:
+        return ""
+    if label == OFF_FRAME:
+        return _OFF_FRAME_REASONS.get(off_frame_applies(db, tax, key, instance, cache), "")
+    return _REASONS.get(shape_applies(db, tax, key, instance, cache, keyframes), "")
 
 
 def range_bounds(db: Db, key: FrameKey, cache: Optional[InputCache] = None
@@ -130,20 +175,22 @@ def _measured(db: Db, key: FrameKey) -> bool:
 def cable_one(db: Db, truth: TruthService, key: FrameKey, instance: str,
               label: Optional[str], annotator: str = "system",
               occluder: str = OCCLUDER_CABLE) -> dict:
-    """Set ``label`` (完全 / 部分 / ``None`` = 撤回) on this frame: one ``set_frame_override`` op.
+    """Set ``label`` (完全 / 部分 / 画框外 / ``None`` = 撤回) on this frame: one op.
 
-    Returns what every edit returns plus ``label``, ``changed``,
-    ``replaced_hand_mask`` (完全 took the place of a single-frame mask drawn by
-    hand -- the op's inverse holds it) and ``accepted`` (the frozen frames whose
-    row now carries the label, :func:`accept_own_label`); nothing is written
-    (and no op made) when the frame already says exactly that.
+    One ``set_frame_override`` op. Returns what every edit returns plus
+    ``label``, ``changed``, ``was`` (what the frame said before,
+    :func:`~tda.core.occluder.frame_label`), ``replaced_hand_mask`` (完全 or
+    画框外 took the place of a single-frame mask drawn by hand -- the op's
+    inverse holds it) and ``accepted`` (the frozen frames whose row now
+    carries the label, :func:`accept_own_label`); nothing is written (and no
+    op made) when the frame already says exactly that.
     """
     _refuse_gallery(key)
-    if label is not None:
-        why = cable_reason(db, truth.tax, key, instance)
-        if why:
-            raise SessionRefusal(why)
+    why = label_reason(db, truth.tax, key, instance, label)
+    if why:
+        raise SessionRefusal(why)
     previous = db.frame_overrides(key).get(instance)
+    was = frame_label(previous)
     hw = frame_hw(db, key, truth.cache_dir) if label == FULL else (0, 0)
     after = occluded_override(key, instance, previous, label, hw, occluder)
     common = {"desktop": key.desktop, "view": key.view, "step": key.step,
@@ -151,13 +198,14 @@ def cable_one(db: Db, truth: TruthService, key: FrameKey, instance: str,
     payload = common | override_state(after)
     inverse = common | override_state(previous)
     if _same(payload, inverse):
-        return _settled(db, truth, key, [key.step], None, label, changed=False)
+        return _settled(db, truth, key, [key.step], None, label, changed=False, was=was)
     disputed = disputed_before(db, truth, key.desktop, key.view, instance, [key.step])
     with db.transaction():
         _write_override(db, key, instance, payload)
         db.log_op(key.desktop, key.view, "set_frame_override", payload, inverse, annotator)
     out = _settled(db, truth, key, [key.step], Op("set_frame_override", payload, inverse),
-                   label, replaced_hand_mask=label == FULL and _hand_mask(previous))
+                   label, was=was,
+                   replaced_hand_mask=label in (FULL, OFF_FRAME) and _hand_mask(previous))
     return _signed(db, truth, key.desktop, key.view, instance, [key.step], annotator,
                    disputed, out, key.step)
 
@@ -320,13 +368,17 @@ def cable_range(db: Db, truth: TruthService, key: FrameKey, instance: str,
     The frames are this view's annotatable ones (no ``ignore`` step, no frame
     without an image) inside this frame's pose segment; a ``to_step`` in
     another segment is refused. 完全/部分 is refused, naming them, when the
-    part has no shape on some of them -- nothing is written then. 撤回 goes
-    over the frames that carry a 被线挡住 label and leaves the others alone.
+    part has no shape on some of them -- nothing is written then; 画框外 (task
+    U39) wants no shape, only the part in its place on every frame. 撤回 goes
+    over the frames that carry a 被线挡住 label or 画框外 and leaves the others
+    alone.
 
     Returns what every edit returns plus ``label``, ``changed``, ``frames``
-    (the steps written), ``measured`` (frames whose image size had to be read
-    off the image first -- once per frame, ever) and ``accepted`` (the frozen
-    frames whose row now carries the label, :func:`accept_own_label`).
+    (the steps written), ``withdrawn`` (what 撤回 took back, the labels of
+    :func:`~tda.core.occluder.frame_label`), ``measured`` (frames whose image
+    size had to be read off the image first -- once per frame, ever) and
+    ``accepted`` (the frozen frames whose row now carries the label,
+    :func:`accept_own_label`).
     """
     _refuse_gallery(key)
     cache = InputCache()
@@ -339,23 +391,26 @@ def cable_range(db: Db, truth: TruthService, key: FrameKey, instance: str,
     steps = [s for s in annotatable_steps(db, key.desktop, key.view, range(first, last + 1))
              if pose_segment_of(db, FrameKey(key.desktop, s, key.view), cache) == seg]
     if label is not None:
-        shapes = db.keyframes(key.desktop, key.view, instance)   # once for the run
+        # once for the run; 画框外 reads no shape at all
+        shapes = None if label == OFF_FRAME else db.keyframes(key.desktop, key.view, instance)
         refused: dict[str, list[int]] = {}
         for step in steps:
-            why = _REASONS.get(shape_applies(db, truth.tax, FrameKey(key.desktop, step,
-                                                                     key.view),
-                                             instance, cache, shapes), "")
+            why = label_reason(db, truth.tax, FrameKey(key.desktop, step, key.view),
+                               instance, label, cache, shapes)
             if why:
                 refused.setdefault(why, []).append(step)
         if refused:
             raise SessionRefusal("；".join(
                 f"第 {_steps_text(found)} 步：{why}" for why, found in refused.items()))
     frames, before, measured = [], [], 0
+    withdrawn: set[str] = set()
     for step in steps:
         here = FrameKey(key.desktop, step, key.view)
         previous = db.frame_overrides(here).get(instance)
-        if label is None and cable_label(previous) is None:
-            continue                     # 撤回 leaves a frame with no cable label alone
+        if label is None and frame_label(previous) is None:
+            continue                     # 撤回 leaves a frame with no such label alone
+        if label is None:
+            withdrawn.add(str(frame_label(previous)))
         hw = (0, 0)
         if label == FULL:
             measured += not _measured(db, here)
@@ -369,7 +424,7 @@ def cable_range(db: Db, truth: TruthService, key: FrameKey, instance: str,
     written = [f["step"] for f in frames]
     if not frames:
         return _settled(db, truth, key, steps, None, label, changed=False, frames=[],
-                        measured=measured, accepted=[])
+                        measured=measured, accepted=[], withdrawn=[])
     common = {"desktop": key.desktop, "view": key.view, "step": key.step,
               "instance": instance, "steps": written, CABLE_BY: annotator}
     payload = common | {"frames": frames}
@@ -381,7 +436,7 @@ def cable_range(db: Db, truth: TruthService, key: FrameKey, instance: str,
                             state)
         db.log_op(key.desktop, key.view, OP_RANGE, payload, inverse, annotator)
     out = _settled(db, truth, key, written, Op(OP_RANGE, payload, inverse), label,
-                   frames=written, measured=measured)
+                   frames=written, measured=measured, withdrawn=sorted(withdrawn))
     return _signed(db, truth, key.desktop, key.view, instance, written, annotator,
                    disputed, out, key.step)
 
@@ -441,6 +496,37 @@ class CableMixin:
         return {name: label for name, fo in found.items()
                 if (label := cable_label(fo)) is not None}
 
+    def frame_label(self, instance: str) -> Optional[str]:
+        """完全 / 部分 / 画框外 of ``instance`` on the open frame, or ``None`` (U39).
+
+        What ``Ctrl+```'s dialog starts on (:func:`~tda.core.occluder.frame_label`).
+        """
+        return frame_label(self.db.frame_overrides(self.current()).get(str(instance)))
+
+    def off_frame_parts(self) -> frozenset[str]:
+        """The parts said 画框外 on the open frame (task U39); none on a gallery shot.
+
+        There the same row is the gallery's own 「看不见」 (task U10), and on a
+        框外零件 it is 「不在这张里」 (task U18): neither is listed. Nor is a part
+        lying on the bench (round 3): the staging area is in the picture.
+        """
+        if self.gallery:
+            return frozenset()
+        try:
+            found = self.db.frame_overrides(self.current()) or {}
+        except Exception:  # noqa: BLE001 - a missing table is "none set"
+            return frozenset()
+        named = [name for name, fo in found.items()
+                 if off_frame(fo) and not is_context_key(name)]
+        if not named:
+            return frozenset()
+        try:
+            here = self.compiled().instances
+        except Exception:  # noqa: BLE001 - no image, no frame row: placement unknown
+            here = {}
+        return frozenset(name for name in named
+                         if getattr(here.get(name), "placement", None) != ON_BENCH_PLACEMENT)
+
     def cable_reasons(self) -> dict[str, str]:
         """``instance -> occluder`` of the labels :meth:`cable_labels` lists.
 
@@ -472,7 +558,8 @@ class CableMixin:
     def cable_gate(self, instance: str) -> tuple[Optional[str], str]:
         """``(the label I would set, why it cannot)`` -- ``why`` is ``""`` when it may.
 
-        撤回 always may: after 部分, and on a frame that can no longer carry the
+        撤回 always may: after 部分, after 画框外 (task U39: the key takes it
+        back and never sets it), and on a frame that can no longer carry the
         label it holds, whatever that is -- the step table moved under it, the
         shape went (never via 部分 then). The pixels being drawn are the
         window's to judge first (it knows whether they are dirty);
@@ -512,7 +599,9 @@ class CableMixin:
         self._refuse_cable_edit(instance, nxt)
         if why:
             raise SessionRefusal(why)
-        stale = self.cable_carry(instance) if nxt is None else ""
+        # 画框外 needs no shape (U39): taking it back is no sign of a stale label
+        stale = (self.cable_carry(instance)
+                 if nxt is None and self.cable_label(instance) is not None else "")
         lost = nxt != FULL and self._hand_mask_lost(key, str(instance))
         result = cable_one(self.db, self.truth, key, str(instance), nxt, self.annotator)
         result.update(stale=stale, hand_mask_lost=lost)
@@ -542,7 +631,10 @@ class CableMixin:
                                           label, self.annotator))
 
     def set_cable_range(self, instance: str, label: Optional[str], to_step: int) -> dict:
-        """``Ctrl+I``: ``label`` from this frame to ``to_step``, one op (one ``Ctrl+Z``)."""
+        """``Ctrl+I``: ``label`` from this frame to ``to_step``, one op (one ``Ctrl+Z``).
+
+        ``label`` is 完全 / 部分 / 画框外 (task U39) or ``None`` (撤回).
+        """
         self._refuse_cable_edit(instance, label)
         return self._after_edit(cable_range(self.db, self.truth, self.current(),
                                             str(instance), label, int(to_step),

@@ -67,6 +67,7 @@ from tda.ui.canvas.overlay import palette_color
 from tda.ui.class_names import state_zh, visibility_zh
 from tda.ui.panels import session_is_open
 from tda.ui.session_cable import LABEL_ZH as CABLE_ZH
+from tda.ui.session_cable import OFF_FRAME_TAG
 from tda.ui.session_cable import TAG_ZH as CABLE_TAGS
 from tda.ui.session_rows import HIDING_VISIBILITY
 
@@ -129,6 +130,14 @@ VIS_REVIEW_WHERE = "在复查的「可见性审查」里改"
 VIEWPOINT_TAGS = {"occluded_full": "角度", "occluded_partial": "角度半"}
 VIEWPOINT_TIP = ("这一帧角度看不到（{how}）：零件在原位，这个相机从它的位置看不到它，不是被挡住；"
                  "导出时写明。在复查「可见性审查」里设的 / not visible from this viewpoint")
+#: ... and of one 画框外 (task U39, Ctrl+`'s fourth choice).
+OFF_FRAME_TIP = ("这一帧画框外：零件在机器里、状态照常，但在这个视角的画面外（拍不到），"
+                 "这一帧不出掩码；形状有的话保留。选中按 ` 键撤回，Ctrl+Z 撤销 / "
+                 "outside this view's picture")
+#: ... and what the ⚠ cell of a drawn part adds when the label hiding it is
+#: 画框外: the drawn shape is kept as the whole part's estimate.
+OFF_FRAME_DRAWN = ("这是「画框外」：零件在机器里、这个视角拍不到，形状保留；"
+                   "其实在画面里：选中按 ` 键撤回")
 
 
 def _short(value: str) -> str:
@@ -373,6 +382,14 @@ class InstanceListPanel(QWidget):
             item.setBackground(QBrush(OVERRIDE_COLOR))
             item.setToolTip(CONTEXT_T.TAG_ABSENT_TIP)
             return item
+        if not gone and data.get("off_frame") and not data.get("has_shape"):
+            # 画框外 (task U39): in the machine, outside this view's picture --
+            # the label says why, like 线挡. A drawn shape it hides keeps the
+            # U2b round-3 warning below (⚠), its tooltip naming 画框外
+            item.setText(OFF_FRAME_TAG)
+            item.setBackground(QBrush(OVERRIDE_COLOR))
+            item.setToolTip(OFF_FRAME_TIP)
+            return item
         if _not_drawn(data, gone):
             item.setText(NOT_DRAWN)
             item.setToolTip(NOT_DRAWN_TIP)
@@ -398,6 +415,8 @@ class InstanceListPanel(QWidget):
             item.setForeground(QBrush(WARN_COLOR))
             note = (f"已设为不可见（{visibility_zh(value)}）：它画好了，但这一帧不显示"
                     f"它的形状；Ctrl+Z 撤销，或{VIS_REVIEW_WHERE}")
+        if data.get("off_frame"):
+            note += f"。{OFF_FRAME_DRAWN}"      # 画框外 (task U39), set by Ctrl+`
         item.setToolTip(note)
         return item
 

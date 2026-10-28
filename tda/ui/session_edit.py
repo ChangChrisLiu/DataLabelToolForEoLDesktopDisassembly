@@ -390,7 +390,9 @@ def _commit_shape(db: Db, truth: TruthService, key: FrameKey, instance: str,
                           "existed": existed}
         steps = annotatable_steps(db, key.desktop, key.view, reach)
         # a shape drawn on a gallery part marked 「看不见」 says it IS in this
-        # shot (task U10): the label goes, in this same op
+        # shot (task U10): the label goes, in this same op. On a sequence frame
+        # the same row is 画框外 (task U39) and stays: a label is a label there
+        # (U10 round 2) -- the shape is kept as the whole part's estimate
         absent = (is_component_view(key.view)
                   and marked_absent(db.frame_overrides(key).get(instance)))
         if absent:

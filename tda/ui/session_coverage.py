@@ -71,9 +71,11 @@ def coverage(db: Db, tax: Taxonomy, desktop: int, view: str, steps: Iterable[int
         # about the same set of instances as the truth table
         bench_roi = None if gallery else db.bench_roi(desktop, view, seg)
         # a gallery part said not to be in this shot (看不见, task U10) is
-        # settled, exactly as the compiler has it (marked_absent)
-        absent = ({name for name, fo in db.frame_overrides(key).items()
-                   if marked_absent(fo)} if gallery else set())
+        # settled, exactly as the compiler has it (marked_absent); so is a
+        # part in its place said to be outside this view's picture (画框外,
+        # task U39) -- a part on the bench still wants its box
+        absent = {name for name, fo in db.frame_overrides(key).items()
+                  if marked_absent(fo)}
         found = FrameCoverage(step=step)
         needs = needs_geom(instances, state, tax, bench_roi=bench_roi)
         for instance, kind in sorted(needs.items()):
@@ -82,7 +84,7 @@ def coverage(db: Db, tax: Taxonomy, desktop: int, view: str, steps: Iterable[int
             chosen = select_keyframe(chains.get((instance, seg, placement), []), step)
             if chosen is not None and _usable(chosen, hw):
                 found.drawn += 1
-            elif instance in absent:
+            elif instance in absent and (gallery or kind != "box"):
                 continue
             elif kind == "box":
                 found.bench_missing.append(instance)

@@ -51,7 +51,8 @@ from tda.core.compiler import (
     _wrong_size,
     select_keyframe,
 )
-from tda.core.model import FrameKey, Similarity, Visibility
+from tda.core.model import FrameKey, FrameOverride, Similarity, Visibility
+from tda.core.occluder import off_frame
 from tda.core.truth_inputs import (
     InputCache,
     _keyframes_of,
@@ -74,6 +75,7 @@ __all__ = [
     "amodal_box",
     "make_stamp",
     "mark_whole",
+    "off_frame_row",
     "occluders_on_frame",
     "order_of",
     "order_runs",
@@ -156,6 +158,29 @@ def stamp_covers(flags: Optional[dict], visibility: Optional[str],
 # --------------------------------------------------------------------------- #
 # the rows
 # --------------------------------------------------------------------------- #
+#: Stands for "the override keeps pixels" when a row -- which only says so --
+#: is asked the compiler's question (:func:`off_frame_row`).
+_SOME_PIXELS = {"size": [0, 0], "counts": ""}
+
+
+def off_frame_row(row: dict) -> bool:
+    """Is this review row 画框外 (task U39)? :func:`tda.core.occluder.off_frame` of its override.
+
+    The compiler's own test, asked of the row's override columns: a label set
+    by hand (``hand_visibility``) of ``out_of_view`` with **no pixels of its
+    own** (``hand_pixels`` false). A digit key's ``out_of_view`` over a
+    single-frame mask drawn by hand is not 画框外 -- the compiler paints that
+    part as before -- and is shown as before (round 3).
+    """
+    if row.get("hand_visibility") is None:
+        return False
+    override = FrameOverride(FrameKey(0, int(row.get("step") or 0), ""),
+                             str(row.get("instance") or ""),
+                             _SOME_PIXELS if row.get("hand_pixels") else None,
+                             row.get("hand_visibility"), row.get("occluder"))
+    return off_frame(override)
+
+
 def review_rows(db, desktop: int, view: str) -> tuple[list[dict], list[dict]]:
     """``(to review, reviewed)``: the view's candidate rows, split by their stamp.
 
@@ -306,6 +331,9 @@ class Run:
     #: The frames from which none of the parts hiding it before hides it (U36):
     #: another reason -- where 「从这帧起另算」 may be wanted.
     changes: list[int] = field(default_factory=list)
+    #: The label is 画框外 (task U39, :func:`off_frame_row`): set by hand,
+    #: ``out_of_view``, no pixels of its own.
+    off_frame: bool = False
 
     def entry(self) -> dict:
         """The queue entry a panel lists (``step`` is the run's first frame)."""
@@ -314,17 +342,21 @@ class Run:
                 "instance": self.instance, "visibility": self.visibility,
                 "manual": self.manual, "occluder": self.occluder,
                 "occluded_by": list(self.occluded_by), "placement": self.placement,
-                "whole": self.whole, "changes": list(self.changes)}
+                "whole": self.whole, "changes": list(self.changes),
+                "off_frame": self.off_frame}
 
 
 def _signature(row: dict) -> tuple:
     """What two neighbouring frames must share to be one run (task U36).
 
     The label, whether it was set by hand, the reason it gives -- and, for
-    ``cli check``'s listing over reviewed rows too, whether a stamp covers it.
+    ``cli check``'s listing over reviewed rows too, whether a stamp covers it
+    -- and whether it is 画框外 (task U39 round 3: a hand ``out_of_view`` over
+    a mask drawn by hand is another statement).
     """
     return (str(row.get("visibility") or ""), row.get("hand_visibility") is not None,
-            row.get("occluder") or None, bool(row.get("reviewed", False)))
+            row.get("occluder") or None, bool(row.get("reviewed", False)),
+            off_frame_row(row))
 
 
 def runs_of(rows: Iterable[dict], order: list[int],
@@ -371,7 +403,8 @@ def runs_of(rows: Iterable[dict], order: list[int],
             else:
                 current = Run(part, [step], sig[0], sig[1], sig[2], who,
                               str(row.get("placement") or ""),
-                              {step: row.get("input_hash")}, reviewed=sig[3])
+                              {step: row.get("input_hash")}, reviewed=sig[3],
+                              off_frame=sig[4])
                 current_sig = sig
                 out.append(current)
             last_at, last_who = at, who

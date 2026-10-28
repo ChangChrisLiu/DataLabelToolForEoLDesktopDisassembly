@@ -33,6 +33,11 @@ single confirmation of a ``failed`` / ``dupli`` step means "nothing changed
 next door", which only holds inside a segment.  D34 ends on a failed step, and
 that card was the only one that could ever have asked for its chassis.
 
+A part said **画框外** on the frame (task U39: in the machine, outside this
+view's picture -- ``Ctrl+```'s fourth choice, the gallery's 「看不见」 row) has
+nothing to draw there: its row is done and carries :data:`OFF_FRAME_KEY`, so
+the panel says 「画框外」 instead of asking for a shape.
+
 Bench work is asked for only where there is a bench to see.  Spec 4.2 says
 若该视角有堆放区 ROI -- *if this view has a staging-area ROI* -- and the scanner
 looks straight down at the board, so on it the parts that have been taken out
@@ -78,9 +83,10 @@ from tda.ui.session_ops import (
     placement_of,
 )
 
-__all__ = ["LAYER_RANK", "SEGMENT_START", "SHAPE_PREDATES_STATE", "SPLIT_TRANSITIONS",
-           "STATE_ONLY_TRANSITIONS", "bench_roi_of", "gallery_card", "has_bench_roi",
-           "item_text", "same_segment", "segment_cut", "stale_split_rows", "task_card_for"]
+__all__ = ["LAYER_RANK", "OFF_FRAME_KEY", "SEGMENT_START", "SHAPE_PREDATES_STATE",
+           "SPLIT_TRANSITIONS", "STATE_ONLY_TRANSITIONS", "bench_roi_of", "gallery_card",
+           "has_bench_roi", "item_text", "same_segment", "segment_cut", "stale_split_rows",
+           "task_card_for"]
 
 REMOVED = "removed"
 _VERIFIED = "verified"
@@ -90,6 +96,10 @@ _REORIENT = StepType.REORIENT.value
 #: segment rather than the start of the walk (task U37): :func:`segment_cut`'s
 #: ``{"cut": k, "reorient": bool}``.
 SEGMENT_START = "segment_start"
+#: The key a row carries when its part is 画框外 on the frame (task U39).
+OFF_FRAME_KEY = "off_frame"
+#: The rows 画框外 settles: the ones asking for a shape (or its new version).
+_SHAPE_KINDS = (api.KIND_ADD_SHAPE, api.KIND_SPLIT_KEYFRAME)
 
 #: Taxonomy group -> how low it sits in a frame, so the start frame's card can
 #: be drawn from the bottom up: the chassis is behind everything, the parts
@@ -234,6 +244,39 @@ def _item(instance: str, kind: str, changes: dict, done: bool,
     return row
 
 
+def _mark_off_frame(db: Db, tax: Taxonomy, key: FrameKey, items: list[dict],
+                    cache: Optional[InputCache] = None) -> list[dict]:
+    """The rows of parts said 画框外 on ``key`` (task U39), in place.
+
+    A row asking for a shape (✚) or its new version (✂) is done: there is
+    nothing of the part in this picture to draw. That row and a state-only one
+    carry :data:`OFF_FRAME_KEY`, so the panel says 「画框外」. The label is the
+    compiler's :func:`~tda.core.compiler.marked_absent` -- ``out_of_view``
+    with no pixels -- which also settles ``missing_shape`` and the ✂ question
+    (:func:`tda.core.split_rows.split_state`), so the card agrees with ``Space``.
+    Only a part in its place can be 画框外 (round 3): one on the bench is in
+    the picture, its row is left as it is (the compiler still says
+    ``bench_missing`` for it).
+    """
+    try:
+        overrides = db.frame_overrides(key) or {}
+    except Exception:  # noqa: BLE001 - a missing table is "none set"
+        return items
+    off = {name for name, fo in overrides.items() if marked_absent(fo)
+           and placement_of(db, tax, key, name, cache) != ON_BENCH}
+    if not off:
+        return items
+    for row in items:
+        kind = row.get("kind")
+        if row.get("instance") not in off or kind not in (*_SHAPE_KINDS,
+                                                          api.KIND_STATE_ONLY):
+            continue
+        row[OFF_FRAME_KEY] = True
+        if kind in _SHAPE_KINDS:
+            row["done"] = True
+    return items
+
+
 def _ordered(items: list[dict], instances: dict[str, InstanceRec]) -> list[dict]:
     """Parent before the children that ride out of the chassis with it."""
     def sort_key(item: dict) -> tuple:
@@ -368,6 +411,8 @@ def task_card_for(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
     if not items:
         return [_item(f"step {step}", api.KIND_CONFIRM,
                       {"nothing": (str(neighbour), str(step))}, confirmed, None, span)]
+    # 画框外 (task U39): nothing of the part to draw in this picture
+    _mark_off_frame(db, tax, FrameKey(desktop, step, view), items, cache)
     return _ordered(items, instances)
 
 
@@ -401,9 +446,9 @@ def _start_card(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
     """Spec 4.2 step 1: on the start frame everything present has to be drawn.
 
     Every instance that needs geometry here is listed; the ones already drawn
-    are ✔ rows after the open ones (U2b round 3 ruling: "what are the other
-    items on the last frame?" -- hiding the drawn parts took a paragraph to
-    explain).  With nothing that needs geometry at all the card is a single
+    -- or said 画框外 (task U39) -- are ✔ rows after the open ones (U2b round
+    3 ruling: "what are the other items on the last frame?" -- hiding the
+    drawn parts took a paragraph to explain).  With nothing that needs geometry at all the card is a single
     confirmation, as on any frame with nothing to draw.
 
     ``segment_start`` is :func:`segment_cut`'s answer when the frame is the
@@ -423,6 +468,8 @@ def _start_card(db: Db, tax: Taxonomy, desktop: int, view: str, step: int,
     if not items:
         items = [_item(f"step {step}", api.KIND_CONFIRM, {}, confirmed, None, None)]
     else:
+        # 画框外 (task U39) is done, so after the open rows like a drawn one
+        _mark_off_frame(db, tax, FrameKey(desktop, step, view), items, cache)
         items = _bottom_up(items, instances, tax)
     if segment_start is not None:
         for row in items:
