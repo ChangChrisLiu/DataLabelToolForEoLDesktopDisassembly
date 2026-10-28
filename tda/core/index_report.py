@@ -23,11 +23,19 @@ def _extra_shots(di: Any) -> int:
     return sum(len((ff.aux or {}).get("extra_shots") or []) for ff in di.frames.values())
 
 
+def _unphotographed(di: Any) -> list[int]:
+    """The steps no camera photographed (``unphotographed.<d>.steps``, task U40)."""
+    return sorted(int(s) for s in getattr(di, "unphotographed", None) or [])
+
+
 def _rows(di: Any) -> str:
-    """``50 (30, 43)``: the Camera_1 captures and the dupli rows collapsed out."""
+    """``50 (30, 43)``: the Camera_1 captures and the dupli rows collapsed out;
+    ``34 +3 unphotographed`` when steps no camera photographed are declared (U40)."""
     dupli = list(getattr(di, "dupli_rows", None) or [])
     rows = int(getattr(di, "n_rows", 0) or 0) or di.n_steps
-    return f"{rows} ({', '.join(str(r) for r in dupli)})" if dupli else str(rows)
+    text = f"{rows} ({', '.join(str(r) for r in dupli)})" if dupli else str(rows)
+    unph = _unphotographed(di)
+    return text + (f" +{len(unph)} unphotographed" if unph else "")
 
 
 def compact(steps: list[int]) -> str:
@@ -54,6 +62,7 @@ def write_report(idx: dict[int, Any], path: str) -> None:
     n_frames = sum(len(di.frames) for di in idx.values()) - n_gallery
     n_extra = sum(_extra_shots(di) for di in idx.values())
     n_dupli = sum(len(getattr(di, "dupli_rows", None) or []) for di in idx.values())
+    unph = {d: _unphotographed(di) for d, di in sorted(idx.items()) if _unphotographed(di)}
     lines = [
         "# Frame index report",
         "",
@@ -63,6 +72,14 @@ def write_report(idx: dict[int, Any], path: str) -> None:
         f"- frames: {n_frames}",
         f"- extra shots (dupli captures, scanner duplicate folders): {n_extra}",
         f"- components gallery shots: {n_gallery}",
+    ]
+    if unph:
+        lines.append(
+            f"- steps no camera photographed (`unphotographed`): "
+            f"{sum(len(s) for s in unph.values())} on "
+            + ", ".join(f"D{d} ({compact(s)})" for d, s in unph.items())
+        )
+    lines += [
         "",
         "## Per desktop",
         "",
@@ -91,10 +108,22 @@ def write_report(idx: dict[int, Any], path: str) -> None:
         if not di.missing:
             continue
         lines.append(f"- **Desktop {d}**")
+        declared = set(unph.get(d) or [])
         for view in VIEWS:
             steps = sorted(k.step for k in di.missing if k.view == view)
             if steps:
-                lines.append(f"  - `{view}`: {compact(steps)}")
+                own = sorted(set(steps) & declared)
+                note = (f" -- of which unphotographed (no view): {compact(own)}"
+                        if own else "")
+                lines.append(f"  - `{view}`: {compact(steps)}{note}")
+
+    if unph:
+        lines += ["", "## Steps no camera photographed", "",
+                  "Declared in `configs/index_fixes.yaml` (`unphotographed.<d>.steps`, "
+                  "task U40): the operator did them but no view has a capture; every "
+                  "view's captures sit on the other steps.", ""]
+        for d, steps in unph.items():
+            lines.append(f"- **Desktop {d}**: steps {compact(steps)}")
 
     lines += ["", "## Issues and applied fixes", ""]
     for d, di in sorted(idx.items()):

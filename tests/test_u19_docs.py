@@ -54,9 +54,10 @@ def test_the_spec_has_the_paragraph_and_v1_19_on_top():
                                   "- **v1.26", "- **v1.27",
                                   "- **v1.28", "- **v1.29", "- **v1.30", "- **v1.31",
                                   "- **v1.32", "- **v1.33", "- **v1.34", "- **v1.35",
-                                  "- **v1.36"))
+                                  "- **v1.36",
+                                  "- **v1.37", "- **v1.38", "- **v1.39"))
     assert any(e.startswith("- **v1.19（2026-10-17）**：**SAM 两个解码头**（U19")
-               for e in entries[:18])
+               for e in entries[:21])
 
 
 def test_the_readme_names_the_config():

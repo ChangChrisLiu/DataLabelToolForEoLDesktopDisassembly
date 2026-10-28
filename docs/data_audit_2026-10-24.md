@@ -261,6 +261,7 @@ Where the sheet's rows are not the Camera_1 captures, the sheet's step is found 
 
 - D56: the sheet has 45 rows for 46 Camera_1 captures: aligned by Sequence Number; captures [41] have no row (not checked)
 - D63: the sheet has 37 rows for 34 Camera_1 captures: aligned by Sequence Number; numbers [11, 12, 13] used twice (their rows checked together)
+  - **Settled 2026-10-27 (U40):** no camera photographed three of the steps; the 34 captures of every view are the other 34. The last four are the final state from four sides (RGB281-RGB311 face one way, RGB321/RGB331/RGB341 the other three: steps 34-37), and the parts put the gap before capture 23: the RAM sticks leave at captures 23/24 (steps 26/27), the CPU load plate is open at 25 (step 28), the CPU is out at 26 (step 29), the GPU still in at 27 and out at 28 (steps 30/31) -- scanner and OAK1 alike, as the Sequence-Number alignment above has it. Declared `unphotographed.63.steps: [14, 15, 16]` (the rows numbered 11-13 a second time; which three of rows 12-25 it was cannot be seen), so the index has 37 steps, all four views miss steps 14-16, and a rebuilt audit checks D63 by step number.
 - D43: the sheet has 47 rows for 48 Camera_1 captures, and its Sequence Numbers (1-47) do not say which capture has no row: not checked
 
 ### 2d. Scanner shots replaced within the burst
