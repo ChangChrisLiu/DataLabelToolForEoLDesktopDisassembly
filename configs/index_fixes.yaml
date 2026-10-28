@@ -155,18 +155,17 @@ scan:
       folder (RGB281 one open ... RGB311 four) and RGB321 has RAM 1 out (row 33):
       the scanner skipped dupli row 32 (U25 round 2, checked by eye).
   41:
-    skipped_steps: [31]
+    skipped_steps: [32]
     reason: >-
       34 folders for 35 steps: the scanner skipped a real step. Folders 1-30 are
       rows 1-30 (RGB251 CPU out = row 25, RGB261..RGB301 one motherboard screw
-      each: screws 1-5 gone at RGB261..RGB301). RGB301 -> RGB311 loses TWO
-      screws at once (screw 6 at the board's bottom edge and screw 7 at its
-      left edge, both still there in RGB301 and both gone in RGB311), and
-      RGB311 -> RGB321 loses only screw 8. So RGB311 shows the state after row
-      32 (screw 7) and the scanner did not photograph row 31 (screw 6).
-      RGB331 = row 34 (connector 6), RGB341 = row 35 (motherboard out).
-      (U25 round 2 declared [32] by eye; corrected 2026-10-26 from the
-      annotator's report and the screw crops of RGB291..RGB341.)
+      each: screws 1-5 gone at RGB261..RGB301). High-zoom crops of the three
+      remaining screw seats (2026-10-28, confirmed by the annotator's own eyes):
+      RGB311 has lost screw 6 only (7 and 8 still seated), RGB321 has lost 7 AND 8.
+      So RGB311 = row 31, RGB321 = row 33, and the scanner did not photograph row
+      32 (screw 7). RGB331 = row 34 (connector 6), RGB341 = row 35 (motherboard
+      out). (U25 round 2 declared [32]; the controller's 2026-10-26 'correction'
+      to [31] misread the crops and is withdrawn.)
   43:
     duplicate_folders: [40]
     reason: >-
