@@ -27,6 +27,18 @@
 #                                   D61): the folders from there on are one step
 #                                   later each, and step k has no scanner frame.
 #   scan/rs.<d>.missing_steps:      logical (collapsed) steps with no frame.
+#   unphotographed.<d>.steps: [k]   steps NO camera photographed (U40, D63): the
+#                                   operator did them, but the scanner, OAK1,
+#                                   OAK2 and the RealSense all have one capture
+#                                   fewer per step. In every view the i-th
+#                                   capture is on the i-th step not declared
+#                                   (the skipped_steps rule, in all four views;
+#                                   the scanner joins it with its own
+#                                   skipped_steps), and step k is a missing frame
+#                                   everywhere. Asserted: a declared step with a
+#                                   frame, a step without one that nothing
+#                                   declares, a capture with no step or a sheet
+#                                   that counts other steps is a MISMATCH.
 #   oak.<d>.cam1_order: folder      the rows follow the Camera_1 folder numbers
 #                                   even where the capture times disagree (D60).
 #   oak.<d>.gallery_captures: [dir] Camera_1 folders that photographed the laid-out
@@ -264,5 +276,24 @@ rs:
       As Camera_2 (oak.24.cam2_extra_from): the RealSense frame of step 43 sits in
       Components/043 (3 s after cam1 step 043); Disassemble holds 42 of 43 steps.
   folder_aliases: ["Disassemble", "Disassembly"]
+unphotographed:
+  63:
+    steps: [14, 15, 16]
+    reason: >-
+      The sheet has 37 rows (Sequence Numbers 1-13, then 11-13 again, then
+      14-34) and every camera 34 captures (scanner RGB11..RGB341, OAK1/OAK2 and
+      RealSense 001..034). The capture number is the sheet's Sequence Number:
+      the SSD is gone at capture 11 (Sequence Number 11, "SSD"), the CPU at
+      capture 26 (number 26, "CPU") and the Quadro card at capture 28 (number
+      28, "GPU"), scanner and OAK1 alike; the last four captures are the final
+      state from four sides (RGB281..RGB311 face one way, RGB321/RGB331/RGB341
+      the other three: numbers 31-34, steps 34-37). So the three rows without a
+      photo of their own are the ones whose Sequence Numbers repeat 11-13 --
+      rows 14-16, "Open cover case for CPU fan", "Remove RAM cover", "Open
+      additional card cover". Those three covers were already off in the photos
+      (the blue card bracket goes between captures 1 and 2, the air shroud
+      between 3 and 4): the rows log actions that got no photo of their own
+      (U40; the request's steps 31-33 are refuted by captures 26 and 28 --
+      checked by eye, by the coordinator and the reviewer too).
 general:
   step_order_source: "oak1_timestamp"

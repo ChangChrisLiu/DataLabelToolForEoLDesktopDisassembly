@@ -556,12 +556,18 @@ def rows_of_index(di, view: str) -> tuple[list[Optional[str]], dict[int, int],
 
     Works on a collapsed index (``di.rows`` / ``di.dupli_rows`` set, extra shots
     in ``aux["extra_shots"]``) and on one written before U25, where step = row.
+    A row here is a Camera_1 capture: on a desktop with steps no camera
+    photographed (``di.unphotographed``, U40) those steps have no row.
     """
-    from tda.core.index import collapse_rows
+    from tda.core.index import capture_rows, capture_steps
 
     dupli = list(getattr(di, "dupli_rows", None) or [])
-    n_rows = int(getattr(di, "n_rows", 0) or 0) or di.n_steps + len(dupli)
-    step_of_row, _extra = collapse_rows(n_rows, dupli)
+    unph = list(getattr(di, "unphotographed", None) or [])
+    n_rows = int(getattr(di, "n_rows", 0) or 0) or di.n_steps + len(dupli) - len(unph)
+    step_of_row, _extra = capture_steps(n_rows, dupli, unph)
+    # an extra shot names its sheet row; past an unphotographed step that is
+    # not its capture number
+    capture_of = {r: c for c, r in enumerate(capture_rows(n_rows, dupli, unph)) if c}
     main_row: dict[int, int] = {}
     extras: dict[int, list[int]] = {}
     for r in range(1, n_rows + 1):
@@ -576,10 +582,13 @@ def rows_of_index(di, view: str) -> tuple[list[Optional[str]], dict[int, int],
         rows = sorted(([main_row[key.step]] if key.step in main_row else [])
                       + (extras.get(key.step) or []))
         shots = [s for s in (ff.aux or {}).get("extra_shots") or [] if isinstance(s, dict)]
-        named = {int(s["row"]) for s in shots if s.get("row") is not None}
+        named = {capture_of.get(int(s["row"]), int(s["row"]))
+                 for s in shots if s.get("row") is not None}
         for s in shots:
-            if s.get("row") is not None and 1 <= int(s["row"]) <= n_rows:
-                paths[int(s["row"])] = s.get("path")
+            row = None if s.get("row") is None else capture_of.get(int(s["row"]),
+                                                                  int(s["row"]))
+            if row is not None and 1 <= row <= n_rows:
+                paths[row] = s.get("path")
         # the step's own frame is the row no extra shot names (a dupli capture
         # that replaced a bad one is the frame, the earlier row the extra shot)
         free = [r for r in rows if r not in named]

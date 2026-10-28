@@ -14,9 +14,13 @@ to a logical step through ``step_of_dir``, which already accounts for
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Iterable, Optional
 
-from tda.core.model import FrameKey
+from tda.core.model import VIEWS, FrameKey
+
+#: ``configs/index_fixes.yaml`` section of the steps no camera photographed
+#: (task U40): ``unphotographed: {<desktop>: {steps: [k, ...], reason: ...}}``.
+UNPHOTOGRAPHED = "unphotographed"
 
 
 def cam2_fix_step(
@@ -74,16 +78,31 @@ def verify_cam2_fixes(
     return issues
 
 
+def unphotographed_steps(fixes: dict, desktop: int) -> list[int]:
+    """The steps ``unphotographed.<d>.steps`` says no camera photographed (U40).
+
+    Logical steps -- the sheet's rows with its ``dupli`` rows collapsed away.
+    The operator did them, but no view has a capture of them: every view's
+    captures are on the other steps (:func:`tda.core.index.capture_steps`).
+    """
+    entry = (fixes.get(UNPHOTOGRAPHED) or {}).get(desktop)
+    if not isinstance(entry, dict):
+        return []
+    return sorted({int(s) for s in entry.get("steps") or []})
+
+
 def declared_missing(fixes: dict, view: str, desktop: int) -> set[int]:
     """The steps ``missing_steps`` / ``missing_steps_range`` declare for one view.
 
     A scanner's ``skipped_steps`` (U25 round 2) are missing too: the scanner
-    never photographed them.
+    never photographed them; and so are the desktop's ``unphotographed`` steps
+    (U40) in every view.
     """
+    steps = set(unphotographed_steps(fixes, desktop))
     entry = (fixes.get(view) or {}).get(desktop)
     if not isinstance(entry, dict):
-        return set()
-    steps = {int(s) for s in entry.get("missing_steps") or []}
+        return steps
+    steps |= {int(s) for s in entry.get("missing_steps") or []}
     rng = entry.get("missing_steps_range")
     if rng:
         steps |= set(range(int(rng[0]), int(rng[1]) + 1))
@@ -92,18 +111,31 @@ def declared_missing(fixes: dict, view: str, desktop: int) -> set[int]:
     return steps
 
 
+def _from_unphotographed(desktop: int, steps: Iterable[int], unphotographed: set[int]) -> str:
+    """`` (unphotographed.63.steps)``: which of ``steps`` the U40 declaration gives."""
+    mine = sorted(set(steps) & unphotographed)
+    if not mine:
+        return ""
+    if len(mine) == len(set(steps)):
+        return f" (unphotographed.{desktop}.steps)"
+    return f" (of which unphotographed.{desktop}.steps: {mine})"
+
+
 def verify_declared_missing(
     desktop: int, fixes: dict, n_steps: int, missing: list[FrameKey]
 ) -> list[str]:
-    """Check the ``scan``/``rs`` gaps declared in the yaml against the real gaps.
+    """Check the gaps declared in the yaml against the real gaps, view by view.
 
-    ``missing_steps`` / ``missing_steps_range`` are **logical steps** -- since
-    v1.25 the collapsed ones (spec 2.2): the steps the sheet's rows make once its
-    ``dupli`` rows are dropped. A declared-missing frame that turns out to exist
-    is a ``MISMATCH`` - the yaml is then stale.
+    ``missing_steps`` / ``missing_steps_range`` (``scan``, ``rs``) are **logical
+    steps** -- since v1.25 the collapsed ones (spec 2.2): the steps the sheet's
+    rows make once its ``dupli`` rows are dropped. The ``unphotographed`` steps
+    (U40) are declared missing in all four views, the line naming them as such.
+    A declared-missing frame that turns out to exist is a ``MISMATCH`` - the
+    yaml is then stale.
     """
     issues: list[str] = []
-    for view in ("scan", "rs"):
+    unphotographed = set(unphotographed_steps(fixes, desktop))
+    for view in VIEWS:
         declared_all = declared_missing(fixes, view, desktop)
         if not declared_all:
             continue
@@ -115,6 +147,7 @@ def verify_declared_missing(
             issues.append(
                 f"fix:{view}[{desktop}] MISMATCH: declared-missing logical steps "
                 f"present in index: {present}"
+                + _from_unphotographed(desktop, present, unphotographed)
             )
         else:
             note = (
@@ -125,13 +158,73 @@ def verify_declared_missing(
             issues.append(
                 f"fix:{view}[{desktop}] declared missing steps {sorted(declared)} "
                 f"confirmed absent" + note
+                + _from_unphotographed(desktop, declared, unphotographed)
             )
     return issues
 
 
+def verify_unphotographed(
+    desktop: int,
+    fixes: dict,
+    steps: list[int],
+    n_steps: int,
+    frames: dict,
+    missing: list[FrameKey],
+    leftovers: Optional[dict[str, list[str]]] = None,
+    sheet_steps: Optional[int] = None,
+) -> list[str]:
+    """Assert ``unphotographed.<d>.steps`` (U40) in all four views.
+
+    ``steps`` are the declared steps the index applied (the out-of-range ones
+    were reported and dropped). Every other step must have a frame in every
+    view unless that view declares it missing, every capture must have found a
+    step (``leftovers``: the view's captures the index skipped), the sheet --
+    when it is known -- must count the steps the captures and the declaration
+    make, and no view may have a frame on a declared step. Anything else is a
+    ``MISMATCH``: the declaration does not fit the captures on the drive.
+    Silent for a desktop that declares nothing.
+    """
+    declared = unphotographed_steps(fixes, desktop)
+    if not declared:
+        return []
+    head = f"fix:unphotographed[{desktop}] steps {declared}"
+    chosen = set(steps)
+    problems: list[str] = []
+    for view in VIEWS:
+        shot = sorted((k.step, ff.src_step_dir) for k, ff in frames.items()
+                      if k.view == view and k.step in chosen)
+        if shot:
+            problems.append(f"{view} has a frame on declared step(s) "
+                            + ", ".join(f"{s} ({src})" for s, src in shot))
+    for view in VIEWS:
+        allowed = declared_missing(fixes, view, desktop)
+        gap = sorted(k.step for k in missing if k.view == view and k.step not in allowed)
+        if gap:
+            problems.append(f"{view}: steps {gap} have no capture and are not declared "
+                            f"missing")
+    for view in VIEWS:
+        left = (leftovers or {}).get(view) or []
+        if left:
+            problems.append(f"{view}: captures {left} have no step")
+    if sheet_steps is not None and int(sheet_steps) != int(n_steps):
+        problems.append(f"the sheet has {sheet_steps} steps, the captures and the "
+                        f"declared steps make {n_steps}")
+    if problems:
+        return [f"{head} MISMATCH: " + "; ".join(problems)]
+    counts = []
+    for view in VIEWS:
+        own = [ff for k, ff in frames.items() if k.view == view]
+        extra = sum(len((ff.aux or {}).get("extra_shots") or []) for ff in own)
+        counts.append(f"{view} {len(own)}" + (f" + {extra} extra" if extra else ""))
+    sheet = " (as the sheet)" if sheet_steps is not None else ""
+    return [f"{head}: no view photographed them; {n_steps} steps{sheet}, every view's "
+            f"captures on the other {n_steps - len(chosen)} ({', '.join(counts)})"]
+
+
 def verify_scan_rule(desktop: int, scan_fix: dict, dupli_rows: list[int], n_steps: int,
                      frames: dict, missing: list[FrameKey],
-                     leftover: Optional[list[str]] = None) -> list[str]:
+                     leftover: Optional[list[str]] = None,
+                     unphotographed: Iterable[int] = ()) -> list[str]:
     """Assert the scanner rule of a desktop with ``dupli`` rows or a declaration (U25).
 
     Every collapsed step must have a scanner frame except the declared missing
@@ -139,9 +232,15 @@ def verify_scan_rule(desktop: int, scan_fix: dict, dupli_rows: list[int], n_step
     step without a frame that nothing declares, is a ``MISMATCH`` -- the
     declaration (or its absence) does not fit the folders on the drive, which is
     what ``scan-align`` is for. Silent for every other desktop.
+
+    ``unphotographed`` (the desktop's ``unphotographed`` steps, U40) are skipped
+    steps of the scanner as well -- the union with ``skipped_steps`` -- and the
+    line says which declaration each one comes from.
     """
     scan_fix = scan_fix or {}
-    declared = "duplicate_folders" in scan_fix or "skipped_steps" in scan_fix
+    unphotographed = sorted({int(s) for s in unphotographed})
+    declared = ("duplicate_folders" in scan_fix or "skipped_steps" in scan_fix
+                or bool(unphotographed))
     if not declared and not dupli_rows:
         return []
     dup = sorted(int(n) for n in (scan_fix.get("duplicate_folders") or []))
@@ -153,13 +252,20 @@ def verify_scan_rule(desktop: int, scan_fix: dict, dupli_rows: list[int], n_step
     if replacing:
         head += f" (replacing {replacing})"
     skipped = sorted(int(n) for n in (scan_fix.get("skipped_steps") or []))
-    if skipped:
+    if skipped and unphotographed:
+        head += (f", skipped steps {sorted(set(skipped) | set(unphotographed))} "
+                 f"(scan.{desktop}.skipped_steps {skipped}; unphotographed.{desktop}.steps "
+                 f"{unphotographed})")
+    elif skipped:
         head += f", skipped steps {skipped}"
+    elif unphotographed:
+        head += f", skipped steps {unphotographed} (unphotographed.{desktop}.steps)"
     if not declared:
         head = (f"scan[{desktop}] (no scan.{desktop}.duplicate_folders declared -- run "
                 f"scan-align; dupli rows {dupli_rows} taken as all skipped by the scanner)")
     absent = sorted(k.step for k in missing if k.view == "scan")
-    expected = sorted(declared_missing({"scan": {desktop: scan_fix}}, "scan", desktop))
+    expected = sorted(declared_missing({"scan": {desktop: scan_fix}}, "scan", desktop)
+                      | set(unphotographed))
     undeclared = [s for s in absent if s not in expected]
     extras = folders - len(scan)
     shown = (f"{folders} folders -> {len(scan)} of {n_steps} steps"

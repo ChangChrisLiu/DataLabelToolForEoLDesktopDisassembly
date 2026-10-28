@@ -261,6 +261,7 @@ Where the sheet's rows are not the Camera_1 captures, the sheet's step is found 
 
 - D56: the sheet has 45 rows for 46 Camera_1 captures: aligned by Sequence Number; captures [41] have no row (not checked)
 - D63: the sheet has 37 rows for 34 Camera_1 captures: aligned by Sequence Number; numbers [11, 12, 13] used twice (their rows checked together)
+  - **Settled 2026-10-27 (U40):** the capture number is the sheet's Sequence Number (capture 11 has the SSD out = number 11, capture 26 the CPU = number 26, capture 28 the GPU = number 28; the last four captures are the final state from four sides, steps 34-37), so the three rows without a photo of their own are the ones numbered 11-13 a second time -- rows 14-16, the three covers, which were already off between captures 1 and 2 (the blue card bracket) and 3 and 4 (the air shroud): they log actions that got no photo. Declared `unphotographed.63.steps: [14, 15, 16]`, so the index has 37 steps, all four views miss steps 14-16, and a rebuilt audit checks D63 by step number.
 - D43: the sheet has 47 rows for 48 Camera_1 captures, and its Sequence Numbers (1-47) do not say which capture has no row: not checked
 
 ### 2d. Scanner shots replaced within the burst

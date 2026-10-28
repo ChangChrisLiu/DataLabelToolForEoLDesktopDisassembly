@@ -23,9 +23,11 @@ from typing import Any, Callable, Iterable, Optional
 
 from tda.core.index_fixes import (
     cam2_fix_step,
+    unphotographed_steps,
     verify_cam2_fixes,
     verify_declared_missing,
     verify_scan_rule,
+    verify_unphotographed,
 )
 from tda.core.index_report import write_report
 from tda.core.model import VIEWS, FrameKey
@@ -89,7 +91,9 @@ class DesktopIndex:
     """All frames of one desktop, keyed by logical step."""
 
     desktop: int
-    n_steps: int  # logical steps = OAK cam1 captures after fixes, minus the dupli rows
+    # logical steps = OAK cam1 captures after fixes, minus the dupli rows, plus
+    # the steps no camera photographed (U40)
+    n_steps: int
     frames: dict[FrameKey, FrameFile] = field(default_factory=dict)
     missing: list[FrameKey] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
@@ -110,6 +114,11 @@ class DesktopIndex:
     rows: list[str] = field(default_factory=list)
     #: The sheet's ``dupli`` rows the steps were collapsed by (sheet numbering).
     dupli_rows: list[int] = field(default_factory=list)
+    #: The steps no camera photographed (``unphotographed.<d>.steps``, task
+    #: U40): every view's captures sit on the other steps, so capture ``c`` is
+    #: the ``c``-th sheet row that is not one of theirs (:func:`capture_steps`).
+    #: ``[]`` in an index written before, where no desktop declared any.
+    unphotographed: list[int] = field(default_factory=list)
 
 
 #: ``FrameFile.aux`` key of a step's extra shots (task U25): the captures of a
@@ -168,14 +177,58 @@ def collapse_rows(n_rows: int, dupli_rows: Iterable[int]) -> tuple[list[int], se
     return out, extra
 
 
+def capture_rows(n_captures: int, dupli_rows: Iterable[int],
+                 unphotographed: Iterable[int] = ()) -> list[int]:
+    """The sheet row of every Camera_1 capture (task U40); index 0 is unused.
+
+    Without ``unphotographed`` steps capture ``c`` is row ``c``. A step no
+    camera photographed (``unphotographed.<d>.steps``) is a sheet row without
+    a capture, so capture ``c`` is the ``c``-th row that is not one of theirs:
+    the rows are ``n_captures + len(unphotographed)``, collapsed by the
+    ``dupli`` rows (sheet numbering) as :func:`collapse_rows` does, and a step's
+    row is its one row that is not a ``dupli`` row. The steps must lie in
+    ``1..n_captures - #dupli + len(unphotographed)`` (the index checks that
+    first, :func:`_valid_unphotographed`).
+    """
+    unph = {int(s) for s in unphotographed}
+    if not unph:
+        return list(range(int(n_captures) + 1))
+    n_sheet = int(n_captures) + len(unph)
+    step_of_row, extra = collapse_rows(n_sheet, dupli_rows)
+    gone = {r for r in range(1, n_sheet + 1) if r not in extra and step_of_row[r] in unph}
+    return [0] + [r for r in range(1, n_sheet + 1) if r not in gone]
+
+
+def capture_steps(n_captures: int, dupli_rows: Iterable[int],
+                  unphotographed: Iterable[int] = ()) -> tuple[list[int], set[int]]:
+    """``(step_of_capture, extra_captures)``: the Camera_1 captures on the steps.
+
+    :func:`collapse_rows` over the captures (U25) when no step is declared
+    unphotographed; otherwise (U40) capture ``c`` takes the step of its sheet
+    row (:func:`capture_rows`) -- so the captures after an unphotographed step
+    are one step later each, like the scanner's ``skipped_steps`` -- and it is
+    an extra shot when that row is a ``dupli`` row. ``step_of_capture[0]`` is
+    unused. Every view that is aligned by Camera_1's captures (OAK2 by
+    timestamp, the RealSense by folder number) follows it.
+    """
+    unph = {int(s) for s in unphotographed}
+    if not unph:
+        return collapse_rows(n_captures, dupli_rows)
+    rows = capture_rows(n_captures, dupli_rows, unph)
+    step_of_row, extra = collapse_rows(int(n_captures) + len(unph), dupli_rows)
+    return ([0] + [step_of_row[r] for r in rows[1:]],
+            {c for c, r in enumerate(rows) if c and r in extra})
+
+
 def folder_steps(di: "DesktopIndex", view: str) -> dict[int, int]:
     """``{capture folder number: step}`` of one view (task U25).
 
     The scanner's ``RGB<n>1`` folders are looked up where the index put them
     (an extra shot answers its step); every other view goes through the
     Camera_1 folder of the same number, its row and the collapsed step of that
-    row. An index written before U25 has no ``rows``: the OAK and RealSense
-    numbers are then the steps, and ``{}`` says so.
+    row (past the desktop's unphotographed steps, U40). An index written before
+    U25 has no ``rows``: the OAK and RealSense numbers are then the steps, and
+    ``{}`` says so.
     """
     out: dict[int, int] = {}
     if view == "scan":
@@ -192,7 +245,8 @@ def folder_steps(di: "DesktopIndex", view: str) -> dict[int, int]:
         return out
     if not di.rows:
         return out
-    step_of_row, _extra = collapse_rows(len(di.rows), di.dupli_rows)
+    step_of_row, _extra = capture_steps(len(di.rows), di.dupli_rows,
+                                        getattr(di, "unphotographed", None) or ())
     for row, folder in enumerate(di.rows, start=1):
         if folder.isdigit():
             out.setdefault(int(folder), step_of_row[row])
@@ -220,6 +274,14 @@ def scan_desktop(desktop: int, roots: dict, fixes: dict,
     (``aux["extra_shots"]``), not a frame. The scanner never counted those rows
     the same way, so it is mapped by its own folder numbers and the declared
     ``scan.<d>.duplicate_folders`` (:func:`_add_scanner`).
+
+    ``unphotographed.<d>.steps`` (task U40) are steps no camera photographed
+    (D63: the sheet has three rows more than every camera has captures). They
+    are sheet rows without a capture, so in every view the ``i``-th capture is
+    on the ``i``-th step that is not declared (:func:`capture_steps`; the
+    scanner's ``skipped_steps`` rule in all four views) and the declared steps
+    are missing frames everywhere. Asserted like the scanner rule
+    (:func:`tda.core.index_fixes.verify_unphotographed`).
     """
     fixes = fixes or {}
     oak_fix = (fixes.get("oak") or {}).get(desktop, {}) or {}
@@ -245,31 +307,37 @@ def scan_desktop(desktop: int, roots: dict, fixes: dict,
     rows = [src for src, _row in sorted(step_of_dir.items(), key=lambda kv: kv[1])]
 
     # OAK and RealSense first in row numbering (the sheet's), then collapsed
+    leftovers: dict[str, list[str]] = {"oak2": [], "rs": [], "scan": []}
     issues.extend(
         _add_oak_cam2(desktop, disassemble, oak_desktop, oak_fix, step_of_dir, step_of_ts, frames,
-                      gallery["ts"])
+                      gallery["ts"], leftover=leftovers["oak2"])
     )
     rs_fix = (fixes.get("rs") or {}).get(desktop, {}) or {}
     issues.extend(_add_realsense(desktop, roots, aliases, step_of_dir, frames, rs_fix,
-                                 gallery["dirs"]))
+                                 gallery["dirs"], leftover=leftovers["rs"]))
     issues.extend(_add_components(desktop, roots, oak_desktop, oak_fix, step_of_ts, frames,
                                   rs_fix))
-    dupli, collapse_issues = _valid_dupli(dupli_rows, n_rows, sheet_rows)
+    declared_unph = unphotographed_steps(fixes, desktop)
+    dupli, collapse_issues = _valid_dupli(dupli_rows, n_rows, sheet_rows,
+                                          unphotographed=len(declared_unph))
     issues.extend(collapse_issues)
-    n_steps = n_rows - len(dupli)
-    if dupli:
+    unph, unph_issues = _valid_unphotographed(desktop, declared_unph, n_rows - len(dupli))
+    issues.extend(unph_issues)
+    n_steps = n_rows - len(dupli) + len(unph)
+    if dupli or unph:
         replaces = {int(r) for r in oak_fix.get("dupli_replaces") or []}
         for r in sorted(replaces - set(dupli)):
             issues.append(f"fix:oak[{desktop}] dupli_replaces MISMATCH: row {r} is not a "
                           f"dupli row of the sheet; ignored")
         # the lines so far count capture rows; say which step each one now is
-        issues[:] = _restep(issues, collapse_rows(n_rows, dupli)[0])
-        issues.extend(_collapse(desktop, n_rows, dupli, rows, frames, replaces & set(dupli)))
+        issues[:] = _restep(issues, capture_steps(n_rows, dupli, unph)[0])
+        issues.extend(_collapse(desktop, n_rows, dupli, rows, frames, replaces & set(dupli),
+                                unphotographed=unph))
 
     scan_fix = (fixes.get("scan") or {}).get(desktop, {}) or {}
-    leftover: list[str] = []
     issues.extend(_add_scanner(desktop, roots, step_of_dir, frames, n_steps,
-                               scan_fix, collapsed=bool(dupli), leftover=leftover))
+                               scan_fix, collapsed=bool(dupli), leftover=leftovers["scan"],
+                               unphotographed=unph))
 
     # the gallery's shots are not steps: a camera with fewer of them than
     # another misses nothing, so only the sequence views can miss a frame
@@ -281,32 +349,88 @@ def scan_desktop(desktop: int, roots: dict, fixes: dict,
     ]
     issues.extend(verify_declared_missing(desktop, fixes, n_steps, missing))
     issues.extend(verify_scan_rule(desktop, scan_fix, dupli, n_steps, frames, missing,
-                                   leftover))
+                                   leftovers["scan"], unphotographed=unph))
+    sheet_steps = None if sheet_rows is None else int(sheet_rows) - len(dupli)
+    issues.extend(verify_unphotographed(desktop, fixes, unph, n_steps, frames, missing,
+                                        leftovers, sheet_steps))
     return DesktopIndex(desktop, n_steps, frames, missing, issues, n_rows=n_rows, rows=rows,
-                        dupli_rows=dupli)
+                        dupli_rows=dupli, unphotographed=unph)
 
 
 def _valid_dupli(dupli_rows: Optional[Iterable[int]], n_rows: int,
-                 sheet_rows: Optional[int]) -> tuple[list[int], list[str]]:
-    """The ``dupli`` rows that can be collapsed, and a line for every one that cannot."""
+                 sheet_rows: Optional[int],
+                 unphotographed: int = 0) -> tuple[list[int], list[str]]:
+    """The ``dupli`` rows that can be collapsed, and a line for every one that cannot.
+
+    ``unphotographed`` steps (U40) are sheet rows without a Camera_1 capture:
+    the sheet then has that many rows more than the captures, and the
+    ``dupli`` rows (sheet numbering) reach that much further.
+    """
     if dupli_rows is None:
         return [], []
     issues: list[str] = []
-    if sheet_rows is not None and int(sheet_rows) != n_rows:
-        issues.append(f"rows: the sheet has {sheet_rows} rows but Camera_1 {n_rows} captures; "
-                      f"the dupli rows are taken as capture numbers")
+    n_sheet = n_rows + int(unphotographed)
+    if sheet_rows is not None and int(sheet_rows) != n_sheet:
+        if unphotographed:
+            issues.append(f"rows: the sheet has {sheet_rows} rows but Camera_1 {n_rows} "
+                          f"captures and {unphotographed} unphotographed step(s) make "
+                          f"{n_sheet}; the dupli rows are taken as rows of those")
+        else:
+            issues.append(f"rows: the sheet has {sheet_rows} rows but Camera_1 {n_rows} "
+                          f"captures; the dupli rows are taken as capture numbers")
     keep = []
     for r in sorted({int(r) for r in dupli_rows}):
-        if 1 < r <= n_rows:
+        if 1 < r <= n_sheet:
             keep.append(r)
         else:
             issues.append(f"rows: dupli row {r} has no Camera_1 capture to collapse; ignored")
     return keep, issues
 
 
+def _valid_unphotographed(desktop: int, declared: list[int],
+                          n_photographed: int) -> tuple[list[int], list[str]]:
+    """The ``unphotographed`` steps (U40) the index can apply, and its lines.
+
+    ``n_photographed`` is the steps the captures make (Camera_1's captures
+    less the ``dupli`` ones); the declared steps add to them, so a step must
+    lie in ``1..n_photographed + len(steps)``. One that does not is a
+    ``MISMATCH`` and is dropped (and the rest checked again, the bound being one
+    lower).
+    """
+    keep = sorted({int(s) for s in declared})
+    issues: list[str] = []
+    while keep:
+        bound = n_photographed + len(keep)
+        bad = [s for s in keep if not 1 <= s <= bound]
+        if not bad:
+            break
+        issues.append(f"fix:unphotographed[{desktop}] MISMATCH: step(s) {bad} are not steps "
+                      f"of the {bound} that {n_photographed} photographed steps and "
+                      f"{len(keep)} unphotographed ones make; ignored")
+        keep = [s for s in keep if s not in bad]
+    if keep:
+        rest = [s for s in range(1, n_photographed + len(keep) + 1) if s not in keep]
+        issues.append(f"fix:unphotographed[{desktop}] steps {keep} applied: no view has a "
+                      f"capture of them, the {n_photographed} photographed steps are "
+                      f"{_spans(rest)} in every view")
+    return keep, issues
+
+
+def _spans(steps: list[int]) -> str:
+    """``[1, 2, 3, 7, 8]`` -> ``"1-3, 7-8"``."""
+    out: list[str] = []
+    for s in steps:
+        if out and out[-1][1] == s - 1:
+            out[-1][1] = s
+        else:
+            out.append([s, s])
+    return ", ".join(f"{a}" if a == b else f"{a}-{b}" for a, b in out)
+
+
 def _collapse(desktop: int, n_rows: int, dupli: list[int], rows: list[str],
               frames: dict[FrameKey, FrameFile],
-              replaces: Optional[set[int]] = None) -> list[str]:
+              replaces: Optional[set[int]] = None,
+              unphotographed: Iterable[int] = ()) -> list[str]:
     """Re-key the OAK and RealSense frames from rows to steps (task U25).
 
     A ``dupli`` row's frame becomes an extra shot of its step -- or the step's
@@ -315,25 +439,37 @@ def _collapse(desktop: int, n_rows: int, dupli: list[int], rows: list[str],
     re-take of a capture that came out wrong -- a part lifted mid-operation, the
     scanner's blue light on the bench -- so it is the step's frame and the
     capture it replaces becomes the extra shot.
+
+    The frames come keyed by Camera_1 capture number; with ``unphotographed``
+    steps (U40) a capture is not its sheet row (:func:`capture_rows`), and
+    ``dupli`` / ``replaces`` / the extra shots' ``row`` are sheet rows.
     """
     replaces = replaces or set()
-    step_of_row, extra = collapse_rows(n_rows, dupli)
-    issues = [
-        f"rows: sheet dupli rows {dupli} collapsed: {n_rows} Camera_1 captures are "
-        f"{n_rows - len(dupli)} steps; "
-        + ", ".join(f"row {r} (cam1 {rows[r - 1]}) -> "
-                    + (f"frame of step {step_of_row[r]}, replacing row {r - 1}"
-                       if r in replaces else f"extra shot of step {step_of_row[r]}")
-                    for r in dupli)
-    ]
+    unph = sorted({int(s) for s in unphotographed})
+    step_of_row, extra = capture_steps(n_rows, dupli, unph)
+    sheet_row = capture_rows(n_rows, dupli, unph)
+    capture_of = {r: c for c, r in enumerate(sheet_row) if c}
+    issues = []
+    if dupli:
+        issues.append(
+            f"rows: sheet dupli rows {dupli} collapsed: {n_rows} Camera_1 captures are "
+            f"{n_rows - len(dupli)} steps; "
+            + ", ".join(f"row {r} (cam1 {rows[capture_of[r] - 1]}) -> "
+                        + (f"frame of step {step_of_row[capture_of[r]]}, replacing row {r - 1}"
+                           if r in replaces
+                           else f"extra shot of step {step_of_row[capture_of[r]]}")
+                        for r in dupli if r in capture_of)
+        )
     for view in ("oak1", "oak2", "rs"):
         mains: dict[int, tuple[int, FrameFile]] = {}
         extras: dict[int, list[tuple[int, FrameFile]]] = {}
         for key in [k for k in frames if k.view == view]:
             ff = frames.pop(key)
-            row = key.step
-            step = step_of_row[row] if 1 <= row <= n_rows else row
-            if row in extra:
+            capture = key.step
+            inside = 1 <= capture <= n_rows
+            step = step_of_row[capture] if inside else capture
+            row = sheet_row[capture] if inside else capture
+            if capture in extra:
                 extras.setdefault(step, []).append((row, ff))
             else:
                 mains[step] = (row, ff)
@@ -520,13 +656,16 @@ def _add_oak_cam2(
     step_of_ts: dict[str, int],
     frames: dict[FrameKey, FrameFile],
     gallery_ts: Optional[dict[str, int]] = None,
+    leftover: Optional[list[str]] = None,
 ) -> list[str]:
     """Pair Camera_2 captures onto the logical steps, applying the D24/D10 fixes.
 
     A capture paired with a Camera_1 ``gallery_captures`` folder goes to the same
-    shot of Camera_2's components gallery.
+    shot of Camera_2's components gallery. ``leftover`` receives every capture
+    that found no step (``folder (token)``), for the assertion of U40.
     """
     gallery_ts = gallery_ts or {}
+    leftover = leftover if leftover is not None else []
     issues: list[str] = []
     cam2 = scan_oak_camera(os.path.join(disassemble, "Camera_2"), issues)
     captures: list[tuple[str, str, dict[str, str]]] = []
@@ -568,6 +707,7 @@ def _add_oak_cam2(
             issues.append(
                 f"oak2: capture {ts} in folder {src_dir} has no cam1 partner; skipped"
             )
+            leftover.append(f"{src_dir} ({ts})")
             continue
         key = FrameKey(desktop, step, "oak2")
         if key in frames:
@@ -575,6 +715,7 @@ def _add_oak_cam2(
                 f"oak2: step {step} already filled by folder {frames[key].src_step_dir}; "
                 f"dropped duplicate from {src_dir} ({ts})"
             )
+            leftover.append(f"{src_dir} ({ts})")
             continue
         frames[key] = _oak_frame(key, ts, role_paths, src_dir)
         assigned.setdefault(src_dir, []).append(step)
@@ -602,7 +743,8 @@ def scan_step(number: int, duplicate_folders: Iterable[int],
     ``skipped_steps`` (``scan.<d>.skipped_steps``, U25 round 2) are steps the
     scanner never photographed (D41, D61): the folders from there on are one
     step later each -- the ``b``-th folder lands on the ``b``-th step that was
-    not skipped.
+    not skipped. The desktop's ``unphotographed`` steps (U40) are passed here
+    too, joined with its own.
     """
     base = int(number) - sum(1 for d in duplicate_folders if int(d) <= int(number))
     for k in sorted({int(s) for s in skipped_steps}):
@@ -620,12 +762,15 @@ def _add_scanner(
     scan_fix: Optional[dict] = None,
     collapsed: bool = False,
     leftover: Optional[list[str]] = None,
+    unphotographed: Iterable[int] = (),
 ) -> list[str]:
     """Add the scanner (top-down) frames.
 
     A desktop whose rows were collapsed (it has ``dupli`` rows) or that declares
-    ``scan.<d>.duplicate_folders`` or ``scan.<d>.skipped_steps`` maps folder
-    ``RGB<n>1`` with :func:`scan_step`; a duplicate folder is an extra shot of its step, or the
+    ``scan.<d>.duplicate_folders``, ``scan.<d>.skipped_steps`` or steps no
+    camera photographed (``unphotographed``, U40 -- skipped steps of the
+    scanner too, the union with its own) maps folder ``RGB<n>1`` with
+    :func:`scan_step`; a duplicate folder is an extra shot of its step, or the
     step's frame when nothing else photographed it (D1's ``RGB331``). Every
     other desktop keeps the old rule: folder ``n`` is the step of Camera_1
     folder ``n``.
@@ -636,9 +781,11 @@ def _add_scanner(
     times the way :func:`_add_realsense` does.
     """
     scan_fix = scan_fix or {}
-    own = collapsed or "duplicate_folders" in scan_fix or "skipped_steps" in scan_fix
+    unphotographed = {int(s) for s in unphotographed}
+    own = (collapsed or "duplicate_folders" in scan_fix or "skipped_steps" in scan_fix
+           or bool(unphotographed))
     duplicates = {int(n) for n in (scan_fix.get("duplicate_folders") or [])}
-    skipped = {int(n) for n in (scan_fix.get("skipped_steps") or [])}
+    skipped = {int(n) for n in (scan_fix.get("skipped_steps") or [])} | unphotographed
     issues: list[str] = []
     base = scanner_desktop_dir(roots["scanner_root"], desktop, issues)
     if base is None:
@@ -716,12 +863,14 @@ def _add_realsense(
     frames: dict[FrameKey, FrameFile],
     rs_fix: Optional[dict] = None,
     gallery_dirs: Optional[dict[str, int]] = None,
+    leftover: Optional[list[str]] = None,
 ) -> list[str]:
     """Add the RealSense frames, aligning by folder number *and* file time.
 
     The frame of a Camera_1 ``gallery_captures`` folder (by folder number, or
     the ``rs_extra_from`` of its number) goes to the same shot of the
-    RealSense's components gallery.
+    RealSense's components gallery. ``leftover`` receives every folder that
+    found no step, for the assertion of U40.
 
     Spec 2.2 aligns the RealSense by folder number plus file time.  Unlike the
     scanner, these files were never re-copied, so ``original_color.png``'s mtime
@@ -753,6 +902,8 @@ def _add_realsense(
             issues.append(
                 f"rs: folder {entry.name} (nominal step {nominal}) has no cam1 folder; skipped"
             )
+            if leftover is not None:
+                leftover.append(entry.name)
             continue
         found = {f.name: f for f in files(entry.path, issues)}
         main = found.get("original_color.png")
@@ -974,6 +1125,8 @@ def build_index(
             n_missing = len(idx.missing)
             rows = (f" ({idx.n_rows} rows, dupli {idx.dupli_rows})" if idx.dupli_rows
                     else "")
+            if idx.unphotographed:
+                rows += f" (unphotographed {idx.unphotographed})"
             print(
                 f"[index] Desktop {desktop:>2}: {idx.n_steps:>3} steps{rows}, "
                 f"{len(idx.frames):>4} frames, {n_missing:>3} missing, "
@@ -1080,6 +1233,7 @@ def save_index(idx: dict[int, DesktopIndex], path: str) -> None:
                 "n_rows": di.n_rows,
                 "rows": list(di.rows),
                 "dupli_rows": list(di.dupli_rows),
+                "unphotographed": list(getattr(di, "unphotographed", None) or []),
                 "frames": [_frame_to_json(ff) for ff in di.frames.values()],
                 "missing": [[k.desktop, k.step, k.view] for k in di.missing],
                 "issues": di.issues,
@@ -1126,6 +1280,7 @@ def load_index(path: str) -> dict[int, DesktopIndex]:
             n_rows=int(raw.get("n_rows") or 0),
             rows=list(raw.get("rows") or []),
             dupli_rows=[int(r) for r in raw.get("dupli_rows") or []],
+            unphotographed=[int(s) for s in raw.get("unphotographed") or []],
         )
     return out
 

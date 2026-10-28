@@ -67,8 +67,8 @@ def test_v1_34_is_on_top_of_14():
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
     # U33's v1.32 and U34's v1.33 land at the same time; the controller orders them
     # U33 / U34 / U36 landed v1.32 / v1.33 / v1.35 the same day; the controller ordered them
-    # (and U37's v1.36 and U38's v1.37 have gone above them since)
-    [entry] = [e for e in entries[:6] if e.startswith("- **v1.34")]
+    # (and U37's v1.36 has gone above them since)
+    [entry] = [e for e in entries[:8] if e.startswith("- **v1.34")]
     assert entry.startswith("- **v1.34（2026-10-26）**：**这一帧的说明**（U35，§3.1、§4.4）")
     for needed in ("在 review 的时候我可以加入对这一帧说明的 notes",
                    "`frame_note(desktop, view, step, text, author, updated_at)`",

@@ -157,8 +157,27 @@ def capture_alignment(di, li, rows: list[dict]) -> tuple[Optional[dict[int, list
     ``k``: a repeated number gives its rows together (D63's 11-13), a skipped
     one leaves its capture without a row (D56's 41). Anything else cannot be
     told, and the desktop is not checked: ``({}, why)``.
+
+    An index with steps no camera photographed (``di.unphotographed``, U40 --
+    D63) already numbers its steps as the sheet does: index step ``s`` is sheet
+    step ``s``, and the first photographed step after a run of them answers for
+    those rows too (its scanner change is the one across them).
     """
     captures = int(getattr(di, "n_rows", 0) or di.n_steps)
+    unph = sorted(int(s) for s in getattr(di, "unphotographed", None) or [])
+    if unph:
+        out_u: dict[int, list[int]] = {}
+        pending: list[int] = []
+        for s in range(1, int(di.n_steps) + 1):
+            if s in unph:
+                pending.append(s)
+                continue
+            out_u[s], pending = pending + [s], []
+        d = getattr(di, "desktop", "<d>")
+        return out_u, (f"the sheet has {li.sheet_rows} rows for {captures} Camera_1 captures: "
+                       f"steps {unph} no camera photographed (`unphotographed.{d}.steps`, "
+                       f"U40) -- the index steps are the sheet's, and the frame after them "
+                       f"is checked with their rows")
     if li.sheet_rows == captures:
         return None, ""
     head = f"the sheet has {li.sheet_rows} rows for {captures} Camera_1 captures"

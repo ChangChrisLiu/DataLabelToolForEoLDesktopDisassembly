@@ -235,7 +235,9 @@ def test_fixes_file_matches_spec(fixes):
     assert fixes["scan"][1]["duplicate_folders"] == [15, 33]
     assert fixes["rs"][42]["missing_steps_range"] == [1, 12]
     assert fixes["rs"]["folder_aliases"] == ["Disassemble", "Disassembly"]
-    for view in ("oak", "scan", "rs"):
+    # U40: D63's steps no camera photographed (all four views)
+    assert fixes["unphotographed"][63]["steps"] == [14, 15, 16]
+    for view in ("oak", "scan", "rs", "unphotographed"):
         for desktop, entry in fixes[view].items():
             if isinstance(desktop, int):
                 assert entry.get("reason"), f"{view}/{desktop} has no reason string"
