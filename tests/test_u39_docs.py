@@ -40,6 +40,9 @@ def test_the_paragraph_is_at_the_end_of_4_2():
                    "一次 `Ctrl+Z`", "不经过它，免得误触", "按 `` ` `` 就是撤回",
                    "「撤回（被线挡住 / 画框外）」", "不要求先有形状", "已拆下", "台面上",
                    "当作整件的估计", "U10 第二轮", "**不报 `missing_shape`**",
+                   # round 2: it takes no pixel and hides nothing
+                   "**画框外的零件不参与遮挡**", "不占像素、也不挡住它下面的零件",
+                   "形状仍存在库里，撤回画框外后照常生效", "开冲突交给 Review",
                    "`tda.core.compiler.marked_absent`", "`bench_missing` 不变",
                    "`session_coverage`", "`Space`", "`cli check`", "芯片「画框外」",
                    "实例表可见性列写「框外」", "U2b 第三轮", "⚠ 的「已设为不可见」",
@@ -78,6 +81,7 @@ def test_v1_38_is_near_the_top_of_14():
     assert entry.startswith("- **v1.38（2026-10-27）**：**画框外**（U39，§4.2、§4.4、§3.2b）")
     for needed in ("D63 的导风罩", "`tda.core.occluder.OFF_FRAME`", "`off_frame_applies`",
                    f"第四项「{OFF_FRAME_CHOICE}」", "`marked_absent`", "`bench_missing` 不变",
+                   "画框外的零件不参与遮挡",
                    "「out_of_view（原因: 画框外，手动）」", "「画框外 n」",
                    "`vis_runs.OFF_FRAME_REASON`", "`SYNC_LABELS` 去掉 `out_of_view`",
                    "`export_scanpack`", "`KeyError`", "U24 / U36 队列行 psu.01",

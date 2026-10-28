@@ -803,7 +803,11 @@ def compile_frame(
     from every instance's visible mask, bench included (spec 3.3 step 6).
     A ``visibility`` of ``out_of_view`` -- from an override, or from a shape
     that is missing altogether -- leaves neither a visible mask nor a box
-    behind.
+    behind. On a sequence frame an override saying so with no pixels of its
+    own (:func:`marked_absent`, 画框外 -- task U39) also keeps the instance out
+    of step 5: the part is not in this picture, so none of its layers is
+    painted and it hides nothing; its amodal (the keyframe's shape through
+    the transform) is still reported, as the whole part's estimate.
     """
     canvas = (int(hw[0]), int(hw[1]))
     problems: list[str] = []
@@ -868,12 +872,19 @@ def compile_frame(
         kinds[inst] = GEOM_MASK
         amodal = np.zeros(canvas, dtype=bool, order="F")
         window: Optional[Window] = None
+        # 画框外 (task U39): a part said to be outside this view's picture is
+        # not in it, so it takes no pixel and hides nothing -- no layer of it is
+        # painted, whatever shape carries over from the segment's other frames.
+        # The shape itself stays (stored, and as this record's amodal estimate)
+        outside = not gallery and marked_absent(frame_overrides.get(inst))
         for part, here, mask in _shape_parts(kf, transform, canvas):
             if mask is None:
                 problems.append(f"shape_size_mismatch:{inst}/{part.name}")
                 continue
             layer = (inst, part.name)
-            if layer in layer_masks:  # a repeated part name is one layer
+            if outside:
+                pass                  # out of the picture: not a layer here
+            elif layer in layer_masks:  # a repeated part name is one layer
                 layer_masks[layer], layer_windows[layer] = _merge_layer(
                     layer_masks[layer], layer_windows[layer], mask, here
                 )

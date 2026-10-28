@@ -179,6 +179,38 @@ def test_a_drawn_part_off_frame_keeps_the_hidden_shape_warning(window, monkeypat
     assert "已设为不可见" in cell.toolTip() and "画框外" in cell.toolTip()
 
 
+def test_drawing_with_q_on_an_off_frame_frame_keeps_the_label_and_warns(window, monkeypatch):
+    """Round 2, ruled: Q does not take 画框外 back (labels are labels on the
+    sequence, U10 round 2); the ⚠ cell says the drawn shape is hidden and why."""
+    from app_scene import cell as app_cell
+    from tda.ui import session_api as api
+
+    monkeypatch.setattr(window, "ask_cable_range", lambda *a: (OFF_FRAME, STEP))
+    assert window.instances.select_instance(COOLER)
+    window.handle_key(key_event("Ctrl+`"))
+    assert said(window) == OFF_FRAME
+    session = window.session
+    session.begin_edit(COOLER)
+    session.set_editing_mask(app_cell(40))
+    result = session.commit_edit(api.SCOPE_KEYFRAME)
+    session.clear_edit()
+    assert not result.get("cleared_absent")
+    assert said(window) == OFF_FRAME                         # the label stays
+    window.instances.refresh()
+    window.task_card.refresh()
+    QApplication.processEvents()
+    table = window.instances.table()
+    line = next(i for i in range(table.rowCount())
+                if table.item(i, 1) is not None and table.item(i, 1).text() == COOLER)
+    cell = table.item(line, 3)
+    assert cell.text().startswith("⚠")
+    assert "已设为不可见" in cell.toolTip() and "画框外" in cell.toolTip()
+    row = card_row(window, COOLER)
+    assert row is not None and row["done"] and row["off_frame"]
+    sentence = row_view(row)["sentence"]
+    assert sentence.startswith("画框外") and "⚠ 已设为不可见" in sentence
+
+
 # --------------------------------------------------------------------------- #
 # the grave key's cycle
 # --------------------------------------------------------------------------- #
