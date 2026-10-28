@@ -39,6 +39,7 @@ QT_QPA_PLATFORM=offscreen python -m pytest tests -q -o addopts= --basetemp=<a fo
 | `tda/ui/` | the PySide6 window: canvas and tools, task card, guide, Steps and Review modes |
 | `tda/models/` | SAM 2.1 service, the small-part detector (RF-DETR / YOLO backends), the loader gate |
 | `configs/` | taxonomy, paths, SAM decoder heads, detector and prompt-gate settings, area bands |
+| `docs/HANDOFF_2026-10-28.md` | **start here**: the hand-off for whoever takes over (data locations, how to read the database, exports, state, rules; Chinese) |
 | `docs/annotation_guide.md` | the annotator's manual (Chinese) |
 | `docs/trial_quickstart.md` | the step-by-step walk-through for the first machine |
 | `docs/superpowers/specs/` | the design specification (v1.7) |
