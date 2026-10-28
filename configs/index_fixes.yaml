@@ -282,22 +282,18 @@ unphotographed:
     reason: >-
       The sheet has 37 rows (Sequence Numbers 1-13, then 11-13 again, then
       14-34) and every camera 34 captures (scanner RGB11..RGB341, OAK1/OAK2 and
-      RealSense 001..034). The last four are the final state from four sides:
-      RGB281..RGB311 face one way, RGB321/RGB331/RGB341 the other three, so
-      capture 31 is the state after row 34 (the second "Motherboard screws
-      4/5/6/7") and captures 32-34 are rows 35-37 ("Change a direction") -- the
-      user's reading, 2026-10-27. The parts place the three rows without a
-      capture earlier, though: the SSD is gone at capture 11 (row 11), and the
-      RAM sticks leave at captures 23 and 24 (rows 26/27 "RAM set 1/2"), the
-      CPU load plate is open at 25 (row 28 "CPU locker"), the CPU is gone at 26
-      (row 29), the Quadro card is still in at 27 (row 30 "GPU locker") and
-      gone at 28 (row 31 "GPU") -- scanner and OAK1 alike. So capture n is row
-      n + 3 from capture 23 on (the GPU and the screw rows WERE photographed:
-      captures 28-31), and the three rows lie in rows 12-25. Declared: 14-16,
-      "Open cover case for CPU fan", "Remove RAM cover", "Open additional card
-      cover", the rows whose Sequence Numbers repeat 11-13 (logged out of turn,
-      no capture of their own). UNCERTAIN within rows 12-25: if it was others,
-      the frames between them are one to three steps off (U40; the request
-      named steps 31-33, which captures 23-28 refute -- checked by eye).
+      RealSense 001..034). The capture number is the sheet's Sequence Number:
+      the SSD is gone at capture 11 (Sequence Number 11, "SSD"), the CPU at
+      capture 26 (number 26, "CPU") and the Quadro card at capture 28 (number
+      28, "GPU"), scanner and OAK1 alike; the last four captures are the final
+      state from four sides (RGB281..RGB311 face one way, RGB321/RGB331/RGB341
+      the other three: numbers 31-34, steps 34-37). So the three rows without a
+      photo of their own are the ones whose Sequence Numbers repeat 11-13 --
+      rows 14-16, "Open cover case for CPU fan", "Remove RAM cover", "Open
+      additional card cover". Those three covers were already off in the photos
+      (the blue card bracket goes between captures 1 and 2, the air shroud
+      between 3 and 4): the rows log actions that got no photo of their own
+      (U40; the request's steps 31-33 are refuted by captures 26 and 28 --
+      checked by eye, by the coordinator and the reviewer too).
 general:
   step_order_source: "oak1_timestamp"

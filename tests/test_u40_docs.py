@@ -33,9 +33,12 @@ def test_2_2_states_the_rule_next_to_skipped_steps():
 def test_2_2_lists_d63():
     section = _spec().split("### 2.2 统一索引", 1)[1].split("### 2.3", 1)[0]
     line = next(ln for ln in section.splitlines() if ln.startswith("  - D63："))
-    for needed in ("`unphotographed.63.steps: [14, 15, 16]`", "第 34–37 步", "第 n + 3 步",
-                   "**不确定**"):
+    for needed in ("`unphotographed.63.steps: [14, 15, 16]`", "拍摄号就是表格的序号",
+                   "拍摄 26 CPU 已拆 = 序号 26", "拍摄 28 显卡已拆 = 序号 28", "第 34–37 步",
+                   "序号重复 11–13 的第 14–16 步", "拍摄 1→2（蓝色板卡支架）和 3→4（导风罩）",
+                   "没有单独照片的动作"):
         assert needed in line, needed
+    assert "不确定" not in line
     assert "D63 11–13 重号——已定为三步没拍，`unphotographed`，v1.39" in section
 
 
@@ -49,9 +52,11 @@ def test_v1_39_is_near_the_top_of_14():
                    "`tda.core.index.capture_rows` / `capture_steps`",
                    "`verify_unphotographed`", "`verify_declared_missing`",
                    "`34 +3 unphotographed`", "**D63 的声明与任务原文不同**",
-                   "[31, 32, 33]", "第 14–16 步", "**不确定**", "第 4 个位姿段",
+                   "[31, 32, 33]", "第 14–16 步", "拍摄号就是表格的序号",
+                   "没有单独照片的动作", "（控制方与审查员各自看图核实）", "第 4 个位姿段",
                    "库结构不变（仍为 v6）"):
         assert needed in entry, needed
+    assert "不确定" not in entry and "交用户裁定" not in entry
     assert changes.index("- **v1.39") < changes.index("- **v1.36")
 
 
@@ -61,3 +66,5 @@ def test_the_audit_says_d63_is_settled():
     settled = d63.split("\n", 2)[1]
     assert settled.startswith("  - **Settled 2026-10-27 (U40):**")
     assert "`unphotographed.63.steps: [14, 15, 16]`" in settled
+    assert "the capture number is the sheet's Sequence Number" in settled
+    assert "cannot be seen" not in settled
