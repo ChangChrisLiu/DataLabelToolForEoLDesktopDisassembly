@@ -165,6 +165,20 @@ def test_ctrl_grave_names_the_frames_the_part_is_taken_out_on(window, monkeypatc
     assert said(window, STEP) is None
 
 
+def test_a_drawn_part_off_frame_keeps_the_hidden_shape_warning(window, monkeypatch):
+    """The U2b round-3 rule: a drawn shape a label hides is said (⚠), and here why."""
+    monkeypatch.setattr(window, "ask_cable_range", lambda *a: (OFF_FRAME, STEP))
+    assert window.instances.select_instance(CHASSIS)
+    window.handle_key(key_event("Ctrl+`"))
+    assert said(window, STEP, CHASSIS) == OFF_FRAME
+    table = window.instances.table()
+    line = next(i for i in range(table.rowCount())
+                if table.item(i, 1) is not None and table.item(i, 1).text() == CHASSIS)
+    cell = table.item(line, 3)
+    assert cell.text().startswith("⚠")
+    assert "已设为不可见" in cell.toolTip() and "画框外" in cell.toolTip()
+
+
 # --------------------------------------------------------------------------- #
 # the grave key's cycle
 # --------------------------------------------------------------------------- #

@@ -42,7 +42,8 @@ def test_the_paragraph_is_at_the_end_of_4_2():
                    "当作整件的估计", "U10 第二轮", "**不报 `missing_shape`**",
                    "`tda.core.compiler.marked_absent`", "`bench_missing` 不变",
                    "`session_coverage`", "`Space`", "`cli check`", "芯片「画框外」",
-                   "实例表可见性列写「框外」", "状态、位置照常", "U15 的路子",
+                   "实例表可见性列写「框外」", "U2b 第三轮", "⚠ 的「已设为不可见」",
+                   "状态、位置照常", "U15 的路子",
                    "COCO 这一帧没有它的行", "`export_scanpack`", "`clean` 不算它", "`KeyError`",
                    "VLM 写 `out_of_view`", "§4.4", "没有 `out_of_view` 的帧覆盖行",
                    "没有新快捷键"):
@@ -80,7 +81,7 @@ def test_v1_38_is_near_the_top_of_14():
                    "「out_of_view（原因: 画框外，手动）」", "「画框外 n」",
                    "`vis_runs.OFF_FRAME_REASON`", "`SYNC_LABELS` 去掉 `out_of_view`",
                    "`export_scanpack`", "`KeyError`", "U24 / U36 队列行 psu.01",
-                   "U10 的", "U2c 的实例表", "库结构不变（仍为 v6）", "没有新快捷键"):
+                   "U10 的", "库结构不变（仍为 v6）", "没有新快捷键"):
         assert needed in entry, needed
     assert changes.index("- **v1.38") < changes.index("- **v1.36")
 
