@@ -77,7 +77,7 @@ def test_the_lines_are_runs_with_their_length_the_longest_first(scene):
         "ram_latch.03 第 10–14 帧（5 帧） · occluded_full（被螺丝挡住，自动） · 全程",
         "ram_module.01 第 10–14 帧（5 帧） · occluded_partial（被螺丝挡住，自动） · 全程",
         "cpu.01 第 13 帧 · occluded_full（原因: 线缆，手动）",
-        "psu.01 第 12 帧 · out_of_view（手动）",
+        "psu.01 第 12 帧 · out_of_view（原因: 画框外，手动）",     # 画框外 (task U39)
     ]
     first = scene.visibility_queue()[0]
     assert (first["a"], first["b"], first["n"], first["whole"]) == (10, 14, 5, True)

@@ -436,7 +436,10 @@ def frame_label_map(anns: list[dict], hw: tuple[int, int], key_to_id: dict[str, 
     """The 16-bit instance-id map of one frame, and the decoded masks.
 
     ``anns`` are the frame's annotations; their ``segmentation`` (the confirmed
-    visible mask) is what is painted -- nothing is recompiled here.
+    visible mask) is what is painted -- nothing is recompiled here. A part the
+    compiler painted with no annotation on the frame -- its shape is there but
+    the frame says 画框外, out of this camera's picture (task U39) -- has
+    nothing to paint.
     """
     visible = {a["attributes"]["instance_key"]: _decode(a["segmentation"], hw) for a in anns}
     order, pairs = paint_order(compiled, patched,
@@ -444,6 +447,8 @@ def frame_label_map(anns: list[dict], hw: tuple[int, int], key_to_id: dict[str, 
     label = np.zeros(hw, dtype=np.uint16)
     tail = [k for k in order if k in patched]
     for key in order[:len(order) - len(tail)]:
+        if key not in visible:
+            continue                     # painted, not annotated: 画框外 (U39)
         label[visible[key]] = key_to_id[key]
     for upper, lower in pairs:
         if upper in visible and lower in visible:

@@ -40,7 +40,8 @@ LINES = [
     "ram_latch.03 第 10–14 帧（5 帧） · occluded_full（被螺丝挡住，自动） · 全程",
     "ram_module.01 第 10–14 帧（5 帧） · occluded_partial（被螺丝挡住，自动） · 全程",
     "cpu.01 第 13 帧 · occluded_full（原因: 线缆，手动）",
-    "psu.01 第 12 帧 · out_of_view（手动）",
+    # task U39: a hand out_of_view is 画框外, and the line says so
+    "psu.01 第 12 帧 · out_of_view（原因: 画框外，手动）",
 ]
 
 

@@ -8,8 +8,9 @@ from __future__ import annotations
 
 from typing import Iterable, Optional
 
-from tda.core.model import OCCLUDER_CABLE, OCCLUDER_OTHER, OCCLUDER_VIEWPOINT
+from tda.core.model import OCCLUDER_CABLE, OCCLUDER_OTHER, OCCLUDER_VIEWPOINT, Visibility
 from tda.core.vis_review import LAYER_PREFIX
+from tda.core.vis_runs import OFF_FRAME_REASON
 from tda.ui.class_names import class_zh, visibility_zh
 
 __all__ = [
@@ -22,11 +23,13 @@ __all__ = [
     "verdict_note", "view_cells",
 ]
 
-#: The reason a hand label gives, as the queue says it (原因: …).
+#: The reason a hand label gives, as the queue says it (原因: …). 画框外 (task
+#: U39) is a hand ``out_of_view`` -- no occluder, a reason all the same.
 REASON_ZH: dict[str, str] = {
     OCCLUDER_CABLE: "线缆",
     OCCLUDER_VIEWPOINT: "角度",
     OCCLUDER_OTHER: "没标注的东西",
+    OFF_FRAME_REASON: "画框外",
 }
 #: An occluder layer among the parts that hide one (spec 3.1 ``OccluderMask``).
 LAYER_ZH: dict[str, str] = {"hand": "手", "arm": "手臂", "body": "身体", "tool": "工具",
@@ -88,7 +91,8 @@ def entry_text(entry: dict) -> str:
 
     Task U36: a run says how many frames it is (a gap -- a frame with no
     image -- shows as fewer than the span), and 「全程」 when it is every
-    confirmed frame the part has in this view.
+    confirmed frame the part has in this view. Task U39: an ``out_of_view``
+    set by hand is 画框外 -- 「out_of_view（原因: 画框外，手动）」.
     """
     steps = entry.get("steps") or [entry.get("step", "?")]
     why: list[str] = []
@@ -96,6 +100,9 @@ def entry_text(entry: dict) -> str:
     if who:
         why.append(who)
     reason = entry.get("occluder")
+    if (not reason and entry.get("manual")
+            and entry.get("visibility") == Visibility.OUT_OF_VIEW.value):
+        reason = OFF_FRAME_REASON
     if reason:
         why.append(f"原因: {REASON_ZH.get(str(reason), str(reason))}")
     why.append("手动" if entry.get("manual") else "自动")
@@ -133,7 +140,9 @@ SYNC_TIP = ("把刚答的这一段的判定（标签 + 原因）写到其他视�
 SYNC_IDLE = "先答一段；答完如果其他视角同样的帧也看不见、还没审，这个按钮可以把判定同步过去"
 SYNC_REFUSED = {
     "no_verdict": "这一段还没有判定：先按键回答它，再同步到其他视角",
-    "not_hidden": "同步只用于看不见的标签（完全 / 部分遮挡、画面外）",
+    "not_hidden": "同步只用于看不见的标签（完全 / 部分遮挡；画框外不同步）",
+    # 画框外 (task U39): the edge of the picture is each camera's own
+    OFF_FRAME_REASON: "画框外不同步：画框是每个视角自己的事，别的视角可能看得到它",
 }
 SKIP_ZH = {"verdict": "已有判定", "different": "那边的标签不一样", "manual": "那边有手动标注",
            "covered": "那边有零件或遮挡层挡着它", "unconfirmed": "那边没确认",

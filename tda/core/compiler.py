@@ -78,7 +78,8 @@ Problems reported in :attr:`CompiledFrame.problems`
 * ``missing_shape:<instance>`` -- an instance inside the chassis needs geometry
   but has no keyframe for this step; this blocks confirming the frame. On a
   components-gallery shot (task U10) every part asked for is such an instance,
-  unless the annotator said it is not in that shot (:func:`marked_absent`).
+  unless the annotator said it is not in that shot (:func:`marked_absent`); on
+  a sequence frame the same label is 画框外 (task U39) and settles it too.
 * ``bench_missing:<instance>`` -- the same for an instance on the bench, which
   only makes the frame's ``bench_annotated`` false and must **not** block.
 * ``zorder_missing:<instance>/<part>`` -- that layer is absent from the z-order;
@@ -139,7 +140,10 @@ def marked_absent(override: Optional[FrameOverride]) -> bool:
 
     An ``out_of_view`` label with no pixels of its own. On a components-gallery
     shot (task U10) that settles a part with no shape: the layout was
-    re-arranged between shots and not every part is in every one.
+    re-arranged between shots and not every part is in every one. On a
+    sequence frame it is 画框外 (task U39, :data:`tda.core.occluder.OFF_FRAME`):
+    the part is in the machine but outside this view's picture, so a part in
+    its place with no shape is settled there too.
     """
     return (override is not None and override.visible_rle is None
             and str(override.visibility) == OUT_OF_VIEW)
@@ -848,7 +852,10 @@ def compile_frame(
                 if not marked_absent(frame_overrides.get(inst)):
                     problems.append(f"missing_shape:{inst}")
             elif placement_of[inst] != ON_BENCH:
-                problems.append(f"missing_shape:{inst}")
+                # 画框外 (task U39): in the machine, outside this view's
+                # picture -- nothing to draw, settled as 看不见 is above
+                if not marked_absent(frame_overrides.get(inst)):
+                    problems.append(f"missing_shape:{inst}")
             elif bench_roi is not None:
                 # a part on the bench is only annotated -- and only missing --
                 # where the view has a staging area to see it in (spec 4.2)

@@ -445,10 +445,12 @@ def test_a_part_marked_absent_settles_its_missing_shape(tmp_path):
     problems = TruthService(db, tax).refresh(key)["problems"]
     assert f"missing_shape:{part}" not in problems
     assert any(p.startswith("missing_shape:") for p in problems)
-    # on the sequence the same label leaves a missing shape missing
+    # on the sequence the same label is 画框外 since task U39 -- the part is in
+    # the machine, outside this view's picture -- and settles it there too
     seq = FrameKey(GS.DESKTOP, 42, "scan")
-    db.set_frame_override(FrameOverride(seq, "chassis", None, "out_of_view"))
     assert "missing_shape:chassis" in TruthService(db, tax).refresh(seq)["problems"]
+    db.set_frame_override(FrameOverride(seq, "chassis", None, "out_of_view"))
+    assert "missing_shape:chassis" not in TruthService(db, tax).refresh(seq)["problems"]
 
 
 def test_shots_are_their_own_steps_and_segments(tmp_path):

@@ -333,10 +333,12 @@ ACTIONS: tuple[Action, ...] = (
            "框外零件 = 不在这张里（再按撤回）", "edit", (), _ANN,
            short="看不见"),
     # Task U15: the same over a span, as Ctrl+T is T's (Ctrl+` since U22).
+    # Task U39: its dialog's fourth choice is 画框外 -- the part is in the
+    # machine, outside this view's picture; the grave key never sets it.
     Action("cable_range", ("Ctrl+`",), "act_cable_range",
-           "Selected part under a cable from this frame to a given step (one op); "
-           "an object outside the machine: not in those frames",
-           "选中零件从这一帧到第 N 步都标被线挡住（完全 / 部分 / 撤回；一次撤销）；"
+           "Selected part under a cable, or out of the frame, from this frame to a "
+           "given step (one op); an object outside the machine: not in those frames",
+           "选中零件从这一帧到第 N 步都标被线挡住（完全 / 部分 / 撤回 / 画框外；一次撤销）；"
            "框外零件 = 这一段都标不在 / 撤回",
            "edit", (), _ANN),
     # -- 可见性审查 (task U24): Review mode only -------------------------------

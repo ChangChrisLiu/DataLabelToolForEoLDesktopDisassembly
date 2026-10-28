@@ -18,6 +18,18 @@ frame: ``I`` on a sequence frame cycles the selected part through
   lost its shape here, was taken out, or lies on the bench) the next press is
   撤回 whatever the label was.
 
+**画框外** (task U39) is the fourth answer, only in ``Ctrl+```'s dialog (the
+cycle of the key does not reach it): the part is in the machine, in its state,
+but **outside this view's picture** on this frame -- or the camera cannot take
+it at all (D63's air shroud, beyond the main view's edge). It is not 被挡住: a
+part under a cable or behind another part is in the picture and keeps an
+amodal shape to draw; one out of the frame has nothing to draw. Written as the
+components gallery's 「看不见」 is (task U10): ``out_of_view``, no pixels, no
+reason (:data:`OFF_FRAME`, :func:`off_frame`). It needs no shape -- one there
+is kept, as an estimate of the whole part, but the frame shows none of it --
+and the compiler reports no ``missing_shape`` for it. 撤回 takes it back like
+the cable labels (the key's next press after it is 撤回).
+
 This module is the rule both the window and the batch tools read -- what a
 label is, what each step of the cycle writes, which stored rows a frame can no
 longer carry (``cli check``) -- and it imports neither Qt nor the session.
@@ -30,7 +42,7 @@ from typing import Optional
 from pycocotools import mask as coco_mask
 
 from tda.core import masks
-from tda.core.compiler import select_keyframe
+from tda.core.compiler import marked_absent, select_keyframe
 from tda.core.model import (
     OCCLUDER_CABLE,
     OCCLUDERS,
@@ -43,24 +55,34 @@ from tda.core.states import needs_geom
 from tda.core.truth_inputs import InputCache, instances_of, pose_segment_of, state_of
 
 __all__ = [
+    "CHOICES",
     "CYCLE",
     "FULL",
     "OCCLUDER_WITHOUT_SHAPE",
+    "OFF_FRAME",
     "PARTIAL",
     "cable_label",
     "empty_rle",
+    "frame_label",
     "keeps_reason",
     "kept_mask",
     "next_label",
     "occluded_override",
     "occluders_without_shape",
+    "off_frame",
+    "off_frame_applies",
     "shape_applies",
 ]
 
 FULL = Visibility.OCCLUDED_FULL.value
 PARTIAL = Visibility.OCCLUDED_PARTIAL.value
+#: 画框外 (task U39): in the machine, outside this view's picture on this frame.
+#: The components gallery's 「看不见」 row: ``out_of_view``, no pixels, no reason.
+OFF_FRAME = Visibility.OUT_OF_VIEW.value
 #: What successive presses of ``I`` set on a sequence frame; ``None`` is 撤回.
 CYCLE: tuple[Optional[str], ...] = (FULL, PARTIAL, None)
+#: What ``Ctrl+```'s dialog offers, in its order: the cycle, then 画框外 (U39).
+CHOICES: tuple[Optional[str], ...] = (*CYCLE, OFF_FRAME)
 #: ``cli check``'s code for a stored reason with no shape under it.
 OCCLUDER_WITHOUT_SHAPE = "occluder_without_shape"
 
@@ -77,8 +99,35 @@ def cable_label(override: Optional[FrameOverride]) -> Optional[str]:
     return vis if vis in (FULL, PARTIAL) else None
 
 
+def off_frame(override: Optional[FrameOverride]) -> bool:
+    """Does ``override`` say 画框外 -- ``out_of_view`` with no pixels (task U39)?
+
+    The compiler's :func:`~tda.core.compiler.marked_absent`: on a gallery shot
+    the same row is 「看不见」 (task U10). A bare ``out_of_view`` set by a digit
+    key in Review on a frame with no hand-drawn mask is the same statement.
+    """
+    return marked_absent(override)
+
+
+def frame_label(override: Optional[FrameOverride]) -> Optional[str]:
+    """What `` ` `` / ``Ctrl+``` said on this frame: 完全 / 部分 / 画框外, or ``None``.
+
+    :func:`cable_label` (a label with its reason -- 被线挡住, or 角度看不到) or
+    :data:`OFF_FRAME` (task U39).
+    """
+    if off_frame(override):
+        return OFF_FRAME
+    return cable_label(override)
+
+
 def next_label(override: Optional[FrameOverride]) -> Optional[str]:
-    """What the next press of ``I`` sets: 完全 -> 部分 -> 撤回 -> 完全."""
+    """What the next press of ``I`` sets: 完全 -> 部分 -> 撤回 -> 完全.
+
+    After 画框外 (task U39, set in ``Ctrl+```'s dialog only) it is 撤回: the
+    key takes it back, and never sets it.
+    """
+    if off_frame(override):
+        return None
     current = cable_label(override)
     if current == FULL:
         return PARTIAL
@@ -130,20 +179,26 @@ def occluded_override(key: FrameKey, instance: str, previous: Optional[FrameOver
                       occluder: str = OCCLUDER_CABLE) -> Optional[FrameOverride]:
     """The row one step of the cycle leaves, ``None`` when it leaves none.
 
-    ``label`` is :data:`FULL`, :data:`PARTIAL` or ``None`` (撤回); ``previous``
-    the row there now. 完全 replaces any mask with an empty one (nothing is
-    seen); 部分 keeps a hand-drawn mask and drops 完全's empty one; 撤回 keeps a
-    hand-drawn mask under no label, and leaves no row when there is none.
+    ``label`` is :data:`FULL`, :data:`PARTIAL`, :data:`OFF_FRAME` or ``None``
+    (撤回); ``previous`` the row there now. 完全 replaces any mask with an empty
+    one (nothing is seen); 部分 keeps a hand-drawn mask and drops 完全's empty
+    one; 撤回 keeps a hand-drawn mask under no label, and leaves no row when
+    there is none. 画框外 (task U39) is ``out_of_view`` with no pixels and no
+    reason: nothing of the part is in the picture, so no mask -- a hand-drawn
+    one it replaces is in the op's inverse.
     """
     if occluder not in OCCLUDERS:
         raise ValueError(f"occluder must be one of {OCCLUDERS}, got {occluder!r}")
+    if label == OFF_FRAME:
+        return FrameOverride(key, instance, None, OFF_FRAME, None)
     if label == FULL:
         return FrameOverride(key, instance, empty_rle(hw), FULL, occluder)
     mask = kept_mask(previous)
     if label == PARTIAL:
         return FrameOverride(key, instance, mask, PARTIAL, occluder)
     if label is not None:
-        raise ValueError(f"a 被线挡住 label is {FULL!r}, {PARTIAL!r} or None, got {label!r}")
+        raise ValueError(f"a 被线挡住 label is {FULL!r}, {PARTIAL!r}, {OFF_FRAME!r} or None, "
+                         f"got {label!r}")
     if mask is None:
         return None
     return FrameOverride(key, instance, mask, None, None)
@@ -177,6 +232,20 @@ def shape_applies(db, tax, key: FrameKey, instance: str,
     chain = [kf for kf in keyframes
              if kf.pose_segment == seg and kf.placement == placement]
     return "" if select_keyframe(chain, key.step) is not None else "no_shape"
+
+
+def off_frame_applies(db, tax, key: FrameKey, instance: str,
+                      cache: Optional[InputCache] = None) -> str:
+    """Why ``instance`` cannot be said 画框外 at ``key``, or ``""`` when it can (U39).
+
+    :func:`shape_applies` without the shape: 画框外 says there is nothing of it
+    in the picture to draw, so no keyframe is asked for. ``"removed"`` (the
+    frame does not need it: taken out, or a state with no geometry) and
+    ``"bench"`` (on the staging area, which is in the picture by definition)
+    stay refusals. No keyframe is read.
+    """
+    why = shape_applies(db, tax, key, instance, cache, keyframes=())
+    return "" if why == "no_shape" else why
 
 
 def occluders_without_shape(db, tax, desktop: int, view: str) -> list[tuple[int, str]]:

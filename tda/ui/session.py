@@ -46,6 +46,7 @@ from tda.ui.session_queues import ReviewState
 from tda.ui.session_refreeze import ResignMixin
 from tda.ui.session_review import ReviewMixin
 from tda.ui.session_state import StateMixin, apply_assert_state
+from tda.ui.session_tasks import OFF_FRAME_KEY
 from tda.ui.session_truth import TruthCacheMixin
 from tda.ui.session_sweep import TruthSweeper
 from tda.ui.session_verb import VerbMixin, apply_correct_verb
@@ -512,6 +513,10 @@ class AnnotationSession(CommitMixin, ReviewMixin, ResignMixin, StateMixin, VerbM
         for row in found:
             if row.get("cable"):
                 row["occluder"] = reasons.get(str(row["key"]))
+        # ... or 画框外 (task U39): outside this view's picture on this frame
+        outside_frame = self.off_frame_parts()
+        for row in found:
+            row[OFF_FRAME_KEY] = str(row["key"]) in outside_frame
         # which states each part can be set to here (task U8): the panel's combo;
         # which can be said to be taken out after all (task U9): its button
         found = self._with_state_choices(found, state, instances)
@@ -562,6 +567,10 @@ class AnnotationSession(CommitMixin, ReviewMixin, ResignMixin, StateMixin, VerbM
         # a loosened captive screw may have been taken out after all (task U14)
         self._mark_loosened_screws(card, key)
         card = rows.mark_invisible(card, self._compiled_or_none())
+        for row in card:
+            if row.get(OFF_FRAME_KEY):
+                # 画框外 (task U39) says why on its own, as 被线挡住 does
+                row.pop("invisible", None)
         card = rows.mark_cable(card, {} if self.gallery else self.cable_labels())
         if any(row.get("cable") for row in card):
             reasons = self.cable_reasons()       # 被线挡住 or 角度看不到 (task U24)

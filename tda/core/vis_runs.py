@@ -29,6 +29,13 @@ the session:
 "See" is the label's: :data:`INVISIBLE` (``occluded_full``, ``out_of_view``)
 is 看不见; every other label has pixels of the part on the frame (``too_small``
 and ``occluded_partial`` too).
+
+**画框外** (task U39) -- ``out_of_view`` set by hand, the part in the machine
+but outside this view's picture -- is 看不见 with a reason of its own
+(:data:`OFF_FRAME_REASON`, 「画框外」 in the other-views table). It is not
+角度看不到 (that part is in the picture: the suggestion never offers it for
+one), and it is **never synced**: what one camera's frame leaves out says
+nothing about another's (:data:`SYNC_LABELS` has no ``out_of_view``).
 """
 from __future__ import annotations
 
@@ -56,6 +63,7 @@ from tda.core.vis_review import (
 
 __all__ = [
     "INVISIBLE",
+    "OFF_FRAME_REASON",
     "SCAN",
     "STATE_NONE",
     "STATE_OK",
@@ -77,8 +85,11 @@ __all__ = [
 INVISIBLE = frozenset({Visibility.OCCLUDED_FULL.value, Visibility.OUT_OF_VIEW.value})
 #: The labels a verdict may be copied to the other views under (「同步到其他视角」):
 #: a part hidden, wholly or in part. Never ``visible`` and its kin -- a part
-#: seen here is no news about another view.
-SYNC_LABELS = frozenset(OCCLUDED_LABELS | {Visibility.OUT_OF_VIEW.value})
+#: seen here is no news about another view -- and never ``out_of_view``
+#: (画框外, task U39): the edge of one camera's picture is that camera's own.
+SYNC_LABELS = frozenset(OCCLUDED_LABELS)
+#: The reason the other-views table gives a hand ``out_of_view``: 画框外 (U39).
+OFF_FRAME_REASON = "off_frame"
 #: The scanner's view: the suggestion's "not seen by the scanner either".
 SCAN = "scan"
 
@@ -224,8 +235,9 @@ def cross_view(entry: dict, sides: dict[str, Side], here: str,
     ``hidden`` / ``partial`` (frames whose label has pixels of the part / is
     :data:`INVISIBLE` / is ``occluded_partial``), ``absent`` (confirmed frames
     without the part), ``unconfirmed`` (steps not confirmed there),
-    ``reasons`` (``{cable|viewpoint|other_unlabeled|manual|computed: frames}``
-    over the frames it is not seen on), ``by`` (the parts hiding it there:
+    ``reasons`` (``{cable|viewpoint|other_unlabeled|off_frame|manual|computed:
+    frames}`` over the frames it is not seen on; ``off_frame`` is a hand
+    ``out_of_view``, 画框外 -- task U39), ``by`` (the parts hiding it there:
     the run's own here, ``names(view, step, part, row)`` on a sample of the
     other view's hidden frames) and ``highlight`` -- another view that sees it
     on these steps.
@@ -259,8 +271,11 @@ def cross_view(entry: dict, sides: dict[str, Side], here: str,
             if label == Visibility.OCCLUDED_PARTIAL.value:
                 row["partial"] += 1
             if label != Visibility.VISIBLE.value or found.get("occluder"):
+                manual = found.get("hand_visibility") is not None
                 why = (str(found["occluder"]) if found.get("occluder")
-                       else "manual" if found.get("hand_visibility") is not None
+                       else OFF_FRAME_REASON
+                       if manual and label == Visibility.OUT_OF_VIEW.value
+                       else "manual" if manual
                        else "computed")
                 if label != Visibility.VISIBLE.value:
                     row["reasons"][why] = row["reasons"].get(why, 0) + 1
@@ -302,6 +317,8 @@ def suggest(entry: dict, views: list[dict], here: str) -> Optional[dict]:
     """
     label = str(entry.get("visibility") or "")
     if label not in OCCLUDED_LABELS:
+        # out_of_view -- 画框外 (task U39) -- is no occlusion: the part is not in
+        # this picture at all, which neither 角度看不到 nor 被挡住 says
         return None
     full = label == Visibility.OCCLUDED_FULL.value
     reason = entry.get("occluder")
@@ -409,7 +426,8 @@ def sync_plan(db, desktop: int, view: str, instance: str, steps: Iterable[int],
     ``{"source": {step: verdict}, "views": {view: {step: what it writes}},
     "count", "skipped": {reason: frames}, "refused": str}`` -- the reasons are
     :data:`SKIP_REASONS`; ``refused`` is why nothing can be planned at all (no
-    verdict yet, a label that is not hidden), ``""`` otherwise.
+    verdict yet, ``off_frame`` for a run 画框外 -- task U39, never synced --
+    ``not_hidden`` for any other label that is not hidden), ``""`` otherwise.
     """
     plan = {"source": {}, "views": {}, "count": 0,
             "skipped": {k: 0 for k in SKIP_REASONS}, "refused": ""}
@@ -423,7 +441,9 @@ def sync_plan(db, desktop: int, view: str, instance: str, steps: Iterable[int],
         return plan
     hidden = {s: v for s, v in source.items() if str(v["visibility"] or "") in SYNC_LABELS}
     if not hidden:
-        plan["refused"] = "not_hidden"
+        outside = any(str(v["visibility"] or "") == Visibility.OUT_OF_VIEW.value
+                      for v in source.values())
+        plan["refused"] = OFF_FRAME_REASON if outside else "not_hidden"
         return plan
     for side in sides:
         other = side.view

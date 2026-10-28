@@ -78,6 +78,13 @@ CABLE_SENTENCE = (" ⚠ 被线挡住（{how}）：形状照画，这一帧导出
 VIEWPOINT_SENTENCE = (" ⚠ 角度看不到（{how}）：形状照画，这个相机看不到它，导出时写明"
                       "（复查「可见性审查」里设的）")
 
+#: A row whose part is 画框外 on this frame (task U39): in the machine, outside
+#: this view's picture -- nothing to draw here.
+OFF_FRAME_SENTENCE = ("画框外：这个视角这一帧拍不到它（零件还在机器里，状态照常），不用画；"
+                      "其实看得到：选中按 ` 键撤回（或 Ctrl+` 选「撤回」），Ctrl+Z 撤销")
+#: ... and its chip.
+OFF_FRAME_CHIP = "画框外"
+
 #: A components-gallery row marked 「看不见」 (task U10).
 GALLERY_ABSENT_SENTENCE = (f"不在这张里（看不见）；其实在的话：右键这一条「撤回看不见」"
                            f"或再按 {ABSENT_KEY}")
@@ -145,7 +152,8 @@ ICON_LEGEND = (
     "⌫ 零件回到机箱：台面框到这里结束\n"
     "✔ 这一帧没有要画的：Space 确认（任务卡下面列着挡住 Space 的问题时，先处理它们）\n"
     "单击一条就开始画它；鼠标停在一条上，画面上会用虚线框标出它大概在哪。\n"
-    "零件合照：不在这张里的零件右键选「看不见」（或按 ` 键）。"
+    "零件合照：不在这张里的零件右键选「看不见」（或按 ` 键）。\n"
+    "画框外：零件在机器里、这个视角拍不到（画面外），Ctrl+` 选「画框外」，这一条就算完成。"
 )
 
 
@@ -376,6 +384,10 @@ def row_view(row: dict, editing: Optional[str] = None, bench: bool = False,
         sentence = f"这一帧不用画，{CONFIRMED_TAIL}"
     if kind == api.KIND_SPLIT_KEYFRAME and row.get("cut_copy") and not done:
         sentence = CUT_COPY_SENTENCE
+    off_frame = bool(row.get("off_frame")) and kind != api.KIND_CONFIRM
+    if off_frame and kind != api.KIND_STATE_ONLY:
+        # 画框外 (task U39): the row's answer is that there is nothing to draw
+        sentence = OFF_FRAME_SENTENCE
     transition = row.get("transition")
     if kind == api.KIND_SPLIT_KEYFRAME and transition:
         sentence += f"（{state_zh(transition[0])} → {state_zh(transition[1])}）"
@@ -386,6 +398,8 @@ def row_view(row: dict, editing: Optional[str] = None, bench: bool = False,
     span = row.get("span")
     if span:
         sentence += f"（这一条跨了第 {span[0]}–{span[-1]} 步：中间的帧没有图像）"
+    if off_frame and kind == api.KIND_STATE_ONLY:
+        sentence += f"（{OFF_FRAME_CHIP}：这一帧拍不到它）"
     if row.get("verb_fix") == "remove" and kind != api.KIND_CONFIRM:
         sentence += f"（{taken_out_hint()}）"
     elif row.get("verb_fix") == "unscrewed" and kind != api.KIND_CONFIRM:
@@ -406,6 +420,8 @@ def row_view(row: dict, editing: Optional[str] = None, bench: bool = False,
         chip = CHIP_BOXING if bench else CHIP_EDITING
     elif gallery and row.get("absent"):
         chip = ABSENT_CHIP
+    elif off_frame and kind != api.KIND_STATE_ONLY:
+        chip = OFF_FRAME_CHIP
     elif kind in (api.KIND_STATE_ONLY, api.KIND_REMOVE_BENCH_BOX):
         # Neither is drawing: a state that changed, a bench box that ends.
         chip = CHIP_NOTHING

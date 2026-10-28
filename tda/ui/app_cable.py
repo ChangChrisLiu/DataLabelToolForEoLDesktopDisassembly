@@ -12,6 +12,11 @@ so it is live on a sequence frame and greyed with these refusals.
 Where it shows: the instance table's tag (线挡 / 线半挡), the card row's
 「⚠ 被线挡住（完全/部分）」, and on the canvas the dashed amodal outline of a
 完全 part, whose visible mask is empty.
+
+**画框外** (task U39) is the dialog's fourth choice, 「画框外（这个视角拍不到）」:
+the part is in the machine but outside this view's picture, no shape needed.
+The key's cycle never sets it (no stray press can) -- it only takes it back.
+The instance table says 框外, the card row 「画框外」 (done).
 """
 from __future__ import annotations
 
@@ -28,16 +33,22 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from tda.core.occluder import CYCLE, FULL, PARTIAL
+from tda.core.occluder import CHOICES, FULL, OFF_FRAME, PARTIAL
 from tda.ui import app_compat as compat
 from tda.ui import app_support as S
 from tda.ui.app_state import REMOVED_ROW
 from tda.ui.canvas.overlay import palette_color
-from tda.ui.session_cable import CABLE_EDITING, CABLE_GALLERY, LABEL_ZH
+from tda.ui.session_cable import (
+    CABLE_EDITING,
+    CABLE_GALLERY,
+    LABEL_ZH,
+    OFF_FRAME_CHOICE,
+    OFF_FRAME_ZH,
+)
 
 __all__ = ["CABLE_DONE", "CABLE_NO_TARGET", "HAND_NOT_BACK", "HAND_REPLACED",
-           "MEASURED_NOTE", "STALE_OFF", "WITHHELD_NOTE", "CableMixin", "CableRangeDialog",
-           "cable_note", "range_note"]
+           "MEASURED_NOTE", "OFF_FRAME_OFF", "STALE_OFF", "WITHHELD_NOTE", "CableMixin",
+           "CableRangeDialog", "cable_note", "choice_text", "range_note"]
 
 #: `````` / ``Ctrl+``` on a sequence frame with nothing to act on (``I`` /
 #: ``Ctrl+I`` before task U22). It names the gallery's meaning too: on a gallery
@@ -51,6 +62,8 @@ CABLE_DONE = {
     PARTIAL: "{label} 被线挡住（部分）：看得见的像素照旧（再按 ` 键撤回，Ctrl+Z 撤销）",
     None: "{label}：撤回被线挡住（Ctrl+Z 撤销）",
 }
+#: ``I`` after 画框外 (task U39): the key only ever takes it back.
+OFF_FRAME_OFF = "{label}：撤回画框外，它在这一帧的画面里（Ctrl+Z 撤销）"
 #: 完全 took the place of a single-frame mask drawn by hand (U15 review M3).
 HAND_REPLACED = "这一帧手画的形状被替换，Ctrl+Z 找回"
 #: ... and a later 部分 / 撤回 does not bring it back.
@@ -72,6 +85,8 @@ def cable_note(label: str, value: Optional[str], result: Optional[dict] = None) 
     result = result or {}
     if value is None and result.get("stale"):
         text = STALE_OFF.format(label=label, why=str(result["stale"]).rstrip("。"))
+    elif value is None and result.get("was") == OFF_FRAME:
+        text = OFF_FRAME_OFF.format(label=label)
     else:
         text = CABLE_DONE[value].format(label=label)
     if value == FULL and result.get("replaced_hand_mask"):
@@ -81,29 +96,52 @@ def cable_note(label: str, value: Optional[str], result: Optional[dict] = None) 
     return text
 
 
-def range_note(label: str, value: Optional[str], steps: list[int]) -> str:
-    """The status line after ``Ctrl+I``: the frames written and what they now say."""
+def range_note(label: str, value: Optional[str], steps: list[int],
+               withdrawn=()) -> str:
+    """The status line after ``Ctrl+I``: the frames written and what they now say.
+
+    ``withdrawn`` is what a 撤回 took back (the result's ``withdrawn``): the
+    cable labels, 画框外 (task U39), or both.
+    """
     first, last = min(steps), max(steps)
     where = f"第 {first} 步" if first == last else f"第 {first}–{last} 步"
     count = f"（{len(steps)} 帧）" if len(steps) > 1 and last - first + 1 != len(steps) else ""
     if value is None:
-        return f"{label} {where}{count}：撤回被线挡住（Ctrl+Z 一次撤销）"
+        took = set(withdrawn)
+        what = ("画框外" if took == {OFF_FRAME} else
+                "被线挡住 / 画框外" if OFF_FRAME in took else "被线挡住")
+        return f"{label} {where}{count}：撤回{what}（Ctrl+Z 一次撤销）"
+    if value == OFF_FRAME:
+        return (f"{label} {where}{count}都标为{OFF_FRAME_ZH}：这个视角拍不到它，零件还在机器里，"
+                f"不出掩码（Ctrl+Z 一次撤销）")
     return f"{label} {where}{count}都标为被线挡住（{LABEL_ZH[value]}）（Ctrl+Z 一次撤销）"
 
 
+def choice_text(choice: Optional[str]) -> str:
+    """One item of ``Ctrl+I``'s list: 被线挡住（完全/部分）, 撤回, 画框外（这个视角拍不到）."""
+    if choice == OFF_FRAME:
+        return OFF_FRAME_CHOICE
+    if choice is None:
+        return "撤回（被线挡住 / 画框外）"
+    return f"被线挡住（{LABEL_ZH[choice]}）"
+
+
 class CableRangeDialog(QDialog):
-    """``Ctrl+I``: which label, and the step the span runs to (U15)."""
+    """``Ctrl+I``: which label, and the step the span runs to (U15).
+
+    The labels are :data:`~tda.core.occluder.CHOICES`: the key's cycle, then
+    画框外 (task U39), which only this dialog sets.
+    """
 
     def __init__(self, parent: Optional[QWidget], label: str, step: int,
                  value: Optional[str], low: int, high: int) -> None:
         super().__init__(parent)
-        self.setWindowTitle("一段帧被线挡住 / hidden by a cable over a span")
+        self.setWindowTitle("一段帧被线挡住 / 画框外 -- hidden by a cable, or out of the frame")
         self.setModal(True)
         self.label_box = QComboBox()
-        for choice in CYCLE:
-            self.label_box.addItem(f"被线挡住（{LABEL_ZH[choice]}）" if choice else
-                                   "撤回被线挡住", choice)
-        self.label_box.setCurrentIndex(list(CYCLE).index(value) if value in CYCLE else 0)
+        for choice in CHOICES:
+            self.label_box.addItem(choice_text(choice), choice)
+        self.label_box.setCurrentIndex(list(CHOICES).index(value) if value in CHOICES else 0)
         self.step_box = QSpinBox()
         self.step_box.setRange(int(low), int(high))
         self.step_box.setValue(int(step))
@@ -118,6 +156,8 @@ class CableRangeDialog(QDialog):
         layout.addWidget(self.label_box)
         layout.addWidget(self.step_box)
         layout.addWidget(QLabel("这一段每一帧都这样标；没有形状的帧不行（先画出形状或从别的帧带过来）。"))
+        layout.addWidget(QLabel("画框外：零件在机器里，但在这个视角的画面外（拍不到），不要形状；"
+                                "被挡住（在画面里）选被线挡住。"))
         layout.addWidget(buttons)
         self.step_box.setFocus()
         self.step_box.selectAll()
@@ -223,7 +263,8 @@ class CableMixin:
     def act_cable_range(self) -> None:
         """``Ctrl+I``: the selected part's 被线挡住 label from this frame to step N.
 
-        On a 框外零件 (task U18): 「不在」 over the span instead.
+        Or 画框外 (task U39), the dialog's fourth choice. On a 框外零件 (task
+        U18): 「不在」 over the span instead.
         """
         target = self.context_target(None) if compat.is_open(self.session) else None
         if target is not None:
@@ -241,7 +282,9 @@ class CableMixin:
             return
         label = self._label_of(target)[0] or target
         low, high = self.session.cable_bounds()
-        current = self.session.cable_label(target)
+        # what the frame says now -- 画框外 too (task U39) -- is the default
+        said = getattr(self.session, "frame_label", None)
+        current = said(target) if callable(said) else self.session.cable_label(target)
         answer = self.ask_cable_range(target, current or FULL, low, high)
         if answer is None:
             return
@@ -261,7 +304,7 @@ class CableMixin:
         if not frames:
             self.report(f"{label}：这一段本来就是这样，没有改")
             return
-        note = range_note(label, value, frames)
+        note = range_note(label, value, frames, result.get("withdrawn") or ())
         withheld = sorted(set(result.get("withheld") or []))
         if withheld:
             note += WITHHELD_NOTE.format(n=len(withheld),

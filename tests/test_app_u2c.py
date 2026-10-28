@@ -252,7 +252,11 @@ def test_a_drawn_part_hidden_by_a_label_still_warns(window):
     assert window.instances.select_instance(CHASSIS)
     window.session.set_visibility(CHASSIS, "out_of_view")          # 画面外 (task U24)
     QApplication.processEvents()
-    assert vis_cell(window, CHASSIS).text() == "⚠ out"
+    # task U39: out_of_view with no pixels is 画框外 -- tagged as such, and
+    # the drawn shape it hides is still said (warning colour, tooltip)
+    cell_ = vis_cell(window, CHASSIS)
+    assert cell_.text() == "框外"
+    assert "⚠ 它画好了" in cell_.toolTip()
 
 
 def test_a_shape_drawn_for_this_frame_only_counts_as_drawn(window):
