@@ -49,8 +49,8 @@ def test_v1_35_is_near_the_top_of_14():
     changes = _spec().split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
     # U33-U35 land v1.32-v1.34 alongside: the controller orders them at merge
-    # (and U37's v1.36 has gone above them since)
-    [entry] = [e for e in entries[:5] if e.startswith("- **v1.35")]
+    # (and U37's v1.36, U38's v1.37 and U39's v1.38 have gone above them since)
+    [entry] = [e for e in entries[:7] if e.startswith("- **v1.35")]
     assert entry.startswith("- **v1.35（2026-10-26）**：**可见性审查按段、跨视角**（U36，§4.4）")
     for needed in ("`changes`", "「第 a–b 帧（n 帧）」", "「全程」", "「从这帧起另算」",
                    "「同步到其他视角」", "`sync_visibility`", "`cli check --visibility`",
