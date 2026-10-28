@@ -617,12 +617,21 @@ class TruthService(FreshMixin, ResolveMixin, VerifyMixin, RefreezeMixin):
         background sweeper the GUI uses. Each request is retired under the
         generation it was read with, so one that arrives during the drain stays
         queued rather than being cleared unchecked.
+
+        A request for a frame whose row is flagged ``missing`` is retired
+        without a refresh (task U38): the step has no photo, so there is
+        nothing to compare and no row to write -- and its problems, every part
+        "missing a shape" on a step nobody photographed, are nobody's to fix.
         """
         cache = InputCache()
         total: dict = {counter: 0 for counter in REFRESH_COUNTERS}
         total["problems"] = []
         for step, gen in self.db.recheck_items(desktop, view):
-            one = self.refresh(FrameKey(desktop, int(step), view), cache)
+            key = FrameKey(desktop, int(step), view)
+            if (self.db.get_frame(key) or {}).get("missing"):
+                self.db.clear_recheck(desktop, view, step, gen)
+                continue
+            one = self.refresh(key, cache)
             for counter in REFRESH_COUNTERS:
                 total[counter] += one[counter]
             total["problems"].extend(one["problems"])

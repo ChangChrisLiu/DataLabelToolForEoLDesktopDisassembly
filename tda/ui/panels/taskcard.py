@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
 )
 
 from tda.core.truth_refusals import (
+    FRAME_MISSING,
     FROZEN_DISAGREEMENT,
     INPUTS_CHANGED,
     OPEN_CONFLICT,
@@ -614,6 +615,8 @@ NOTE_COLOR = QColor(118, 118, 124)
 CONFLICT_SENTENCE = "这一帧有未处理的冲突：点顶部 Review → Conflicts，K 保留旧的 / N 采用新的"
 #: The input race: an edit landed while Space was confirming.  Transient.
 RACE_SENTENCE = "输入刚变了：再按一次 Space"
+#: A step this view has no photo of (task U38): nothing to confirm, nothing to do.
+NO_PHOTO_SENTENCE = "这一步在这个视角没有照片（漏拍）：没有东西可确认 → PgDn / PgUp 翻到有照片的帧"
 
 #: What every other code means, in one place.  ``{what}`` is the part of the
 #: code after the colon -- an instance key, sometimes with a part or a second
@@ -638,6 +641,7 @@ PROBLEM_SENTENCES: tuple[tuple[str, str], ...] = (
     (FROZEN_DISAGREEMENT, "{what}：确认过的形状后来在别的帧被改了，和这一帧对不上 → 到 Review → "
                           "Conflicts：K 保留旧的 / N 采用新的（冲突队列里还没有它就先按 F5）"),
     (INPUTS_CHANGED, RACE_SENTENCE),
+    (FRAME_MISSING, NO_PHOTO_SENTENCE),
 )
 
 

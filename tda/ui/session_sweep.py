@@ -432,6 +432,11 @@ class TruthSweeper(QObject):
                       gen: Optional[int]) -> None:
         key = FrameKey(self.desktop, step, self.view)
         stamp = db.recheck_generation(self.desktop, self.view, step)
+        if (db.get_frame(key) or {}).get("missing"):
+            # a step with no photo (U38): nothing to compare, no row to write
+            if stamp is not None:
+                db.clear_recheck(self.desktop, self.view, step, stamp)
+            return
         guard = truth.inputs_digest(key)
         result = truth.refresh(key, guard=guard)
         if result.get("stale"):

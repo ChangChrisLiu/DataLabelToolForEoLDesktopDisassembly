@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Callable, Optional
 
+from tda.core.cache import has_no_photo
 from tda.core.db import Db
 from tda.core.model import VIEWS, FrameKey, is_component_view
 from tda.core.truth import NEEDS_REVIEW, VERIFIED
@@ -340,11 +341,14 @@ class ReviewState:
             api.QUEUE_CONFLICTS: [
                 self._conflict_row(row) for row in self.open_conflicts()
             ],
+            # a frame with no photo (U38) is never reviewed: nothing can answer
+            # it -- Enter, Space and R all refuse a step nobody photographed --
+            # so listing it put an entry in the queue nobody could clear
             api.QUEUE_NEEDS_REVIEW: [
                 {"step": row["step"]}
                 for row in (self.db.frames_for(self.desktop, self.view)
                             if self.desktop is not None else [])
-                if row.get("review_status") == NEEDS_REVIEW
+                if row.get("review_status") == NEEDS_REVIEW and not has_no_photo(row)
             ],
             api.QUEUE_MISSING_SHAPE: [
                 {"step": step, "instance": instance}

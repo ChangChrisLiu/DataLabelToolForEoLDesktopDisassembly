@@ -423,7 +423,9 @@ class StepTableModel(_TableModel):
         """The cached scanner frame of ``step``, scaled and remembered."""
         key = (self.data_model.desktop, step)
         if key not in self._thumbs:
-            path = thumb_path(self.cache_dir, self.data_model.desktop, step, THUMB_VIEW)
+            # a missed shot (U38): the file at its number is another step's photo
+            path = (None if step in getattr(self.data_model, "no_photo", ()) else
+                    thumb_path(self.cache_dir, self.data_model.desktop, step, THUMB_VIEW))
             pixmap = QPixmap(str(path)) if path is not None else QPixmap()
             self._thumbs[key] = (
                 None

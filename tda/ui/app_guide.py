@@ -357,6 +357,10 @@ class GuideMixin:
             why_confirm = ""
         states["confirm"] = (bool(not closed and not why_confirm), False,
                              closed or why_confirm)
+        no_photo = getattr(self, "no_photo_here", str)() if facts.is_open else ""
+        if no_photo:
+            # a step with no photo (U38): the refusal Space gets, in its words
+            states["confirm"] = (False, False, no_photo)
         stack = getattr(self.session, "undo_stack", None)
         can_undo = bool(getattr(stack, "can_undo", False))
         can_redo = bool(getattr(stack, "can_redo", False))
@@ -440,6 +444,10 @@ class GuideMixin:
         key answered with another.
         """
         if not getattr(self, "_guidance_ready", False) or name not in _KEY_GUARD_NAMES:
+            return ""
+        if name == "confirm" and getattr(self, "no_photo_here", str)():
+            # a step with no photo (U38): verify_frame refuses it in its own
+            # words, the gate Review's Enter reaches too -- the same line both ways
             return ""
         facts = self.guide_facts()
         no_image = not (facts.is_open and facts.has_image)

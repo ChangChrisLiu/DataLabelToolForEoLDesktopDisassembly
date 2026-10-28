@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from tda.core import extra as X
+from tda.core.cache import has_no_photo
 from tda.core.db import Db
 from tda.core.logs import CHASSIS_KEY, UNRESOLVED, instance_key
 from tda.core.model import (
@@ -263,6 +264,10 @@ class StepTableData:
     #: sequence view -- read-only here, written in Review; the Steps table
     #: marks the step with a ✎ next to its thumbnail.
     notes: dict[int, list[dict]] = field(default_factory=dict)
+    #: Steps whose scanner frame has no photo (task U38, a missed shot): their
+    #: thumbnail cell stays empty, whatever the cache holds at their number --
+    #: that file is another step's photo.
+    no_photo: set[int] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         if self.relations is None:
@@ -285,7 +290,9 @@ class StepTableData:
                    annotator=str(annotator or ANNOTATOR),
                    stored_initial=_stored_initial(db, desktop),
                    stored_manual=[e for e in db.events(desktop) if not e.auto],
-                   notes=notes_by_step(db, desktop))
+                   notes=notes_by_step(db, desktop),
+                   no_photo={int(r["step"]) for r in db.frames_for(desktop, "scan")
+                             if has_no_photo(r)})
         data.relations.reload(db)
         data.refresh_issues()
         return data

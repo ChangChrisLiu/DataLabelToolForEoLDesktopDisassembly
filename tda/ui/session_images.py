@@ -20,7 +20,7 @@ import cv2
 import numpy as np
 
 from tda.core import rawroot
-from tda.core.cache import cached_image_path
+from tda.core.cache import cached_image_path, has_no_photo
 from tda.core.db import Db
 from tda.core.model import FrameKey
 from tda.core.rawroot import resolve_raw
@@ -55,7 +55,14 @@ def frame_candidates(cache_dir: str, key: FrameKey,
     last two through :func:`tda.core.rawroot.resolve_raw`.  Shared by
     :class:`ImageCache` and the detector's background pass, which must read
     the very file the canvas shows (task U3).
+
+    **None at all** for a frame with no photo of its own -- flagged
+    ``missing``, or without a stored path (:func:`tda.core.cache.has_no_photo`)
+    -- whatever its ``aux`` names and whatever lies at its cache name: that
+    file is another photo's (task U38, D61's scanner step 26 showing step 27).
     """
+    if has_no_photo(row):
+        return []
     row = row or {}
     return [
         cached_image_path(cache_dir, key),
@@ -102,6 +109,9 @@ class ImageCache:
         :func:`tda.core.rawroot.resolve_raw` knows where that is. Reading them
         as written left ``oak1``, ``oak2`` and ``rs`` blank the day the drive
         came back as ``G:``.
+
+        A frame with no photo of its own (``missing``, or no stored path) has
+        none of the three (:func:`frame_candidates`, task U38).
         """
         return _first_readable(self._candidates(key))
 
@@ -154,7 +164,13 @@ class ImageCache:
         return first_reason
 
     def thumb_path(self, key: FrameKey) -> Optional[str]:
-        """The timeline thumbnail, falling back to the full image."""
+        """The timeline thumbnail, falling back to the full image.
+
+        ``None`` for a frame with no photo of its own, like :meth:`image_path`:
+        a thumbnail at its number was cut from another photo (task U38).
+        """
+        if has_no_photo(self.db.get_frame(key)):
+            return None
         small = _first_readable([thumb_path(self.cache_dir, key)])
         return small if small is not None else self.image_path(key)
 

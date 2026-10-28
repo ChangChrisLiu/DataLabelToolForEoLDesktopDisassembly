@@ -17,6 +17,7 @@ from typing import Iterable, Optional
 from tda.core.model import FrameKey
 from tda.core.truth import StaleConflictError
 from tda.core.truth_inputs import InputCache, instances_of
+from tda.core.truth_refusals import NO_PHOTO as REFUSED_NO_PHOTO
 from tda.core.truth_refusals import PROBLEM as REFUSED_BY_PROBLEM
 from tda.ui.session_coverage import coverage
 from tda.ui import session_api as api
@@ -42,8 +43,9 @@ class ReviewMixin:
         """Freeze the frame and step back (spec 4.2 step 5).
 
         ``False`` means the truth service refused the confirmation -- a chassis
-        instance without a shape, a contradictory layer order, or an open
-        disagreement about this frame that only a human can settle (spec 3.4).
+        instance without a shape, a contradictory layer order, an open
+        disagreement about this frame that only a human can settle (spec 3.4),
+        or a step this view has no photo of (task U38).
         The reason it gave is the first line emitted on :attr:`sigProblems`,
         followed by the compilation's own problems and the card's words for
         them, so a panel can show exactly what the annotator has to do. A
@@ -65,9 +67,14 @@ class ReviewMixin:
             # an open conflict, a frozen disagreement (queued by this very
             # refusal), the race -- as it carries them: nothing is compared a
             # second time (U2e round 2).
-            carried = [b.code for b in getattr(refused, "blockers", ())
-                       if b.kind != REFUSED_BY_PROBLEM]
-            problems = [str(refused)] + list(self.compiled().problems) + carried
+            blockers = list(getattr(refused, "blockers", ()))
+            carried = [b.code for b in blockers if b.kind != REFUSED_BY_PROBLEM]
+            # a frame with no photo (U38) is that one reason: its compilation
+            # -- every part "missing a shape" on a step nobody photographed --
+            # is not a list of things to do
+            compiled = ([] if any(b.kind == REFUSED_NO_PHOTO for b in blockers)
+                        else list(self.compiled().problems))
+            problems = [str(refused)] + compiled + carried
             self.review.problems[key.step] = problems
             self.sigProblems.emit(problems + self._how_to_fix(problems))
             return False

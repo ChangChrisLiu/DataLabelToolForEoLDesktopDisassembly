@@ -75,8 +75,8 @@ def test_v1_32_is_near_the_top_of_14():
     changes = _body().split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
     # U34-U36 landed v1.33-v1.35 the same day; the controller ordered them at the merges
-    # (and U37's v1.36 has gone above them since)
-    [entry] = [e for e in entries[:5] if e.startswith("- **v1.32")]
+    # (and U37's v1.36 and U38's v1.37 have gone above them since)
+    [entry] = [e for e in entries[:6] if e.startswith("- **v1.32")]
     assert entry.startswith("- **v1.32（2026-10-26）**：**日志里拿走一根松线不是卡扣**"
                             "（U33，§6.2、§6.3）")
     for needed in ("`cable_clip.01` + `release`", "42 行 `missing_shape:cable_clip.01`",
