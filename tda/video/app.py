@@ -60,6 +60,11 @@ class VideoRefiner(QMainWindow):
         self.generation = {'oak': 0, 'rs': 0}
         self.positions = {'oak': 0., 'rs': 0.}
         self.playing = None
+        self.play_rate = 1.
+        self.scrubbing = None
+        self.scrub_resume = None
+        self.scrub_target = None
+        self.pending_resume = None
         self.export_worker = None
         self.loading = False
         self.selected_uid = None
@@ -74,6 +79,10 @@ class VideoRefiner(QMainWindow):
         self.timer = QTimer(self)
         self.timer.setInterval(33)
         self.timer.timeout.connect(self.tick)
+        self.scrub_timer = QTimer(self)
+        self.scrub_timer.setSingleShot(True)
+        self.scrub_timer.setInterval(80)
+        self.scrub_timer.timeout.connect(self.flush_scrub)
         self.build_ui()
         self.refresh_list()
         self.start_readers()
@@ -133,6 +142,9 @@ class VideoRefiner(QMainWindow):
                 source = dict(width=1920, height=1080, roi=[0, 0, 1920, 1080], duration=1, path='')
             pane = CameraPane(name, source)
             pane.seek_requested.connect(lambda value, c=camera: self.seek(c, value))
+            pane.scrub_started.connect(lambda c=camera: self.begin_scrub(c))
+            pane.scrub_moved.connect(lambda value, c=camera: self.preview_scrub(c, value))
+            pane.scrub_finished.connect(lambda value, c=camera: self.finish_scrub(c, value))
             pane.step_requested.connect(lambda direction, c=camera: self.step_frame(c, direction))
             pane.play_requested.connect(lambda c=camera: self.toggle_play(c))
             pane.roi_requested.connect(lambda roi, c=camera: self.set_roi(c, roi))
@@ -149,11 +161,13 @@ class VideoRefiner(QMainWindow):
         self.loop_box.setChecked(True)
         row.addWidget(self.loop_box)
         row.addStretch()
-        row.addWidget(QLabel('速度'))
+        row.addWidget(QLabel('播放速度'))
         self.speed = QComboBox()
-        self.speed.addItems(['0.25×', '0.5×', '1×', '2×'])
+        for rate in [.25, .5, 1., 1.5, 2., 4., 8.]:
+            self.speed.addItem(f'{rate:g}×', rate)
         self.speed.setCurrentIndex(2)
-        self.speed.currentIndexChanged.connect(self.pause)
+        self.speed.setToolTip('播放中可直接切换倍速，不改变原片切点或导出速度')
+        self.speed.currentIndexChanged.connect(self.change_speed)
         row.addWidget(self.speed)
         body.addLayout(row)
         self.tabs = QTabWidget()
@@ -179,7 +193,9 @@ class VideoRefiner(QMainWindow):
         tab = QWidget()
         box = QVBoxLayout(tab)
         self.range_bar = RangeBar()
-        self.range_bar.seek_requested.connect(lambda t: self.seek('oak', t))
+        self.range_bar.scrub_started.connect(lambda: self.begin_scrub('oak'))
+        self.range_bar.scrub_moved.connect(lambda t: self.preview_scrub('oak', t))
+        self.range_bar.scrub_finished.connect(lambda t: self.finish_scrub('oak', t))
         self.range_bar.boundary_changed.connect(self.drag_boundary)
         box.addWidget(self.range_bar)
         row = QHBoxLayout()
@@ -395,6 +411,7 @@ class VideoRefiner(QMainWindow):
         pane.canvas.message = text
         pane.canvas.update()
         self.error(f'{camera}：{text}')
+        self.maybe_resume()
 
     def request_frame(self, camera, seconds, precise=False, mode='seek'):
         source = self.project.sources.get(camera)
@@ -418,13 +435,80 @@ class VideoRefiner(QMainWindow):
 
     def seek(self, camera, seconds):
         self.pause()
+        self.scrub_timer.stop()
+        self.scrubbing = self.scrub_target = None
+        self.seek_frames(camera, seconds)
+
+    def seek_frames(self, camera, seconds):
+        source = self.project.sources.get(camera)
+        if source is None:
+            return ()
+        seconds = max(0., min(seconds, source['duration']-1e-6))
         if self.link_box.isChecked() and self.project.data['anchors']:
             a, b = self.project.mapping()
             master = seconds if camera == 'oak' else (seconds-b)/a
             self.request_frame('oak', master, precise=True)
             self.request_frame('rs', a*master+b, precise=True)
+            return ('oak', 'rs')
         else:
             self.request_frame(camera, seconds, precise=True)
+            return (camera,)
+
+    def begin_scrub(self, camera):
+        intended = self.playing or (self.pending_resume[0] if self.pending_resume else None)
+        resume = intended if (intended == camera or self.link_box.isChecked()) else None
+        if resume:
+            self.pause()
+        self.scrubbing, self.scrub_resume = camera, resume
+        self.scrub_target = None
+        self.scrub_timer.stop()
+
+    def preview_scrub(self, camera, seconds):
+        if self.scrubbing != camera:
+            self.begin_scrub(camera)
+        self.scrub_target = camera, seconds
+        self.panes[camera].clock.setText(tc(seconds))
+        self.panes[camera].position.setValue(seconds)
+        if not self.scrub_timer.isActive():
+            self.scrub_timer.start()
+
+    def flush_scrub(self):
+        if self.scrub_target is not None:
+            camera, seconds = self.scrub_target
+            self.scrub_target = None
+            self.seek_frames(camera, seconds)
+
+    def finish_scrub(self, camera, seconds):
+        if self.scrubbing != camera:
+            self.begin_scrub(camera)
+        resume = self.scrub_resume
+        self.scrub_timer.stop()
+        self.scrubbing = self.scrub_resume = self.scrub_target = None
+        cameras = self.seek_frames(camera, seconds)
+        s = self.current()
+        if 'oak' in cameras and s and not s['start'] <= self.positions['oak'] < s['end']:
+            self.loop_box.setChecked(False)
+        if resume:
+            self.pending_resume = resume, {c: self.generation[c] for c in cameras}
+            for pane in self.panes.values():
+                pane.play_button.setText('暂停')
+            self.maybe_resume()
+
+    def maybe_resume(self):
+        if self.pending_resume is None:
+            return
+        camera, generations = self.pending_resume
+        if any(self.generation[c] != gen for c, gen in generations.items()):
+            self.pending_resume = None
+            return
+        if any(self.panes[c].busy for c in generations):
+            return
+        self.pending_resume = None
+        if self.panes[camera].frame is None:
+            for pane in self.panes.values():
+                pane.play_button.setText('播放')
+            return
+        self.start_playback(camera)
 
     def frame_ready(self, camera, frame, generation, mode):
         if self.closed or generation != self.generation[camera]:
@@ -440,6 +524,7 @@ class VideoRefiner(QMainWindow):
                 other = 'rs' if camera == 'oak' else 'oak'
                 target = a*frame.pts+b if camera == 'oak' else (frame.pts-b)/a
                 self.request_frame(other, target, precise=True)
+        self.maybe_resume()
 
     def ready_frame(self, camera='oak'):
         pane = self.panes[camera]
@@ -455,13 +540,16 @@ class VideoRefiner(QMainWindow):
             self.request_frame(camera, frame.pts, precise=True, mode='previous' if direction < 0 else 'next')
 
     def toggle_play(self, camera='oak'):
-        if self.playing:
+        if self.playing or self.pending_resume:
             self.pause()
             return
         if camera not in self.workers or not self.workers[camera].isRunning():
             return
         if self.link_box.isChecked():
             camera = 'oak'
+        self.start_playback(camera)
+
+    def start_playback(self, camera):
         self.playing = camera
         start = self.positions[camera]
         s = self.current()
@@ -473,12 +561,14 @@ class VideoRefiner(QMainWindow):
             p.play_button.setText('暂停')
 
     def pause(self, *args):
+        self.pending_resume = None
+        self.scrub_resume = None
+        for p in self.panes.values():
+            p.play_button.setText('播放')
         if not self.playing:
             return
         self.timer.stop()
         camera, self.playing = self.playing, None
-        for p in self.panes.values():
-            p.play_button.setText('播放')
         self.request_frame(camera, self.positions[camera], precise=True)
         if camera == 'oak' and self.link_box.isChecked() and self.project.data['anchors']:
             a, b = self.project.mapping()
@@ -488,14 +578,14 @@ class VideoRefiner(QMainWindow):
         camera = self.playing
         if camera is None:
             return
-        speed = [.25, .5, 1, 2][self.speed.currentIndex()]
-        t = self.play_start + (time.monotonic()-self.play_wall)*speed
+        t = self.play_start + (time.monotonic()-self.play_wall)*self.play_rate
         s = self.current()
         if camera == 'oak' and self.loop_box.isChecked() and s and t >= s['end']:
             t = self.play_start = s['start']
             self.play_wall = time.monotonic()
             self.generation['oak'] += 1
-            self.generation['rs'] += 1
+            if self.link_box.isChecked() and self.project.data['anchors']:
+                self.generation['rs'] += 1
         if t >= self.project.sources[camera]['duration']:
             self.pause()
             return
@@ -503,6 +593,16 @@ class VideoRefiner(QMainWindow):
         if camera == 'oak' and self.link_box.isChecked() and self.project.data['anchors']:
             a, b = self.project.mapping()
             self.request_frame('rs', a*t+b)
+
+    def change_speed(self, *args):
+        if self.playing:
+            # Advance with the old rate first, then rebase the wall clock. A rate
+            # change must not multiply all elapsed playback time retroactively.
+            self.tick()
+            if self.playing:
+                self.play_start = self.positions[self.playing]
+                self.play_wall = time.monotonic()
+        self.play_rate = float(self.speed.currentData())
 
     def mark_boundary(self, boundary):
         frame = self.ready_frame()
