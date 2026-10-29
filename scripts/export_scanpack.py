@@ -719,10 +719,10 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
         frames_out[str(step)] = entry
         if img is None:
             continue
-        if file_name != FIRST_IMAGE and source["choice"]["reason"] != DARK_P0:
+        if file_name != FIRST_IMAGE and source["choice"]["reason"] not in REASON_TEXT:
             raise PackError(f"D{desktop:02d} {name}: the picture is {file_name}, chosen for "
-                            f"{source['choice']['reason']!r}; the README explains only a dark "
-                            f"P_0 ({DARK_P0!r})")
+                            f"{source['choice']['reason']!r}; the README has no words for that "
+                            f"reason (REASON_TEXT)")
         if row_file is not None and row_file != FIRST_IMAGE:
             raise PackError(f"D{desktop:02d} {name}: the frame record names {row_file}; the "
                             f"README says such a record names {FIRST_IMAGE}")
@@ -1468,7 +1468,7 @@ def _known_issues(summary: dict) -> str:
         items.append(
             f"**Picture vs. our frame record.** For {len(other)} frames our database's frame "
             f"record names `P_0.png`, but the picture the masks were drawn on -- the one in "
-            f"this package -- is another image of the burst (`P_0` is a dark exposure): "
+            f"this package -- is another image of the burst (`P_0` was unusable; `burst_choice.reason` says why): "
             f"{where}. `frames.json` gives the file in `file_name` and the record's name in "
             f"`frame_record_file`. The masks match the packaged picture.")
     for ex in summary["exclusions"]:

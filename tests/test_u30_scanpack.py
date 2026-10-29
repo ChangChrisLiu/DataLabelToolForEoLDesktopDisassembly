@@ -754,13 +754,26 @@ def test_another_tier_stops_the_build(built, tmp_path):
         make_pack(tmp_path, built["db"], built["desktop"], expected_tier="silver")
 
 
-def test_a_picture_chosen_for_another_reason_than_a_dark_p0_stops_the_build(tmp_path):
-    db_path = build_scene(tmp_path, 13)
+def _rechoose(tmp_path, reason: str) -> None:
     manifest = tmp_path / "cache" / VIEW / "D13" / "manifest.json"
     records = json.loads(manifest.read_text(encoding="utf-8"))
-    records[str(CHOSEN_P1_STEP)]["reason"] = "p0_saturated"
+    records[str(CHOSEN_P1_STEP)]["reason"] = reason
     manifest.write_text(json.dumps(records), encoding="utf-8")
-    with pytest.raises(S.PackError, match="the README explains only a dark P_0"):
+
+
+def test_a_picture_chosen_for_any_documented_reason_is_packed_and_explained(tmp_path):
+    """D34 S13: the cache took P_2 for `p0_outlier`; every reason REASON_TEXT can explain is fine."""
+    db_path = build_scene(tmp_path, 13)
+    _rechoose(tmp_path, "p0_outlier")
+    make_pack(tmp_path, db_path, 13)
+    readme = (tmp_path / "pack" / "README.md").read_text(encoding="utf-8")
+    assert "`p0_outlier`" in readme and S.REASON_TEXT["p0_outlier"] in readme
+
+
+def test_a_picture_chosen_for_a_reason_the_readme_cannot_explain_stops_the_build(tmp_path):
+    db_path = build_scene(tmp_path, 13)
+    _rechoose(tmp_path, "p0_weird")
+    with pytest.raises(S.PackError, match="the README has no words for that reason"):
         make_pack(tmp_path, db_path, 13)
 
 
