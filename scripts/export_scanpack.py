@@ -180,6 +180,8 @@ EXPECTED_HW = (1600, 1600)
 EXPECTED_TIER = "gold"
 #: The one reason the README gives for a picture other than ``P_0``.
 DARK_P0 = "p0_dark"
+#: Why a step this view never photographed (``frame.missing``, task U38) is left out of a package.
+NO_PHOTO_REASON = "no scanner photo of this step (a missed shot)"
 FIRST_IMAGE = "P_0.png"
 
 #: One line of English per taxonomy class. ``configs/taxonomy.yaml`` carries
@@ -656,6 +658,9 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
     missing = sorted(s for s in excluded if s not in set(frame_steps))
     if missing:
         raise PackError(f"--exclude: D{desktop:02d} has no frame {missing}")
+    for f in frames:                     # a step with no photo (U38): nothing to pack, said so
+        if f.get("missing") or not f.get("path"):
+            excluded.setdefault(int(f["step"]), NO_PHOTO_REASON)
     stale = sorted(int(s) for s in chosen if int(s) not in set(frame_steps))
     if stale:
         qa["manifest_steps_without_frame"].append({"desktop": desktop, "steps": stale})
@@ -688,6 +693,20 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
         name = frame_name(step)
         roi = roi_of(db, key)
         img = images.get(step)
+        if frame.get("missing") or not frame.get("path"):
+            frames_out[str(step)] = {
+                "step": step, "exported": False, "excluded": excluded.get(step),
+                "image": None, "label": None, "source_folder": None, "file_name": None,
+                "burst_choice": None, "frame_record_file": None,
+                "sha256": None, "bytes": None, "width": None, "height": None,
+                "identical_to_annotated_copy": None, "annotated_copy_same_pixels": None,
+                "roi": None if roi is None else list(roi), "pose_segment": seg_of(step),
+                "step_name": (steps_tab[step].raw_name if step in steps_tab else None),
+                "step_type": ctx.step_type(step), "actions": action_rows(step),
+                "review_status": frame.get("review_status"),
+                "label_sha256": None, "annotations": 0, "clean": 0, "crowd": 0,
+            }
+            continue
         source = _source_record(frame, chosen.get(str(step)))
         folder, file_name = _source_folder(source["recorded"], tail)
         row_file = (None if source["frame_row_path"] is None

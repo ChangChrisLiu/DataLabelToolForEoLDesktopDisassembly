@@ -32,6 +32,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import sqlite3
 import re
 import shutil
 import sys
@@ -776,6 +777,24 @@ def test_a_picture_chosen_for_a_reason_the_readme_cannot_explain_stops_the_build
     with pytest.raises(S.PackError, match="the README has no words for that reason"):
         make_pack(tmp_path, db_path, 13)
 
+
+def test_a_step_with_no_photo_is_left_out_and_said_so(tmp_path):
+    """D41 S32 (the scanner skipped the step, task U38): no file to copy, no crash, the frame
+    is listed as excluded with the no-photo reason in frames.json and the COCO info."""
+    db_path = build_scene(tmp_path, 13)
+    gone = CHOSEN_P1_STEP
+    con = sqlite3.connect(str(db_path))
+    con.execute("UPDATE frame SET missing=1, path=NULL WHERE desktop=13 AND view=? AND step=?", (VIEW, gone))
+    con.commit(); con.close()
+    make_pack(tmp_path, db_path, 13)
+    ddir = tmp_path / "pack" / "D13"
+    frames = json.loads((ddir / "frames.json").read_text(encoding="utf-8"))["frames"]
+    entry = frames[str(gone)]
+    assert entry["exported"] is False and entry["excluded"] == S.NO_PHOTO_REASON
+    assert entry["image"] is None and entry["source_folder"] is None
+    coco = json.loads((ddir / "annotations.json").read_text(encoding="utf-8"))
+    assert {"step": gone, "reason": S.NO_PHOTO_REASON} in coco["info"]["excluded_frames"]
+    assert all(int(img["extra"]["step"]) != gone for img in coco["images"])
 
 # --------------------------------------------------------------------------- #
 # round 3: the README's data-driven sentences, every branch (R2-N1, R2-N2)

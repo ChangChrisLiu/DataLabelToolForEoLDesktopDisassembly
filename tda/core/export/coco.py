@@ -968,6 +968,10 @@ def export_coco(
             # a gallery shot is not a step: the step table says nothing about it
             if not gallery and not ctx.exportable(key.step):
                 continue
+            # a step this view never photographed (frame.missing, task U38) has no
+            # picture to export anything over, whatever rows a cache still holds
+            if frame.get("missing"):
+                continue
             rows = db.compiled(key)
             if only_verified:
                 rows = {k: r for k, r in rows.items() if r.get("status") == VERIFIED}
