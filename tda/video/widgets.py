@@ -2,7 +2,7 @@
 from PySide6.QtCore import Qt, QRectF, QPointF, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-                             QSlider, QDoubleSpinBox, QCheckBox)
+                             QSlider, QDoubleSpinBox, QCheckBox, QStyle, QStyleOptionSlider)
 
 
 def tc(seconds):
@@ -114,8 +114,71 @@ class VideoCanvas(QWidget):
         self.update()
 
 
+class SeekSlider(QSlider):
+    """A video seek bar: clicking the groove seeks, and dragging previews live."""
+    scrub_started = Signal()
+    scrub_moved = Signal(float)
+    scrub_finished = Signal(float)
+
+    def __init__(self, parent=None):
+        super().__init__(Qt.Orientation.Horizontal, parent)
+        self.setSingleStep(1000)
+        self.setPageStep(10000)
+        self.setToolTip('点击或拖动定位原视频；播放中拖动，松开后继续播放')
+
+    def move_to(self, point):
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        handle = self.style().subControlRect(QStyle.ComplexControl.CC_Slider, option,
+                                            QStyle.SubControl.SC_SliderHandle, self)
+        value = QStyle.sliderValueFromPosition(self.minimum(), self.maximum(),
+            round(point.x()-handle.width()/2), max(1, self.width()-handle.width()), option.upsideDown)
+        self.setValue(value)
+        self.scrub_moved.emit(value/1000)
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return super().mousePressEvent(event)
+        self.setFocus()
+        self.setSliderDown(True)
+        self.scrub_started.emit()
+        self.move_to(event.position())
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self.isSliderDown():
+            self.move_to(event.position())
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.isSliderDown():
+            self.move_to(event.position())
+            self.setSliderDown(False)
+            self.scrub_finished.emit(self.value()/1000)
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        previous = self.value()
+        super().keyPressEvent(event)
+        if self.value() != previous:
+            self.scrub_finished.emit(self.value()/1000)
+
+    def wheelEvent(self, event):
+        previous = self.value()
+        super().wheelEvent(event)
+        if self.value() != previous:
+            self.scrub_finished.emit(self.value()/1000)
+
+
 class CameraPane(QWidget):
     seek_requested = Signal(float)
+    scrub_started = Signal()
+    scrub_moved = Signal(float)
+    scrub_finished = Signal(float)
     step_requested = Signal(int)
     play_requested = Signal()
     roi_requested = Signal(list)
@@ -147,9 +210,11 @@ class CameraPane(QWidget):
         row.addStretch()
         button('定位原片', self.source_requested.emit, row)
         layout.addLayout(row)
-        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider = SeekSlider()
         self.slider.setRange(0, round(source['duration'] * 1000))
-        self.slider.sliderReleased.connect(lambda: self.seek_requested.emit(self.slider.value() / 1000))
+        self.slider.scrub_started.connect(self.scrub_started.emit)
+        self.slider.scrub_moved.connect(self.scrub_moved.emit)
+        self.slider.scrub_finished.connect(self.scrub_finished.emit)
         layout.addWidget(self.slider)
         row = QHBoxLayout()
         button('◀ 帧', lambda: self.step_requested.emit(-1), row)
@@ -187,7 +252,9 @@ class CameraPane(QWidget):
 
 
 class RangeBar(QWidget):
-    seek_requested = Signal(float)
+    scrub_started = Signal()
+    scrub_moved = Signal(float)
+    scrub_finished = Signal(float)
     boundary_changed = Signal(str, float)
 
     def __init__(self, parent=None):
@@ -225,19 +292,30 @@ class RangeBar(QWidget):
         p.drawText(18, 13, '原片时间轴 · 拖动绿色边界调整 · 点击定位')
 
     def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
         x = event.position().x()
         self.dragging = ('start' if abs(x-self.to_x(self.start)) < 10 else
                          'end' if abs(x-self.to_x(self.end)) < 10 else 'seek')
+        if self.dragging == 'seek':
+            self.scrub_started.emit()
+            self.position = self.to_time(x)
+            self.scrub_moved.emit(self.position)
+            self.update()
 
     def mouseMoveEvent(self, event):
         if self.dragging:
             self.setCursor(Qt.CursorShape.SizeHorCursor)
+            if self.dragging == 'seek':
+                self.position = self.to_time(event.position().x())
+                self.scrub_moved.emit(self.position)
+                self.update()
 
     def mouseReleaseEvent(self, event):
         value = self.to_time(event.position().x())
         if self.dragging in ('start', 'end'):
             self.boundary_changed.emit(self.dragging, value)
         elif self.dragging:
-            self.seek_requested.emit(value)
+            self.scrub_finished.emit(value)
         self.dragging = None
         self.unsetCursor()
