@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+video = ["av>=12"]
 
 [tool.setuptools.packages.find]
 include = ["tda*"]
