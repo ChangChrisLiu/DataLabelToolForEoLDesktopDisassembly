@@ -61,3 +61,15 @@ Interfaces: `VideoRefiner(project, project_path)` owns project state, lock, hist
 ## Execution ledger
 
 User delegated all details and explicitly opted out of further design questions. Execute natively in this session. Work on `codex/video-refiner` in the clean D: checkout to honor its fixed D: runtime/data configuration; no remote push. Progress and verification are recorded here and in the task's D: scratch directory.
+
+### Verification ledger (2026-10-29)
+
+- Task 1 complete: import/validation/atomic backup/history/synchronization tests RED→GREEN, 16 tests initially; later invalidation regression added. Commit 35a8f67.
+- Task 2 complete: synthetic VFR PTS navigation, backward seek and end boundaries RED→GREEN. Commit 45ff41d. Real OAK and RS source timestamp checks passed. Added 48-frame decode cache after real RS backward seek took seconds; reverse step now 0.0033 s in observed run.
+- Task 3 complete: real FFmpeg synthetic paired offset and affine exports, duration/ROI/native provenance and cancellation tests RED→GREEN. Commit 45ff41d. Real 1-second OAK+RS pair exported and decoded to 720×480; artificial sync confined to `.cache/tmp/video-real-export`, never written to user's project.
+- Task 4 implementation complete: actual Qt UI opened with both full source files and 58 Desktop 7 cuts. OAK native frame step observed 74.000 → 74.0166667 seconds. Standalone UI workflow tests RED→GREEN, launcher and Chinese guide added. Commit d48a5b0.
+- Final review: fresh gpt-6-astra read-only reviewer; no Critical findings. Important fixes: preserve exact source PTS when untouched form fields round for display; invalidate confirmations for changed sync/ROI with undo restoration; honor cancellation when final encoder finishes. Each regression observed RED then GREEN. Extra usability regression: synchronization tab plays full original video without loop-to-current-cut reset. Current video tests: 33 passed.
+- Final minor (deferred): changing start times does not reorder the existing list; original list order is retained, while export sorts by source start and retains UID/log step. Documented in guide.
+- Ruling: use independent local PySide6 tool with PyAV and original-source JSON edits — user delegated details and explicitly required original-video synchronization — costs a separate window from image annotation.
+- Ruling: all work in clean D: checkout on codex/video-refiner; all output/temp on D:, raw drive read-only, no database access — respects this workstation's fixed data/runtime paths — no separate worktree copy.
+- Review items the reviewer declined to judge: actual chosen physical synchronization points (left unset for the user), power-loss durability (fsync + atomic replace + previous backup, no absolute hardware guarantee), full regression run (pending recorded result below).

@@ -343,8 +343,13 @@ class VideoRefiner(QMainWindow):
     def apply_form(self, *args):
         if self.loading or self.index() < 0:
             return True
-        return self.mutation(lambda: self.project.edit(self.index(), start=self.start_box.value(),
-            end=self.end_box.value(), label_zh=self.label_box.text().strip() or '未命名动作',
+        s = self.current()
+        # The display has four decimal places; merely saving or confirming must
+        # not replace the precise source PTS with its rounded UI representation.
+        start = s['start'] if self.start_box.value() == round(s['start'], 4) else self.start_box.value()
+        end = s['end'] if self.end_box.value() == round(s['end'], 4) else self.end_box.value()
+        return self.mutation(lambda: self.project.edit(self.index(), start=start,
+            end=end, label_zh=self.label_box.text().strip() or '未命名动作',
             note=self.note_box.text(), enabled=self.enabled_box.isChecked()))
 
     def undo(self):
@@ -552,6 +557,7 @@ class VideoRefiner(QMainWindow):
         self.pause()
         if index == 1:
             self.link_box.setChecked(False)
+            self.loop_box.setChecked(False)
             self.status.setText('同步定位模式：左右分别定位同一瞬间，再记录同步点。')
 
     def capture_anchor(self, index):
@@ -605,7 +611,7 @@ class VideoRefiner(QMainWindow):
     def set_roi(self, camera, roi):
         if not self.project.sources.get(camera):
             return
-        self.mutation(lambda: self.project.sources[camera].update(roi=roi))
+        self.mutation(lambda: self.project.set_roi(camera, roi))
 
     def roi_dialog(self, camera):
         source = self.project.sources.get(camera)

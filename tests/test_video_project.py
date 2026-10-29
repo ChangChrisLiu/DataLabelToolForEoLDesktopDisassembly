@@ -106,3 +106,12 @@ def test_atomic_save_backup_and_roundtrip(project, tmp_path):
     assert saved.segments[0]['baseline']['start'] == 74.
     with pytest.raises(ValueError):
         project.save(project.data['import_manifest'])
+
+
+def test_sync_changes_invalidate_confirmation_but_identical_settings_do_not(project):
+    project.set_sync([[74, 70]], False)
+    project.edit(0, confirmed=True)
+    project.set_sync([[74, 70]], False)
+    assert project.segments[0]['confirmed']
+    project.set_sync([[74, 71]], False)
+    assert not project.segments[0]['confirmed']

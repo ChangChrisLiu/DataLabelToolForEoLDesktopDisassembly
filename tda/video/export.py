@@ -112,6 +112,8 @@ def export_project(project: Project, output_dir, ids=None, paired=True, cancel=N
                         if process.poll() is None:
                             process.kill()
                         process.wait()
+                if cancel.is_set():
+                    raise ExportCancelled('导出已取消。')
                 if code:
                     raise RuntimeError(f'FFmpeg 导出失败，详情见 {destination / "ffmpeg.log"}')
                 info = probe(destination / file)
@@ -125,11 +127,15 @@ def export_project(project: Project, output_dir, ids=None, paired=True, cancel=N
                     roi=source['roi'], actual_duration=info['duration'], file=file))
                 status['completed'] += 1
                 _json(destination / 'status.json', status)
-        status['status'] = report['status'] = 'complete'
+        if cancel.is_set():
+            raise ExportCancelled('导出已取消。')
         with (destination / 'segments.csv').open('w', encoding='utf-8-sig', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=list(report['clips'][0]))
             writer.writeheader()
             writer.writerows(report['clips'])
+        if cancel.is_set():
+            raise ExportCancelled('导出已取消。')
+        status['status'] = report['status'] = 'complete'
         _json(destination / 'manifest.json', report)
         _json(destination / 'status.json', status)
         progress(status['total'], status['total'], '导出完成')

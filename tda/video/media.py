@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import OrderedDict
+from bisect import bisect_right
 from pathlib import Path
 import av
 import numpy as np
@@ -42,6 +44,7 @@ class FrameReader:
         self.iterator = None
         self.current = self.following = None
         self._image = None
+        self.cache = OrderedDict()
 
     def _pts(self, frame):
         return float(frame.pts * frame.time_base) - self.origin
@@ -49,12 +52,21 @@ class FrameReader:
     def _read(self):
         for frame in self.iterator:
             if frame.pts is not None:
+                self.cache[self._pts(frame)] = frame
+                while len(self.cache) > 48:
+                    self.cache.popitem(last=False)
                 return frame
         return None
+
+    def _after(self, frame):
+        times = list(self.cache)
+        i = bisect_right(times, self._pts(frame) + 1e-9)
+        return self.cache[times[i]] if i < len(times) else self._read()
 
     def _seek(self, seconds):
         timestamp = max(0, int((seconds + self.origin) / self.stream.time_base))
         self.container.seek(timestamp, stream=self.stream, backward=True, any_frame=False)
+        self.cache.clear()
         self.iterator = iter(self.container.decode(self.stream))
         self.current = self._read()
         if self.current is None:
@@ -64,11 +76,20 @@ class FrameReader:
 
     def frame_at(self, seconds):
         seconds = min(max(float(seconds), 0), self.info['duration'] - 1e-7)
-        if (self.current is None or seconds < self._pts(self.current) - 1e-9 or
+        times = list(self.cache)
+        if times and times[0] <= seconds <= times[-1]:
+            i = max(0, bisect_right(times, seconds + 1e-9) - 1)
+            selected = self.cache[times[i]]
+            if selected is not self.current:
+                self._image = None
+            self.current = selected
+            self.following = self._after(selected)
+        elif (self.current is None or seconds < self._pts(self.current) - 1e-9 or
                 seconds > self._pts(self.current) + 1.):
             self._seek(seconds)
         while self.following is not None and self._pts(self.following) <= seconds + 1e-9:
-            self.current, self.following = self.following, self._read()
+            self.current = self.following
+            self.following = self._after(self.current)
             self._image = None
         if self._image is None:
             f = self.current

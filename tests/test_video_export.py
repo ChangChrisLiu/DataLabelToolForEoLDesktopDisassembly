@@ -73,3 +73,25 @@ def test_existing_destination_not_overwritten_and_cancel_incomplete(pair, tmp_pa
     status = json.loads((dest / 'status.json').read_text(encoding='utf-8'))
     assert status['status'] == 'canceled'
     assert not (dest / 'manifest.json').exists()
+
+
+def test_cancel_as_last_encoder_finishes_does_not_publish_success(pair, tmp_path, monkeypatch):
+    import subprocess
+    real_popen = subprocess.Popen
+    cancel = threading.Event()
+    class CancelWhenFinished:
+        def __init__(self, *args, **kwargs):
+            self.process = real_popen(*args, **kwargs)
+        def __getattr__(self, name):
+            return getattr(self.process, name)
+        def wait(self, *args, **kwargs):
+            result = self.process.wait(*args, **kwargs)
+            if result == 0:
+                cancel.set()
+            return result
+    monkeypatch.setattr(subprocess, 'Popen', CancelWhenFinished)
+    dest = tmp_path / 'late_cancel'
+    with pytest.raises(ExportCancelled):
+        export_project(pair, dest, paired=False, cancel=cancel)
+    assert json.loads((dest / 'status.json').read_text())['status'] == 'canceled'
+    assert not (dest / 'manifest.json').exists()

@@ -56,3 +56,23 @@ def test_probe_and_last_frame(media):
 def test_missing_media_has_actionable_error(tmp_path):
     with pytest.raises(ValueError, match='视频'):
         probe(tmp_path / 'missing.mp4')
+
+
+def test_recent_reverse_steps_do_not_seek_back_to_disk_keyframe(media):
+    with FrameReader(media) as reader:
+        original = reader.container
+        class CountingContainer:
+            seeks = 0
+            def seek(self, *args, **kwargs):
+                self.seeks += 1
+                return original.seek(*args, **kwargs)
+            def __getattr__(self, name):
+                return getattr(original, name)
+        counter = CountingContainer()
+        reader.container = counter
+        reader.frame_at(.6)
+        assert reader.previous(.6).pts == pytest.approx(.52)
+        assert reader.previous(.52).pts == pytest.approx(.4)
+        assert reader.next(.4).pts == pytest.approx(.52)
+        assert reader.frame_at(.88).pts == pytest.approx(.88)
+        assert counter.seeks == 1

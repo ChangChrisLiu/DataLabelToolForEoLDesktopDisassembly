@@ -111,8 +111,27 @@ class Project:
 
     def set_sync(self, anchors, drift=False):
         self._check_sync(anchors, drift)
+        changed = self.data['anchors'] != anchors or self.data['drift_correction'] != bool(drift)
         self.data['anchors'] = copy.deepcopy(anchors)
         self.data['drift_correction'] = bool(drift)
+        if changed:
+            self.invalidate_confirmations()
+
+    def invalidate_confirmations(self):
+        for segment in self.segments:
+            segment['confirmed'] = False
+
+    def set_roi(self, camera, roi):
+        old = self.sources[camera]['roi']
+        if old == roi:
+            return
+        self.sources[camera]['roi'] = list(roi)
+        try:
+            self.validate()
+        except Exception:
+            self.sources[camera]['roi'] = old
+            raise
+        self.invalidate_confirmations()
 
     def mapping(self):
         points = self.data['anchors']

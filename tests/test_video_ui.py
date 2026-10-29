@@ -66,6 +66,32 @@ def test_invalid_edit_leaves_cut_and_lock_blocks_second_writer(window):
         VideoRefiner(window.project, window.project_path)
 
 
+def test_confirm_and_save_do_not_round_frame_exact_boundaries(window):
+    exact = 29 / 60
+    window.mutation(lambda: window.project.edit(0, start=exact))
+    window.confirm_current(advance=False)
+    assert window.project.segments[0]['start'] == exact
+    window.save()
+    assert Project.load(window.project_path).segments[0]['start'] == exact
+
+
+def test_roi_changes_invalidate_confirmation_and_undo_restores_it(window):
+    window.confirm_current(advance=False)
+    window.set_roi('oak', [8, 2, 80, 60])
+    assert not window.project.segments[0]['confirmed']
+    window.undo()
+    assert window.project.segments[0]['confirmed']
+    assert window.project.sources['oak']['roi'] == [4, 2, 80, 60]
+
+
+def test_sync_mode_plays_original_video_outside_selected_clip(window):
+    window.tabs.setCurrentIndex(1)
+    window.seek('oak', 1.4)
+    window.toggle_play('oak')
+    assert window.play_start == 1.4
+    window.pause()
+
+
 def test_split_exclude_and_canvas_source_coordinate(window):
     window.project.split(0, .7)
     window.refresh_list()
