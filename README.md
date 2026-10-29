@@ -34,8 +34,8 @@ QT_QPA_PLATFORM=offscreen python -m pytest tests -q -o addopts= --basetemp=<a fo
 ## Data
 
 The images are not in this repository. They are published as a Hugging Face dataset,
-**ETresD: EoL Desktop Disassembly Dataset** —
-https://huggingface.co/datasets/ChangChrisLiu/ETresD-EoL_Desktop_Disassembly_Dataset
+**E3D: End-of-Life Desktop Disassembly Dataset** —
+https://huggingface.co/datasets/ChangChrisLiu/E3D-Desktop-Disassembly
 (public; raw captures of all 66 desktops; the annotations and the edited operator
 videos follow later under `annotations/` and `videos/`).
 
@@ -62,13 +62,13 @@ elsewhere); no login is needed for a public dataset.
 
 ```bash
 # the scanner view of every desktop (the main view)
-hf download ChangChrisLiu/ETresD-EoL_Desktop_Disassembly_Dataset --repo-type dataset    --include "raw/scanner/**" --local-dir D:/ETresD
+hf download ChangChrisLiu/E3D-Desktop-Disassembly --repo-type dataset    --include "raw/scanner/**" --local-dir D:/E3D
 
 # one desktop, all views (desktop 13: the scanner keeps it under its batch folder)
-hf download ChangChrisLiu/ETresD-EoL_Desktop_Disassembly_Dataset --repo-type dataset    --include "raw/scanner/*/*/13/**" "raw/oak/Desktop 13/**" "raw/realsense/Desktop 13/**" --local-dir D:/ETresD
+hf download ChangChrisLiu/E3D-Desktop-Disassembly --repo-type dataset    --include "raw/scanner/*/*/13/**" "raw/oak/Desktop 13/**" "raw/realsense/Desktop 13/**" --local-dir D:/E3D
 
 # the taxonomy only
-hf download ChangChrisLiu/ETresD-EoL_Desktop_Disassembly_Dataset --repo-type dataset --include taxonomy.yaml --local-dir D:/ETresD
+hf download ChangChrisLiu/E3D-Desktop-Disassembly --repo-type dataset --include taxonomy.yaml --local-dir D:/E3D
 ```
 
 The same in Python: `huggingface_hub.snapshot_download(repo_id, repo_type="dataset",
@@ -78,14 +78,14 @@ and temp file on D: as well).
 
 ### 3. Point the tool at the data
 
-`configs/paths.yaml` names the three capture roots. For a download under `D:/ETresD`:
+`configs/paths.yaml` names the three capture roots. For a download under `D:/E3D`:
 
 ```yaml
-f_root:        "D:/ETresD/raw"
-scanner_root:  "D:/ETresD/raw/scanner"
-oak_root:      "D:/ETresD/raw/oak"
-rs_root:       "D:/ETresD/raw/realsense"
-raw_marker:    "ETresD/raw"          # the folder the drive resolver looks for when the drive letter changes
+f_root:        "D:/E3D/raw"
+scanner_root:  "D:/E3D/raw/scanner"
+oak_root:      "D:/E3D/raw/oak"
+rs_root:       "D:/E3D/raw/realsense"
+raw_marker:    "E3D/raw"          # the folder the drive resolver looks for when the drive letter changes
 ```
 
 (The lab's own copy keeps the capture rigs' original folder names, `UGA DATA`,
