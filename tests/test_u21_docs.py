@@ -66,8 +66,8 @@ def test_the_spec_has_the_paragraph_in_3_2_and_v1_21_on_top():
                                   "- **v1.28", "- **v1.29", "- **v1.30", "- **v1.31",
                                   "- **v1.32", "- **v1.33", "- **v1.34", "- **v1.35",
                                   "- **v1.36",
-                                  "- **v1.37", "- **v1.38", "- **v1.39"))
-    [first] = [e for e in entries[:19] if e.startswith("- **v1.21")]
+                                  "- **v1.37", "- **v1.38", "- **v1.39", "- **v1.40"))
+    [first] = [e for e in entries[:20] if e.startswith("- **v1.21")]
     assert first.startswith("- **v1.21（2026-10-23）**：**其实是硬盘架**（U21，§3.2）")
     assert "「合并，重叠处保留 <keep>」" in first
     assert changes.index("- **v1.21") < changes.index("- **v1.20")

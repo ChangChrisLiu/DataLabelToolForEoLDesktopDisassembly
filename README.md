@@ -27,6 +27,12 @@ command-line entry point behind it is `python -m tda.cli` (`app`, `status`, `che
 
 Tests:
 
+The standalone dual-camera video refiner opens with `start_video_refiner.bat`.
+It loads preliminary action segments, edits original-video boundaries, aligns
+OAK and RealSense with manually selected source-frame anchors, and exports paired
+clips. Its JSON projects are separate from the annotation database. See the
+[Chinese video refinement guide](docs/video_refiner_guide.md).
+
 ```bash
 QT_QPA_PLATFORM=offscreen python -m pytest tests -q -o addopts= --basetemp=<a folder on D:>
 ```

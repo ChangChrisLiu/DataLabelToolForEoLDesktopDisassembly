@@ -46,7 +46,7 @@ def test_v1_39_is_near_the_top_of_14():
     changes = _spec().split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
     # U38 / U39 land v1.37 / v1.38 alongside: the controller orders them at merge
-    [entry] = [e for e in entries[:3] if e.startswith("- **v1.39")]
+    [entry] = [e for e in entries[:4] if e.startswith("- **v1.39")]
     assert entry.startswith("- **v1.39（2026-10-27）**：**全部相机都没拍的步**（U40，§2.2）")
     for needed in ("`unphotographed.<d>.steps: [k, …]`",
                    "`tda.core.index.capture_rows` / `capture_steps`",
