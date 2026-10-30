@@ -41,8 +41,11 @@ def scene(tmp_path: Path) -> Path:
     db, _paths, _tax = make_db(tmp_path)
     try:
         for step in (1, 2):
-            db.upsert_frame(FrameKey(DESKTOP, step, SECOND_VIEW), "",
-                            {"hw": [64, 64]}, None)
+            # a real picture (the scan frame's): a frame with no photo is `missing` and
+            # exports nothing (task U38), which is not what this scene is about
+            picture = db.get_frame(FrameKey(DESKTOP, step, VIEW))["path"]
+            db.upsert_frame(FrameKey(DESKTOP, step, SECOND_VIEW), picture,
+                            {"hw": [64, 64]}, None, flags={"missing": 0})
         db.set_pose_segment(DESKTOP, SECOND_VIEW, 1, 1, 2, 2, None, None)
         freeze_mask(db, VIEW)
         freeze_mask(db, SECOND_VIEW)
