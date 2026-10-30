@@ -291,8 +291,12 @@ unphotographed:
       rows 14-16, "Open cover case for CPU fan", "Remove RAM cover", "Open
       additional card cover". Those three covers were already off in the photos
       (the blue card bracket goes between captures 1 and 2, the air shroud
-      between 3 and 4): the rows log actions that got no photo of their own
-      (U40; the request's steps 31-33 are refuted by captures 26 and 28 --
-      checked by eye, by the coordinator and the reviewer too).
+      between 3 and 4): the rows re-log row 2 ("Take out the plastic cover" =
+      the bracket, hinged open) and row 4 ("Heatsink cover" = the PRECISION
+      shroud over CPU fan, heatsink and DIMMs), so in the database they are
+      `ignore` steps with no action of their own (2026-10-30, the user: frame
+      13 shows none of the three; cover.01 merged into cover.05, cover.03/04
+      into cover.02). (U40; the request's steps 31-33 are refuted by captures
+      26 and 28 -- checked by eye, by the coordinator and the reviewer too).
 general:
   step_order_source: "oak1_timestamp"

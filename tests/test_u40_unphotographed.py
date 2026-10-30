@@ -404,7 +404,7 @@ def test_the_real_d63_declaration():
     assert "UNCERTAIN" not in reason and "RGB321" in reason
     for needed in ("The capture number is the sheet's Sequence Number",
                    "the CPU at capture 26 (number 26", "Quadro card at capture 28 (number 28",
-                   "repeat 11-13", "already off", "actions that got no photo of their own"):
+                   "repeat 11-13", "already off", "re-log row 2", "`ignore` steps with no action"):
         assert needed in reason, needed
     assert unphotographed_steps(fixes, 63) == [14, 15, 16]
     for desktop, value in fixes["unphotographed"].items():
