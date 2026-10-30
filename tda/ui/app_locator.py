@@ -48,6 +48,19 @@ can decide is here:
   read only, else its model on a worker thread) and added as chips when they
   arrive -- unless the dock has moved on to other frames or another class by
   then.  Answers are kept by ``(machine, frames, class, crops)``.
+* **「这一步的变化」** (task U43).  A third kind: the whole scanner frame of
+  the step with every part of the frame's task card painted on it
+  (:mod:`tda.ui.locator_change`), on the OAK / RealSense views.  The button
+  next to the panel's caption cycles 定位 → 拆前/拆后 → 这一步的变化 (its
+  text names the kind a click switches to; 拆前/拆后 is skipped when there is
+  no part to show it for) and the choice **sticks** -- across parts, views
+  and sessions (``locator/kind`` in the INI, next to ``locator/open``).  In
+  定位 a part met for the first time still gets its pair, as in U28; going
+  back to 定位 with the button puts that part's first-time pair away until
+  the part changes.  In 拆前/拆后 every part gets its pair.  这一步的变化 is
+  never shown on the scanner view (the canvas is that picture): there the
+  dock stays down unless the top bar's 「主视角」 asks for the part's pair, and
+  the button skips it (拆前/拆后 → 定位).
 """
 from __future__ import annotations
 
@@ -64,16 +77,19 @@ from tda.ui import app_actions as A
 from tda.ui import app_compat as compat
 from tda.ui import app_support as S
 from tda.ui.class_names import class_zh
+from tda.ui.locator_change import CHANGE_NAME, ChangeScene
 from tda.ui.locator_dets import DET_LABEL, LocatorDetections, ReadOnlyEngine
 from tda.ui.locator_pair import PAIR_HEAD, PAIR_HEAD_FIRST, PairScene
 from tda.ui.session_images import frame_candidates
 from tda.ui.locator_source import SCAN, LocatorScene, LocatorSource
 from tda.ui.panels.locator import TITLE, LocatorDock, LocatorPanel
-from tda.ui.panels.locator_pair import PAIR_TIP
+from tda.ui.panels.locator_change import FILL_ALPHA
+from tda.ui.panels.locator_pair import TOGGLE_TEXT
 
-__all__ = ["KIND_PAIR", "KIND_SCENE", "LOCATOR_HEIGHT", "LOCATOR_MODES", "LOCATOR_VIEWS",
+__all__ = ["KIND_CHANGE", "KIND_ORDER", "KIND_PAIR", "KIND_SCENE", "KIND_SETTING", "KIND_TEXT",
+           "KIND_TIP", "LOCATOR_HEIGHT", "LOCATOR_MODES", "LOCATOR_VIEWS",
            "LocatorMixin", "NOT_ON_THIS_VIEW", "PAIR_VIEWS", "SETTING", "TOGGLE_TIP",
-           "TOGGLE_TIP_DOWN", "TOP_NEEDS_PART", "locator_toggle_button"]
+           "TOGGLE_TIP_DOWN", "TOP_NEEDS_PART", "locator_toggle_button", "next_kind"]
 
 #: The views the location scene shows on: the sequence's cameras other than the scanner.
 LOCATOR_VIEWS: tuple[str, ...] = tuple(v for v in VIEWS if v != SCAN)
@@ -81,15 +97,24 @@ LOCATOR_VIEWS: tuple[str, ...] = tuple(v for v in VIEWS if v != SCAN)
 PAIR_VIEWS: tuple[str, ...] = tuple(VIEWS)
 #: ... and the modes: a frame is on screen in both.
 LOCATOR_MODES: tuple[str, ...] = (A.MODE_ANNOTATE, A.MODE_REVIEW)
-#: The two kinds of scene.
+#: The three kinds of scene: 定位 (U23), 拆前/拆后 (U28), 这一步的变化 (U43).
 KIND_SCENE = "scene"
 KIND_PAIR = "pair"
+KIND_CHANGE = "change"
+#: The order the panel's button cycles them in, and what it calls each.
+KIND_ORDER: tuple[str, ...] = (KIND_SCENE, KIND_PAIR, KIND_CHANGE)
+KIND_TEXT = {KIND_SCENE: "定位", KIND_PAIR: TOGGLE_TEXT, KIND_CHANGE: CHANGE_NAME}
 #: The INI key of "the annotator wants the panel".
 SETTING = "locator/open"
+#: ... and of the kind they chose with the panel's button (task U43).
+KIND_SETTING = "locator/kind"
+KIND_TIP = ("小窗三种画面依次换：定位（这个零件在扫描仪画面里的位置）→ 拆前/拆后 → 这一步的变化"
+            "（任务卡上的零件都涂在整帧扫描仪画面上，鼠标移上去看名字）；选择会记住"
+            " / cycle: locate -> before/after -> this step's changes (remembered)")
 #: Asked for in the default layout, at the foot of the right column.
 LOCATOR_HEIGHT = 260
 TOGGLE_TIP = ("主视角：在 OAK / RealSense 的帧旁边显示扫描仪视角里这个零件在哪；第一次标某个零件时"
-              "（任何视角）显示它被拆走前后的两帧（点一下开 / 关）"
+              "（任何视角）显示它被拆走前后的两帧；小窗右上的按钮可换到「这一步的变化」（点一下开 / 关）"
               " / show where this part is in the scanner view, and the frames around its removal")
 NOT_ON_THIS_VIEW = ("主视角只在拆解帧上显示（标注、复查模式）"
                     " / the scanner locator shows on frames of the teardown")
@@ -122,6 +147,27 @@ def _as_bool(value, default: bool = True) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _as_kind(value) -> str:
+    """An INI value as one of :data:`KIND_ORDER`; anything else is 定位."""
+    text = "" if value is None else str(value).strip().lower()
+    return text if text in KIND_ORDER else KIND_SCENE
+
+
+def next_kind(shown: Optional[str], is_part: bool, beside: bool = True) -> str:
+    """The kind the panel's button switches to from ``shown`` (task U43).
+
+    定位 → 拆前/拆后 → 这一步的变化 → 定位; the pair is skipped when there is
+    no part to show it for, 这一步的变化 off the OAK / RealSense views
+    (``beside`` false: the scanner view, where the canvas is that picture).
+    """
+    start = KIND_ORDER.index(shown) if shown in KIND_ORDER else 0
+    for offset in range(1, len(KIND_ORDER) + 1):
+        kind = KIND_ORDER[(start + offset) % len(KIND_ORDER)]
+        if (kind != KIND_PAIR or is_part) and (kind != KIND_CHANGE or beside):
+            return kind
+    return KIND_SCENE
+
+
 class LocatorMixin:
     """The 「主视角」 dock's place in :class:`tda.ui.app.MainWindow`."""
 
@@ -142,8 +188,10 @@ class LocatorMixin:
         dock.sigClosedByUser.connect(self._on_locator_closed)
         # The window's own dock menu (right-click a dock title or the top bar).
         dock.toggleViewAction().triggered.connect(self._on_locator_menu)
-        self.locator.sigPairToggled.connect(self.act_locator_pair)
+        self.locator.sigKindClicked.connect(self.act_locator_kind)
         self.locator_wanted = _as_bool(self.settings.value(SETTING), True)
+        #: The kind chosen with the panel's button (task U43), kept in the INI.
+        self.locator_mode = _as_kind(self.settings.value(KIND_SETTING))
         #: What the panel was last refreshed for; ``None`` forces the next one.
         self._locator_key: Optional[tuple] = None
         #: Refreshes actually done -- a scene read and drawn (tests, report).
@@ -152,7 +200,9 @@ class LocatorMixin:
         self.locator_checks = 0
         #: ``(desktop, view, part, epoch) -> (a part, has a shape here)``, one entry.
         self._locator_own: Optional[tuple] = None
-        #: The toggle's choice: ``(desktop, part, pair wanted)``, for that part only.
+        #: A choice for one part: ``(desktop, part, pair wanted)`` -- the top
+        #: bar's 「主视角」 on the scanner view (True), or the button going back
+        #: to 定位 over a first-time pair (False); forgotten when the part changes.
         self._pair_choice: Optional[tuple] = None
         #: What the pair on screen was drawn for: ``(desktop, view, part, epoch, asked)``.
         self._locator_pair_shown: Optional[tuple] = None
@@ -217,13 +267,16 @@ class LocatorMixin:
         return is_part and not has_shape
 
     def locator_kind(self, fresh: bool = False) -> Optional[str]:
-        """:data:`KIND_PAIR`, :data:`KIND_SCENE`, or ``None`` (the dock is down)."""
+        """:data:`KIND_CHANGE`, :data:`KIND_PAIR`, :data:`KIND_SCENE`, or ``None`` (down)."""
         if not self.locator_applies() or not self.locator_wanted:
             return None
+        beside = str(self.session.view) in LOCATOR_VIEWS
+        if self.locator_mode == KIND_CHANGE and beside:
+            return KIND_CHANGE
         target = self.locator_target()
         if self._wants_pair(target, fresh):
             return KIND_PAIR
-        return KIND_SCENE if str(self.session.view) in LOCATOR_VIEWS else None
+        return KIND_SCENE if beside else None
 
     def _wants_pair(self, target: Optional[str], fresh: bool = False) -> bool:
         is_part, has_shape = self._locator_own_shapes(target, fresh)
@@ -233,7 +286,10 @@ class LocatorMixin:
         if choice is not None and choice[:2] == (int(self.session.current().desktop),
                                                  str(target)):
             return bool(choice[2])
-        return not has_shape
+        if self.locator_mode == KIND_PAIR:
+            return True
+        # the first-time pair is U28's 定位 rule only (U43)
+        return self.locator_mode == KIND_SCENE and not has_shape
 
     # ------------------------------------------------------------- follow
     def _locator_stamp(self) -> tuple:
@@ -244,7 +300,13 @@ class LocatorMixin:
         """
         key = self.session.current()
         return (int(key.desktop), str(key.view), int(key.step), self.locator_target(),
-                getattr(self.session, "_epoch", None))
+                getattr(self.session, "_epoch", None), self._locator_card_key())
+
+    def _locator_card_key(self) -> Optional[tuple]:
+        """The card's instances while 这一步的变化 is the choice (U43), else ``None``."""
+        if getattr(self, "locator_mode", KIND_SCENE) != KIND_CHANGE:
+            return None
+        return tuple(str(row.get("instance") or "") for row in self.task_card.rows())
 
     def follow_locator(self, force: bool = False) -> None:
         """Show or hide the panel by the rules, and refresh it when its key moved.
@@ -314,6 +376,8 @@ class LocatorMixin:
                 return
             self.refresh_pair(stamp[0], stamp[3])
             self._locator_pair_shown = shown
+        elif kind == KIND_CHANGE:
+            self.refresh_change(stamp[0], stamp[2])
         else:
             self.refresh_locator(stamp[0], stamp[2], stamp[3])
         self._sync_pair_button(kind, target)
@@ -340,6 +404,25 @@ class LocatorMixin:
             pair = PairScene(desktop=desktop, instance=target,
                              note=f"拆前 / 拆后读不出来：{exc}")
         self.locator.show_pair(pair, PAIR_HEAD if self._pair_forced(target) else PAIR_HEAD_FIRST)
+
+    def refresh_change(self, desktop: int, step: int) -> None:
+        """Read 「这一步的变化」 for the card on screen and draw it (task U43); never a crash.
+
+        The card's rows are the task card's own, as it was last filled; the
+        fill takes the canvas's opacity.
+        """
+        self.locator_refreshes += 1
+        canvas = getattr(self, "canvas", None)
+        self.locator.change_view.alpha = int(getattr(canvas, "overlay_alpha", FILL_ALPHA))
+        try:
+            card = [row.get("instance") for row in self.task_card.rows()]
+            change = self.locator_source.change(desktop, step, card)
+        except Exception as exc:  # noqa: BLE001 - a side panel never stops the window
+            self.logger.warning("locator change: D%s step %s: %s", desktop, step, exc)
+            change = ChangeScene(desktop=desktop, asked_step=step,
+                                 caption=f"{TITLE} · {CHANGE_NAME}",
+                                 note=f"这一步的变化读不出来：{exc}")
+        self.locator.show_change(change)
 
     # ------------------------------------------- vanished detections (round 3)
     def locator_detector(self) -> Optional[LocatorDetections]:
@@ -465,14 +548,22 @@ class LocatorMixin:
 
     def _pair_forced(self, target: Optional[str]) -> bool:
         """Is the pair up because the annotator asked, not because it is a first time?"""
-        return (self._pair_choice is not None and bool(self._pair_choice[2])
-                and not self.locator_first_time(target))
+        asked = (self.locator_mode == KIND_PAIR
+                 or (self._pair_choice is not None and bool(self._pair_choice[2])))
+        return asked and not self.locator_first_time(target)
 
     def _sync_pair_button(self, kind: Optional[str], target: Optional[str]) -> None:
-        """The panel's 「拆前/拆后」 is checked while the pair is up, live with a part."""
+        """The panel's kind button: names the next kind, checked while the pair is up.
+
+        Live when a click has somewhere to go: with a part, or on the OAK /
+        RealSense views (这一步的变化 needs none).
+        """
         is_part = self._locator_own_shapes(target)[0] if target else False
-        self.locator.set_pair_button(kind == KIND_PAIR, is_part,
-                                     PAIR_TIP if is_part else PAIR_TIP_NO_PART)
+        beside = str(getattr(self.session, "view", "")) in LOCATOR_VIEWS
+        live = is_part or beside
+        coming = next_kind(kind or KIND_SCENE, is_part, beside)
+        tip = f"点一下换成「{KIND_TEXT[coming]}」\n{KIND_TIP}" if live else PAIR_TIP_NO_PART
+        self.locator.set_pair_button(kind == KIND_PAIR, live, tip, KIND_TEXT[coming])
 
     # ---------------------------------------------------------- the wish
     def _sync_locator_button(self, applies: bool) -> None:
@@ -538,21 +629,38 @@ class LocatorMixin:
             self.report(NOT_ON_THIS_VIEW)
 
     @S.guard
-    def act_locator_pair(self, checked: bool) -> None:
-        """The panel's 「拆前/拆后」: the pair for this part, or not (task U28).
+    def act_locator_kind(self) -> None:
+        """The panel's kind button: the next of 定位 → 拆前/拆后 → 这一步的变化 (task U43).
 
-        The choice is the annotator's for the part on screen and holds until
-        the part changes; on the scanner view taking the pair away hides the
-        dock, which has nothing else to show there.
+        The kind follows the one on screen, and the choice sticks -- for every
+        part and view, and in the INI (``locator/kind``).  Back to 定位 over a
+        part met for the first time puts its pair away for that part (until
+        the part changes), as U28's toggle did.  On the scanner view, where
+        这一步的变化 is not shown, the pair is followed by 定位 -- which hides
+        the dock there, as taking the pair away always did.
         """
         if self.closed or not compat.is_open(self.session):
             return
         target = self.locator_target()
-        if not target or not self._locator_own_shapes(target)[0]:
+        is_part = self._locator_own_shapes(target)[0] if target else False
+        beside = str(self.session.view) in LOCATOR_VIEWS
+        shown = self.locator_kind()
+        if shown is None and not is_part:
             self._sync_pair_button(None, target)
             return
-        self._pair_choice = (int(self.session.current().desktop), str(target), bool(checked))
+        coming = next_kind(shown or KIND_SCENE, is_part, beside)
+        self.set_locator_mode(coming, follow=False)
+        self._pair_choice = ((int(self.session.current().desktop), str(target), False)
+                             if coming == KIND_SCENE and is_part else None)
         self.follow_locator(force=True)
+
+    def set_locator_mode(self, kind: str, follow: bool = True) -> None:
+        """Choose the dock's kind (:data:`KIND_ORDER`), remembered in the INI (U43)."""
+        kind = _as_kind(kind)
+        self.locator_mode = kind
+        self.settings.setValue(KIND_SETTING, kind)
+        if follow:
+            self.follow_locator(force=True)
 
     @S.guard
     def _on_locator_closed(self) -> None:

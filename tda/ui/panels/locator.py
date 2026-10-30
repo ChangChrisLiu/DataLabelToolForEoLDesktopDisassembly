@@ -23,6 +23,11 @@ Since task U28 the panel has a second kind of scene, 「拆前 / 拆后」 -- th
 scanner frames before and after the part leaves
 (:mod:`tda.ui.panels.locator_pair`) -- and a toggle next to its caption that
 asks for it; :class:`LocatorPanel` shows one kind or the other.
+
+Task U43 adds a third, 「这一步的变化」 -- the whole scanner frame of the step
+with every part of the frame's task card painted on it
+(:mod:`tda.ui.panels.locator_change`) -- and the toggle becomes one button
+that cycles the three kinds, its text naming the kind a click switches to.
 """
 from __future__ import annotations
 
@@ -64,6 +69,10 @@ ZOOM_STEP = 1.25
 MIN_ZOOM = 0.2
 #: A crop never narrower than this many frame pixels.
 MIN_CROP_PX = 16.0
+#: Which picture :class:`LocatorPanel` has up.
+SHOW_SCENE = "scene"
+SHOW_PAIR = "pair"
+SHOW_CHANGE = "change"
 BACKGROUND = QColor(32, 33, 36)
 ROI_PEN = QColor(255, 255, 255, 110)
 
@@ -286,17 +295,21 @@ class LocatorView(QWidget):
 class LocatorPanel(QWidget):
     """Caption, picture, sentence: what the 「主视角」 dock holds.
 
-    Two kinds of scene (task U28): where the part is on this step's scanner
-    frame (:class:`LocatorView`), or 「拆前 / 拆后」 -- the scanner frames
+    Three kinds of scene: where the part is on this step's scanner frame
+    (:class:`LocatorView`); 「拆前 / 拆后」 (task U28) -- the scanner frames
     before and after it leaves (:class:`~tda.ui.panels.locator_pair.PairView`,
-    with a small whole frame and the log's words under it).  The toggle next
-    to the caption asks for the second one; the window decides which is up.
+    with a small whole frame and the log's words under it); 「这一步的变化」
+    (task U43) -- the card's parts painted on the whole scanner frame
+    (:class:`~tda.ui.panels.locator_change.ChangeView`, the part under the
+    mouse named in the caption's second line).  The button next to the
+    caption asks for the next kind; the window decides which is up.
     """
 
-    #: The 「拆前/拆后」 toggle was clicked: ``True`` asks for the pair.
-    sigPairToggled = Signal(bool)
+    #: The kind button was clicked (task U43: it cycles the three kinds).
+    sigKindClicked = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
+        from tda.ui.panels.locator_change import ChangeView
         from tda.ui.panels.locator_pair import (
             PAIR_TIP,
             TOGGLE_TEXT,
@@ -316,8 +329,7 @@ class LocatorPanel(QWidget):
         self.pair_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.pair_button.setToolTip(PAIR_TIP)
         self.pair_button.setObjectName("locator_pair_toggle")
-        self.pair_button.clicked.connect(lambda checked=False: self.sigPairToggled.emit(
-            bool(checked)))
+        self.pair_button.clicked.connect(lambda checked=False: self.sigKindClicked.emit())
         head = QHBoxLayout()
         head.setContentsMargins(0, 0, 0, 0)
         head.setSpacing(4)
@@ -326,6 +338,11 @@ class LocatorPanel(QWidget):
         self.view = LocatorView()
         self.pair_view = PairView()
         self.pair_view.setVisible(False)
+        self.change_view = ChangeView()
+        self.change_view.setVisible(False)
+        self.change_view.sigHover.connect(self._change_line)
+        #: 「这一步的变化」's first caption line, while it is up.
+        self._change_head = ""
         self.inset = InsetView(self.pair_view)
         self.candidates = CandidateBar(self.pair_view)
         self.candidates.setVisible(False)
@@ -359,6 +376,7 @@ class LocatorPanel(QWidget):
         layout.addLayout(head)
         layout.addWidget(self.view, 1)
         layout.addWidget(self.pair_view, 1)
+        layout.addWidget(self.change_view, 1)
         layout.addWidget(self.below)
         layout.addWidget(self.note)
         #: How many scenes were shown (the window's refresh count).
@@ -375,7 +393,7 @@ class LocatorPanel(QWidget):
         before = self.view.scene()
         new_part = (before is None or scene is None or before.instance != scene.instance)
         self.view.set_scene(scene, reset_zoom=new_part)
-        self._showing_pair(False)
+        self._show_kind(SHOW_SCENE)
         self.caption.setText("" if scene is None else scene.caption)
         self._set_note("" if scene is None else scene.note)
         # A wrapped caption may have gained or lost a line: lay out now, not
@@ -390,7 +408,7 @@ class LocatorPanel(QWidget):
         new_part = (before is None or pair is None or before.instance != pair.instance
                     or not self.showing_pair())
         self.pair_view.set_pair(pair, reset_zoom=new_part)
-        self._showing_pair(True)
+        self._show_kind(SHOW_PAIR)
         self.caption.setText(head)
         self.info.setText("" if pair is None else "\n".join(pair.lines()))
         self.candidates.setVisible(self.pair_view.has_choice())
@@ -398,6 +416,32 @@ class LocatorPanel(QWidget):
         self.layout().activate()
         self.inset.update()
         self.shown += 1
+
+    def show_change(self, change) -> None:
+        """Draw 「这一步的变化」 (:class:`~tda.ui.locator_change.ChangeScene`), task U43.
+
+        The zoom starts over on another scanner frame; the same frame rebuilt
+        (an edit, a selection) keeps where the annotator was looking.
+        """
+        before = self.change_view.change()
+        new_frame = (before is None or change is None or not self.showing_change()
+                     or (before.desktop, before.scan_step) != (change.desktop,
+                                                               change.scan_step))
+        self.change_view.set_change(change, reset_zoom=new_frame)
+        self._show_kind(SHOW_CHANGE)
+        self._change_head = "" if change is None else change.caption
+        self._change_line(self.change_view.hover_text())
+        self._set_note("" if change is None else change.note)
+        self.layout().activate()
+        self.shown += 1
+
+    def _change_line(self, text: str = "") -> None:
+        """The caption's second line: the part under the mouse, else the counts."""
+        if not self.showing_change():
+            return
+        change = self.change_view.change()
+        line = text or ("" if change is None else change.line)
+        self.caption.setText(f"{self._change_head}\n{line}" if line else self._change_head)
 
     def _pair_note(self) -> None:
         """The pair's note -- or, with a vanished detection on screen, what it is."""
@@ -420,19 +464,28 @@ class LocatorPanel(QWidget):
         """「候选 k/n」 while a guessed window has others to choose from, else ``""``."""
         return self.pair_view.candidate_text() if self.showing_pair() else ""
 
-    def _showing_pair(self, on: bool) -> None:
-        if self.pair_view.isHidden() == on:
-            self.view.setVisible(not on)
-            self.pair_view.setVisible(on)
-            self.below.setVisible(on)
+    def _show_kind(self, kind: str) -> None:
+        """One of the three pictures on screen (:data:`SHOW_SCENE` / ``PAIR`` / ``CHANGE``)."""
+        for widget, on in ((self.view, kind == SHOW_SCENE),
+                           (self.pair_view, kind == SHOW_PAIR),
+                           (self.below, kind == SHOW_PAIR),
+                           (self.change_view, kind == SHOW_CHANGE)):
+            if widget.isHidden() == on:
+                widget.setVisible(on)
 
     def _set_note(self, note: str) -> None:
         self.note.setText(note)
         self.note.setVisible(bool(note))
 
-    def set_pair_button(self, checked: bool, enabled: bool, tip: str = "") -> None:
-        """The toggle says whether the pair is up, and is live when there is a part."""
+    def set_pair_button(self, checked: bool, enabled: bool, tip: str = "",
+                        text: str = "") -> None:
+        """The kind button: checked while the pair is up, live when it has somewhere to go.
+
+        ``text`` names the kind a click switches to (task U43).
+        """
         button = self.pair_button
+        if text and button.text() != text:
+            button.setText(text)
         if button.isChecked() != bool(checked):
             blocked = button.blockSignals(True)
             button.setChecked(bool(checked))
@@ -446,9 +499,17 @@ class LocatorPanel(QWidget):
         """Is the 「拆前 / 拆后」 up (rather than the location)?"""
         return not self.pair_view.isHidden()
 
+    def showing_change(self) -> bool:
+        """Is 「这一步的变化」 up (task U43)?"""
+        return not self.change_view.isHidden()
+
     def scene(self) -> Optional[LocatorScene]:
-        """The location scene on screen, ``None`` while the pair is up."""
-        return None if self.showing_pair() else self.view.scene()
+        """The location scene on screen, ``None`` while another kind is up."""
+        return None if self.showing_pair() or self.showing_change() else self.view.scene()
+
+    def change(self):
+        """「这一步的变化」 on screen, ``None`` while another kind is up."""
+        return self.change_view.change() if self.showing_change() else None
 
     def pair(self):
         """The 「拆前 / 拆后」 on screen, ``None`` while the location is up."""
