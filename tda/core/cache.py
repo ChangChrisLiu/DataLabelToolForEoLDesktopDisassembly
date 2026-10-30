@@ -58,7 +58,7 @@ from tda.core.model import FrameKey
 from tda.core.rawroot import resolve_raw
 
 __all__ = [
-    "DbRoiLookup", "build_cache", "build_thumbs", "burst_metrics", "cache_path",
+    "BURST_VIEWS", "DbRoiLookup", "build_cache", "build_thumbs", "burst_metrics", "cache_path",
     "cached_image_path", "choose_scan_image", "configured_cache_dir", "full_frame",
     "has_no_photo", "measure_roi", "missing_copies", "oak_chassis_candidates",
     "prune_missing", "roi_bands", "scan_bed_candidates",
@@ -119,8 +119,12 @@ DIST_MAX = 20.0  # mean abs difference to the burst median above this gray level
 
 # --- cache layout --------------------------------------------------------
 VIEW_EXT = {"scan": "png", "rs": "png", "oak1": "jpg", "oak2": "jpg",
-            # the components gallery (task U10): its camera's files
-            "cmp_oak1": "jpg", "cmp_oak2": "jpg", "cmp_rs": "png"}
+            # the components gallery (task U10, the scanner's U42): its camera's files
+            "cmp_scan": "png", "cmp_oak1": "jpg", "cmp_oak2": "jpg", "cmp_rs": "png"}
+#: The views whose frame is a scanner burst to choose from: the steps and,
+#: since task U42, the scanner's all-components scans -- the same bursts of
+#: ten taken by the same machine, so the same choice (``p0``, ``p0_dark`` ...).
+BURST_VIEWS = frozenset({"scan", "cmp_scan"})
 MANIFEST_NAME = "manifest.json"
 MANIFEST_FLUSH_EVERY = 25  # flush mid-desktop so an interrupted run resumes
 METRICS_VERSION = 1  # bump whenever burst_metrics changes what it measures (a new
@@ -599,7 +603,7 @@ def _write_manifest(path: str, manifest: dict) -> None:
 
 def _select_source(frame: FrameFile, view: str) -> dict:
     """Manifest record for one frame: which source file to copy, and why."""
-    if view == "scan":
+    if view in BURST_VIEWS:
         burst = [str(p) for p in (frame.aux.get("burst") or [frame.path])]
         metrics = burst_metrics(burst)
         chosen, reason = choose_scan_image(metrics)
@@ -611,7 +615,7 @@ def _select_source(frame: FrameFile, view: str) -> dict:
 
 def _metrics_stale(record: Optional[dict], view: str) -> bool:
     """True when ``record`` was measured by an older :func:`burst_metrics`."""
-    if not record or view != "scan":
+    if not record or view not in BURST_VIEWS:
         return False
     return int(record.get("metrics_version", 1)) != METRICS_VERSION
 
@@ -629,7 +633,7 @@ def _source_moved(record: Optional[dict], frame: FrameFile, view: str) -> bool:
     """
     if not record:
         return False
-    if view == "scan":
+    if view in BURST_VIEWS:
         burst = {_norm(p) for p in (frame.aux.get("burst") or [frame.path]) if p}
         return bool(burst) and _norm(record.get("src") or "") not in burst
     if not frame.path:
@@ -644,7 +648,7 @@ def _redecide(record: dict, view: str) -> Optional[dict]:
     re-decided without touching the source drive again - that is how a re-run
     picks up a changed rule.
     """
-    if view != "scan" or not record.get("metrics"):
+    if view not in BURST_VIEWS or not record.get("metrics"):
         return None
     chosen, reason = choose_scan_image(record["metrics"])
     if chosen == record.get("chosen") and reason == record.get("reason"):

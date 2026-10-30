@@ -387,7 +387,7 @@ def plan_for(facts: GuideFacts) -> GuidePlan:
     if not facts.is_open:
         return GuidePlan(PHASE_CLOSED, "现在做什么",
                          "这台机器的这个视角没有帧：在顶部换一台机器或换视角"
-                         "（F1–F4，零件合照 F6–F8）")
+                         "（F1–F4，零件合照 F6–F8，扫描仪的零件合照点工具栏按钮）")
     if not facts.has_image and facts.raw_missing:
         # The resolver's own sentence already says what to plug in and that
         # F5 looks again; saying it twice was noise (round 2).  It is

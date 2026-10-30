@@ -36,6 +36,7 @@ from tda.core.sources import (
     COMPONENT_CAMERA_DIRS,
     COMPONENTS_DIR,
     DEFAULT_FOLDER_ALIASES,
+    SCAN_SHOT_RE,
     STEP_DIR_RE,
     dirs,
     files,
@@ -45,6 +46,7 @@ from tda.core.sources import (
     norm,
     scan_oak_camera,
     scan_oak_step_dir,
+    scanner_components_dir,
     scanner_desktop_dir,
 )
 
@@ -58,11 +60,22 @@ DEFAULT_PATHS_PATH = "configs/paths.yaml"
 #: 3: the sheet's ``dupli`` rows are collapsed and the scanner is mapped by
 #: ``duplicate_folders`` (task U25); ``load-index`` refuses a version-2 file too,
 #: because its steps are the uncollapsed rows.
-INDEX_VERSION = 3
+#: 4: the scanner's all-components scans are the gallery view ``cmp_scan``
+#: (task U42); ``load-index`` refuses a version-3 file too: it says nothing
+#: about them, so loading it after a v4 one would have
+#: :func:`tda.pipeline._drop_stale_shots` drop every ``cmp_scan`` shot nobody
+#: worked on (and refuse the desktops whose shots carry work).
+INDEX_VERSION = 4
 #: The first version whose scan covers the components gallery.
 GALLERY_INDEX_VERSION = 2
 #: The first version whose steps are the collapsed ones (task U25).
 COLLAPSED_INDEX_VERSION = 3
+#: The first version whose scan covers the scanner's gallery (task U42).
+SCAN_GALLERY_INDEX_VERSION = 4
+#: A scanner shot folder holding more images than this is not a scan of the
+#: laid-out parts but a sequence (D64's ``allcomponentsseq11``: 176 fringe
+#: projection images); a scan is a burst of ten.
+SCAN_SHOT_MAX_BURST = 20
 #: How far a RealSense file mtime may sit from its OAK cam1 capture time.
 RS_TIME_TOLERANCE_S = 30.0
 
@@ -119,6 +132,10 @@ class DesktopIndex:
     #: the ``c``-th sheet row that is not one of theirs (:func:`capture_steps`).
     #: ``[]`` in an index written before, where no desktop declared any.
     unphotographed: list[int] = field(default_factory=list)
+    #: Did the scan look at the scanner's all-components scans (``cmp_scan``,
+    #: task U42)? ``False`` for a file written before (version 3 or older):
+    #: ``load-index`` refuses it.
+    scan_gallery: bool = True
 
 
 #: ``FrameFile.aux`` key of a step's extra shots (task U25): the captures of a
@@ -338,6 +355,8 @@ def scan_desktop(desktop: int, roots: dict, fixes: dict,
     issues.extend(_add_scanner(desktop, roots, step_of_dir, frames, n_steps,
                                scan_fix, collapsed=bool(dupli), leftover=leftovers["scan"],
                                unphotographed=unph))
+    # the scanner's scans of the laid-out parts (task U42): shots, not steps
+    issues.extend(_add_scanner_components(desktop, roots, frames))
 
     # the gallery's shots are not steps: a camera with fewer of them than
     # another misses nothing, so only the sequence views can miss a frame
@@ -1067,6 +1086,88 @@ def _add_components(
     return issues
 
 
+def scan_shot_k(name: str) -> Optional[int]:
+    """The ``k`` of a scanner all-components shot folder, ``None`` for no shot (U42).
+
+    ``allcomponentsrgb21_color`` -> 2 and ``allcompoentsrgb11`` -> 1, the step
+    folders' ``RGB<k>1`` convention; a bare ``1`` (``allRGB1_color``, D52's
+    ``allcomponentsrgb1``) or no digit at all is 1.
+    """
+    m = SCAN_SHOT_RE.match(name.lower())
+    if m is None:
+        return None
+    digits = m.group(1)
+    if len(digits) > 1 and digits.endswith("1"):
+        return int(digits[:-1])
+    return int(digits or 1)
+
+
+def _add_scanner_components(
+    desktop: int,
+    roots: dict,
+    frames: dict[FrameKey, FrameFile],
+) -> list[str]:
+    """Index the scanner's scans of the laid-out parts: view ``cmp_scan`` (task U42).
+
+    After the teardown the parts were also laid out on the scanner's bed and
+    scanned, one to five times (:func:`tda.core.sources.scanner_components_dir`).
+    Each shot folder (``all...rgb<k>1[_color]``, spelled a dozen ways) is a
+    burst ``P_0..P_9`` like a step scan's, and is indexed like one: ``P_0`` the
+    main image, ``aux["burst"]`` every image -- so ``build-cache`` picks among
+    them exactly as it does for the scanner's steps -- ``ts`` the main image's
+    file time (the copy date, informational) and ``src_step_dir`` the folder
+    from the group down. The shots are numbered ``1..N`` by ``(k, name)``:
+    the position, so they stay contiguous whatever a folder is called.
+
+    Not a shot: a folder whose name is not an RGB scan's -- D64's
+    ``allcomponentsseq11`` / ``21`` are fringe-projection sequences (176 images
+    under projected stripes) -- or that holds more than
+    :data:`SCAN_SHOT_MAX_BURST` images. Each is reported and left out.
+    """
+    issues: list[str] = []
+    root = roots["scanner_root"]
+    base = scanner_components_dir(root, desktop, issues)
+    if base is None:
+        # silent, like a desktop without a Components folder (_add_components):
+        # a gallery has no missing frames, and the report counts its shots
+        return issues
+    found: list[tuple[int, str, FrameFile]] = []
+    for entry in sorted(dirs(base, issues), key=lambda e: e.name):
+        name = entry.name
+        burst = []
+        for f in files(entry.path, issues):
+            m = BURST_RE.match(f.name)
+            if m:
+                burst.append((int(m.group(1)), norm(f.path), f.stat().st_mtime))
+        k = scan_shot_k(name)
+        if k is None or len(burst) > SCAN_SHOT_MAX_BURST:
+            why = ("its name is not an all-components RGB scan's" if k is None
+                   else f"more than {SCAN_SHOT_MAX_BURST} images")
+            issues.append(f"cmp_scan: {name} is not an RGB scan ({why}, {len(burst)} "
+                          f"images); left out")
+            continue
+        if not burst:
+            issues.append(f"cmp_scan: {name} holds no P_k.png; left out")
+            continue
+        burst.sort()
+        main = next((b for b in burst if b[0] == 0), burst[0])
+        if main[0] != 0:
+            issues.append(f"cmp_scan: {name} has no P_0.png; using P_{main[0]}.png")
+        if len(burst) < 9:
+            issues.append(f"cmp_scan: {name} burst has only {len(burst)} images")
+        rel = norm(os.path.relpath(entry.path, root))
+        found.append((k, name, FrameFile(
+            key=FrameKey(desktop, 0, "cmp_scan"), path=main[1],
+            aux={"burst": [b[1] for b in burst]}, ts=iso_from_mtime(main[2]),
+            src_step_dir=rel)))
+    for shot, (k, name, ff) in enumerate(sorted(found, key=lambda s: s[:2]), start=1):
+        if k != shot:
+            issues.append(f"cmp_scan: {name} (k={k}) is shot {shot}")
+        ff.key = FrameKey(desktop, shot, "cmp_scan")
+        frames[ff.key] = ff
+    return issues
+
+
 def _nearest_seconds(ts: str, others: list[str]) -> Optional[float]:
     """Seconds from ``ts`` to the closest of ``others`` (ISO strings), or ``None``."""
     if not others:
@@ -1257,6 +1358,7 @@ def load_index(path: str) -> dict[int, DesktopIndex]:
         version = 1
     gallery = version >= GALLERY_INDEX_VERSION
     collapsed = version >= COLLAPSED_INDEX_VERSION
+    scan_gallery = version >= SCAN_GALLERY_INDEX_VERSION
     out: dict[int, DesktopIndex] = {}
     for d, raw in payload.get("desktops", {}).items():
         frames: dict[FrameKey, FrameFile] = {}
@@ -1281,6 +1383,7 @@ def load_index(path: str) -> dict[int, DesktopIndex]:
             rows=list(raw.get("rows") or []),
             dupli_rows=[int(r) for r in raw.get("dupli_rows") or []],
             unphotographed=[int(s) for s in raw.get("unphotographed") or []],
+            scan_gallery=scan_gallery,
         )
     return out
 

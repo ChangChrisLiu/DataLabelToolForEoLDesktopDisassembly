@@ -57,9 +57,21 @@ def test_every_action_has_a_name_keys_and_chinese_label():
     assert len(A.ACTIONS) >= ACTION_COUNT_MIN
     groups = dict(A.GROUPS)
     for action in A.ACTIONS:
-        assert action.name and action.keys and action.slot
+        # one action has no key on purpose: the scanner's components gallery
+        # is a toolbar button only (task U42, no new keyboard shortcuts)
+        assert action.name and action.slot
+        assert action.keys or action.name in KEYLESS, action.name
         assert action.label and action.label_zh
         assert action.group in groups
+
+
+#: The actions with no key at all (task U42): reached by a button.
+KEYLESS = {"view_cmp_scan"}
+
+
+def test_the_keyless_actions_are_the_known_ones():
+    assert {a.name for a in A.ACTIONS if not a.keys} == KEYLESS
+    assert not A.combos_of(A.action_named("view_cmp_scan"))
 
 
 def test_action_names_and_bindings_are_unique():
@@ -80,10 +92,12 @@ def test_views_are_f1_to_f4_and_ctrl_digits_set_visibility():
     until task U22 gave ``1`` / ``2`` to the brush, and ``Ctrl+1..7``; since
     task U24 the labels are Review's 可见性审查 only, where the bare digit is
     free again: ``1..7``, with ``Ctrl+1..7`` as the alias."""
-    views = {a.args[0]: a.keys[0] for a in A.ACTIONS if a.slot == "act_set_view"}
+    views = {a.args[0]: (a.keys or ("",))[0] for a in A.ACTIONS
+             if a.slot == "act_set_view"}
     assert views == {"scan": "F1", "oak1": "F2", "oak2": "F3", "rs": "F4",
-                     # the components gallery (task U10); F5 stays "recompile"
-                     "cmp_oak1": "F6", "cmp_oak2": "F7", "cmp_rs": "F8"}
+                     # the components gallery (task U10); F5 stays "recompile";
+                     # the scanner's (U42) has no key, only its toolbar button
+                     "cmp_scan": "", "cmp_oak1": "F6", "cmp_oak2": "F7", "cmp_rs": "F8"}
     digits = sorted(a.keys for a in A.ACTIONS if a.slot == "act_set_visibility")
     assert digits == [(f"{i}", f"Ctrl+{i}") for i in range(1, 8)]
 
@@ -171,7 +185,7 @@ def test_cheat_sheet_names_every_action():
     html = A.cheat_sheet_html()
     for action in A.ACTIONS:
         assert action.label_zh in html
-        assert action.keys[0] in html
+        assert (action.keys[0] if action.keys else A.NO_KEY_TEXT) in html
 
 
 def test_shortcut_markdown_is_a_table_of_every_action():

@@ -44,6 +44,7 @@ def test_every_view_has_a_tier_in_the_taxonomy():
     assert tax.view_tiers == {"scan": "gold", "oak1": "gold",
                               "oak2": "silver", "rs": "bronze",
                               # the components gallery: the camera's tier (U10)
+                              "cmp_scan": "gold",          # the scanner's (U42)
                               "cmp_oak1": "gold", "cmp_oak2": "silver",
                               "cmp_rs": "bronze"}
 

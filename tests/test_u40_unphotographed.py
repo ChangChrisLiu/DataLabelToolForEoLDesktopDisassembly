@@ -316,7 +316,8 @@ def test_save_load_and_folder_steps(tmp_path):
     path = tmp_path / "index.json"
     save_index({D: idx}, str(path))
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["version"] == 3 and payload["desktops"]["96"]["unphotographed"] == [2, 3]
+    # v4 since U42 (the scanner's gallery); the key is U40's
+    assert payload["version"] == 4 and payload["desktops"]["96"]["unphotographed"] == [2, 3]
     back = load_index(str(path))[D]
     assert back == idx and back.unphotographed == [2, 3]
     assert folder_steps(back, "oak1") == {1: 1, 2: 4, 3: 5, 4: 5, 5: 6}

@@ -72,9 +72,10 @@ def test_top_bar_lists_the_desktops_and_the_four_views(window):
     assert window.desktop_combo.count() >= 1
     assert window.desktop_combo.currentData() == DESKTOP
     assert f"D{DESKTOP}" in window.desktop_combo.currentText()
-    # the four views of the teardown, then the components gallery's three (U10)
+    # the four views of the teardown, then the components gallery's four (U10;
+    # the scanner's first since U42)
     assert list(window.view_buttons) == ["scan", "oak1", "oak2", "rs",
-                                         "cmp_oak1", "cmp_oak2", "cmp_rs"]
+                                         "cmp_scan", "cmp_oak1", "cmp_oak2", "cmp_rs"]
     assert window.view_buttons[VIEW].isChecked() is True
     assert [window.mode_tabs.tabText(i) for i in range(window.mode_tabs.count())] == [
         "Steps", "Annotate", "Review"

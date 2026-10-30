@@ -1,7 +1,8 @@
 """Task U10: the components gallery (零件合照, spec 3.2b) -- core, session, exports.
 
 After each teardown the parts were laid out on the table and photographed; those
-shots are three views of their own (``cmp_oak1``/``cmp_oak2``/``cmp_rs``), one
+shots are views of their own (``cmp_oak1``/``cmp_oak2``/``cmp_rs``; the scanner's
+``cmp_scan`` since task U42, tests/test_u42_scan_gallery.py), one
 frame per shot, and everything that works on a frame works on them. What these
 tests pin down is what is *different*: the index, the D66-style sheet row that
 leaves the sequence, what a shot asks to be drawn, one pose segment per shot,
@@ -72,8 +73,9 @@ def fixes() -> dict:
 # --------------------------------------------------------------------------- #
 # the views
 # --------------------------------------------------------------------------- #
-def test_three_gallery_views_after_the_four_sequence_views():
-    assert COMPONENT_VIEWS == ("cmp_oak1", "cmp_oak2", "cmp_rs")
+def test_four_gallery_views_after_the_four_sequence_views():
+    # the scanner's first since task U42, as in VIEWS
+    assert COMPONENT_VIEWS == ("cmp_scan", "cmp_oak1", "cmp_oak2", "cmp_rs")
     assert ALL_VIEWS == VIEWS + COMPONENT_VIEWS
     assert all(is_component_view(v) for v in COMPONENT_VIEWS)
     assert not any(is_component_view(v) for v in VIEWS)
@@ -81,10 +83,10 @@ def test_three_gallery_views_after_the_four_sequence_views():
 
 
 def test_gallery_image_ids_never_collide_with_the_sequence():
-    """``desktop*100000 + step*10 + view index``: the gallery takes 4..6."""
-    assert [view_index(v) for v in ALL_VIEWS] == list(range(7))
+    """``desktop*100000 + step*10 + view index``: the gallery takes 4..7 (U42)."""
+    assert [view_index(v) for v in ALL_VIEWS] == list(range(8))
     ids = {image_id(2, s, v) for s in range(1, 60) for v in ALL_VIEWS}
-    assert len(ids) == 59 * 7
+    assert len(ids) == 59 * 8
 
 
 # --------------------------------------------------------------------------- #
@@ -129,7 +131,7 @@ def test_index_reads_two_cameras_and_the_realsense(tmp_path, fixes):
     add_components(tmp_path, 99, {"Camera_1": SHOT_TS, "Camera_2": SHOT_TS},
                    rs={f"{i:03d}": SHOT_TS[i - 1] for i in (1, 2, 3)})
     idx = scan_desktop(99, roots, fixes)
-    for view in COMPONENT_VIEWS:
+    for view in ("cmp_oak1", "cmp_oak2", "cmp_rs"):     # the scanner's: test_u42
         shots = sorted(k.step for k in idx.frames if k.view == view)
         assert shots == [1, 2, 3], view
     first = idx.frames[FrameKey(99, 1, "cmp_oak1")]
@@ -294,8 +296,12 @@ def test_an_all_components_row_moves_into_the_gallery(tmp_path):
         assert row["aux"]["sheet_step"] == 3 and row["aux"]["depth_npy"] == "d.npy"
         assert [(s["seg"], s["start_step"]) for s in db.pose_segments(66, view)] == [
             (SHEET_SHOT, SHEET_SHOT)]
-    assert out["shots"] == {"cmp_oak1": 1, "cmp_oak2": 1, "cmp_rs": 1}
+    # the scanner's row of step 3 has no photo here (the U42 case with one is
+    # tests/test_u42_scan_gallery.py): it goes nowhere, and says why
+    assert out["shots"] == {"cmp_scan": 0, "cmp_oak1": 1, "cmp_oak2": 1, "cmp_rs": 1}
     assert len(out["moved"]) == 4      # three photos and the scanner's empty row
+    assert any("(scan)" in line and "nowhere (it has no photo)" in line
+               for line in out["moved"])
     # the step keeps its number and its type
     assert [(s.step, s.step_type) for s in db.steps(66)][-1] == (3, "ignore")
     # idempotent: a re-load puts the sequence rows back, the rule moves them again
@@ -644,8 +650,10 @@ def test_status_rows_count_the_gallery(tmp_path):
     assert views["cmp_oak1"]["done"] == 1 and views["cmp_oak1"]["keyframes"] == 1
     table = format_status(rows)
     assert "零件合照 / components gallery" in table
-    gallery_line = next(l for l in table.splitlines() if l.startswith("D13") and "|" in l
-                        and l.count("|") == 3)
+    # four gallery views since U42, like the sequence: the line after the heading
+    gallery = table.partition("零件合照 / components gallery")[2]
+    gallery_line = next(l for l in gallery.splitlines() if l.startswith("D13") and "|" in l
+                        and l.count("|") == len(COMPONENT_VIEWS))
     assert "1/3" in gallery_line
     detail = format_desktop(session.db, rows[0])
     assert "cmp_oak1" in detail and "shots" in detail
@@ -680,7 +688,8 @@ def test_view_list_knows_the_gallery_and_its_alias():
     from tda.cli_app import _view_list
 
     assert _view_list("components") == list(COMPONENT_VIEWS)
-    assert _view_list("scan,cmp_rs,components") == ["scan", "cmp_rs", "cmp_oak1", "cmp_oak2"]
+    assert _view_list("scan,cmp_rs,components") == ["scan", "cmp_rs", "cmp_scan", "cmp_oak1",
+                                                    "cmp_oak2"]
     with pytest.raises(ValueError, match="cmp_oak1"):
         _view_list("cmp_oak3")
 

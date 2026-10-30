@@ -35,7 +35,8 @@ def _desktop_list(spec: str | None) -> list[int]:
     return sorted(wanted) if wanted else []
 
 
-#: ``--view components``: the components gallery's three views (task U10).
+#: ``--view components``: the components gallery's four views (task U10; the
+#: scanner's ``cmp_scan`` since U42).
 COMPONENTS_ALIAS = "components"
 
 
@@ -48,7 +49,7 @@ def _view_list(spec: str) -> list[str]:
     'scan,oak1'" for a spelling this now accepts.
 
     The components gallery's views (task U10) are views like any other here;
-    ``components`` names all three.
+    ``components`` names all four.
     """
     known = ", ".join(ALL_VIEWS) + f" ({COMPONENTS_ALIAS} = {', '.join(COMPONENT_VIEWS)})"
     wanted: list[str] = []
@@ -77,7 +78,8 @@ def _add_view_flags(p, default: str = "scan", plural_first: bool = False) -> Non
     names = ("--views", "--view") if plural_first else ("--view", "--views")
     p.add_argument(*names, dest="views", default=default, metavar="VIEW[,VIEW...]",
                    help=f"one view or a comma-separated list ({', '.join(ALL_VIEWS)}; "
-                        f"'{COMPONENTS_ALIAS}' = the components gallery's three); "
+                        f"'{COMPONENTS_ALIAS}' = the components gallery's "
+                        f"{len(COMPONENT_VIEWS)}: {', '.join(COMPONENT_VIEWS)}); "
                         f"--view and --views are the same option")
 
 
@@ -333,7 +335,7 @@ def _add_app(sub) -> None:
     # export does not get "unrecognized arguments" here.
     p.add_argument("--view", "--views", dest="view", default=None, choices=list(ALL_VIEWS),
                    help="the ONE view to open (default: the last one, else scan; "
-                        "cmp_oak1/cmp_oak2/cmp_rs open the components gallery); "
+                        f"{'/'.join(COMPONENT_VIEWS)} open the components gallery); "
                         "unlike check and the exports this takes no list")
     p.add_argument("--annotator", required=True, help="who is annotating (the lock holder)")
     p.add_argument("--step", type=int, default=None, help="open this logical step")
@@ -692,6 +694,11 @@ def cmd_export_coco(args: argparse.Namespace) -> int:
                 # predates the keywords runs
                 **({} if getattr(args, "amodal", True) else {"amodal": False}),
                 **({} if getattr(args, "hidden", True) else {"hidden": False}),
+                # a gallery shot names the picture drawn on, which for the
+                # scanner's is the cache's burst choice (U42): this workspace's
+                # cache, not the one configs/paths.yaml names
+                **({"cache_dir": paths.get("cache_dir")} if is_component_view(view)
+                   else {}),
             )
             if not _count(stats, "annotations"):
                 worst = max(worst, _nothing_exported("export-coco", view, out,

@@ -227,7 +227,9 @@ def test_report_counts_rows_dupli_and_extra_shots(tmp_path):
     # 2 dupli captures x 3 views + 1 scanner duplicate folder
     assert "- extra shots (dupli captures, scanner duplicate folders): 7" in text
     assert "| 90 | 8 | 10 (4, 8) |" in text
-    assert "| 90 | 8 | 10 (4, 8) | 32 | 7 | 0 | 0 | 0 | 0 | 0 |" in text
+    # the gallery cell names each camera's shots since U42
+    assert ("| 90 | 8 | 10 (4, 8) | 32 | 7 | 0 | 0 | 0 | 0 | "
+            "0 (scan 0 / oak1 0 / oak2 0 / rs 0) |") in text
 
 
 def test_save_load_keeps_rows_and_extra_shots(tmp_path):
@@ -237,7 +239,7 @@ def test_save_load_keeps_rows_and_extra_shots(tmp_path):
     path = tmp_path / "index.json"
     save_index({90: idx}, str(path))
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["version"] == 3
+    assert payload["version"] == 4          # U42: the scanner's gallery
     assert payload["desktops"]["90"]["dupli_rows"] == [4, 8]
     back = load_index(str(path))[90]
     assert back == idx and back.collapsed

@@ -176,16 +176,46 @@ SPLIT_SEQUENCE = "sequence"
 SPLIT_COMPONENTS = "components"
 
 
-def _shot_source(frame: dict, key: FrameKey) -> dict:
+def burst_manifest(cache_dir: Optional[str], desktop: int, view: str) -> dict:
+    """``{shot: record}`` of the cache's burst choices for one burst view (task U42).
+
+    ``<cache>/<view>/D<nn>/manifest.json``, as :func:`tda.core.cache.build_cache`
+    wrote it; ``{}`` for a view without a burst, without a cache or without one.
+    """
+    from tda.core.cache import BURST_VIEWS, MANIFEST_NAME, _load_manifest
+
+    if not cache_dir or view not in BURST_VIEWS:
+        return {}
+    root = str(cache_dir).replace("\\", "/").rstrip("/")
+    return _load_manifest(f"{root}/{view}/D{int(desktop):02d}/{MANIFEST_NAME}")
+
+
+def _shot_source(frame: dict, key: FrameKey, manifest: Optional[dict] = None) -> dict:
     """What a components-gallery image says about the photo it is (task U10).
 
-    The shot number among its camera's shots, the source file as recorded, and
-    -- for a sheet row of the laid-out parts moved out of the sequence -- the
-    step it was filed under.
+    The shot number among its camera's shots, the source file, and -- for a
+    sheet row of the laid-out parts moved out of the sequence -- the step it
+    was filed under.
+
+    ``source`` is the picture the shapes were drawn on. For the scanner's
+    gallery (``cmp_scan``, task U42) a shot is a burst and the cache chose one
+    of it (a dark ``P_0`` is replaced, ``p0_dark``): the cache manifest's
+    ``src`` is that picture, and ``burst_choice`` its reason (``p0``,
+    ``p0_dark`` ...). Without a manifest record -- the OAK / RealSense shots,
+    no cache, or a record from another burst than the frame's (re-pointed and
+    not cached again) -- it is the frame's own path and there is no
+    ``burst_choice``.
     """
-    out = {"split": SPLIT_COMPONENTS, "shot": int(key.step),
-           "source": (frame or {}).get("path")}
-    sheet_step = ((frame or {}).get("aux") or {}).get("sheet_step")
+    frame = frame or {}
+    out = {"split": SPLIT_COMPONENTS, "shot": int(key.step), "source": frame.get("path")}
+    record = (manifest or {}).get(str(key.step)) or {}
+    src = record.get("src")
+    burst = {str(p).replace("\\", "/") for p in (frame.get("aux") or {}).get("burst") or []}
+    if src and str(src).replace("\\", "/") in burst:
+        out["source"] = src
+        if record.get("reason"):
+            out["burst_choice"] = record["reason"]
+    sheet_step = (frame.get("aux") or {}).get("sheet_step")
     if sheet_step is not None:
         out["sheet_step"] = int(sheet_step)
     return out
@@ -203,8 +233,11 @@ def view_index(view: str) -> int:
     """Position of ``view`` in :data:`tda.core.model.ALL_VIEWS`.
 
     scan=0 .. rs=3 for the sequence, then the components gallery
-    (cmp_oak1=4 .. cmp_rs=6): still below :data:`STEP_STRIDE`, so a gallery
-    shot's image id never collides with a sequence frame's (task U10).
+    (cmp_scan=4, cmp_oak1=5, cmp_oak2=6, cmp_rs=7): still below
+    :data:`STEP_STRIDE`, so a gallery shot's image id never collides with a
+    sequence frame's (task U10). Task U42 put the scanner's gallery first and
+    so moved the three others up by one; no gallery image id had been
+    released, so :data:`EXPORT_VERSION` stays.
     """
     try:
         return ALL_VIEWS.index(view)
@@ -861,6 +894,7 @@ def export_coco(
     allow_conflicts: bool = False,
     amodal: bool = True,
     hidden: bool = True,
+    cache_dir: Optional[str] = None,
 ) -> dict:
     """Write the compiled truth of ``desktops`` in ``view`` as one COCO file.
 
@@ -904,14 +938,20 @@ def export_coco(
         region with its amodal shape, like a part 被线挡住（完全） (task U26):
         what a layered amodal dataset is for. On by default; ``False``
         (``--no-hidden``) drops them as before. ``info.hidden`` records it.
+    cache_dir:
+        The image cache, read for the scanner gallery's burst choices (task
+        U42, :func:`_shot_source`); ``None`` takes the truth service's.
 
     Steps typed ``ignore`` are skipped: they describe no moment of the teardown.
 
-    A components-gallery view (``cmp_oak1``/``cmp_oak2``/``cmp_rs``, task U10)
+    A components-gallery view (``cmp_scan``/``cmp_oak1``/``cmp_oak2``/``cmp_rs``,
+    tasks U10 and U42)
     is its own split, ``info.split == "components"``: one image per shot, every
     annotation ``removed`` / ``on_bench``, and each image's ``extra`` naming the
-    source photo (``shot``, ``source``, ``sheet_step`` when it came from a sheet
-    row). The step table's types do not apply to shots.
+    source photo (``shot``, ``source`` -- the picture drawn on, the cache's
+    burst choice for ``cmp_scan`` with ``burst_choice`` its reason --,
+    ``sheet_step`` when it came from a sheet row). The step table's types do
+    not apply to shots.
 
     Returns the COCO document that was written (``images``, ``annotations``,
     ``categories``, plus a deterministic ``info`` block: nothing in the file
@@ -947,12 +987,15 @@ def export_coco(
     cat_of = category_ids(tax)
     ann_id = 1
     service = truth or TruthService(db, tax)
+    cache_dir = cache_dir if cache_dir is not None else getattr(service, "cache_dir", None)
 
     tier = view_tier(view, tax)  # the view's, so it is read once for the file
     #: the encoded whole shapes by keyframe, transform and size (U29)
     shapes: dict = {}
     for desktop in desktops:
         ctx = load_ctx(db, tax, desktop, view)
+        # which picture of each scanner burst was drawn on (cmp_scan, U42)
+        burst_choices = burst_manifest(cache_dir, desktop, view) if gallery else {}
         # the amodal shapes read each frame's inputs once more; the
         # step-independent reads are shared by the desktop's frames
         inputs = InputCache()
@@ -998,7 +1041,7 @@ def export_coco(
                           "review_status": frame.get("review_status")},
             }
             if gallery:
-                image["extra"].update(_shot_source(frame, key))
+                image["extra"].update(_shot_source(frame, key, burst_choices))
             if roi is not None:
                 image["roi"] = list(roi)
             doc["images"].append(image)

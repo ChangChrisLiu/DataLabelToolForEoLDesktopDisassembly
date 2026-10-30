@@ -89,7 +89,8 @@ VIEW_HW: dict[str, tuple[int, int]] = {
     "oak1": (3040, 4032),
     "oak2": (3040, 4032),
     "rs": (720, 1280),
-    # the components gallery (task U10): the same cameras
+    # the components gallery (task U10; the scanner's since U42): the same cameras
+    "cmp_scan": (1600, 1600),
     "cmp_oak1": (3040, 4032),
     "cmp_oak2": (3040, 4032),
     "cmp_rs": (720, 1280),

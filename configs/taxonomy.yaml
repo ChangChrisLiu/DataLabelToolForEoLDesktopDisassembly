@@ -48,6 +48,7 @@ view_tiers:
   oak1: gold
   oak2: silver
   rs: bronze
+  cmp_scan: gold
   cmp_oak1: gold
   cmp_oak2: silver
   cmp_rs: bronze

@@ -15,6 +15,8 @@ and the components gallery (task U10)::
 
     oak_root/Desktop <n>/Components/<Camera_1|C1|Camera_2|C2>/<NNN>/<ts>_camera_<c>_<role>
     rs_root/Desktop <n>/Components/<NNN>/original_color.png
+    scanner_root/TAMU_B2.3_<a>-<b>_RGB/TAMU_B2.0_<c>-<d>_RGB_allcompoentsrgb/<payload>/<n>/
+        <all...rgb<k>1[_color]>/P_<k>.png                                  (task U42)
 """
 from __future__ import annotations
 
@@ -27,6 +29,16 @@ OAK_FILE_RE = re.compile(r"^(\d{8}_\d{6}_\d{3})_camera_(\d)_(.+)$")
 STEP_DIR_RE = re.compile(r"^\d{3}$")
 SCAN_GROUP_RE = re.compile(r"^TAMU_B2\.3_(\d+)-(\d+)_RGB$")
 BURST_RE = re.compile(r"^P_(\d+)\.png$", re.IGNORECASE)
+#: The scanner's all-components folder inside a group (task U42), e.g.
+#: ``TAMU_B2.0_1-9_RGB_allcompoentsrgb`` (sic): matched on ``allcompo`` without
+#: case, its ``<a>-<b>`` the desktops it was meant to hold.
+SCAN_COMPONENTS_RE = re.compile(r"allcompo", re.IGNORECASE)
+SCAN_RANGE_RE = re.compile(r"(\d+)-(\d+)")
+#: A shot folder of the scanner's all-components scans, lower-cased (U42):
+#: ``allrgb1_color``, ``allcomponentsrgb11``, ``allcompoentsrgb21_color``,
+#: ``allcomponenetsrgb31`` ... The digits are the step folders' ``<k>1``
+#: (``11`` -> 1, ``21`` -> 2); a bare ``1`` is 1.
+SCAN_SHOT_RE = re.compile(r"^all.*rgb(\d*)(?:_color)?$")
 
 #: OAK filename suffix -> ``FrameFile.aux`` key ("main" goes to ``FrameFile.path``).
 OAK_ROLES = {
@@ -158,4 +170,38 @@ def scanner_desktop_dir(
                 target = os.path.join(cand.path, str(desktop))
                 if os.path.isdir(target):
                     return target
+    return None
+
+
+def scanner_components_dir(
+    scanner_root: str, desktop: int, errors: Optional[list[str]] = None
+) -> Optional[str]:
+    """Locate the scanner's all-components scans of one desktop (task U42).
+
+    They sit beside the step scans' payload in the same group folder:
+    ``<group>/TAMU_B2.0_<a>-<b>_RGB_allcompoentsrgb/<payload>/<desktop>``, the
+    payload being the one sub-folder inside (spelled as its parent, or
+    ``TAMU_color_<a>-<b>_B2.0``). The group ``TAMU_B2.3_50-66_RGB`` holds two
+    of them (50-59, 60-66), so the folder's own range picks the one -- but
+    desktop 20 lies in the 10-19 batch (``10..20``): when no folder whose range
+    holds the desktop has it, every other all-components folder is looked in.
+    """
+    groups = [e for e in sorted(dirs(scanner_root, errors), key=lambda e: e.name)
+              if SCAN_GROUP_RE.match(e.name)]
+    ranged: list[os.DirEntry] = []
+    others: list[os.DirEntry] = []
+    for group in groups:
+        for entry in sorted(dirs(group.path, errors), key=lambda e: e.name):
+            if not SCAN_COMPONENTS_RE.search(entry.name):
+                continue
+            m = SCAN_RANGE_RE.search(entry.name)
+            if m and int(m.group(1)) <= desktop <= int(m.group(2)):
+                ranged.append(entry)
+            else:
+                others.append(entry)
+    for folder in ranged + others:
+        for payload in sorted(dirs(folder.path, errors), key=lambda e: e.name):
+            target = os.path.join(payload.path, str(desktop))
+            if os.path.isdir(target):
+                return target
     return None

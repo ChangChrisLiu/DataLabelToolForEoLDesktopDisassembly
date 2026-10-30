@@ -508,11 +508,12 @@ cover.01（装着）」。单击看整帧，再单击回来；滚轮放大缩小
 `` ` `` = 被线盖住了。导出时分别写 `viewpoint` / `cable`。列表空了标签页写「可见性审查完成」；
 `tda.cli status --desktop 13` 每个视角写「可见性审查 已审/总数」。
 
-## 4.5 零件合照（拆完后零件摆在桌上拍的照片）
+## 4.5 零件合照（拆完后零件摆在桌上拍、放在扫描仪上扫的图）
 
-每台拆完后，所有拆下来的零件摆在桌上用两台 OAK 和 RealSense 各拍了几张（每张之间重新摆过）。这些
-**不是拆解步骤**，是单独的三个视图：顶部 `零件合照·OAK1 (F6)` / `·OAK2 (F7)` / `·RealSense (F8)`，
-或 `python -m tda.cli app --annotator chang --desktop 13 --view cmp_oak1`。
+每台拆完后，所有拆下来的零件摆在桌上用两台 OAK 和 RealSense 各拍了几张（每张之间重新摆过），还摆在扫描仪台上
+扫了 1–5 次。这些**不是拆解步骤**，是单独的四个视图：顶部 `零件合照·扫描仪`（**没有快捷键**，点这个工具栏按钮）/
+`零件合照·OAK1 (F6)` / `·OAK2 (F7)` / `·RealSense (F8)`，或 `python -m tda.cli app --annotator chang --desktop 13
+--view cmp_oak1`（扫描仪的是 `--view cmp_scan`）。
 
 - 窗口标题和任务卡写着「零件合照 OAK1 第 1/5 张：把这张里看得到的零件都画出来；不在这张里的点「看不见」」。
   打开在第 1 张，`Space` 确认后到**下一张**，`PgUp`/`PgDn` 换张。
@@ -528,9 +529,10 @@ cover.01（装着）」。单击看整帧，再单击回来；滚轮放大缩小
   那一步的帧上去改）：按了状态栏说为什么。零件压在一起时层级照常用 `L` / `Ctrl+↑↓`。
 - 从拆解序列换到合照（或换回来）时回到上次在那边看的那张/那一帧；第一次进合照是第 1 张。
 - 进度：`tda.cli status` 表下面单独一段「零件合照」；导出 `tda.cli export-coco --desktops 13
-  --view components` 每个相机一个文件（`coco_cmp_oak1.json` …，`split: components`，零件都写
-  `removed` / `on_bench`）；`export-vlm` 不出零件合照。本地缓存：`tda.cli build-cache --views components
-  --desktops 13`（合照的帧从数据库读，D66 表格里那行 "All components" 的照片也在里面）。
+  --view components` 每个相机一个文件（`coco_cmp_scan.json`、`coco_cmp_oak1.json` …，`split: components`，零件都写
+  `removed` / `on_bench`；扫描仪那张的 `source` 是缓存在连拍里选中、你画在上面的那张）；`export-vlm` 不出零件合照。
+  本地缓存：`tda.cli build-cache --views components --desktops 13`（四个视图；扫描仪的和扫描仪步骤一样在十张连拍里挑一张，
+  `P_0` 太暗就换；合照的帧从数据库读，D66 表格里那行 "All components" 的照片也在里面）。
 
 ## 5. 收工与导出（可选）
 

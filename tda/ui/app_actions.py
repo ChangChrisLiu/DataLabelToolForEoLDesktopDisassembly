@@ -74,6 +74,7 @@ __all__ = [
     "MODE_ANNOTATE",
     "MODE_REVIEW",
     "MODE_STEPS",
+    "NO_KEY_TEXT",
     "PALETTE_ACTIONS",
     "PALETTE_OTHER",
     "PALETTE_REVIEW",
@@ -167,9 +168,11 @@ class Action:
     short: str = ""
 
 
-def _view(view: str, key: str, zh: str) -> Action:
-    return Action(f"view_{view}", (key,), "act_set_view", f"View: {view}", zh,
-                  "view", (view,), _ANN_REV)
+def _view(view: str, key: Optional[str], zh: str) -> Action:
+    # ``key=None``: a view with no key, only its toolbar button (task U42 --
+    # the user's standing rule is no new keyboard shortcuts)
+    return Action(f"view_{view}", (key,) if key else (), "act_set_view", f"View: {view}",
+                  zh, "view", (view,), _ANN_REV)
 
 
 def _visibility(index: int) -> Action:
@@ -196,7 +199,9 @@ ACTIONS: tuple[Action, ...] = (
     _view("oak1", "F2", "切换到 OAK 正面视图"),
     _view("oak2", "F3", "切换到 OAK 侧面视图"),
     _view("rs", "F4", "切换到 RealSense 视图"),
-    # Task U10: the components gallery (零件合照), one view per camera.
+    # Task U10: the components gallery (零件合照), one view per camera. The
+    # scanner's (task U42) has no key, only its toolbar button.
+    _view("cmp_scan", None, "切换到零件合照 扫描仪（拆下来的零件摆在扫描仪上扫的图）"),
     _view("cmp_oak1", "F6", "切换到零件合照 OAK1（拆下来的零件摆在桌上拍的照片）"),
     _view("cmp_oak2", "F7", "切换到零件合照 OAK2"),
     _view("cmp_rs", "F8", "切换到零件合照 RealSense"),
@@ -598,6 +603,8 @@ def key_caption(action: Action) -> str:
 
 
 def _compact_keys(action: Action) -> str:
+    if not action.keys:          # a toolbar button only (task U42)
+        return NO_KEY_TEXT
     return " / ".join(k for k in action.keys
                       if k not in ("Return", "Alt+Return", "Ctrl+Return"))
 
@@ -748,8 +755,15 @@ def navigates_a_list(widget: Optional[QWidget], key) -> bool:
 # --------------------------------------------------------------------------- #
 # generated documentation
 # --------------------------------------------------------------------------- #
+#: What the generated tables say for an action with no key -- the scanner's
+#: components gallery (task U42), reached by its toolbar button only.
+NO_KEY_TEXT = "无快捷键（点工具栏按钮）"
+#: What stands in the key column's code span of such a row in the guide.
+NO_KEY_MARK = "—"
+
+
 def _keys_text(action: Action) -> str:
-    return " / ".join(action.keys)
+    return " / ".join(action.keys) or NO_KEY_TEXT
 
 
 def _code_span(text: str) -> str:
@@ -803,7 +817,10 @@ def shortcut_markdown() -> str:
     lines = ["| 快捷键 | 作用 | 分组 |", "|---|---|---|"]
     for key, title, actions in _by_group():
         for action in actions:
-            lines.append(f"| {_code_span(_keys_text(action))} | {_md_text(action.label_zh)}"
+            # a keyless row is still a key row: "`—` 无快捷键…" (task U42)
+            keys = (_code_span(_keys_text(action)) if action.keys
+                    else f"{_code_span(NO_KEY_MARK)} {NO_KEY_TEXT}")
+            lines.append(f"| {keys} | {_md_text(action.label_zh)}"
                          f"{_how_text(action)} | {title} |")
         for entry in _menu_of(key):
             lines.append(f"| {_code_span(entry.where)} | {_md_text(entry.label_zh)} "

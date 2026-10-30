@@ -429,7 +429,7 @@ def test_cli_build_cache_passes_the_database(tmp_path, monkeypatch):
                  "--desktops", "13"]) == 0
     argv = seen[0]
     assert argv[argv.index("--db") + 1] == env["cfg"]["db_path"]
-    assert "cmp_oak1,cmp_oak2,cmp_rs" in argv
+    assert "cmp_scan,cmp_oak1,cmp_oak2,cmp_rs" in argv
 
 
 # --------------------------------------------------------------------------- #
