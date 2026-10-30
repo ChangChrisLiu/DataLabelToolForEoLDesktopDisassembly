@@ -62,7 +62,9 @@ DEFAULT_PATHS_PATH = "configs/paths.yaml"
 #: because its steps are the uncollapsed rows.
 #: 4: the scanner's all-components scans are the gallery view ``cmp_scan``
 #: (task U42); ``load-index`` refuses a version-3 file too: it says nothing
-#: about them, and D66's "All components" scanner frame would go nowhere.
+#: about them, so loading it after a v4 one would have
+#: :func:`tda.pipeline._drop_stale_shots` drop every ``cmp_scan`` shot nobody
+#: worked on (and refuse the desktops whose shots carry work).
 INDEX_VERSION = 4
 #: The first version whose scan covers the components gallery.
 GALLERY_INDEX_VERSION = 2

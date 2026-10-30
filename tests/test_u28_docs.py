@@ -84,7 +84,8 @@ def test_the_spec_has_the_paragraph_after_u23_and_v1_28_on_top():
     assert entries[0].startswith(("- **v1.28", "- **v1.29", "- **v1.30", "- **v1.31",
                                   "- **v1.32", "- **v1.33", "- **v1.34", "- **v1.35",
                                   "- **v1.36",
-                                  "- **v1.37", "- **v1.38", "- **v1.39", "- **v1.40"))
+                                  "- **v1.37", "- **v1.38", "- **v1.39", "- **v1.40",
+                                  "- **v1.41"))
     [first] = [e for e in entries[:14] if e.startswith("- **v1.28")]
     assert first.startswith("- **v1.28（2026-10-24）**：**拆前 / 拆后**（U28，§4.5）")
     for needed in ("第一次标", "`removed` / `displaced`", "级联", "1.6 倍", "1/6", "随 … 一起拆走",

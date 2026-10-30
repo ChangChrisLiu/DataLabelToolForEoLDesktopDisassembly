@@ -227,7 +227,9 @@ def test_report_counts_rows_dupli_and_extra_shots(tmp_path):
     # 2 dupli captures x 3 views + 1 scanner duplicate folder
     assert "- extra shots (dupli captures, scanner duplicate folders): 7" in text
     assert "| 90 | 8 | 10 (4, 8) |" in text
-    assert "| 90 | 8 | 10 (4, 8) | 32 | 7 | 0 | 0 | 0 | 0 | 0 |" in text
+    # the gallery cell names each camera's shots since U42
+    assert ("| 90 | 8 | 10 (4, 8) | 32 | 7 | 0 | 0 | 0 | 0 | "
+            "0 (scan 0 / oak1 0 / oak2 0 / rs 0) |") in text
 
 
 def test_save_load_keeps_rows_and_extra_shots(tmp_path):

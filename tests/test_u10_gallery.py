@@ -1,7 +1,8 @@
 """Task U10: the components gallery (零件合照, spec 3.2b) -- core, session, exports.
 
 After each teardown the parts were laid out on the table and photographed; those
-shots are three views of their own (``cmp_oak1``/``cmp_oak2``/``cmp_rs``), one
+shots are views of their own (``cmp_oak1``/``cmp_oak2``/``cmp_rs``; the scanner's
+``cmp_scan`` since task U42, tests/test_u42_scan_gallery.py), one
 frame per shot, and everything that works on a frame works on them. What these
 tests pin down is what is *different*: the index, the D66-style sheet row that
 leaves the sequence, what a shot asks to be drawn, one pose segment per shot,

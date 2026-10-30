@@ -694,6 +694,11 @@ def cmd_export_coco(args: argparse.Namespace) -> int:
                 # predates the keywords runs
                 **({} if getattr(args, "amodal", True) else {"amodal": False}),
                 **({} if getattr(args, "hidden", True) else {"hidden": False}),
+                # a gallery shot names the picture drawn on, which for the
+                # scanner's is the cache's burst choice (U42): this workspace's
+                # cache, not the one configs/paths.yaml names
+                **({"cache_dir": paths.get("cache_dir")} if is_component_view(view)
+                   else {}),
             )
             if not _count(stats, "annotations"):
                 worst = max(worst, _nothing_exported("export-coco", view, out,

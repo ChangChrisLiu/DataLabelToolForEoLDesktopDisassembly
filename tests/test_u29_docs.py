@@ -17,7 +17,8 @@ def test_v1_29_is_on_top_of_14():
     # on top when it landed; L6's v1.30 and U32's v1.31 have gone above it since
     assert entries[0].startswith(("- **v1.29", "- **v1.30", "- **v1.31", "- **v1.32",
                                   "- **v1.33", "- **v1.34", "- **v1.35", "- **v1.36",
-                                  "- **v1.37", "- **v1.38", "- **v1.39", "- **v1.40"))
+                                  "- **v1.37", "- **v1.38", "- **v1.39", "- **v1.40",
+                                  "- **v1.41"))
     [first] = [e for e in entries[:13] if e.startswith("- **v1.29")]
     assert first.startswith("- **v1.29（2026-10-24）**：**标注流程待办清理**（U29")
     for needed in ("小零件上撤销「被线挡住（完全）」", "一段状态中间按 `Q`", "正序也不越过",

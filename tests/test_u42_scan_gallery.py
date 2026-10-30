@@ -262,6 +262,20 @@ def test_scan_desktop_indexes_the_scanners_gallery(tmp_path, fixes):
     assert len([k for k in idx.frames if k.view == "scan"]) == N_STEPS
 
 
+def test_the_index_report_shows_the_shots_per_camera(tmp_path, fixes):
+    """A desktop without its scanner gallery shows it (review round 2)."""
+    from tda.core.index_report import write_report
+
+    idx = {66: scan_desktop(66, d66_tree(tmp_path), fixes),
+           67: scan_desktop(67, d66_tree(tmp_path / "b", shots=0), fixes)}
+    idx[67].desktop = 67
+    path = tmp_path / "report.md"
+    write_report(idx, str(path))
+    text = path.read_text(encoding="utf-8")
+    assert "| 2 (scan 2 / oak1 0 / oak2 0 / rs 0) |" in text
+    assert "| 0 (scan 0 / oak1 0 / oak2 0 / rs 0) |" in text
+
+
 def test_a_version_3_index_is_refused_and_a_version_4_one_loaded(tmp_path, fixes):
     idx = {66: scan_desktop(66, d66_tree(tmp_path), fixes)}
     path = tmp_path / "index.json"
@@ -376,6 +390,83 @@ def test_export_coco_of_cmp_scan(tmp_path):
     assert image["tier"] == "gold"
 
 
+def _p0_dark_shot(db, src_dir: Path, cache_dir: Path, shot: int = 1) -> list[str]:
+    """Give ``cmp_scan`` shot ``shot`` a burst whose ``P_0`` is dark, and a cache
+    manifest that chose ``P_9`` for it (as build-cache does, ``p0_dark``)."""
+    burst = _write_burst(src_dir, [_texture(seed=s) for s in range(10)])
+    assert cv2.imwrite(burst[0], _texture(seed=1) * 0 + 9)
+    key = FrameKey(GS.DESKTOP, shot, "cmp_scan")
+    row = db.get_frame(key)
+    aux = dict(row.get("aux") or {})
+    aux["burst"] = burst
+    db.upsert_frame(key, row["path"], aux, row.get("ts"), {"missing": False})
+    manifest = cache_dir / "cmp_scan" / f"D{GS.DESKTOP:02d}" / "manifest.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(json.dumps({str(shot): {
+        "chosen": 9, "reason": "p0_dark", "src": burst[9],
+        "metrics": [{"path": p, "p_index": i} for i, p in enumerate(burst)]}}),
+        encoding="utf-8")
+    return burst
+
+
+def test_export_coco_names_the_burst_image_the_cache_chose(tmp_path):
+    """``extra.source`` is the picture drawn on: P_9 when P_0 was dark (review S1)."""
+    session = GS.make_session(tmp_path, view="cmp_scan")
+    burst = _p0_dark_shot(session.db, tmp_path / "src" / "allcomponentsrgb11",
+                          tmp_path / "cache2")
+    _confirm_shot(session, 1)
+    doc = export_coco(session.db, session.tax, [GS.DESKTOP], "cmp_scan",
+                      str(tmp_path / "coco.json"), cache_dir=str(tmp_path / "cache2"))
+    extra = doc["images"][0]["extra"]
+    assert extra["source"] == burst[9] and extra["source"].endswith("P_9.png")
+    assert extra["burst_choice"] == "p0_dark"
+    # no cache: the frame's own path, and no choice to name
+    bare = export_coco(session.db, session.tax, [GS.DESKTOP], "cmp_scan",
+                       str(tmp_path / "coco_bare.json"), cache_dir=str(tmp_path / "none"))
+    extra = bare["images"][0]["extra"]
+    assert extra["source"] == session.db.get_frame(FrameKey(GS.DESKTOP, 1, "cmp_scan"))["path"]
+    assert "burst_choice" not in extra
+
+
+def test_a_manifest_of_another_burst_is_not_believed(tmp_path):
+    from tda.core.export.coco import _shot_source
+
+    frame = {"path": "F:/a/P_0.png", "aux": {"burst": ["F:/a/P_0.png", "F:/a/P_9.png"]}}
+    key = FrameKey(1, 2, "cmp_scan")
+    good = {"2": {"src": "F:/a/P_9.png", "reason": "p0_dark"}}
+    stale = {"2": {"src": "F:/old/P_9.png", "reason": "p0_dark"}}
+    assert _shot_source(frame, key, good)["source"] == "F:/a/P_9.png"
+    out = _shot_source(frame, key, stale)
+    assert out["source"] == "F:/a/P_0.png" and "burst_choice" not in out
+    assert "burst_choice" not in _shot_source({"path": "F:/x.jpg"}, FrameKey(1, 2, "cmp_oak1"))
+
+
+def test_cli_export_coco_reads_the_workspaces_cache(tmp_path, capsys):
+    from tda.core.db import Db as _Db
+    from tda.core.taxonomy import load_taxonomy
+    from tda.core.truth import TruthService
+    from tda.ui.session import AnnotationSession
+
+    env = GS.make_env(tmp_path)
+    db = _Db(env["cfg"]["db_path"])
+    burst = _p0_dark_shot(db, tmp_path / "src" / "allcomponentsrgb11",
+                          Path(env["cfg"]["cache_dir"]))
+    tax = load_taxonomy()
+    session = AnnotationSession(db, tax, TruthService(db, tax), env["cfg"]["cache_dir"],
+                                "tester")
+    session.sweeper_enabled = False
+    session.open(GS.DESKTOP, "cmp_scan")
+    _confirm_shot(session, 1)
+    session.close(force=True)
+    db.close()
+    out = tmp_path / "coco_cli.json"
+    assert _run(env, "export-coco", "--desktops", str(GS.DESKTOP), "--view", "cmp_scan",
+                "--out", str(out)) == 0, capsys.readouterr().out
+    image = json.loads(out.read_text(encoding="utf-8"))["images"][0]
+    assert image["extra"]["source"] == burst[9]
+    assert image["extra"]["burst_choice"] == "p0_dark"
+
+
 def _run(env: dict, *argv: str) -> int:
     from tda.cli import main
 
@@ -428,14 +519,20 @@ GUIDE = REPO_ROOT / "docs" / "annotation_guide.md"
 def test_the_docs_say_it():
     spec = SPEC.read_text(encoding="utf-8")
     gallery = spec.split("### 3.2b 零件合照", 1)[1].split("### 3.2c", 1)[0]
-    for needed in ("**扫描仪的零件合照 `cmp_scan`**（v1.40，U42）", "allcompoentsrgb",
+    for needed in ("**扫描仪的零件合照 `cmp_scan`**（v1.41，U42）", "allcompoentsrgb",
                    "`allcomponentsseq11`", "**索引版本 4**", "**没有快捷键**"):
         assert needed in gallery, needed
     changes = spec.split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
-    assert entries[0].startswith("- **v1.40（2026-10-30）**：**扫描仪的零件合照 `cmp_scan`**（U42")
+    assert entries[0].startswith("- **v1.41（2026-10-30）**：**扫描仪的零件合照 `cmp_scan`**（U42")
     guide = GUIDE.read_text(encoding="utf-8")
-    assert "**零件合照（`F6`–`F8`；扫描仪的点工具栏）。**" in guide
+    assert "**零件合照（`F6`–`F8`；扫描仪的点工具栏按钮）。** 零件拆完摆开拍/扫的图" in guide
+    quick = (REPO_ROOT / "docs" / "trial_quickstart.md").read_text(encoding="utf-8")
+    section = quick.split("## 4.5 零件合照", 1)[1].split("\n## ", 1)[0]
+    for needed in ("单独的四个视图", "`零件合照·扫描仪`（**没有快捷键**", "`--view cmp_scan`",
+                   "`coco_cmp_scan.json`"):
+        assert needed in section, needed
+    assert "`extra` 写 `shot`（帧号）、`source`（标注时画在上面的那张原图" in gallery
     assert A.shortcut_markdown() in guide
 
 

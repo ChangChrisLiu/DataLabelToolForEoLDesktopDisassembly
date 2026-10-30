@@ -638,7 +638,6 @@ def _held_by_gallery(db: Db, desktop: int, di: DesktopIndex) -> set[FrameKey]:
                 held.add(FrameKey(desktop, step, camera))
         if relocated:
             held |= photoless
-            held |= {FrameKey(desktop, step, v) for v in VIEWS if v not in GALLERY_OF}
     return held
 
 
@@ -931,7 +930,7 @@ def status_rows(db: Db, desktops: Optional[set[int]] = None) -> list[dict]:
             "desktop": desktop,
             "brand": meta.get("brand_model_raw") or meta.get("brand") or "",
             **{name: totals[name].get(desktop, 0) for name in STATUS_TOTALS},
-            # the sequence's four views and the components gallery's three
+            # the sequence's four views and the components gallery's four (U42)
             "views": views,
             # the frames' notes per view (U35); {} for none
             "notes": dict(notes.get(desktop, {})),

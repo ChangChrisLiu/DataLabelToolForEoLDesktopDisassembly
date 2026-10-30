@@ -4,7 +4,7 @@ The real D13 step sheet (``tests/fixtures/logs/desktop_13.csv``) imported in ful
 -- 42 steps, so the board and everything on it are out by the end -- with a
 synthetic 64x64 image per scanner step and per gallery shot in a temporary
 cache directory. :func:`seed_gallery` adds ``shots`` frames to each of the
-three gallery views and seeds their pose segments the way ``load-index`` does
+four gallery views (the scanner's since task U42) and seeds their pose segments the way ``load-index`` does
 (:func:`tda.pipeline.settle_gallery`).
 """
 from __future__ import annotations

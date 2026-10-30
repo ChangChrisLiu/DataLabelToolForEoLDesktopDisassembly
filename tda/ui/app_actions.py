@@ -603,8 +603,10 @@ def key_caption(action: Action) -> str:
 
 
 def _compact_keys(action: Action) -> str:
+    if not action.keys:          # a toolbar button only (task U42)
+        return NO_KEY_TEXT
     return " / ".join(k for k in action.keys
-                      if k not in ("Return", "Alt+Return", "Ctrl+Return")) or NO_KEY_TEXT
+                      if k not in ("Return", "Alt+Return", "Ctrl+Return"))
 
 
 def mode_cheat_rows(mode: str) -> list[tuple[str, str]]:

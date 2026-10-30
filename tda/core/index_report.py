@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 from typing import Any
 
-from tda.core.model import VIEWS, is_component_view
+from tda.core.model import COMPONENT_CAMERA, COMPONENT_VIEWS, VIEWS, is_component_view
 
 _HEADER = (
     "| desktop | n_steps | rows (dupli) | frames | extra shots | missing scan | "
@@ -16,6 +16,14 @@ _HEADER = (
 def _gallery(di: Any) -> int:
     """How many components-gallery shots (task U10) the desktop has, all cameras."""
     return sum(1 for key in di.frames if is_component_view(key.view))
+
+
+def _gallery_cell(di: Any) -> str:
+    """``4 (scan 1 / oak1 1 / oak2 1 / rs 1)``: the shots per camera (task U42), so
+    a desktop whose scanner gallery (or any other camera's) is absent shows it."""
+    per = " / ".join(f"{COMPONENT_CAMERA[v]} {sum(1 for k in di.frames if k.view == v)}"
+                     for v in COMPONENT_VIEWS)
+    return f"{_gallery(di)} ({per})"
 
 
 def _extra_shots(di: Any) -> int:
@@ -94,7 +102,7 @@ def write_report(idx: dict[int, Any], path: str) -> None:
         lines.append(
             f"| {d} | {di.n_steps} | {_rows(di)} | {len(di.frames) - _gallery(di)} | "
             f"{_extra_shots(di)} | {per['scan']} | "
-            f"{per['oak1']} | {per['oak2']} | {per['rs']} | {_gallery(di)} | "
+            f"{per['oak1']} | {per['oak2']} | {per['rs']} | {_gallery_cell(di)} | "
             f"{len(di.issues)} |"
         )
     lines.append(
