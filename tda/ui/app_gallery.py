@@ -34,7 +34,8 @@ from tda.ui.gallery import (
 __all__ = ["GalleryMixin", "NOT_A_GALLERY", "PICK_A_PART"]
 
 #: 看不见 (`````` since task U22) outside the gallery.
-NOT_A_GALLERY = ("「看不见」只用在零件合照里（F6–F8）；拆解序列里的可见性在复查的「可见性审查」里设 / "
+NOT_A_GALLERY = ("「看不见」只用在零件合照里（F6–F8 和工具栏的「零件合照·扫描仪」）；"
+                 "拆解序列里的可见性在复查的「可见性审查」里设 / "
                  "\"not in this shot\" is for the components gallery")
 #: 看不见 with nothing to act on.
 PICK_A_PART = "先在任务卡上点一条零件，再按 ` 键（看不见）/ pick a part on the card first"
@@ -62,7 +63,7 @@ class GalleryMixin:
     def landing_step(self, view: str, step: Optional[int]) -> Optional[int]:
         """The step a switch to ``view`` should land on, from ``step`` now.
 
-        Within one family (the four sequence views, or the three gallery ones)
+        Within one family (the four sequence views, or the four gallery ones)
         the number is the same moment and is kept. Across them it means
         nothing, so the frame this machine was last left on in the *other*
         family is remembered per desktop and returned instead -- ``None`` the

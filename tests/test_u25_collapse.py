@@ -237,7 +237,7 @@ def test_save_load_keeps_rows_and_extra_shots(tmp_path):
     path = tmp_path / "index.json"
     save_index({90: idx}, str(path))
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["version"] == 3
+    assert payload["version"] == 4          # U42: the scanner's gallery
     assert payload["desktops"]["90"]["dupli_rows"] == [4, 8]
     back = load_index(str(path))[90]
     assert back == idx and back.collapsed

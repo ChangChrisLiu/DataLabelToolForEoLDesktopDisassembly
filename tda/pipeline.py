@@ -269,23 +269,29 @@ def add_desktop_issues(db: Db, desktop: int, key: str, lines: Iterable[str]) -> 
 # --------------------------------------------------------------------------- #
 # load-index
 # --------------------------------------------------------------------------- #
-#: Why ``load-index`` refuses an index file older than the gallery (task U10)
-#: or older than the collapsed steps (task U25).
+#: Why ``load-index`` refuses an index file older than the gallery (task U10),
+#: older than the collapsed steps (task U25) or older than the scanner's
+#: gallery (task U42).
 STALE_INDEX = ("is an old index -- a version-1 index, written before the components "
-               "gallery and the RealSense fixes, or a version-2 index, written before the "
-               "sheet's dupli rows were collapsed into steps (U25): loading it would mark "
-               "frames the current index has as missing again or put photos on the wrong "
-               "steps. Nothing was loaded. Run build-index first, then load-index again.")
+               "gallery and the RealSense fixes, a version-2 index, written before the "
+               "sheet's dupli rows were collapsed into steps (U25), or a version-3 index, "
+               "written before the scanner's all-components scans became the gallery view "
+               "cmp_scan (U42): loading it would mark frames the current index has as "
+               "missing again, put photos on the wrong steps or leave the scanner's "
+               "gallery out. Nothing was loaded. Run build-index first, then load-index "
+               "again.")
 
 
 class StaleIndex(ValueError):
-    """An index file written before the gallery (v1, U10) or the collapse (v2, U25)."""
+    """An index file written before the gallery (v1, U10), the collapse (v2, U25)
+    or the scanner's gallery (v3, U42)."""
 
 
 def stale_index(index: dict[int, DesktopIndex]) -> list[int]:
-    """The desktops of ``index`` read from a version-1 or version-2 file."""
+    """The desktops of ``index`` read from a version-1, -2 or -3 file."""
     return sorted(d for d, di in index.items()
-                  if not getattr(di, "gallery", True) or not getattr(di, "collapsed", True))
+                  if not getattr(di, "gallery", True) or not getattr(di, "collapsed", True)
+                  or not getattr(di, "scan_gallery", True))
 
 
 def load_index_into_db(
@@ -316,7 +322,9 @@ def load_index_into_db(
     An index file written before the components gallery (version 1) is refused
     outright with :class:`StaleIndex` before anything is written: it lacks the
     frames the index fixes added since (the RealSense ``rs_extra_from`` steps of
-    D1 and D24), and loading it would mark them missing again (task U10).
+    D1 and D24), and loading it would mark them missing again (task U10). So
+    is a version-2 file (uncollapsed steps, U25) and a version-3 one (no
+    scanner gallery ``cmp_scan``, U42).
     """
     if stale_index(index):
         raise StaleIndex(f"the index {STALE_INDEX}")
@@ -615,15 +623,21 @@ def _held_by_gallery(db: Db, desktop: int, di: DesktopIndex) -> set[FrameKey]:
     held: set[FrameKey] = set()
     for step in gallery_rows(db, desktop):
         relocated = False
+        photoless: set[FrameKey] = set()
         for camera, view in GALLERY_OF.items():
             row = _sheet_shot_row(db, desktop, view, step)
+            ff = di.frames.get(FrameKey(desktop, step, camera))
             if row is None:
+                # a camera that has no photo of the row has nothing to move:
+                # the scanner was held for that before it had a gallery (U42)
+                if ff is None:
+                    photoless.add(FrameKey(desktop, step, camera))
                 continue
             relocated = True
-            ff = di.frames.get(FrameKey(desktop, step, camera))
             if ff is None or ff.path == row.get("path"):
                 held.add(FrameKey(desktop, step, camera))
         if relocated:
+            held |= photoless
             held |= {FrameKey(desktop, step, v) for v in VIEWS if v not in GALLERY_OF}
     return held
 
@@ -656,7 +670,8 @@ def settle_gallery(db: Db, desktop: int) -> dict:
     1. **A sheet row of the parts** (:func:`gallery_rows`): its step keeps its
        number and its ``ignore`` type, but its frames are not frames of the
        teardown -- each sequence view's photo of it becomes shot
-       ``SHEET_SHOT_BASE + step`` of its camera's gallery view (scanner: none;
+       ``SHEET_SHOT_BASE + step`` of its camera's gallery view (the scanner's
+       goes to ``cmp_scan`` since task U42, where it went nowhere before;
        ``aux["sheet_step"]`` says where it came from) and the sequence rows are
        dropped. A row somebody annotated is never dropped (it is reported
        instead). The measured size of a photo already there is kept.
@@ -698,8 +713,12 @@ def settle_gallery(db: Db, desktop: int) -> dict:
                     db.upsert_frame(there, row["path"], aux, row.get("ts"),
                                     {"missing": False})
                     where = f"{target} shot {shot}"
-                else:
+                elif target is None:
                     where = "nowhere (no gallery for this camera)"
+                else:
+                    # every camera has a gallery since task U42: what goes
+                    # nowhere now is a row without a photo
+                    where = "nowhere (it has no photo)"
                 db.delete_unannotated_frame(key)
                 moved.append(f"step {step} ({view}) is a photo of the laid-out parts: "
                              f"moved to {where}")

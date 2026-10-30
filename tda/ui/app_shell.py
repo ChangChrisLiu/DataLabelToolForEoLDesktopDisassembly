@@ -198,12 +198,15 @@ class ShellMixin:
         self.view_buttons: dict[str, QToolButton] = {}
         group = QButtonGroup(self)
         group.setExclusive(True)
-        keys = {a.args[0]: a.keys[0] for a in A.ACTIONS if a.slot == "act_set_view"}
+        # a view with no key (the scanner's gallery, task U42) shows no "()"
+        keys = {a.args[0]: a.keys[0] for a in A.ACTIONS
+                if a.slot == "act_set_view" and a.keys}
         for view in ALL_VIEWS:
             if view == COMPONENT_VIEWS[0]:
                 bar.addSeparator()      # the components gallery (task U10)
             button = QToolButton()
-            button.setText(f"{view_label(view)} ({keys.get(view, '')})")
+            key = keys.get(view)
+            button.setText(f"{view_label(view)} ({key})" if key else view_label(view))
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.setCheckable(True)
             button.setChecked(view == self.session.view)

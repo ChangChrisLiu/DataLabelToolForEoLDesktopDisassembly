@@ -203,8 +203,11 @@ def view_index(view: str) -> int:
     """Position of ``view`` in :data:`tda.core.model.ALL_VIEWS`.
 
     scan=0 .. rs=3 for the sequence, then the components gallery
-    (cmp_oak1=4 .. cmp_rs=6): still below :data:`STEP_STRIDE`, so a gallery
-    shot's image id never collides with a sequence frame's (task U10).
+    (cmp_scan=4, cmp_oak1=5, cmp_oak2=6, cmp_rs=7): still below
+    :data:`STEP_STRIDE`, so a gallery shot's image id never collides with a
+    sequence frame's (task U10). Task U42 put the scanner's gallery first and
+    so moved the three others up by one; no gallery image id had been
+    released, so :data:`EXPORT_VERSION` stays.
     """
     try:
         return ALL_VIEWS.index(view)
@@ -907,7 +910,8 @@ def export_coco(
 
     Steps typed ``ignore`` are skipped: they describe no moment of the teardown.
 
-    A components-gallery view (``cmp_oak1``/``cmp_oak2``/``cmp_rs``, task U10)
+    A components-gallery view (``cmp_scan``/``cmp_oak1``/``cmp_oak2``/``cmp_rs``,
+    tasks U10 and U42)
     is its own split, ``info.split == "components"``: one image per shot, every
     annotation ``removed`` / ``on_bench``, and each image's ``extra`` naming the
     source photo (``shot``, ``source``, ``sheet_step`` when it came from a sheet

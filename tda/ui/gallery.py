@@ -1,8 +1,9 @@
 """The components gallery (零件合照) in the annotator's words (task U10, spec 3.2b).
 
 After each teardown the operators laid every removed part out on the table and
-photographed the layout several times with both OAK cameras and the RealSense.
-Those shots are three views of their own (:data:`tda.core.model.COMPONENT_VIEWS`):
+photographed the layout several times with both OAK cameras and the RealSense,
+and laid them on the scanner's bed and scanned them (task U42). Those shots are
+four views of their own, one per camera (:data:`tda.core.model.COMPONENT_VIEWS`):
 a shot is an ordinary frame, so drawing, SAM, the compiler, Review and the
 exports work on it unchanged. What is different is said here, once, for every
 place that says it -- the window title, the task card, the guide, the status
@@ -30,7 +31,7 @@ __all__ = [
 ]
 
 #: The camera of each gallery view, as the annotator says it.
-_CAMERA_ZH = {"oak1": "OAK1", "oak2": "OAK2", "rs": "RealSense"}
+_CAMERA_ZH = {"scan": "扫描仪", "oak1": "OAK1", "oak2": "OAK2", "rs": "RealSense"}
 
 #: The visibility label that says "this part is not in this shot" (看不见).
 ABSENT = "out_of_view"

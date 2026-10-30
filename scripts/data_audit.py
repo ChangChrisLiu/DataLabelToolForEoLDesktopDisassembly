@@ -614,7 +614,8 @@ def report(records: list[dict], flagged: list[dict], args) -> str:
         "",
         "## 1. Per desktop",
         "",
-        "| D | sheet rows / dupli / steps | cam1 / cam2 / RS / scan folders | gallery oak1/oak2/rs "
+        "| D | sheet rows / dupli / steps | cam1 / cam2 / RS / scan folders | gallery "
+        f"{'/'.join(v.removeprefix('cmp_') for v in COMPONENT_VIEWS)} "
         "| scanner vs OAK cam1 | scanner vs RealSense | scanner pictures vs the sheet "
         "| known anomalies, fixes, index issues | sheet notes (rescan / missing / skip / redo) |",
         "|---:|---|---|---|---|---|---|---|---|",

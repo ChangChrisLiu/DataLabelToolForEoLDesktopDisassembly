@@ -18,15 +18,18 @@ VIEWS = ("scan", "oak1", "oak2", "rs")
 # --------------------------------------------------------------------------- #
 #: After each teardown the operators laid every removed part out on the table
 #: and photographed the layout several times (re-arranged between shots) with
-#: both OAK cameras and the RealSense. Those photos are **not** steps of the
+#: both OAK cameras and the RealSense -- and laid them out on the scanner's bed
+#: and scanned them, one to five times (task U42: ``cmp_scan``, first, as the
+#: scanner is first among :data:`VIEWS`). Those photos are **not** steps of the
 #: teardown: each camera's shots are a view of their own, a shot ``k = 1..N`` is
 #: an ordinary frame ``(desktop, k, view)``, and keyframes, the tools, the
 #: compiler, the truth table, Review and the COCO export work on it unchanged.
-COMPONENT_VIEWS = ("cmp_oak1", "cmp_oak2", "cmp_rs")
+COMPONENT_VIEWS = ("cmp_scan", "cmp_oak1", "cmp_oak2", "cmp_rs")
 #: Every view a frame row can carry: the sequence first, then the gallery.
 ALL_VIEWS = VIEWS + COMPONENT_VIEWS
 #: The camera each gallery view was shot with.
-COMPONENT_CAMERA = {"cmp_oak1": "oak1", "cmp_oak2": "oak2", "cmp_rs": "rs"}
+COMPONENT_CAMERA = {"cmp_scan": "scan", "cmp_oak1": "oak1", "cmp_oak2": "oak2",
+                    "cmp_rs": "rs"}
 #: Classes that are not drawn in a layout photo: a plug, a cable and a screw
 #: cannot be told apart from the next one lying beside it.
 GALLERY_EXCLUDED_CLASSES = frozenset({"connector", "cable", "screw"})
