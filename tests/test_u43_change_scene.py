@@ -16,7 +16,8 @@ they are out at 14), step 1 the cover (drawn) and a cooler screw's state
 * the mouse names the part in the caption's second line; a click is whole ↔
   crop, the wheel zooms about the mouse;
 * nothing written, no new key, a scene built once per frame and card, and a
-  40-part frame built well under 100 ms with warm caches.
+  40-part frame built well under 100 ms with warm caches;
+* the spec (§4.5 paragraph, v1.42 on top of §14) and the quickstart say it.
 """
 from __future__ import annotations
 
@@ -437,6 +438,33 @@ def test_one_refresh_per_settled_change_and_a_selection_builds_nothing(window):
     goto(window, 13)
     goto(window, STEP)                           # back: from the cache
     assert window.locator_source.stats["changes"] == built + 1
+
+
+def test_the_docs_say_it():
+    root = Path(__file__).resolve().parents[1]
+    spec = (root / "docs" / "superpowers" / "specs"
+            / "2026-09-17-teardown-annotator-design.md").read_text(encoding="utf-8")
+    section = spec.split("### 4.5 界面布局", 1)[1].split("### 4.6", 1)[0]
+    assert (section.index("**拆前 / 拆后（v1.28，U28）**")
+            < section.index("**这一步的变化（v1.42，U43）**"))
+    para = section.split("**这一步的变化（v1.42，U43）**", 1)[1].split("\n", 1)[0]
+    for needed in ("「变化的部分，给一个大图，然后把变化的都标出来」", "「扩展现有的就行」",
+                   "reference 我可以鼠标过去然后放大什么的", "**整帧**", "**任务卡上的每一行零件**",
+                   "**半透明填充**", "`compiled_mask`", "就不涂", "图上不写字",
+                   "「卡片上 n 个零件，扫描仪上画了 m 个」", EMPTY_CARD,
+                   f"「主视角 第 k 帧 · {CHANGE_NAME}」", "至少帧长边的 10 %",
+                   "定位 → 拆前/拆后 → 这一步的变化 → 定位", "`locator/kind`", "**只在「定位」下**",
+                   "不另开窗口", "不加快捷键", "`cmp_*`", "不写库", "D13 扫描仪第 12 帧"):
+        assert needed in para, needed
+    changes = spec.split("## 14. 修订记录", 1)[1]
+    entries = [line for line in changes.splitlines() if line.startswith("- ")]
+    assert entries[0].startswith("- **v1.42（2026-10-30）**：**这一步的变化**（U43，§4.5）")
+    quick = (root / "docs" / "trial_quickstart.md").read_text(encoding="utf-8")
+    dock = quick.split("### 换到 OAK / RealSense 以后：「主视角」小窗", 1)[1].split("\n#", 1)[0]
+    dock = dock.replace("\n", "")
+    for needed in ("「拆前/拆后」→「这一步的变化」→「定位」", "下次也记得", "半透明涂出来",
+                   "标题第二行", "滚轮放大", "拖出来浮动、拉大"):
+        assert needed in dock, needed
 
 
 def test_a_forty_part_frame_builds_well_under_100_ms_with_warm_caches(window):

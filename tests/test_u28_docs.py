@@ -40,7 +40,7 @@ def test_the_quickstart_says_it_in_two_sentences_of_the_dock_section():
                    "灰色虚线框只是猜的位置", "别的候选"):
         assert needed in section, needed
     assert "随时" not in section.split("第一次标某个零件时", 1)[1]     # round 2, N10
-    assert len(section) < 420
+    assert len(section) < 600            # U43's paragraph (这一步的变化) is in it since
 
 
 def test_the_spec_has_the_paragraph_after_u23_and_v1_28_on_top():
@@ -85,8 +85,8 @@ def test_the_spec_has_the_paragraph_after_u23_and_v1_28_on_top():
                                   "- **v1.32", "- **v1.33", "- **v1.34", "- **v1.35",
                                   "- **v1.36",
                                   "- **v1.37", "- **v1.38", "- **v1.39", "- **v1.40",
-                                  "- **v1.41"))
-    [first] = [e for e in entries[:14] if e.startswith("- **v1.28")]
+                                  "- **v1.41", "- **v1.42"))
+    [first] = [e for e in entries[:15] if e.startswith("- **v1.28")]
     assert first.startswith("- **v1.28（2026-10-24）**：**拆前 / 拆后**（U28，§4.5）")
     for needed in ("第一次标", "`removed` / `displaced`", "级联", "1.6 倍", "1/6", "随 … 一起拆走",
                    "扫描仪视角", "「拆前/拆后」按钮", "无快捷键", "`locator/open` 不变",
