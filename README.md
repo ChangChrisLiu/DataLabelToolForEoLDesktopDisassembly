@@ -51,6 +51,7 @@ raw/scanner/<batch>/<batch>_allcompoentsrgb/...           scanner all-components
 raw/oak/Desktop NN/Disassemble|Components/Camera_1|2/NNN/ OAK-D: 12 MP jpg, aligned png, depth, ply   (212 GB, 35k files)
 raw/realsense/Desktop NN/...                              RealSense: colour, depth, ply                (57 GB, 21k files)
 taxonomy.yaml                                             the part taxonomy (same file as configs/taxonomy.yaml)
+annotations/scanner/D<NN>/                                scanner-view labels and metadata of the finished desktops (57 on 2026-10-29)
 ```
 
 ### 1. Install the tool
@@ -109,10 +110,12 @@ python -m tda.cli app --annotator <name> --desktop 13 --view scan
 ```
 
 `build-index` only needs the images; `configs/index_fixes.yaml` (in this repository)
-carries the per-desktop capture-to-step corrections. The step logs (`import-logs`) and
-the annotation database are not published yet: they will be released with the
-annotations, as one package per desktop, so that a fresh checkout can reproduce the
-labelled frames without the lab's private files.
+carries the per-desktop capture-to-step corrections. The published annotations
+(`annotations/scanner/D<NN>/`) are the scanner packages `scripts/export_scanpack.py`
+writes from the annotation database: label maps, COCO with amodal fields, the parts
+and relations, the step sequence and `frames.json`, whose `source_folder` +
+`file_name` name the picture under `raw/scanner/`. The database itself and the step
+logs stay private; the packages are what a consumer needs.
 
 ## Where things are
 
