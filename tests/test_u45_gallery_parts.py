@@ -399,12 +399,14 @@ def test_coco_writes_the_cable_category_and_the_flag_on_the_gallery_only(tmp_pat
     assert (ann["attributes"]["state"], ann["attributes"]["placement"]) == (
         "removed", "on_bench")
     names = {c["name"]: c["id"] for c in doc["categories"]}
-    assert names["loose_cable"] == 25 and names["connector"] == 23 and len(names) == 24
+    # ... and the fan `screw_hole` of task W3e (26) in every file
+    assert names["loose_cable"] == 25 and names["connector"] == 23 and len(names) == 25
+    assert names["screw_hole"] == 26
     # the sequence's file: no cable category, no gallery_only key anywhere
     seq = export_coco(session.db, session.tax, [GS.DESKTOP], "scan",
                       str(tmp_path / "coco_scan.json"), only_verified=False)
     assert "loose_cable" not in {c["name"] for c in seq["categories"]}
-    assert len(seq["categories"]) == 23
+    assert len(seq["categories"]) == 24
     assert not [a for a in seq["annotations"] if "gallery_only" in a["attributes"]]
     assert key not in json.dumps(seq)
 
@@ -414,7 +416,8 @@ def test_coco_writes_the_cable_category_and_the_flag_on_the_gallery_only(tmp_pat
 # --------------------------------------------------------------------------- #
 def test_the_taxonomy_has_24_classes_loose_cable_last_and_the_virtual_node_is_unchanged():
     tax = load_taxonomy()
-    assert len(tax.classes) == 24 and list(tax.classes)[-1] == "loose_cable"
+    # the 24th; the fan `screw_hole` (task W3e) has come after it since
+    assert len(tax.classes) == 25 and list(tax.classes)[-2:] == ["loose_cable", "screw_hole"]
     cable = tax.classes["loose_cable"]
     assert cable["group"] == "interface"
     assert cable["attrs"]["kind"] == ["sata", "power", "fan", "front_panel", "other"]
@@ -463,7 +466,8 @@ def test_the_docs_say_it():
                    "「只在零件合照里出现，拆解序列里不会要它；"):
         assert needed in gallery, needed
     classes = spec.split("### 6.1 类别", 1)[1].split("### 6.2", 1)[0]
-    assert "（24 类" in classes and "| `loose_cable`（v1.44，U45） |" in classes
+    # 「24 类」 when it landed; W3e's `screw_hole` (v1.50) made it 25
+    assert "（25 类" in classes and "| `loose_cable`（v1.44，U45） |" in classes
     assert "`loose_cable` 是 25" in classes and "`other` 保持 24" in classes
     changes = spec.split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]

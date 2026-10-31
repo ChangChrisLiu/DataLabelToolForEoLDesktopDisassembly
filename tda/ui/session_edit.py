@@ -56,7 +56,7 @@ from tda.core.model import (
 from tda.core.truth import TruthService
 from tda.core.split_rows import open_split_steps, reverse_walk, split_rows_at
 from tda.core.truth_inputs import InputCache, frame_hw, pose_segment_of, state_of
-from tda.core.zorder_floor import floor_index
+from tda.core.zorder_floor import entered
 from tda.ui import session_api as api
 from tda.ui.class_names import state_zh
 from tda.ui.session_api import SessionRefusal
@@ -991,7 +991,8 @@ def _append_to_zorder(db: Db, key: FrameKey, seg: int, instance: str,
     On top -- except the two floor layers (task U17,
     :func:`tda.core.zorder_floor.floor_index`): a ``chassis`` goes to the very
     bottom and a ``motherboard`` directly above the lowest chassis, whatever
-    order the annotator drew them in on the start frame.  The class is the
+    order the annotator drew them in on the start frame; and a fan
+    ``screw_hole`` (task W3e) directly below its screw.  The class is the
     instance record's.  Only here: a move the annotator makes stays theirs.
 
     Returns the before/after states for the undo payload, or ``None`` when the
@@ -1002,10 +1003,9 @@ def _append_to_zorder(db: Db, key: FrameKey, seg: int, instance: str,
     if any(entry[0] == instance for entry in order):
         return None
     # a 框外零件 (task U18) is no floor layer and goes on top, in draw order;
-    # nor does one of class chassis count as the machine's chassis
-    cls_of = {k: r.cls for k, r in machine_only(db.instances(key.desktop)).items()}
-    at = floor_index(order, cls_of.get(instance), cls_of)
-    after = order[:at] + [(instance, part)] + order[at:]
+    # nor does one of class chassis count as the machine's chassis; a fan screw
+    # hole (task W3e) goes directly below its screw (zorder_floor.entered)
+    after = entered(order, instance, part, machine_only(db.instances(key.desktop)))
     db.set_zorder(ZOrderRec(key.desktop, key.view, seg, after, version=rec.version + 1))
     return {
         "before": {"pose_segment": seg, "order": [list(e) for e in order],

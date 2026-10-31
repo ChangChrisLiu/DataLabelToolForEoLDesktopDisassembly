@@ -87,6 +87,7 @@ CLASS_ZH: dict[str, str] = {
     "connector": "接头",
     "cable": "线缆",
     "loose_cable": "线缆",       # the gallery's cables on the table (task U45)
+    "screw_hole": "螺丝孔",      # the fan screw holes of seven desktops (task W3e)
 }
 
 #: ``(class, attribute) -> {value: name}`` where one attribute renames the part.

@@ -162,8 +162,10 @@ def test_coco_loads_in_pycocotools_with_23_categories(db, tax, tmp_path: Path):
     doc = export_coco(db, tax, [DESKTOP], VIEW, str(out), only_verified=False)
 
     coco = COCO(str(out))
-    assert len(coco.getCatIds()) == 23
-    assert sorted(coco.getCatIds()) == list(range(1, 24))
+    # the 23 classes, and the fan screw holes (task W3e) numbered after `other` (24)
+    # and the gallery-only `loose_cable` (25)
+    assert len(coco.getCatIds()) == 24
+    assert sorted(coco.getCatIds()) == [*range(1, 24), 26]
     assert coco.cats[1]["name"] == next(iter(tax.classes))
     assert coco.cats[1]["supercategory"] == "structure"
     assert len(coco.getImgIds()) == len(doc["images"])
@@ -172,15 +174,16 @@ def test_coco_loads_in_pycocotools_with_23_categories(db, tax, tmp_path: Path):
 
 def test_categories_follow_taxonomy_order(tax):
     cats = categories(tax)
-    # a sequence file: the 23 classes; the gallery-only `loose_cable` (task U45, the
-    # taxonomy's last) only in a gallery file, after `other` (24)
-    assert [c["name"] for c in cats] == list(tax.classes)[:23]
-    assert [c["id"] for c in cats] == list(range(1, 24))
+    # a sequence file: the 23 classes and the fan `screw_hole` (task W3e, the taxonomy's
+    # last, id 26); the gallery-only `loose_cable` (task U45) only in a gallery file,
+    # both after `other` (24)
+    assert [c["name"] for c in cats] == [*list(tax.classes)[:23], "screw_hole"]
+    assert [c["id"] for c in cats] == [*range(1, 24), 26]
     assert {c["supercategory"] for c in cats} == {
         "structure", "part", "fastener", "latch", "interface"
     }
-    assert categories(tax, gallery=True) == cats + [
-        {"id": 25, "name": "loose_cable", "supercategory": "interface"}]
+    assert categories(tax, gallery=True) == cats[:23] + [
+        {"id": 25, "name": "loose_cable", "supercategory": "interface"}, cats[23]]
 
 
 def test_only_verified_filters_rows_and_images(db, tax, tmp_path: Path):
