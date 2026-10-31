@@ -98,8 +98,11 @@ derived are left out): `label` (`type(target, blocker)`), `type` (`fastened_by`,
 `blocker` (what must change state first), `necessity` (`required` / `recommended`), `mode`
 (`blocked_by` only: `physical_path`, `tool_access`, `cable_tension`, `mounted` -- a part
 mounted on the board, which must be `removed` before the board moves; `displaced` does not
-count), `reason`, `source`
-(`rule`, `template`, `manual`, `labelstudio`), `status`, `evidence_step`, and
+count; `contained` -- a drive or optical drive carried in or on the cage, which must be
+`removed` before the cage leaves the machine, while the cage may still be swung aside), `reason`,
+`source` (`rule`, `template`, `manual`, `labelstudio`, `review:covers` -- the user's Review
+ruling, `pixels:W2` -- a class-level ruling instantiated where the confirmed frames show the
+overlap), `status`, `evidence_step`, and
 `demonstrated_at`: the first step after which the log has the blocker in a state the edge
 accepts -- `null` when it already was at the start, or when the log never gets there.
 
