@@ -45,7 +45,7 @@ from tda.ui import app_actions as A
 from tda.ui import app_compat as compat
 from tda.ui import app_support as S
 from tda.ui.commands import Op
-from tda.ui.occlusion_order import labeller, occlusion_order
+from tda.ui.occlusion_order import floor_parts, labeller, occlusion_order
 from tda.ui.panels.notes_dock import DOCK_TITLE, NotesDock, NotesPanel
 
 __all__ = ["NOTES_REVIEW_ONLY", "NOTES_SETTING", "NOTE_CLEARED", "NOTE_HOLD_MS", "NOTE_LEFT",
@@ -244,7 +244,7 @@ class NotesWindowMixin:
             records = self.session.db.instances(key.desktop)
         except Exception:  # noqa: BLE001 - names are a convenience; the keys still say it
             records = {}
-        lines = occlusion_order(compiled, drawn)
+        lines = occlusion_order(compiled, drawn, floor_parts(records, compiled.instances))
         order.set_lines(lines, labeller(records))
         self.notes_order_ms = (time.perf_counter() - started) * 1000.0
         self.notes_order_builds += 1

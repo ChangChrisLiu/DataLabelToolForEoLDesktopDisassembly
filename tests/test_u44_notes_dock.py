@@ -34,8 +34,10 @@ from tda.ui.app_notes import NOTES_SETTING
 from tda.ui.occlusion_order import (
     COVERED,
     EMPTY,
+    FLOOR_NOTE,
     MANUAL,
     OWN_FRAME,
+    floor_parts,
     header_text,
     labeller,
     line_text,
@@ -139,6 +141,28 @@ def test_only_overlapping_pairs_count_and_big_counts_are_spaced():
     assert line_text(OrderLine("a", (Taken("b", 1234567),)), plain) == "a　压着 b (1 234 567 px)"
 
 
+def test_the_floor_layers_are_not_listed_as_pressed_on_unless_by_hand():
+    """Round 2 (controller ruling): 「压着 机箱 / 主板」 on every line is noise."""
+    from tda.core.model import InstanceRec
+
+    compiled = frame()
+    compiled.pairs["in_chassis"].append(("ram.01", "chassis"))     # a hand-set floor pair
+    floor = floor_parts({"chassis": InstanceRec(key="chassis", desktop=DESKTOP, cls="chassis"),
+                         "mb.x": InstanceRec(key="mb.x", desktop=DESKTOP, cls="motherboard")},
+                        compiled.instances)
+    assert floor == {"chassis", "mb.x"}
+    assert floor_parts({}, ["motherboard.01", "cover.01"]) == {"motherboard.01"}
+    lines = occlusion_order(compiled, drawn={"ssd.01"}, floor=floor)
+    by = {line.instance: line for line in lines}
+    assert [(t.below, t.pixels, t.manual) for t in by["cover.01"].takes] == [
+        ("ssd.01", 16, True), ("screw.01", 4, False)]               # chassis (64 px) dropped
+    assert by["ssd.01"].takes == ()                                   # its only pair was the floor
+    assert [(t.below, t.pixels, t.manual) for t in by["ram.01"].takes] == [("chassis", 9, True)]
+    assert "chassis" in by and by["chassis"].takes == ()             # keeps its own line
+    assert line_text(by["ram.01"], plain) == f"ram.01　压着 chassis (9 px){MANUAL}"
+    assert header_text(lines) == "这一帧 6 个零件，3 对重叠"        # the listed pairs only
+
+
 def test_names_are_the_annotators_name_and_the_key():
     from tda.core.model import InstanceRec
 
@@ -173,9 +197,13 @@ def test_the_review_panel_keeps_the_box_until_the_window_takes_it(qapp):
 
 
 def seed_overlap(session) -> tuple[str, str]:
-    """Two chassis parts of the frame on screen: a big one and one on top of it."""
+    """Two chassis parts of the frame on screen: a big one and one on top of it.
+
+    Not the chassis or a motherboard: those are never listed as pressed on (round 2).
+    """
     step = int(session.current().step)
-    lower, upper = app_scene.chassis_instances(session, step)[:2]
+    lower, upper = [key for key in app_scene.chassis_instances(session, step)
+                    if key.split(".")[0] not in ("chassis", "motherboard")][:2]
     big = np.zeros(app_scene.HW, dtype=bool)
     big[4:40, 4:40] = True
     small = np.zeros(app_scene.HW, dtype=bool)
@@ -227,6 +255,8 @@ def test_the_dock_shows_in_review_only_and_holds_the_box(window):
     assert not dock.isHidden() and dock.isAncestorOf(window.review.note_box)
     assert not window.review.note_row.isHidden()
     assert window.notes_panel.order.title.text() == ORDER_TITLE
+    assert window.notes_panel.order.footer.text() == FLOOR_NOTE == "机箱与主板垫底，不列为被压的零件"
+    assert not window.notes_panel.order.footer.isHidden()
     assert window.review.note_box.edit.maximumHeight() > window.review.note_box.EDIT_HEIGHT
     assert window.dockWidgetArea(dock) == window.dockWidgetArea(window.review_dock)
     window.set_mode(A.MODE_ANNOTATE)
@@ -325,7 +355,8 @@ def test_the_docs_say_it():
     for needed in ("「我还是想着我口述然后你来理解", "**说明仍是自由文字**", "「写说明」", "**没有快捷键**",
                    "「这一帧 n 个零件，m 对重叠」", "「这一帧没有编译出的零件」", "「（手动）」",
                    "「（这一帧单独画）」", "「被完全盖住」", "`out_of_view`", "**不另编译、不写库**",
-                   "`notes/open`", "`cli notes` 不变"):
+                   "`notes/open`", "`cli notes` 不变", "**机箱和主板垫底**",
+                   "「机箱与主板垫底，不列为被压的零件」"):
         assert needed in bullet, needed
     changes = spec.split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]

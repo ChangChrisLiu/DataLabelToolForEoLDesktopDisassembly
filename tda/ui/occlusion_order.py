@@ -17,6 +17,9 @@ from a ``PairOverride`` (:attr:`~tda.core.compiler.CompiledFrame.pairs`) is
 marked 「（手动）」; a part with a per-frame mask (「只改这一帧」, the caller
 says which) 「（这一帧单独画）」; a part whose visible mask is empty 「被完全盖住」.
 ``out_of_view`` parts are left out: they take no pixels (spec §4.2 画框外).
+The floor layers -- the chassis and the motherboard -- are never listed as the
+part pressed on (every part lies on them), unless a ``PairOverride`` decided
+the pair (round 2, controller ruling); they keep their own lines.
 
 Pairs are counted inside the windows the compiler already knows each mask is
 empty outside, so a frame of forty parts costs a few milliseconds, not forty
@@ -32,10 +35,11 @@ import numpy as np
 
 from tda.core.compiler import CompiledFrame
 from tda.core.model import CONTEXT_PLACEMENT, Placement, Visibility
-from tda.ui.class_names import instance_label
+from tda.ui.class_names import class_of_key, instance_label
 
-__all__ = ["COVERED", "EMPTY", "MANUAL", "OWN_FRAME", "OrderLine", "Taken", "header_text",
-           "labeller", "line_text", "occlusion_order", "overlap_pairs"]
+__all__ = ["COVERED", "EMPTY", "FLOOR_CLASSES", "FLOOR_NOTE", "MANUAL", "OWN_FRAME", "OrderLine",
+           "Taken", "floor_parts", "header_text", "labeller", "line_text", "occlusion_order",
+           "overlap_pairs"]
 
 #: Marks of a line (spec §4.4, v1.43).
 MANUAL = "（手动）"
@@ -43,6 +47,10 @@ OWN_FRAME = "（这一帧单独画）"
 COVERED = "被完全盖住"
 #: The header of a frame with nothing compiled on it.
 EMPTY = "这一帧没有编译出的零件"
+#: The floor layers' classes (U44 round 2): never listed as the part pressed
+#: on, unless a ``PairOverride`` decided the pair; the list's footer says so.
+FLOOR_CLASSES = frozenset({"chassis", "motherboard"})
+FLOOR_NOTE = "机箱与主板垫底，不列为被压的零件"
 #: Painting order of the groups, bottom-up -- :func:`tda.ui.session_rows.painted`'s.
 GROUPS = (Placement.IN_CHASSIS.value, Placement.ON_BENCH.value, CONTEXT_PLACEMENT)
 OUT_OF_VIEW = Visibility.OUT_OF_VIEW.value
@@ -169,20 +177,29 @@ def overlap_pairs(compiled: CompiledFrame,
 
 
 def occlusion_order(compiled: Optional[CompiledFrame],
-                    drawn: Iterable[str] = ()) -> list[OrderLine]:
+                    drawn: Iterable[str] = (),
+                    floor: Iterable[str] = ()) -> list[OrderLine]:
     """The frame's parts top to bottom in painting order, with what each takes.
 
     ``drawn``: the instances with a per-frame mask on this frame (the frame
     overrides with pixels; the compiled row does not tell them apart).
+    ``floor``: the floor layers -- the chassis and the motherboard
+    (:func:`floor_parts`).  Every part lies on them, so 「压着 机箱 / 主板」
+    on every line is noise (U44 round 2, controller ruling): a pair whose
+    lower part is one of them is not listed, unless a ``PairOverride`` decided
+    it.  They keep their own lines -- they can still take pixels themselves.
     """
     if compiled is None:
         return []
-    drawn = set(drawn)
+    drawn, floor = set(drawn), set(floor)
     manual = {tuple(pair) for pairs in (compiled.pairs or {}).values() for pair in pairs}
     groups = _groups(compiled)
     taken: dict[str, list[Taken]] = {}
     for (above, below), n in overlap_pairs(compiled, groups).items():
-        taken.setdefault(above, []).append(Taken(below, n, (above, below) in manual))
+        hand = (above, below) in manual
+        if below in floor and not hand:
+            continue
+        taken.setdefault(above, []).append(Taken(below, n, hand))
     lines = []
     for part in reversed([part for parts in groups for part in parts]):
         name = part.instance
@@ -216,6 +233,21 @@ def header_text(lines: list[OrderLine]) -> str:
         return EMPTY
     pairs = {frozenset((line.instance, t.below)) for line in lines for t in line.takes}
     return f"这一帧 {len(lines)} 个零件，{len(pairs)} 对重叠"
+
+
+def floor_parts(records: Mapping[str, object], instances: Iterable[str] = ()) -> set[str]:
+    """The floor layers among ``instances`` (and ``records``): the chassis and the motherboards.
+
+    By class (``chassis``, ``motherboard``); a key with no record falls back
+    to the class its key names (``chassis``, ``motherboard.01``).
+    """
+    found = set()
+    for name in set(records) | set(instances):
+        rec = records.get(name)
+        cls = getattr(rec, "cls", None) or class_of_key(name)
+        if str(cls) in FLOOR_CLASSES:
+            found.add(str(name))
+    return found
 
 
 def labeller(records: Mapping[str, object]) -> Callable[[str], str]:

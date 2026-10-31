@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from tda.ui.occlusion_order import OrderLine, header_text, line_text
+from tda.ui.occlusion_order import FLOOR_NOTE, OrderLine, header_text, line_text
 from tda.ui.panels.frame_note import FrameNoteBox
 
 __all__ = ["DOCK_TITLE", "ORDER_TITLE", "ORDER_TIP", "INSTANCE_ROLE", "NotesDock",
@@ -39,7 +39,8 @@ DOCK_TITLE = "说明"
 ORDER_TITLE = "这一帧的遮挡顺序"
 ORDER_TIP = ("这一帧编译出的零件，从上到下按画的顺序（最上面的先写）：每个零件后面是它在这一帧压着的零件和"
              "压住的像素，多的在前。「（手动）」：这一对的上下是「改层级」定的；「（这一帧单独画）」："
-             "这个零件这一帧有单独画的形状；「被完全盖住」：它这一帧一点都露不出来。画框外的零件不列。"
+             "这个零件这一帧有单独画的形状；「被完全盖住」：它这一帧一点都露不出来。画框外的零件不列；"
+             "机箱和主板垫在最下面，不列为被压的零件（「改层级」定的除外）。"
              "只看不改：点一行在实例表里选中那个零件；遮挡关系不对就在下面的说明里写出来。")
 #: The part a line is about.
 INSTANCE_ROLE = int(Qt.ItemDataRole.UserRole)
@@ -65,7 +66,10 @@ class OcclusionList(QWidget):
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.list.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.list.itemClicked.connect(self._on_clicked)
-        for widget in (self, self.title, self.header, self.list):
+        # round 2: the floor layers are not listed as pressed on; said once, small
+        self.footer = QLabel(FLOOR_NOTE)
+        self.footer.setStyleSheet("color: gray; font-size: 8pt")
+        for widget in (self, self.title, self.header, self.list, self.footer):
             widget.setToolTip(ORDER_TIP)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -76,6 +80,7 @@ class OcclusionList(QWidget):
         head.addWidget(self.header)
         layout.addLayout(head)
         layout.addWidget(self.list, 1)
+        layout.addWidget(self.footer)
 
     def set_lines(self, lines: list[OrderLine],
                   label: Optional[Callable[[str], str]] = None) -> None:
