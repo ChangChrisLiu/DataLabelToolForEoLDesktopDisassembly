@@ -92,8 +92,9 @@ def test_the_spec_has_the_fifth_queue_viewpoint_and_v1_24_on_top():
                                   "- **v1.32", "- **v1.33", "- **v1.34", "- **v1.35",
                                   "- **v1.36",
                                   "- **v1.37", "- **v1.38", "- **v1.39", "- **v1.40",
-                                  "- **v1.41", "- **v1.42"))
-    [first] = [e for e in entries[:19] if e.startswith("- **v1.24")]
+                                  "- **v1.41", "- **v1.42", "- **v1.43", "- **v1.44",
+                                  "- **v1.45"))
+    [first] = [e for e in entries[:20] if e.startswith("- **v1.24")]
     assert first.startswith("- **v1.24（2026-10-23）**：**可见性审查**（U24，§4.4、§6.2）")
     for needed in ("`QUEUE_VISIBILITY`", "`viewpoint`", "`review_visibility`",
                    "`attributes.visibility_reviewed`", "「可见性审查 n/m」", "无迁移"):
