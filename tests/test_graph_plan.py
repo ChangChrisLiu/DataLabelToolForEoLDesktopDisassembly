@@ -148,20 +148,22 @@ def test_remaining_plan_from_the_initial_state(bench, tax):
     ):
         assert pair in plan
     # everything on the board comes off before it (task W3d): the RAM (its
-    # latches first), the cooler (its captive screws first), then the CPU. Off
-    # is `remove` or `displace` -- `covered_by` accepts either, and the planner
-    # takes the least invasive verb (`graph_plan.VERB_PREFERENCE`)
+    # latches first), the cooler (its captive screws first), then the CPU -- and
+    # off means removed: the `mounted` block does not accept a part swung aside
     for pair in (
         ("open", "ram_latch.01"),
         ("open", "ram_latch.02"),
+        ("remove", "ram_module.01"),
         ("unscrew", "screw.cpu_cooler.01"),
         ("unscrew", "screw.cpu_cooler.02"),
+        ("remove", "cpu_cooler.fan.01"),
         ("open", "cpu_socket_lever.01"),
+        ("remove", "cpu.01"),
     ):
         assert pair in plan
-    off = {t: i for i, (v, t) in enumerate(plan) if v in ("remove", "displace")}
-    assert {"ram_module.01", "cpu_cooler.fan.01", "cpu.01"} <= set(off)
-    assert off["cpu_cooler.fan.01"] < plan.index(("open", "cpu_socket_lever.01"))
+    assert not [p for p in plan if p[0] == "displace"]
+    assert plan.index(("remove", "cpu_cooler.fan.01")) < plan.index(
+        ("open", "cpu_socket_lever.01"))
     # nothing irrelevant: the drive stays where it is
     assert not [p for p in plan if p[1].startswith("storage_")]
 

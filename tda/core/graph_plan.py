@@ -36,6 +36,7 @@ from tda.core.graph_rules import (
     cable_nodes,
     gated_verbs,
     is_provisional,
+    required_states,
     verb_applies,
     verb_effect,
 )
@@ -150,6 +151,29 @@ def _removal_goal(instances: dict[str, InstanceRec], goal: str) -> str:
     if rec.parent and rec.attached and rec.parent in instances:
         return rec.parent
     return goal
+
+
+def _must_remove(by_target: dict[str, list[Edge]], target: str) -> set[str]:
+    """Every node that has to be ``removed`` before ``target`` can be (task W3d).
+
+    The blockers of the edges on ``target`` that accept nothing but
+    ``removed`` (a ``blocked_by`` of mode ``mounted``: the CPU, RAM, cooler and
+    cards on the board) and gate its removal, then theirs, and so on. The
+    planner takes such a part out the first time anything needs it out of the
+    way: the cooler that covers the CPU is lifted off once, not swung aside for
+    the CPU and lifted off again for the board.
+    """
+    out: set[str] = set()
+    todo = [target]
+    while todo:
+        node = todo.pop()
+        for edge in by_target.get(node, ()):
+            if (edge.blocker not in out
+                    and required_states(edge.type, edge.mode) == frozenset({REMOVED})
+                    and "remove" in gated_verbs(edge.type, edge.mode)):
+                out.add(edge.blocker)
+                todo.append(edge.blocker)
+    return out
 
 
 @dataclass(frozen=True)
@@ -282,6 +306,8 @@ def _plan_once(
     #: with no deadlock in it -- which is the definition
     #: :func:`find_deadlocks` now uses, and the two must agree.
     visiting: set[VerbTarget] = set()
+    #: Nodes the goal cannot be removed without removing (:func:`_must_remove`).
+    must_remove: set[str] = set()
 
     def apply(key: str, verb: str) -> None:
         rec = instances.get(key)
@@ -314,7 +340,8 @@ def _plan_once(
                 # schedule its disconnects
                 if verb not in gated_verbs(edge.type, edge.mode):
                     continue
-                wanted = REQUIRED_STATES.get(edge.type, frozenset())
+                # by type and mode: a `mounted` part must come off, not aside
+                wanted = required_states(edge.type, edge.mode)
                 if not ensure(edge.blocker, wanted):
                     return False
         finally:
@@ -348,7 +375,15 @@ def _plan_once(
             if not key.startswith(CABLE_PREFIX):
                 return True
             rec = InstanceRec(key=key, desktop=0, cls="cable")
-        for verb in _choose_verbs(tax, rec, current, wanted):
+        verbs = _choose_verbs(tax, rec, current, wanted)
+        if key in must_remove:
+            # this part has to come out for the goal anyway (task W3d): take it
+            # out the first time it is in the way rather than swing it aside now
+            # and come back for it, falling back to the lighter verbs if that
+            # cannot be planned here
+            first = _choose_verbs(tax, rec, current, frozenset({REMOVED}))
+            verbs = [*first, *(v for v in verbs if v not in first)]
+        for verb in verbs:
             mark, snapshot = len(plan), dict(sim)
             if perform(key, verb):
                 return True
@@ -363,6 +398,7 @@ def _plan_once(
         return None
 
     target = _removal_goal(instances, goal)
+    must_remove.update(_must_remove(by_target, target))
     chain = _removal_chain(tax, instances[target], sim.get(target, ""))
     if chain is None:
         return None
@@ -453,7 +489,7 @@ def clearing_actions(
     The planner's own alternatives (:func:`_choose_verbs`), so the two agree on
     what "clearing a blocker" can mean.
     """
-    wanted = REQUIRED_STATES.get(edge.type, frozenset())
+    wanted = required_states(edge.type, edge.mode)
     current = sim.get(edge.blocker)
     if current is None or current == REMOVED or current in wanted:
         return None

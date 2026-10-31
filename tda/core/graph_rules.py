@@ -42,11 +42,14 @@ __all__ = [
     "AMBIGUOUS",
     "ACCEPTED",
     "BLOCKED_GATES",
+    "BLOCKED_MODES",
+    "BLOCKED_REQUIRED",
     "CABLE_DEFAULT_STATE",
     "CABLE_PREFIX",
     "INACTIVE_STATUSES",
     "LS_PREFIX",
     "MOTHERBOARD_CLASS",
+    "MOUNTED_MODE",
     "MOUNTED_ON_MOTHERBOARD",
     "NO_CANDIDATE",
     "ORPHAN_OF",
@@ -73,6 +76,7 @@ __all__ = [
     "infer_relational_fields",
     "is_provisional",
     "propose_edges",
+    "required_states",
     "unresolved_boards",
     "unresolved_coolers",
     "unresolved_fan_owners",
@@ -95,8 +99,12 @@ REQUIRED_STATES: dict[str, frozenset[str]] = {
     "blocked_by": frozenset({"removed", "displaced", "released"}),
 }
 
+#: The ``blocked_by`` mode of the rule-derived "this part is mounted on that
+#: board" edge (task W3d).
+MOUNTED_MODE = "mounted"
 #: ``blocked_by`` is the only type that carries a mode (spec 7.1).
-BLOCKED_MODES = ("physical_path", "tool_access", "cable_tension")
+#: ``physical_path`` stays first: it is the Relations panel's default.
+BLOCKED_MODES = ("physical_path", "tool_access", "cable_tension", MOUNTED_MODE)
 
 #: Verbs a hard constraint can block at all (spec 7.2). ``reorient`` is a
 #: capture action on the chassis, not a disassembly step, so nothing gates it.
@@ -138,12 +146,38 @@ GATES: dict[str, frozenset[str]] = {
 #:   only stops it leaving the machine, exactly like ``connected_to``;
 #: * ``physical_path`` -- the blocker is in the part's way, so it can neither be
 #:   taken out nor moved, but its own screws and plugs are still reachable;
-#: * ``tool_access`` -- you cannot get at it at all, so every gated verb waits.
+#: * ``tool_access`` -- you cannot get at it at all, so every gated verb waits;
+#: * ``mounted`` (task W3d) -- the blocker is mounted on the part (a CPU, RAM
+#:   stick, cooler or card on the board): as ``physical_path``, the board can
+#:   neither be taken out nor moved, but its own screws and plugs stay reachable.
 BLOCKED_GATES: dict[str, frozenset[str]] = {
     "cable_tension": frozenset({"remove"}),
     "physical_path": frozenset({"remove", "displace"}),
     "tool_access": GATED_VERBS,
+    "mounted": frozenset({"remove", "displace"}),
 }
+
+#: ``blocked_by`` modes whose blocker must reach a narrower set of states than
+#: :data:`REQUIRED_STATES` gives the type (task W3d). A part mounted on the
+#: board has to come **off**: a RAM stick swung aside is still in its slot, so
+#: ``displaced`` does not free the board (the user's 「拆掉了」; in the 60
+#: board-removing logs no CPU, RAM stick or card is ever displaced).
+BLOCKED_REQUIRED: dict[str, frozenset[str]] = {
+    "mounted": frozenset({"removed"}),
+}
+
+
+def required_states(edge_type: str, mode: Optional[str] = None) -> frozenset[str]:
+    """The states the blocker of an edge of this type (and ``blocked_by`` mode) must be in.
+
+    The one accessor every reader of the required states goes through (task
+    W3d): a ``blocked_by`` whose mode has a :data:`BLOCKED_REQUIRED` row gets
+    that row, everything else :data:`REQUIRED_STATES` by type (empty for an
+    unknown type).
+    """
+    if edge_type == "blocked_by" and mode in BLOCKED_REQUIRED:
+        return BLOCKED_REQUIRED[mode]
+    return REQUIRED_STATES.get(edge_type, frozenset())
 
 
 def gated_verbs(edge_type: str, mode: Optional[str] = None) -> frozenset[str]:
@@ -528,7 +562,7 @@ def board_of(instances: dict[str, InstanceRec]) -> tuple[Optional[str], Optional
         return boards[0], None
     return None, (
         f"unresolved board: 这台机器有不止一块主板，无法判断零件装在哪块上 / more than one "
-        f"motherboard on this desktop: {', '.join(boards)}. No covered_by edge from a "
+        f"motherboard on this desktop: {', '.join(boards)}. No blocked_by (mounted) edge from a "
         f"mounted part ({', '.join(MOUNTED_ON_MOTHERBOARD)}) to a board was proposed; "
         f"in S1 keep one board."
     )
@@ -552,8 +586,9 @@ def propose_edges(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[Edge
     PSU-latch edges -> ``locked_by``; ``cover.of`` plus the fixed edges of the
     cooler on the CPU (over the CPU, over every socket lever, and a two-part
     cooler's fan over its heatsink; :func:`cooler_on_cpu`) -> ``covered_by``;
-    every part mounted on the motherboard over the board -> ``covered_by``
-    (:func:`_mounted_on_board`, below). ``cable_clip.holds`` yields no edge on its own -- a
+    every part mounted on the motherboard -> ``blocked_by(board <- part,
+    mode="mounted")`` (:func:`_mounted_on_board`, below) -- the one rule-derived
+    ``blocked_by``. ``cable_clip.holds`` still yields no edge on its own -- a
     clipped cable only blocks a target once a human says which one, so those
     ``blocked_by`` edges stay manual (spec 7.3 item 3).
 
@@ -575,12 +610,17 @@ def propose_edges(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[Edge
     user's rule of 2026-10-31, task W3d): every real instance of
     :data:`MOUNTED_ON_MOTHERBOARD` -- ``cpu``, ``ram_module``, ``cpu_cooler``
     (both parts of a two-part cooler) and ``expansion_card`` -- gives
-    ``covered_by(motherboard <- part)``, reason ``"<part> sits on <board>"``.
-    It is an assembly / protocol rule of this dataset (physical for a GPU seated
-    in its slot and screwed to the chassis, protocol for a RAM stick), and
-    ``covered_by`` is the type the fixed template edges of the same kind already
-    use (the cooler on the CPU); it gates ``remove`` and ``displace`` of the
-    board, which has no ``open``. All 60 board-removing logs already obey it.
+    ``blocked_by(motherboard <- part, mode="mounted")``, reason
+    ``"<part> sits on <board>"``. It is an assembly / protocol rule of this
+    dataset (physical for a GPU seated in its slot and screwed to the chassis,
+    protocol for a RAM stick). The mode gates ``remove`` and ``displace`` of the
+    board (:data:`BLOCKED_GATES`), and its blocker must be ``removed``
+    (:data:`BLOCKED_REQUIRED`, :func:`required_states`). Not ``covered_by``,
+    which the first round used: that type is satisfied by ``displaced``, the
+    taxonomy lets ``displace`` apply to all four classes, and so every board plan
+    swung the parts aside instead of taking them off -- the user's 「拆掉了」
+    means removed, and in the 60 board-removing logs no CPU, RAM stick or card is
+    ever displaced. All 60 logs already obey the rule.
     What it does **not** say is "the board is the last thing out": that holds
     on 56 of the 60 logs, but D01 D02 D35 D36 take the PSU (D01 also the optical
     drive, D02 the cover and its PSU latch) out after the board, so only these
@@ -609,8 +649,10 @@ def _dedupe(edges: list[Edge]) -> list[Edge]:
     return out
 
 
-def _edge(etype: str, target: str, blocker: str, reason: str) -> Edge:
-    return Edge(type=etype, target=target, blocker=blocker, reason=reason, source="rule")
+def _edge(etype: str, target: str, blocker: str, reason: str,
+          mode: Optional[str] = None) -> Edge:
+    return Edge(type=etype, target=target, blocker=blocker, reason=reason, source="rule",
+                mode=mode)
 
 
 def _fastened_by(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[Edge]:
@@ -696,11 +738,13 @@ def _covered_by(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[Edge]:
 
 
 def _mounted_on_board(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[Edge]:
-    """Every real part of :data:`MOUNTED_ON_MOTHERBOARD` covers the board (task W3d).
+    """Every real part of :data:`MOUNTED_ON_MOTHERBOARD` blocks the board (task W3d).
 
-    ``covered_by(board <- part)``, one per settled, non-extra instance of the
-    four classes. No edge at all when the desktop has no single real board
-    (:func:`board_of`) or the board is an S1 extra (see :func:`propose_edges`).
+    ``blocked_by(board <- part, mode=MOUNTED_MODE)``, one per settled, non-extra
+    instance of the four classes: the part has to be removed before the board
+    can be moved or taken out. No edge at all when the desktop has no single
+    real board (:func:`board_of`) or the board is an S1 extra (see
+    :func:`propose_edges`).
     """
     board, _ = board_of(instances)
     if board is None or is_extra(instances[board]):
@@ -709,7 +753,8 @@ def _mounted_on_board(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[
     for cls in MOUNTED_ON_MOTHERBOARD:
         for key in _real_instances(instances, cls):
             if not is_extra(instances[key]):
-                out.append(_edge("covered_by", board, key, f"{key} sits on {board}"))
+                out.append(_edge("blocked_by", board, key, f"{key} sits on {board}",
+                                 mode=MOUNTED_MODE))
     return out
 
 

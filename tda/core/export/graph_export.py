@@ -71,7 +71,6 @@ from tda.core.export.release import model_names, public_attrs
 from tda.core.graph import (
     GATED_VERBS,
     HARD_TYPES,
-    REQUIRED_STATES,
     Edge,
     applicable_preconditions,
     constraint_edges,
@@ -84,7 +83,13 @@ from tda.core.graph import (
     validate_sequence,
 )
 from tda.core.graph_plan import plan_removal
-from tda.core.graph_rules import active_edges, blocker_state, verb_applies, verb_effect
+from tda.core.graph_rules import (
+    active_edges,
+    blocker_state,
+    required_states,
+    verb_applies,
+    verb_effect,
+)
 from tda.core.implied import is_implied
 from tda.core.model import (
     VIEWS,
@@ -327,8 +332,8 @@ def _steps(ctx: DesktopCtx, timeline: list[int]) -> list[dict]:
 
 def _satisfied(edge: Edge, state: FrameState) -> bool:
     current = blocker_state(state, edge.blocker)
-    return current is None or current == REMOVED or current in REQUIRED_STATES.get(
-        edge.type, frozenset())
+    return current is None or current == REMOVED or current in required_states(
+        edge.type, edge.mode)
 
 
 def _edges(ctx: DesktopCtx, edges: list[Edge], timeline: list[int]) -> list[dict]:

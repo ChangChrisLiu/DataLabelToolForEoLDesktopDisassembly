@@ -74,7 +74,6 @@ from tda.core.export.coco import (
 )
 from tda.core.graph import (
     Edge,
-    REQUIRED_STATES,
     applicable_preconditions,
     find_deadlocks,
     gated_verbs,
@@ -87,6 +86,7 @@ from tda.core.graph_rules import (
     active_edges,
     blocker_state,
     cable_nodes,
+    required_states,
     verb_applies,
     verb_effect,
 )
@@ -1647,7 +1647,7 @@ def _v4_record(tc: TaskCtx, frame: FrameData, verb: str, target: str,
                                        edge.necessity, edge.mode))
         chain.append(observed(edge.blocker, current, tc, frame.pointable))
         chain.append(R.check_precondition(edge.blocker,
-                                          REQUIRED_STATES.get(edge.type, frozenset()),
+                                          required_states(edge.type, edge.mode),
                                           current, False))
     if truth_source == STATE_INAPPLICABLE:
         chain.append(R.check_precondition(target, ["a state the verb starts from"],
@@ -1669,7 +1669,7 @@ def _v4_record(tc: TaskCtx, frame: FrameData, verb: str, target: str,
          "metric": "per_verb_accuracy_macro", "secondary_metric": "accuracy",
          "edges": [{"type": e.type, "target": e.target, "blocker": e.blocker,
                     "necessity": e.necessity, "mode": e.mode,
-                    "required": sorted(REQUIRED_STATES.get(e.type, frozenset()))}
+                    "required": sorted(required_states(e.type, e.mode))}
                    for e in sorted(bad, key=lambda e: (e.type, e.blocker))]},
         evidence(bboxes, tc), R.rationale(chain),
         row_verified([frame.pointable[k][0] for k in bboxes], frame.verified),
@@ -2622,7 +2622,7 @@ def _plan_record(tc: TaskCtx, frame: FrameData, plan: Sequence[tuple[str, str]],
                                        edge.necessity, edge.mode))
         chain.append(observed(edge.blocker, current, tc, frame.pointable))
         chain.append(R.check_precondition(edge.blocker,
-                                          REQUIRED_STATES.get(edge.type, frozenset()),
+                                          required_states(edge.type, edge.mode),
                                           current, False))
     if not edges:
         chain.extend(observed(t, state[t].state if t in state else None,
@@ -2806,7 +2806,7 @@ def required_actions(tc: TaskCtx, state: FrameState, goal: str) -> list[Requirem
                 continue
             if not all(v in gated_verbs(edge.type, edge.mode) for v in verbs):
                 continue
-            need(edge.blocker, REQUIRED_STATES.get(edge.type, frozenset()),
+            need(edge.blocker, required_states(edge.type, edge.mode),
                  via + (edge,))
 
     need(goal, frozenset({REMOVED}), ())

@@ -81,7 +81,7 @@ TAG_OTHER = "其他"
 TAGS = (TAG_RECOMMENDED, TAG_UNCERTAIN, TAG_OTHER)
 
 #: Class-level support: the part sits on the motherboard.  Since task W3d the
-#: pair is a **rule edge** (``covered_by(motherboard <- part)``, spec 7.3
+#: pair is a **rule edge** (``blocked_by(motherboard <- part, mode=mounted)``, spec 7.3
 #: 「主板上的东西先拆」), so its order is already decided and Review never asks
 #: it.  The one table (``tda.core.export.graph_covers.SUPPORT``, built from
 #: ``tda.core.graph_rules.MOUNTED_ON_MOTHERBOARD``; unified at the W3a merge,
