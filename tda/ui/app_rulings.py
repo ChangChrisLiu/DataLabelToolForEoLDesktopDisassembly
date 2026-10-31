@@ -34,7 +34,9 @@ are not touched.  The rows carry both parts' states at the frame
 pairs the graph orders indirectly or the log already decides are folded away
 (:func:`tda.ui.cover_rulings.triage_pairs`; the log replay,
 :func:`~tda.ui.cover_rulings.cover_log`, is kept per desktop until its actions
-or hand-written events change).
+or hand-written events change).  Task W3g folds a third kind away, the pairs
+whose class pair the user ruled 不挡 (the shipped whitelist's ``not_blocks:``,
+read once by :func:`~tda.ui.cover_rulings.class_rulings`).
 """
 from __future__ import annotations
 
@@ -159,7 +161,8 @@ class RulingsWindowMixin:
         self._rulings_states = states
         tri = triage_pairs(triples, records, edges_from_db(db, desktop), rulings,
                            log=self._desktop_cover_log(desktop, records), states=states)
-        section.set_rulings(tri.asked, rulings, proven=tri.proven, indirect=tri.indirect)
+        section.set_rulings(tri.asked, rulings, proven=tri.proven, indirect=tri.indirect,
+                            class_not_blocks=tri.class_not_blocks)
         self.rulings_ms = (time.perf_counter() - started) * 1000.0
         self.rulings_builds += 1
 

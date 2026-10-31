@@ -64,11 +64,13 @@ WAS_RULE = "was rule: "
 
 #: What each mode stops, in the annotator's words -- the table of
 #: :data:`~tda.core.graph_rules.BLOCKED_GATES` read out loud.
-#: ``mounted`` (task W3d) also narrows what clears it, which the gate list alone
-#: does not say.
+#: ``mounted`` (task W3d) and ``contained`` (task W3g) also narrow what clears
+#: them, which the gate list alone does not say.
 _MODE_NOTES = {
     "mounted": "（装在上面的零件要拆下来，挪开不算 / the part on it must be taken off; "
                "moving it aside does not count）",
+    "contained": "（装在里面 / 上面的零件要先拿下来，架子可以先挪开 / the parts it carries "
+                 "must come out first; the cage may be moved aside before）",
 }
 MODE_TOOLTIP = "blocked_by 的方式决定它挡住哪些动作 / what this block stops:\n" + "\n".join(
     f"  {mode}: {', '.join(sorted(BLOCKED_GATES[mode]))}{_MODE_NOTES.get(mode, '')}"
