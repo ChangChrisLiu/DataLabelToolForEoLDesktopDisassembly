@@ -61,6 +61,8 @@ from tda.ui.session_visruns import VisRunsMixin, apply_sync
 from tda.ui.session_absent import OP_KIND as ABSENT_OP
 from tda.ui.session_absent import AbsentMixin, apply_absent
 from tda.ui.session_notes import NotesMixin
+from tda.ui.session_rulings import OP_KIND as RULING_OP
+from tda.ui.session_rulings import RulingsMixin
 from tda.ui.session_gallery import OP_KIND as GALLERY_PARTS_OP
 from tda.ui.session_gallery import GalleryPartsMixin, apply_gallery_parts
 
@@ -71,7 +73,7 @@ log = logging.getLogger("tda.session")
 class AnnotationSession(CommitMixin, ReviewMixin, ResignMixin, StateMixin, VerbMixin,
                         CaptiveMixin, ReclassMixin, CableMixin, ContextMixin, VisReviewMixin,
                         VisRunsMixin, AbsentMixin, NotesMixin, GalleryPartsMixin,
-                        TruthCacheMixin, QObject):
+                        RulingsMixin, TruthCacheMixin, QObject):
     """One annotator's working set: a desktop, a view, and the frame in hand."""
 
     #: The current frame changed; payload is a :class:`~tda.core.model.FrameKey`.
@@ -98,6 +100,9 @@ class AnnotationSession(CommitMixin, ReviewMixin, ResignMixin, StateMixin, VerbM
     #: The note of a frame (「这一帧的说明」, task U35) was written, cleared, or
     #: put back by an undo; payload is its :class:`~tda.core.model.FrameKey`.
     sigNoteChanged = Signal(object)
+    #: The 「谁压着谁」 rulings of a desktop (task W3c) were written, cleared,
+    #: or put back by an undo; payload is the desktop.
+    sigRulingsChanged = Signal(int)
 
     def __init__(self, db: Db, tax: Taxonomy, truth: TruthService, cache_dir: str,
                  annotator: str) -> None:
@@ -216,6 +221,9 @@ class AnnotationSession(CommitMixin, ReviewMixin, ResignMixin, StateMixin, VerbM
         # 这一帧的说明 (task U35): no input of the compiler -- the row, and the
         # panels told; nothing compiled, nothing announced
         self.undo_stack.register(NOTE_OP, self._apply_note_op, self._apply_note_op)
+        # 谁压着谁 (task W3c): no input of the compiler either -- the rows, and
+        # the dock told
+        self.undo_stack.register(RULING_OP, self._apply_ruling_op, self._apply_ruling_op)
         # a brush stroke is undone in the same history, but it touches nothing
         # but the editing layer: no database write, no recompilation
         self.undo_stack.register(

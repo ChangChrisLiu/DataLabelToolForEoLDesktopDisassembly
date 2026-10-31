@@ -226,7 +226,8 @@ def overlap_pairs(compiled: CompiledFrame,
 
 def occlusion_order(compiled: Optional[CompiledFrame],
                     drawn: Iterable[str] = (),
-                    floor: Iterable[str] = ()) -> list[OrderLine]:
+                    floor: Iterable[str] = (),
+                    pairs: Optional[Mapping[tuple[str, str], int]] = None) -> list[OrderLine]:
     """The frame's parts top to bottom in painting order, with what each takes.
 
     ``drawn``: the instances with a per-frame mask on this frame (the frame
@@ -236,14 +237,18 @@ def occlusion_order(compiled: Optional[CompiledFrame],
     on every line is noise (U44 round 2, controller ruling): a pair whose
     lower part is one of them is not listed, unless a ``PairOverride`` decided
     it.  They keep their own lines -- they can still take pixels themselves.
+    ``pairs``: :func:`overlap_pairs` of ``compiled`` when the caller has
+    counted them already (the window shares one count with the 「谁压着谁」
+    section, task W3c); counted here otherwise.
     """
     if compiled is None:
         return []
     drawn, floor = set(drawn), set(floor)
-    manual = {tuple(pair) for pairs in (compiled.pairs or {}).values() for pair in pairs}
+    manual = {tuple(pair) for group in (compiled.pairs or {}).values() for pair in group}
     groups, bottom_up, unpainted = _layout(compiled)
     taken: dict[str, list[Taken]] = {}
-    for (above, below), n in overlap_pairs(compiled, groups).items():
+    counted = overlap_pairs(compiled, groups) if pairs is None else pairs
+    for (above, below), n in counted.items():
         hand = (above, below) in manual
         if below in floor and not hand:
             continue
