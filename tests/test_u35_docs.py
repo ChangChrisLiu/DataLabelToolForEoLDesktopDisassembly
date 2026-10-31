@@ -104,7 +104,8 @@ def test_the_guide_has_one_sentence_in_6_and_its_prose_stays_within_its_limit():
     body = GUIDE.read_text(encoding="utf-8")
     section = body.split("## 6. 复查队列", 1)[1].split("\n---", 1)[0]
     last = [line for line in section.splitlines() if line.strip()][-1]
-    assert last == "队列下「这一帧的说明」：翻帧自动存，`cli notes` 读。"         # round 3
+    # round 3; the box is in the 「说明」 dock since U44, under the occlusion order
+    assert last == "「说明」窗：遮挡顺序与说明，翻帧自动存，`cli notes` 读。"
     prose = [line for line in body.splitlines() if not line.startswith("| `")]
     assert sum(len(line) for line in prose) <= 7700
     # a promise the user cares about: it stays (round 3, R2-N2)
