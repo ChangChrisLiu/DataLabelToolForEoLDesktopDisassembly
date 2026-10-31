@@ -783,7 +783,7 @@ def _add_refresh_flags(p) -> None:
 
 def cmd_export_vlm(args: argparse.Namespace) -> int:
     """Write the P0 question set of spec 8.2 for one view as JSONL."""
-    from tda.core.export.vlm import TASKS, export_vlm
+    from tda.core.export.vlm import ALL_TASKS, TASKS, export_vlm
 
     with session(args, lock=True) as (paths, db):
         desktops = _desktop_list(args.desktops)
@@ -804,10 +804,12 @@ def cmd_export_vlm(args: argparse.Namespace) -> int:
         if targets is None:
             return EXIT_ERROR
         tasks = [t.strip() for t in str(args.tasks).split(",") if t.strip()] or list(TASKS)
-        unknown = [t for t in tasks if t not in TASKS]
+        # V5 left the default set (W3b) but is still a task: `--tasks V5` works
+        unknown = [t for t in tasks if t not in ALL_TASKS]
         if unknown:
             print(f"[export-vlm] not a task: {', '.join(unknown)}; "
-                  f"the P0 set is {','.join(TASKS)}")
+                  f"the default set is {','.join(TASKS)} "
+                  f"(also available: {','.join(t for t in ALL_TASKS if t not in TASKS)})")
             return EXIT_ERROR
         worst = EXIT_OK
         for view in views:
@@ -820,6 +822,7 @@ def cmd_export_vlm(args: argparse.Namespace) -> int:
                 export_vlm, db, load_taxonomy(), desktops, view, str(out),
                 allow_conflicts=bool(args.allow_conflicts), tasks=tasks,
                 only_verified=bool(args.only_verified), truth=truth,
+                **({} if getattr(args, "v2_balance", True) else {"balance": False}),
             )
             _report_vlm(stats, view)
             if not _count(stats, "records"):
@@ -873,6 +876,24 @@ def _report_vlm(stats: dict, view: str) -> None:
         listed = ", ".join(f"D{d}:{len(t)}" for d, t in sorted(no_v10.items()))
         print(f"[export-vlm] {len(no_v10)} desktop(s) have logged actions whose "
               f"target is unresolved, so V10 is not asked of them: {listed}")
+    moment = stats.get("v15_moment_by_view") or {}
+    if moment:
+        print(f"[export-vlm] {view}: V15 same-moment pairs "
+              + " ".join(f"{pair}={row.get('positive', 0)}+{row.get('negative', 0)}"
+                         for pair, row in sorted(moment.items())))
+    no_v7 = {d: why["V7"] for d, why in (stats.get("skip_reasons") or {}).items()
+             if isinstance(why, dict) and "V7" in why}
+    if no_v7:
+        cooler = sorted(int(d) for d, r in no_v7.items() if "cooler_unresolved" in r)
+        if cooler:
+            print(f"[export-vlm] {len(cooler)} desktop(s) ask no V7: no covered_by(cpu <- "
+                  f"cpu_cooler) edge (cooler set unresolved): "
+                  + ", ".join(f"D{d}" for d in cooler))
+    balance = stats.get("v2_balance") or {}
+    if balance:
+        before = sum(int(r.get("before", 0)) for r in balance.values())
+        after = sum(int(r.get("after", 0)) for r in balance.values())
+        print(f"[export-vlm] {view}: V2 thinned by class prior {before} -> {after}")
     _report_shortcuts(stats, view)
 
 
@@ -900,7 +921,7 @@ def _report_shortcuts(stats: dict, view: str) -> None:
 
 
 def _add_export_vlm(sub) -> None:
-    from tda.core.export.vlm_tasks import TASKS
+    from tda.core.export.vlm_tasks import ALL_TASKS, TASKS
 
     p = sub.add_parser("export-vlm", help="compiled truth -> one VLM JSONL per view")
     p.add_argument("--desktops", default=None, help="e.g. 13 or 1-20")
@@ -909,7 +930,15 @@ def _add_export_vlm(sub) -> None:
                    help="one output file; only with a single view (without it each "
                         "view is written to <cache_dir>/vlm_<view>.jsonl)")
     p.add_argument("--tasks", default=",".join(TASKS),
-                   help=f"comma-separated task ids; the P0 set is {','.join(TASKS)}")
+                   help=f"comma-separated task ids; the default set is {','.join(TASKS)}; "
+                        f"also available: "
+                        f"{','.join(t for t in ALL_TASKS if t not in TASKS)} "
+                        f"(V5 is out of the default: its legal set has a median "
+                        f"of 37 actions, so it cannot be scored)")
+    p.add_argument("--no-v2-balance", dest="v2_balance", action="store_false",
+                   default=True,
+                   help="keep every V2 question instead of thinning each class's "
+                        "majority answer to at most half of that class's questions")
     p.add_argument("--only-verified", dest="only_verified", action="store_true",
                    default=False, help="ask only about confirmed rows")
     p.add_argument("--no-only-verified", dest="only_verified", action="store_false")
