@@ -30,7 +30,10 @@ What is read, and nothing else:
   conflict is not confirmed), and of those only the ``verified`` mask rows of
   machine parts in the chassis -- no Label Studio draft, no 框外零件, no part
   this machine does not have, nothing on the bench (a part lying on another one
-  on the table says nothing about the order they came out in);
+  on the table says nothing about the order they came out in), and no fan
+  screw hole (``screw_hole``, task W3e): it is never a node of a constraint
+  edge, so a covering it takes part in can be neither an edge's evidence nor a
+  candidate for one;
 * each part's whole shape on that frame: the keyframe the compiler would select
   there (:meth:`tda.core.export.coco.DesktopCtx.keyframe_at`, the same
   narrowing by placement chain and pose segment), turned onto the frame by its
@@ -81,7 +84,7 @@ from tda.core.graph_rules import (
     active_edges,
     verb_effect,
 )
-from tda.core.model import FrameKey, is_context_key
+from tda.core.model import SCREW_HOLE_CLASS, FrameKey, is_context_key
 from tda.core.states import IN_CHASSIS
 from tda.core.truth_inputs import pose_segment_of
 
@@ -411,6 +414,7 @@ def scan_covers(db: Db, ctx: DesktopCtx, view: str, edges: list[Edge],
         confirmed += 1
         rows = {inst: row for inst, row in compiled.items()
                 if inst in ctx.instances and row.get("status") == VERIFIED
+                and ctx.instances[inst].cls != SCREW_HOLE_CLASS
                 and (row.get("geom_type") or MASK) == MASK and row.get("visible_rle")
                 and (row.get("placement") or IN_CHASSIS) == IN_CHASSIS}
         if len(rows) < 2:

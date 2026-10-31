@@ -57,7 +57,7 @@ from PySide6.QtWidgets import (
 
 from tda.core import extra as X
 from tda.core.logs import CHASSIS_KEY
-from tda.core.model import GALLERY_ONLY_CLASSES
+from tda.core.model import GALLERY_ONLY_CLASSES, SCREW_HOLE_CLASS
 from tda.ui.class_names import class_zh, state_zh
 from tda.ui.gallery import ADD_PARTS_BUTTON, ADD_PARTS_INTRO, ADD_PARTS_TIP
 from tda.ui.guide import steps_text
@@ -388,12 +388,14 @@ def gallery_class_choices(data: StepTableData) -> list[tuple[str, str]]:
     ``loose_cable`` (task U45) among them -- it is the class this dialog exists for;
     the screws and connectors the gallery leaves out of a log's parts are
     offered too, because an annotator who adds one is saying it can be told
-    apart on the table. Left out: the chassis, and the classes moulded into
+    apart on the table. Left out: the chassis, the classes moulded into
     their host (``host_class``: a RAM clip, the socket lever) -- they never lie
-    on the table on their own.
+    on the table on their own -- and the fan ``screw_hole`` (task W3e), which
+    is a place on the fan, not a part.
     """
     return [(f"{class_zh(cls)}  {cls}", cls) for cls in data.tax.classes
-            if cls != CHASSIS_KEY and not data.tax.host_class(cls)]
+            if cls != CHASSIS_KEY and not data.tax.host_class(cls)
+            and cls != SCREW_HOLE_CLASS]
 
 
 def gallery_preview_text(keys: list[str]) -> str:
