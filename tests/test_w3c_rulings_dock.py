@@ -30,10 +30,22 @@ from tda.core.model import ShapeKeyframe, ShapePart, ZOrderRec
 from tda.ui import app_actions as A
 from tda.ui.app import MainWindow
 from tda.ui.app_rulings import RULINGS_SETTING
-from tda.ui.cover_rulings import TAG_OTHER, TAG_RECOMMENDED, TAG_UNCERTAIN
+from tda.ui import cover_rulings as CR
+from tda.ui.cover_rulings import TAG_OTHER, TAG_USER_BLOCKS, ClassRulings
 from tda.ui.panels.notes_dock import NONE_PENDING, RULINGS_TIP
 
 DESKTOP, VIEW = app_scene.DESKTOP, app_scene.VIEW
+
+#: Task W3g: the dock's mechanics are pinned on class rulings of their own --
+#: the shipped whitelist rules ``psu -> motherboard`` 不挡 for the whole class,
+#: which would fold the scene's third row away (``tests/test_w3g_*`` cover the
+#: shipped rulings).
+DOCK_CLASSES = ClassRulings(blocks=(("cover", "psu", "测试：盖板压着电源"),))
+
+
+@pytest.fixture(autouse=True)
+def dock_class_rulings(monkeypatch):
+    monkeypatch.setattr(CR, "class_rulings", lambda path=None: DOCK_CLASSES)
 
 
 @pytest.fixture(scope="session")
@@ -99,8 +111,8 @@ def ruling_ops(win) -> list[dict]:
     return win.session.db.ops_of_kind(DESKTOP, OP_KIND)
 
 
-PENDING = [("cover.01", "psu.01", TAG_RECOMMENDED), ("cover.02", "psu.01", TAG_RECOMMENDED),
-           ("psu.01", "motherboard.01", TAG_UNCERTAIN),
+PENDING = [("cover.01", "psu.01", TAG_USER_BLOCKS), ("cover.02", "psu.01", TAG_USER_BLOCKS),
+           ("psu.01", "motherboard.01", TAG_OTHER),
            ("cover.01", "motherboard.01", TAG_OTHER), ("cover.02", "motherboard.01", TAG_OTHER)]
 
 
@@ -114,13 +126,14 @@ def test_the_rows_render_above_the_occlusion_list(window):
     assert section.toggle.text() == "谁压着谁 · 这台还没裁定的（5）"
     texts = section.texts()
     # task W3f: both parts' states at the frame
-    assert texts[0] == "cover.01（打开）→ psu.01（装着） · 像素 1 200 · 建议收"
-    assert texts[2] == "psu.01（装着）→ motherboard.01（装着） · 像素 1 440 · 存疑"
+    assert texts[0] == "cover.01（打开）→ psu.01（装着） · 像素 1 200 · 用户已定：挡"
+    assert texts[2] == "psu.01（装着）→ motherboard.01（装着） · 像素 1 440 · 其他"
     assert texts[5:] == ["同类对本帧全部：cover → psu（2 对）",
                          "同类对本帧全部：cover → motherboard（2 对）"]
     cand, blocks, free = section.row_buttons[2]
     assert (blocks.text(), free.text()) == ("挡着", "不挡")
-    assert "PSU 悬在主板一角上方" in section._row_labels[2].toolTip()
+    assert "用户还没有按类别裁定" in section._row_labels[2].toolTip()
+    assert "测试：盖板压着电源" in section._row_labels[0].toolTip()     # the user's words
     assert section.toolTip() == RULINGS_TIP and "没有快捷键" in RULINGS_TIP
     for button in section.findChildren(QPushButton):
         assert button.focusPolicy() == Qt.FocusPolicy.NoFocus
@@ -295,7 +308,7 @@ def test_the_docs_say_it():
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
     # on top when it landed; W3a / W3b (v1.46 / v1.47) are ordered at their merges
     assert any(e.startswith("- **v1.46（2026-10-31）**：**复查里的「谁压着谁」裁定**（W3c，§4.4）")
-               for e in entries[:7])
+               for e in entries[:8])
     quick = (ROOT / "docs" / "trial_quickstart.md").read_text(encoding="utf-8")
     review_part = quick.split("## 4. 走完之后：Review", 1)[1].split("### 冲突从哪来", 1)[0]
     item = review_part.split("\n5. ", 1)[1].split("\n6. ", 1)[0]   # W3f's item 6 follows

@@ -44,6 +44,21 @@ shows them, so the controller's suggestion layer must not write them either --
 the loader refuses such a pair outright. Only an explicit user ruling wins over
 a structural reason.
 
+**Task W3g: the whitelist is the user's class-level rulings** (``version:
+W2``). Each ``pairs:`` entry names the ``edge`` it writes where the pixels
+overlap: ``covered_by`` (the default), ``blocked_by.contained`` -- the new
+``blocked_by`` mode ``contained`` (:data:`~tda.core.graph_rules.BLOCKED_GATES`:
+only the lower part's ``remove`` waits, for the upper part ``removed``; the
+drives in the cage, the optical drive on it) -- or ``blocked_by.physical_path``.
+The ``would_violate`` and deadlock checks replay the log with the row that
+would be written, its real gating included. A ``not_blocks:`` list holds the
+class pairs the user ruled 不挡: such a covering is never written
+(``class_not_blocks`` in the evidence), unless the user ruled that very pair
+``blocks`` in Review, which wins and is logged (``ruling_overrides_class``).
+A ruled pair whose class pair is in ``pairs:`` takes that pair's edge too
+(source ``review:covers``). The loader refuses a class pair named in both
+lists.
+
 The rows are **imported** to :func:`tda.core.graph_derive.derive_edges`: kept
 byte for byte by every later ``constraints`` run, never re-derived, so
 ``graph_version`` changes exactly once, when they appear. Everything here is
@@ -54,6 +69,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
@@ -79,19 +95,28 @@ from tda.core.graph import (
     validate_sequence,
 )
 from tda.core.graph_derive import settled_instances
-from tda.core.graph_rules import ACCEPTED, active_edges
+from tda.core.graph_rules import ACCEPTED, CONTAINED_MODE, active_edges
 from tda.core.states import initial_overrides
 from tda.core.taxonomy import Taxonomy
 
 __all__ = [
-    "ANNOTATOR", "COVERED_BY", "DEFAULT_WHITELIST", "OP_KIND", "OP_UNDO_KIND", "OP_VIEW",
+    "ANNOTATOR", "BLOCKED_BY", "COVERED_BY", "ClassPair", "DEFAULT_EDGE", "DEFAULT_WHITELIST",
+    "EDGE_KINDS", "OP_KIND", "OP_UNDO_KIND", "OP_VIEW",
     "OWNED_PREFIXES", "PIXELS_PREFIX", "REVIEW_SOURCE", "DesktopPlan", "Whitelist",
-    "WhitelistError", "WhitelistPair", "edge_of", "evidence_from_db",
+    "WhitelistError", "WhitelistPair", "edge_of", "edge_text", "evidence_from_db",
     "evidence_from_graph_dir", "evidence_json", "load_whitelist", "owned", "plan_desktop",
     "UNDO_SELECTORS", "rulings_of", "split_suggestions", "undo_edges", "write_edges",
 ]
 
 COVERED_BY = "covered_by"
+BLOCKED_BY = "blocked_by"
+#: The ``edge:`` a whitelist pair may write (task W3g) -> ``(type, mode)``.
+EDGE_KINDS: dict[str, tuple[str, Optional[str]]] = {
+    COVERED_BY: (COVERED_BY, None),
+    f"{BLOCKED_BY}.{CONTAINED_MODE}": (BLOCKED_BY, CONTAINED_MODE),
+    f"{BLOCKED_BY}.physical_path": (BLOCKED_BY, "physical_path"),
+}
+DEFAULT_EDGE = COVERED_BY
 #: ``relation.source`` of an edge the user ruled in Review.
 REVIEW_SOURCE = "review:covers"
 #: ``relation.source`` prefix of an edge the whitelist wrote (``pixels:W1``).
@@ -129,9 +154,19 @@ class WhitelistPair:
     min_frac: float
     note: str = ""
     index: int = 0
+    #: What the pair writes (task W3g): a key of :data:`EDGE_KINDS`.
+    edge: str = DEFAULT_EDGE
 
     def matches(self, above_class: str, below_class: str) -> bool:
         return _spec_matches(self.above, above_class) and _spec_matches(self.below, below_class)
+
+    @property
+    def edge_type(self) -> str:
+        return EDGE_KINDS[self.edge][0]
+
+    @property
+    def mode(self) -> Optional[str]:
+        return EDGE_KINDS[self.edge][1]
 
     def need(self, amodal: Optional[int]) -> int:
         """The pixels a covering must reach; ``min_px`` alone when the amodal area is unknown."""
@@ -145,12 +180,30 @@ class WhitelistPair:
 
 
 @dataclass(frozen=True)
+class ClassPair:
+    """One class pair the user ruled 不挡 for the whole class (``not_blocks:``, task W3g)."""
+
+    above: str
+    below: str
+    note: str = ""
+    index: int = 0
+
+    def matches(self, above_class: str, below_class: str) -> bool:
+        return _spec_matches(self.above, above_class) and _spec_matches(self.below, below_class)
+
+    def label(self) -> str:
+        return f"{self.above} -> {self.below}"
+
+
+@dataclass(frozen=True)
 class Whitelist:
     version: str
     path: str
     min_px: int
     min_frac: float
     pairs: tuple[WhitelistPair, ...]
+    #: The class pairs ruled 不挡 (task W3g): never written.
+    not_blocks: tuple[ClassPair, ...] = ()
 
     @property
     def source(self) -> str:
@@ -159,11 +212,18 @@ class Whitelist:
     def match(self, above_class: str, below_class: str) -> Optional[WhitelistPair]:
         return next((p for p in self.pairs if p.matches(above_class, below_class)), None)
 
+    def not_blocking(self, above_class: str, below_class: str) -> Optional[ClassPair]:
+        """The ``not_blocks:`` entry naming the class pair, or ``None`` (task W3g)."""
+        return next((p for p in self.not_blocks if p.matches(above_class, below_class)), None)
+
     def as_json(self) -> dict:
         return {"version": self.version, "path": self.path,
                 "defaults": {"min_px": self.min_px, "min_frac": self.min_frac},
-                "pairs": [{"above": p.above, "below": p.below, "min_px": p.min_px,
-                           "min_frac": p.min_frac, "note": p.note} for p in self.pairs]}
+                "pairs": [{"above": p.above, "below": p.below, "edge": p.edge,
+                           "min_px": p.min_px, "min_frac": p.min_frac, "note": p.note}
+                          for p in self.pairs],
+                "not_blocks": [{"above": p.above, "below": p.below, "note": p.note}
+                               for p in self.not_blocks]}
 
 
 def _spec_matches(spec: str, key: str) -> bool:
@@ -171,6 +231,14 @@ def _spec_matches(spec: str, key: str) -> bool:
     if "." in spec:
         return spec == key
     return key == spec or key.split(".", 1)[0] == spec
+
+
+def _specs_overlap(one: str, other: str) -> bool:
+    """Can one class key match both specs? Equal, or one is the bare class of the other."""
+    if one == other:
+        return True
+    return ("." not in one and other.split(".", 1)[0] == one) or (
+        "." not in other and one.split(".", 1)[0] == other)
 
 
 def _check_spec(spec: str, tax: Taxonomy, side: str) -> Optional[str]:
@@ -231,10 +299,15 @@ def load_whitelist(path: str | Path, tax: Taxonomy) -> Whitelist:
         if bad:
             problems.append(f"pair {i} ({above} -> {below}): {bad}")
             continue
+        edge = str(entry.get("edge") or DEFAULT_EDGE).strip()
+        if edge not in EDGE_KINDS:
+            problems.append(f"pair {i} ({above} -> {below}): edge {edge!r} is none of "
+                            f"{', '.join(EDGE_KINDS)}")
+            continue
         try:
             pair = WhitelistPair(above, below, int(entry.get("min_px", min_px)),
                                  float(entry.get("min_frac", min_frac)),
-                                 str(entry.get("note") or ""), i)
+                                 str(entry.get("note") or ""), i, edge)
         except (TypeError, ValueError) as exc:
             problems.append(f"pair {i} ({above} -> {below}): {exc}")
             continue
@@ -242,9 +315,28 @@ def load_whitelist(path: str | Path, tax: Taxonomy) -> Whitelist:
             problems.append(f"pair {i} ({above} -> {below}): thresholds out of range")
             continue
         pairs.append(pair)
+    # task W3g: the class pairs the user ruled 不挡 -- never written
+    not_blocks: list[ClassPair] = []
+    for i, entry in enumerate(raw.get("not_blocks") or [], 1):
+        if not isinstance(entry, dict) or not entry.get("above") or not entry.get("below"):
+            problems.append(f"not_blocks {i}: needs `above` and `below`")
+            continue
+        above, below = str(entry["above"]).strip(), str(entry["below"]).strip()
+        bad = _check_spec(above, tax, "above") or _check_spec(below, tax, "below")
+        if bad:
+            problems.append(f"not_blocks {i} ({above} -> {below}): {bad}")
+            continue
+        both = [p for p in pairs
+                if _specs_overlap(p.above, above) and _specs_overlap(p.below, below)]
+        if both:
+            problems.append(f"not_blocks {i} ({above} -> {below}): also in pairs "
+                            f"(pair {both[0].index}, {both[0].label()}) -- "
+                            f"a class pair is 挡 or 不挡, not both")
+            continue
+        not_blocks.append(ClassPair(above, below, str(entry.get("note") or ""), i))
     if problems:
         raise WhitelistError(f"{path}: refused -- " + "; ".join(problems))
-    return Whitelist(version, str(path), min_px, min_frac, tuple(pairs))
+    return Whitelist(version, str(path), min_px, min_frac, tuple(pairs), tuple(not_blocks))
 
 
 # --------------------------------------------------------------------------- #
@@ -292,6 +384,12 @@ class DesktopPlan:
     #: ``not_blocks`` or not ruled at all, a ``pixels:*`` row whose pair is now
     #: ruled ``not_blocks``. Listed on every run; ``--apply`` deletes them.
     stale: list[dict] = field(default_factory=list)
+    #: Unruled coverings whose class pair the user ruled 不挡 (``not_blocks:``,
+    #: task W3g): never written.
+    class_not_blocks: list[dict] = field(default_factory=list)
+    #: Pairs ruled ``blocks`` in Review although their class pair is in
+    #: ``not_blocks:`` -- the explicit ruling wins (task W3g); listed for the record.
+    ruling_overrides_class: list[dict] = field(default_factory=list)
     rulings: int = 0
 
     def to_write(self, allow_unruled: bool) -> list[dict]:
@@ -359,15 +457,32 @@ def plan_desktop(desktop: int, covers: list[dict], confirmed_frames: int,
             plan.rejected_by_user.append({**item, "ruling": ruling})
             continue
         ruled = bool(ruling and ruling.get("ruling") == BLOCKS)
-        pair = None if ruled or whitelist is None else whitelist.match(
-            item["above_class"], item["below_class"])
+        classes = (item["above_class"], item["below_class"])
+        # task W3g: the class pairs the user ruled 不挡 are never written ...
+        no = None if whitelist is None else whitelist.not_blocking(*classes)
+        if no is not None and not ruled:
+            plan.class_not_blocks.append({**item, "class_pair": no.label(), "note": no.note})
+            continue
+        if no is not None:
+            # ... unless the user ruled this very pair `blocks` in Review: that wins
+            plan.ruling_overrides_class.append({**item, "class_pair": no.label(),
+                                                "note": no.note, "ruling": ruling})
+        matched = None if whitelist is None else whitelist.match(*classes)
+        pair = None if ruled else matched
         if not ruled and pair is None:
             continue
         item["ruling"] = ruling if ruled else None
         item["whitelist_pair"] = None if pair is None else pair.label()
+        # the row the pair writes (task W3g): its class pair's edge, Review's too
+        item["edge"] = DEFAULT_EDGE if matched is None else matched.edge
+        item["edge_type"], item["mode"] = EDGE_KINDS[item["edge"]]
         same = [e.label() for e in active if e.target == below and e.blocker == above]
         other = [e.label() for e in active if e.target == above and e.blocker == below]
-        row = rows.get((COVERED_BY, below, above))
+        # a row of the triple to write, or of the other kind this command writes
+        # (a rejected covered_by keeps a blocked_by out too), in any status
+        row = rows.get((item["edge_type"], below, above)) or next(
+            (rows[(t, below, above)] for t in (COVERED_BY, BLOCKED_BY)
+             if (t, below, above) in rows), None)
         if same or row is not None:
             skip(item, "already_an_edge", edges=same or [row.label()],
                  row_source=None if row is None else row.source,
@@ -399,7 +514,8 @@ def plan_desktop(desktop: int, covers: list[dict], confirmed_frames: int,
         else:
             item["source"] = whitelist.source
             item["reason"] = (f"{_pixels_text(item, view)}; whitelist {whitelist.version} "
-                              f"pair {pair.label()}")
+                              f"pair {pair.label()} ({pair.edge})"
+                              + (f": {pair.note}" if pair.note else ""))
             plan.whitelist.append(item)
 
     for (above, below), ruling in sorted(rulings.items()):
@@ -414,12 +530,16 @@ def plan_desktop(desktop: int, covers: list[dict], confirmed_frames: int,
             skip(item, "ruled_no_pixel_evidence")
 
     for edge in stored:
-        if edge.type != COVERED_BY or not owned(edge):
+        if not owned(edge):     # covered_by, and blocked_by since task W3g
             continue
         ruling = rulings.get((edge.blocker, edge.target))
         said = (ruling or {}).get("ruling")
         if str(edge.source).startswith(PIXELS_PREFIX):
             why = "ruled_not_blocks" if said == NOT_BLOCKS else None
+            if (why is None and said != BLOCKS and whitelist is not None
+                    and whitelist.not_blocking(class_key(instances.get(edge.blocker)),
+                                               class_key(instances.get(edge.target)))):
+                why = "class_not_blocks"      # the user has since ruled the class 不挡
         else:
             why = None if said == BLOCKS or not rulings_table else (
                 "ruled_not_blocks" if said == NOT_BLOCKS else "ruling_cleared")
@@ -434,9 +554,18 @@ def plan_desktop(desktop: int, covers: list[dict], confirmed_frames: int,
 
 
 def edge_of(item: dict) -> Edge:
-    return Edge(type=COVERED_BY, target=item["below"], blocker=item["above"],
-                necessity="required", mode=None, reason=item["reason"],
-                source=item["source"], evidence_step=item.get("first"), status=ACCEPTED)
+    """The row an item writes: ``covered_by``, or the ``blocked_by`` of its pair's mode (W3g)."""
+    return Edge(type=item.get("edge_type") or COVERED_BY, target=item["below"],
+                blocker=item["above"], necessity="required", mode=item.get("mode"),
+                reason=item["reason"], source=item["source"],
+                evidence_step=item.get("first"), status=ACCEPTED)
+
+
+def edge_text(item: dict) -> str:
+    """``covered_by(below, above)`` / ``blocked_by(below, above, mode=contained)``."""
+    mode = item.get("mode")
+    return (f"{item.get('edge_type') or COVERED_BY}({item['below']}, {item['above']}"
+            + (f", mode={mode})" if mode else ")"))
 
 
 def _check_against_log(plan: DesktopPlan, settled: dict, active: list[Edge], actions: list,
@@ -581,17 +710,27 @@ def evidence_json(plans: list[DesktopPlan], whitelist: Optional[Whitelist],
         # rows written earlier that the current rulings no longer back; --apply deletes them
         "stale_review_edges": every("stale"),
         "skipped": skipped,
+        # task W3g: coverings of a class pair the user ruled 不挡 (never written), and
+        # the Review rulings of `blocks` that win over such a class ruling
+        "class_not_blocks": every("class_not_blocks"),
+        "ruling_overrides_class": every("ruling_overrides_class"),
+        "class_not_blocks_by_pair": dict(sorted(Counter(
+            item["class_pair"] for item in every("class_not_blocks")).items())),
         "desktops": [{"desktop": p.desktop, "confirmed_frames": p.confirmed_frames,
                       "rulings": p.rulings, "edges": len(p.review),
                       "whitelist_edges": len(p.whitelist), "suggested": len(p.suggested),
                       "rejected_by_user": len(p.rejected_by_user),
                       "stale_review_edges": len(p.stale),
+                      "class_not_blocks": len(p.class_not_blocks),
+                      "ruling_overrides_class": len(p.ruling_overrides_class),
                       "skipped": len(p.skipped)} for p in plans],
         "by_pair": dict(sorted(per_pair.items())),
         "counts": {"edges": len(every("review")), "whitelist_edges": len(every("whitelist")),
                    "suggested": len(every("suggested")),
                    "rejected_by_user": len(every("rejected_by_user")),
                    "stale_review_edges": len(every("stale")),
+                   "class_not_blocks": len(every("class_not_blocks")),
+                   "ruling_overrides_class": len(every("ruling_overrides_class")),
                    "skipped": len(skipped)},
     }
 

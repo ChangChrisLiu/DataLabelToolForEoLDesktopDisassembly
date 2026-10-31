@@ -111,15 +111,17 @@ def whitelist_file(tmp: Path, body: str) -> Path:
 # --------------------------------------------------------------------------- #
 def test_the_shipped_whitelist_loads():
     wl = PE.load_whitelist(Path(__file__).resolve().parents[1] / PE.DEFAULT_WHITELIST, TAX)
-    assert wl.version == "W1" and wl.source == "pixels:W1"
+    # task W3g: W2 is the user's class rulings (re-pinned from W1's suggestions)
+    assert wl.version == "W2" and wl.source == "pixels:W2"
     assert (wl.min_px, wl.min_frac) == (1000, 0.03)
     labels = [p.label() for p in wl.pairs]
-    assert labels[0] == "optical_drive -> motherboard" and len(labels) == 18
-    # A1 is a rule edge (task W3d; structural by the support table where it gets
-    # none): never a candidate, so not the whitelist's
+    assert labels[0] == "drive_cage -> motherboard" and len(labels) == 19
+    # a part on the board is a rule edge (task W3d; structural by the support table
+    # where it gets none): never a candidate, so not the whitelist's
     assert "expansion_card.gpu -> motherboard" not in labels
-    assert "drive_cage -> motherboard" not in labels          # 存疑: commented out
-    assert {p.min_frac for p in wl.pairs if p.below == "cpu"} == {0.25}
+    assert "psu -> motherboard" not in labels                  # A4: ruled 不挡
+    assert {p.min_frac for p in wl.pairs if p.below in ("cpu", "ram_module")} == {0.25}
+    assert len(wl.not_blocks) == 12
 
 
 @pytest.mark.parametrize("above, below, said", [

@@ -69,7 +69,8 @@ def extra(rec: InstanceRec) -> InstanceRec:
 # the mode
 # --------------------------------------------------------------------------- #
 def test_the_mounted_mode_gates_like_physical_path_and_wants_removed():
-    assert MOUNTED_MODE == "mounted" and BLOCKED_MODES[-1] == MOUNTED_MODE
+    # W3d appended it; W3g's `contained` comes after it
+    assert MOUNTED_MODE == "mounted" and BLOCKED_MODES[3] == MOUNTED_MODE
     assert BLOCKED_MODES[0] == "physical_path"      # the Relations panel's default
     assert gated_verbs("blocked_by", "mounted") == frozenset({"remove", "displace"})
     assert required_states("blocked_by", "mounted") == frozenset({"removed"})
@@ -340,7 +341,7 @@ def test_the_docs_say_it():
     entries = [line for line in spec.split("## 14. 修订记录", 1)[1].splitlines()
                if line.startswith("- ")]
     # on top when it landed; W3e's v1.50 has gone above it since
-    [entry] = [e for e in entries[:3] if e.startswith("- **v1.49（2026-10-31）**")]
+    [entry] = [e for e in entries[:4] if e.startswith("- **v1.49（2026-10-31）**")]
     assert "mode=mounted" in entry
     handoff = (root / "docs" / "HANDOFF_2026-10-28.md").read_text(encoding="utf-8")
     section = handoff.split("## 5. 导出与 HuggingFace 准备", 1)[1].split("\n## ", 1)[0]

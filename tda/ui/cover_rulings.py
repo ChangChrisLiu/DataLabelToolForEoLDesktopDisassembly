@@ -33,11 +33,13 @@ when all of these hold:
 * no ruling yet on this desktop for ``(above, below)`` (the ordered pair:
   ``(B, A)`` is a question of its own).
 
-Each candidate is tagged with the class-level recommendation of the covering
-adjudication sheet (``docs/superpowers/discussions/2026-10-30-vlm-paper-scope/
-06-covering-adjudication.md`` table A): 「建议收」 (:data:`RECOMMENDED`),
-「存疑」 (:data:`UNCERTAIN`) or 「其他」, with the sheet's one-line reason --
-a hint, never a ruling.  No Qt here.
+Each candidate is tagged with the user's class-level ruling (task W3g; it
+replaced the covering adjudication sheet's 「建议收」 / 「存疑」 tables):
+「用户已定：挡」 (:data:`TAG_USER_BLOCKS`) when its class pair is one of the
+``pairs:`` of ``configs/covers_whitelist.yaml`` (W2, the user's answers to
+``08-class-pair-questions.md``), with the user's words as the reason, else
+「其他」.  The row keeps both buttons: an instance-level exception is still
+the user's to make.  No Qt here.
 
 **Task W3f: two kinds of pair are no longer asked** (:func:`triage_pairs`; the
 dock folds them away).  The user could not tell what a row was about, and on
@@ -61,10 +63,19 @@ cover at step 22 with the PSU still in place.
 
 Rows also carry both parts' states at the frame (``states``) and, with the
 log, the 「日志：…」 line of the tooltip (:func:`log_line`).
+
+**Task W3g: a fourth kind is not asked** -- 「用户已定不挡（类级）」: the class
+pair is in the whitelist's ``not_blocks:`` list (the user ruled it 不挡 for the
+whole class: 「只是我们 disassembly 的时候有这个顺序」).  Judged after the
+graph's chain and before the log; folded, no buttons.  The class rulings are
+read once from the shipped whitelist (:func:`class_rulings`, through the same
+loader ``cli pixel-edges`` uses), or passed in (``classes=``).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
+from pathlib import Path
 from typing import Iterable, Mapping, Optional, Union
 
 from tda.core.export.graph_covers import SUPPORT
@@ -80,12 +91,12 @@ from tda.core.model import (
 from tda.core.states import REMOVED, events_from_actions, state_at
 from tda.ui.class_names import state_zh
 
-__all__ = ["BLOCKS", "COVER_CLEAR", "COVER_GATED", "Candidate", "CoverLog", "FIXED_CLASSES",
-           "LogMove", "MIN_PX", "MOVE_ZH", "NOT_BLOCKS", "RECOMMENDED",
+__all__ = ["BLOCKS", "COVER_CLEAR", "COVER_GATED", "Candidate", "ClassRulings", "CoverLog",
+           "FIXED_CLASSES", "LogMove", "MIN_PX", "MOVE_ZH", "NOT_BLOCKS",
            "RULINGS", "RULING_MARK", "RULING_TEXT", "SMALL_ABOVE", "SMALL_BELOW", "SUPPORT",
-           "TAGS", "TAG_OTHER",
-           "TAG_RECOMMENDED", "TAG_UNCERTAIN", "Triage", "UNCERTAIN", "candidate_text",
-           "chain_text", "chain_tip", "chassis_pairs", "class_key", "class_pairs", "cover_log",
+           "TAGS", "TAG_OTHER", "TAG_USER_BLOCKS", "TAG_USER_NOT_BLOCKS", "Triage",
+           "candidate_text", "chain_text", "chain_tip", "chassis_pairs", "class_key",
+           "class_not_blocks_text", "class_pairs", "class_rulings", "cover_log",
            "excluded_part", "indirect_chain", "indirect_text", "joined_by_edge", "log_line",
            "log_proof", "pair_tag", "pending_pairs", "proven_text", "ruled_text", "status_text",
            "structural_reasons", "triage_pairs"]
@@ -104,11 +115,13 @@ RULINGS = (BLOCKS, NOT_BLOCKS)
 RULING_TEXT = {BLOCKS: "挡着", NOT_BLOCKS: "不挡"}
 RULING_MARK = {BLOCKS: "✓", NOT_BLOCKS: "✗"}
 
-TAG_RECOMMENDED = "建议收"
-TAG_UNCERTAIN = "存疑"
+#: The class pair is one the user ruled 挡 (W2 ``pairs:``, task W3g).
+TAG_USER_BLOCKS = "用户已定：挡"
+#: The class pair is one the user ruled 不挡 (W2 ``not_blocks:``): folded, not asked.
+TAG_USER_NOT_BLOCKS = "用户已定：不挡"
 TAG_OTHER = "其他"
 #: The order candidates are listed in.
-TAGS = (TAG_RECOMMENDED, TAG_UNCERTAIN, TAG_OTHER)
+TAGS = (TAG_USER_BLOCKS, TAG_OTHER, TAG_USER_NOT_BLOCKS)
 
 #: Class-level support: the part sits on the motherboard.  Since task W3d the
 #: pair is a **rule edge** (``blocked_by(motherboard <- part, mode=mounted)``, spec 7.3
@@ -129,65 +142,71 @@ SMALL_ABOVE = frozenset({"screw", "connector", "cable_clip", "cable", "ram_latch
 #: real questions).
 SMALL_BELOW = frozenset({"screw", "connector", "cable_clip", "cable"})
 
-_RIGID = "刚性大件压着；日志每台都先拆上面那件"
-_HANGING = "上方悬着的大件下面内存可能拔得出（Dell MT 硬盘架 / 光驱位在内存插槽上方）"
-_SMALL = "像素中位数 < 1000"
+_OTHER_REASON = "用户还没有按类别裁定这一类对：看图判断"
+_USER_BLOCKS_REASON = "用户已按类别裁定：挡"
+_USER_NOT_BLOCKS_REASON = "用户已按类别裁定：不挡"
+
+ClassEntry = tuple[str, str, str]
 
 
-def _first(share: int) -> str:
-    return f"日志里上面那件先拆的只有 {share}%"
+@dataclass(frozen=True)
+class ClassRulings:
+    """The user's class-level rulings (task W3g): the W2 whitelist's two lists.
+
+    ``blocks`` are its ``pairs:`` (挡), ``not_blocks`` its ``not_blocks:`` (不挡),
+    each ``(above, below, note)`` with a side naming a ``class`` (every kind of
+    it) or a ``class.kind``.  The loader refuses a class pair in both lists.
+    """
+
+    blocks: tuple[ClassEntry, ...] = ()
+    not_blocks: tuple[ClassEntry, ...] = ()
+
+    @classmethod
+    def from_whitelist(cls, whitelist) -> "ClassRulings":
+        """From a :class:`tda.core.pixel_edges.Whitelist`."""
+        return cls(tuple((p.above, p.below, p.note) for p in whitelist.pairs),
+                   tuple((p.above, p.below, p.note) for p in whitelist.not_blocks))
+
+    @staticmethod
+    def _best(entries: tuple[ClassEntry, ...], above_class: str,
+              below_class: str) -> Optional[ClassEntry]:
+        best: Optional[tuple[int, ClassEntry]] = None
+        for entry in entries:
+            a, b = _matches(entry[0], above_class), _matches(entry[1], below_class)
+            if a is None or b is None:
+                continue
+            if best is None or a + b > best[0]:
+                best = (a + b, entry)
+        return None if best is None else best[1]
+
+    def blocking(self, above_class: str, below_class: str) -> Optional[ClassEntry]:
+        """The most exact 挡 entry naming the class pair, or ``None``."""
+        return self._best(self.blocks, above_class, below_class)
+
+    def not_blocking(self, above_class: str, below_class: str) -> Optional[ClassEntry]:
+        """The most exact 不挡 entry naming the class pair, or ``None``."""
+        return self._best(self.not_blocks, above_class, below_class)
 
 
-#: 「建议收」 class pairs of the sheet's table A (rows 2-19): ``(above, below, reason)``,
-#: each side a ``class`` or a ``class.kind``.  Row 1 (``expansion_card.gpu ->
-#: motherboard``) is left out: a card is mounted on the board, so the pair is a
-#: rule edge (task W3d, the user's 「主板上的东西先拆」; :data:`SUPPORT`) and it is
-#: never asked (controller ruling, W3c round 2).
-RECOMMENDED: tuple[tuple[str, str, str], ...] = (
-    ("optical_drive", "motherboard", _RIGID),
-    ("optical_drive", "drive_cage", _RIGID),
-    ("cover", "cpu_socket_lever", _RIGID),
-    ("optical_drive", "storage_drive.ssd", _RIGID),
-    ("cover", "cpu", _RIGID),
-    ("drive_cage", "cpu_socket_lever", _RIGID),
-    ("optical_drive", "cpu_cooler.heatsink", _RIGID),
-    ("drive_cage", "cpu_cooler.heatsink", _RIGID),
-    ("optical_drive", "cpu_socket_lever", _RIGID),
-    ("optical_drive", "cpu", _RIGID),
-    ("drive_cage", "cpu", _RIGID),
-    ("optical_drive", "storage_drive.hdd", _RIGID),
-    ("drive_cage", "storage_drive.hdd", _RIGID),
-    ("cpu_cooler.heatsink", "cooler_bracket", _RIGID),
-    ("cover", "psu", _RIGID),
-    ("cover", "cpu_cooler.heatsink", _RIGID),
-    ("optical_drive", "optical_drive", _RIGID),
-    ("optical_drive", "cover", _RIGID),
-)
-#: 「存疑」 class pairs of table A (rows 20-40): the physical question is open.
-UNCERTAIN: tuple[tuple[str, str, str], ...] = (
-    ("drive_cage", "motherboard", _first(65)),
-    ("drive_cage", "ram_latch", _HANGING),
-    ("drive_cage", "ram_module", _HANGING),
-    ("optical_drive", "ram_module", _HANGING),
-    ("psu", "cover", _first(71)),
-    ("psu", "motherboard", "PSU 悬在主板一角上方，主板可能斜抽；HP SFF 10 台日志都先动 PSU"),
-    ("optical_drive", "ram_latch", _HANGING),
-    ("cover", "ram_latch", _HANGING),
-    ("cover", "cover", _first(33)),
-    ("expansion_card.gpu", "cover", _first(0)),
-    ("cover", "ram_module", _HANGING),
-    ("cpu_cooler.fan", "ram_latch", _HANGING),
-    ("cpu_cooler.fan", "cooler_latch", _first(0)),
-    ("expansion_card.gpu", "card_latch", _first(0)),
-    ("optical_drive", "cpu_cooler.fan", _SMALL),
-    ("cpu_cooler.fan", "ram_module", _HANGING),
-    ("psu", "storage_drive.ssd", _first(0)),
-    ("drive_cage", "optical_drive", _SMALL),
-    ("psu", "cpu_socket_lever", _first(0)),
-    ("cpu_cooler.fan", "drive_cage", _SMALL),
-    ("expansion_card.gpu", "expansion_card.other", _SMALL),
-)
-_OTHER_REASON = "裁定单表 A 里没有建议：看图判断"
+#: The shipped whitelist (``configs/covers_whitelist.yaml``), next to the package.
+WHITELIST_PATH = Path(__file__).resolve().parents[2] / "configs" / "covers_whitelist.yaml"
+
+
+@lru_cache(maxsize=None)
+def class_rulings(path: Optional[str] = None) -> ClassRulings:
+    """The user's class rulings, read once through ``cli pixel-edges``' own loader (W3g).
+
+    An unreadable or refused file gives no class rulings (every pair is asked,
+    as before W3g) rather than no Review.
+    """
+    from tda.core.pixel_edges import WhitelistError, load_whitelist
+    from tda.core.taxonomy import load_taxonomy
+
+    try:
+        return ClassRulings.from_whitelist(load_whitelist(path or WHITELIST_PATH,
+                                                          load_taxonomy()))
+    except (WhitelistError, OSError):
+        return ClassRulings()
 #: The structural relation fields: one of the two names the other.
 _FIELDS = ("mounted_on", "fastens", "socket_host", "cable")
 
@@ -204,9 +223,10 @@ class Candidate:
     below_class: str
     #: Pixels of ``below``'s shape ``above`` paints on this frame.
     px: int
-    #: 「建议收」 / 「存疑」 / 「其他」 (:data:`TAGS`) -- the sheet's hint.
+    #: 「用户已定：挡」 / 「其他」 / 「用户已定：不挡」 (:data:`TAGS`) -- the user's
+    #: class-level ruling (task W3g).
     tag: str
-    #: The sheet's one-line reason (the row's tooltip).
+    #: The user's words for the class ruling, or 「其他」's hint (the row's tooltip).
     reason: str
     #: How many *other* candidates share the class pair.  Only the frame on
     #: screen is known here -- the desktop's other frames are not compiled --
@@ -251,25 +271,22 @@ def _matches(pattern: str, key: str) -> Optional[int]:
     return None
 
 
-def pair_tag(above_class: str, below_class: str) -> tuple[str, str]:
-    """``(tag, reason)`` of a class pair: the most exact entry of the sheet wins.
+def pair_tag(above_class: str, below_class: str,
+             classes: Optional[ClassRulings] = None) -> tuple[str, str]:
+    """``(tag, reason)`` of a class pair from the user's class rulings (task W3g).
 
-    An entry's side names a ``class`` (every kind of it) or a ``class.kind``;
-    between equally exact entries 「建议收」 comes before 「存疑」.  No entry: 「其他」.
+    A 挡 entry (W2 ``pairs:``) -> 「用户已定：挡」 with the user's words; a 不挡
+    entry -> 「用户已定：不挡」; neither -> 「其他」.  ``classes``: the rulings
+    (``None``: the shipped whitelist, :func:`class_rulings`).
     """
-    best: Optional[tuple[int, int, str, str]] = None
-    for rank, (tag, table) in enumerate(((TAG_RECOMMENDED, RECOMMENDED),
-                                          (TAG_UNCERTAIN, UNCERTAIN))):
-        for above, below, reason in table:
-            a, b = _matches(above, above_class), _matches(below, below_class)
-            if a is None or b is None:
-                continue
-            score = (a + b, -rank, tag, reason)
-            if best is None or score[:2] > best[:2]:
-                best = score
-    if best is None:
-        return TAG_OTHER, _OTHER_REASON
-    return best[2], best[3]
+    classes = class_rulings() if classes is None else classes
+    yes = classes.blocking(above_class, below_class)
+    if yes is not None:
+        return TAG_USER_BLOCKS, yes[2] or _USER_BLOCKS_REASON
+    no = classes.not_blocking(above_class, below_class)
+    if no is not None:
+        return TAG_USER_NOT_BLOCKS, no[2] or _USER_NOT_BLOCKS_REASON
+    return TAG_OTHER, _OTHER_REASON
 
 
 def excluded_part(key: str, rec) -> Optional[str]:
@@ -506,7 +523,7 @@ def indirect_chain(edges: Iterable, above: str, below: str) -> tuple:
 
 @dataclass
 class Triage:
-    """The frame's pairs, sorted three ways (:func:`triage_pairs`, W3f)."""
+    """The frame's pairs, sorted four ways (:func:`triage_pairs`, W3f, W3g)."""
 
     #: Open questions: the rows with 「挡着」 / 「不挡」.
     asked: list[Candidate] = field(default_factory=list)
@@ -514,6 +531,9 @@ class Triage:
     proven: list[Candidate] = field(default_factory=list)
     #: 规则已间接覆盖: each with its :attr:`Candidate.chain`.
     indirect: list[Candidate] = field(default_factory=list)
+    #: 用户已定不挡（类级）(task W3g): the class pair is in the whitelist's
+    #: ``not_blocks:``; tag 「用户已定：不挡」, the user's words as the reason.
+    class_not_blocks: list[Candidate] = field(default_factory=list)
 
 
 def _order(cand: Candidate) -> tuple:
@@ -522,8 +542,9 @@ def _order(cand: Candidate) -> tuple:
 
 def triage_pairs(frame_pairs: PairsLike, instances: Mapping, edges: Iterable,
                  rulings: Mapping, min_px: int = MIN_PX, *, log: Optional[CoverLog] = None,
-                 states: Optional[Mapping[str, str]] = None) -> Triage:
-    """The candidates of one frame (see the module docstring), sorted into the three lists.
+                 states: Optional[Mapping[str, str]] = None,
+                 classes: Optional[ClassRulings] = None) -> Triage:
+    """The candidates of one frame (see the module docstring), sorted into the four lists.
 
     ``frame_pairs``: ``(above, below, px)`` triples (or ``{(above, below): px}``)
     of the frame on screen; ``instances``: the desktop's records; ``edges``:
@@ -532,14 +553,18 @@ def triage_pairs(frame_pairs: PairsLike, instances: Mapping, edges: Iterable,
     ruled pair is in none of the lists); ``log``: :func:`cover_log` of the
     desktop (``None``: nothing is proven by the log, and no 日志 line);
     ``states``: each part's state at the frame (``{key: state}``), for the row
-    text.  A pair the graph orders indirectly goes to ``indirect`` (whatever
-    the log says), else one the log proves goes to ``proven``, else it is
-    asked.  Each list is ordered by tag (「建议收」 first), then pixels (most
-    first), then keys; :attr:`Candidate.same_pair_pending` counts the asked
-    list only (the batch lines are made of it).  Pure.
+    text; ``classes``: the user's class rulings (``None``: the shipped
+    whitelist, :func:`class_rulings`; ``ClassRulings()``: none).  A pair the
+    graph orders indirectly goes to ``indirect`` (whatever the rest says), else
+    one whose class pair the user ruled 不挡 goes to ``class_not_blocks`` (task
+    W3g), else one the log proves goes to ``proven``, else it is asked.  Each
+    list is ordered by tag (「用户已定：挡」 first), then pixels (most first),
+    then keys; :attr:`Candidate.same_pair_pending` counts the asked list only
+    (the batch lines are made of it).  Pure.
     """
     edges = list(edges)
     states = states or {}
+    classes = class_rulings() if classes is None else classes
     picked = []
     for above, below, px in _triples(frame_pairs):
         if above == below or px < int(min_px) or (above, below) in rulings:
@@ -551,36 +576,40 @@ def triage_pairs(frame_pairs: PairsLike, instances: Mapping, edges: Iterable,
             continue
         if joined_by_edge(edges, above, below) or structural_reasons(instances, above, below):
             continue
-        classes = (class_key(up), class_key(low))
-        tag, reason = pair_tag(*classes)
+        keys = (class_key(up), class_key(low))
+        tag, reason = pair_tag(*keys, classes=classes)
         chain = indirect_chain(edges, above, below)
-        proof = None if chain else log_proof(log, above, below)
-        picked.append(Candidate(above, below, classes[0], classes[1], px, tag, reason, 0,
+        said_no = not chain and tag == TAG_USER_NOT_BLOCKS
+        proof = None if chain or said_no else log_proof(log, above, below)
+        picked.append(Candidate(above, below, keys[0], keys[1], px, tag, reason, 0,
                                 str(states.get(above) or ""), str(states.get(below) or ""),
                                 log_line(log, above, below), proof, chain))
     out = Triage()
     for cand in picked:
-        (out.indirect if cand.chain else out.proven if cand.proof else out.asked).append(cand)
+        (out.indirect if cand.chain
+         else out.class_not_blocks if cand.tag == TAG_USER_NOT_BLOCKS
+         else out.proven if cand.proof else out.asked).append(cand)
     counts: dict[tuple[str, str], int] = {}
     for cand in out.asked:
         counts[cand.classes] = counts.get(cand.classes, 0) + 1
     out.asked = [replace(cand, same_pair_pending=counts[cand.classes] - 1)
                  for cand in out.asked]
-    for name in ("asked", "proven", "indirect"):
+    for name in ("asked", "proven", "indirect", "class_not_blocks"):
         getattr(out, name).sort(key=_order)
     return out
 
 
 def pending_pairs(frame_pairs: PairsLike, instances: Mapping, edges: Iterable,
                   rulings: Mapping, min_px: int = MIN_PX, *, log: Optional[CoverLog] = None,
-                  states: Optional[Mapping[str, str]] = None) -> list[Candidate]:
+                  states: Optional[Mapping[str, str]] = None,
+                  classes: Optional[ClassRulings] = None) -> list[Candidate]:
     """The open questions of one frame: :func:`triage_pairs`' ``asked`` list.
 
-    Without ``log`` only the pairs the graph orders indirectly (task W3f) are
-    left out besides W3c's rule.
+    Without ``log`` only the pairs the graph orders indirectly (task W3f) and
+    the class pairs the user ruled 不挡 (task W3g) are left out besides W3c's rule.
     """
     return triage_pairs(frame_pairs, instances, edges, rulings, min_px, log=log,
-                        states=states).asked
+                        states=states, classes=classes).asked
 
 
 def class_pairs(candidates: Iterable[Candidate]) -> list[tuple[tuple[str, str], list[Candidate]]]:
@@ -610,7 +639,7 @@ def _pair_words(cand: Candidate) -> str:
 
 
 def candidate_text(cand: Candidate) -> str:
-    """「optical_drive.01（装着）→ motherboard.01（装着） · 像素 68 797 · 建议收」.
+    """「optical_drive.01（装着）→ motherboard.01（装着） · 像素 68 797 · 用户已定：挡」.
 
     The states are the parts' states at the frame on screen (task W3f); a
     candidate made without them reads 「optical_drive.01 → motherboard.01 · …」.
@@ -638,6 +667,11 @@ def chain_text(cand: Candidate) -> str:
 def indirect_text(cand: Candidate) -> str:
     """A 规则已间接覆盖 row: the chain in words, then the pixels."""
     return f"{chain_text(cand)} · 像素 {_px(cand.px)}"
+
+
+def class_not_blocks_text(cand: Candidate) -> str:
+    """A 用户已定不挡（类级） row (W3g): 「drive_cage.01（装着）→ cpu.01（装着） · 像素 4 406 · C 不挡：…」."""
+    return f"{_pair_words(cand)} · 像素 {_px(cand.px)} · {cand.reason}"
 
 
 def chain_tip(cand: Candidate) -> str:

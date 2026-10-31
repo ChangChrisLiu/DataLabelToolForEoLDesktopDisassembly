@@ -32,6 +32,12 @@ lists take the pairs nobody needs to rule: 「规则已间接覆盖（k）」 (t
 orders them through another part; the chain in words, no button) and
 「日志已证明不挡（k）」 (the log acted on the lower part with the upper one
 still in the way; one 「不挡」 per row for the record, never 「挡着」).
+
+Task W3g adds a third fold of the same kind, 「用户已定不挡（类级）（k）」: the
+pairs whose class pair the user ruled 不挡 for the whole class (the
+whitelist's ``not_blocks:``), the user's words on each row, no button.  An
+open row whose class pair the user ruled 挡 is tagged 「用户已定：挡」 and keeps
+both buttons.
 """
 from __future__ import annotations
 
@@ -61,6 +67,7 @@ from tda.ui.cover_rulings import (
     Candidate,
     candidate_text,
     chain_tip,
+    class_not_blocks_text,
     class_pairs,
     indirect_text,
     proven_text,
@@ -69,7 +76,8 @@ from tda.ui.cover_rulings import (
 from tda.ui.occlusion_order import FLOOR_NOTE, OrderLine, header_text, line_text
 from tda.ui.panels.frame_note import FrameNoteBox
 
-__all__ = ["BATCH_TEXT", "DOCK_TITLE", "INDIRECT_TIP", "INDIRECT_TITLE", "NONE_PENDING",
+__all__ = ["BATCH_TEXT", "CLASS_NO_TIP", "CLASS_NO_TITLE", "DOCK_TITLE", "INDIRECT_TIP",
+           "INDIRECT_TITLE", "NONE_PENDING",
            "ORDER_TITLE", "ORDER_TIP", "INSTANCE_ROLE", "NotesDock", "NotesPanel",
            "OcclusionList", "PROVEN_TIP", "PROVEN_TITLE", "RULED_TITLE",
            "RULINGS_TIP", "RULINGS_TITLE", "RulingsSection", "UNDO_RULING"]
@@ -93,7 +101,8 @@ UNDO_RULING = "撤销"
 RULINGS_TIP = ("这一帧上重叠的对（像素 ≥ 1000，机箱里），还没有任何边、没有结构关系（随父件、装在 / 插在 / "
                "拧住、主板上的 CPU / 内存 / 散热器 / 扩展卡）、这台也还没裁定的。看图判断："
                "「挡着」= 拆下面那件之前必须先拿走上面那件；「不挡」= 只是画面上重叠。每对这台只问一次。"
-               "「建议收」/「存疑」是裁定单按类别给的提示（悬停一行看理由），不是裁定。没有快捷键；"
+               "「用户已定：挡」= 你已经按类别裁定这一类对挡着（悬停一行看你的原话），这一对仍可以单独改判；"
+               "按类别裁定不挡的对折在「用户已定不挡（类级）」里，不再问。没有快捷键；"
                "Ctrl+Z 撤回最近一次裁定，「已裁定」里的「撤销」去掉任一条。"
                "鼠标停在任一行上，画布上框出这两件：橙框 = 压在上面的，蓝框 = 被压的（只是显示）。"
                "括号里是这一帧的状态；悬停看日志对两件做了什么。")
@@ -104,6 +113,10 @@ INDIRECT_TIP = ("图里已经有边通过别的零件定了这两件的先后（
 PROVEN_TITLE = "日志已证明不挡（{k}）"
 PROVEN_TIP = ("日志里下面那件被拆下 / 打开 / 挪开的时候，上面那件还在原处：它显然没挡着，"
               "「挡着」这条边会和日志矛盾，所以不问。想留个记录可以点「不挡」。")
+#: Task W3g: the pairs whose class pair the user ruled 不挡 for the whole class.
+CLASS_NO_TITLE = "用户已定不挡（类级）（{k}）"
+CLASS_NO_TIP = ("这一类对你已经按类别裁定为不挡（只是拆的习惯顺序，或两件彼此独立；"
+                "configs/covers_whitelist.yaml 的 not_blocks），不再问，也不会写成边。悬停看你的原话。")
 #: The two areas' tallest heights: the dock keeps most of its room for the note.
 PENDING_MAX_HEIGHT = 220
 RULED_MAX_HEIGHT = 140
@@ -214,6 +227,9 @@ class RulingsSection(QWidget):
             self._folded(INDIRECT_TITLE.format(k=0), INDIRECT_TIP)
         self.proven_toggle, self.proven, self.proven_layout, self.proven_area = \
             self._folded(PROVEN_TITLE.format(k=0), PROVEN_TIP)
+        # task W3g: the class pairs the user ruled 不挡, the same kind of fold
+        self.class_no_toggle, self.class_no, self.class_no_layout, self.class_no_area = \
+            self._folded(CLASS_NO_TITLE.format(k=0), CLASS_NO_TIP)
         for widget in (self, self.toggle, self.empty, self.ruled_toggle):
             widget.setToolTip(RULINGS_TIP)
         inner = QVBoxLayout(self.body)
@@ -225,6 +241,8 @@ class RulingsSection(QWidget):
         inner.addWidget(self.indirect_area)
         inner.addWidget(self.proven_toggle)
         inner.addWidget(self.proven_area)
+        inner.addWidget(self.class_no_toggle)
+        inner.addWidget(self.class_no_area)
         inner.addWidget(self.ruled_toggle)
         inner.addWidget(self.ruled_area)
         layout = QVBoxLayout(self)
@@ -247,6 +265,9 @@ class RulingsSection(QWidget):
         self.proven_buttons: list[tuple[Candidate, QPushButton]] = []
         self._indirect_labels: list[QLabel] = []
         self._proven_labels: list[QLabel] = []
+        #: The 用户已定不挡（类级） fold (W3g): what is in it; no buttons.
+        self.class_no_candidates: list[Candidate] = []
+        self._class_no_labels: list[QLabel] = []
         #: Every hoverable line: ``(pair, row widget)`` (tests drive enter / leave).
         self.hover_rows: list[tuple[tuple[str, str], QWidget]] = []
         #: The pair the pointer rests on, or ``None``.
@@ -299,11 +320,13 @@ class RulingsSection(QWidget):
     def set_rulings(self, candidates: list[Candidate],
                     ruled: Mapping[tuple[str, str], Mapping],
                     proven: Optional[list[Candidate]] = None,
-                    indirect: Optional[list[Candidate]] = None) -> None:
+                    indirect: Optional[list[Candidate]] = None,
+                    class_not_blocks: Optional[list[Candidate]] = None) -> None:
         """Show the frame's ``candidates`` (in order) and the desktop's ``ruled`` rows.
 
-        ``proven`` / ``indirect`` (task W3f) fill the two folded lists; a fold
-        with nothing in it is not shown.  Rebuilding under a resting pointer
+        ``proven`` / ``indirect`` (task W3f) and ``class_not_blocks`` (task W3g)
+        fill the folded lists; a fold with nothing in it is not shown.
+        Rebuilding under a resting pointer
         reports the hover gone (``sigHover("", "")``): its row is no more.
         """
         if self.hovered is not None:
@@ -340,6 +363,18 @@ class RulingsSection(QWidget):
         self.proven_layout.addStretch(1)
         self.proven_toggle.setText(PROVEN_TITLE.format(k=len(self.proven_candidates)))
         self._show_fold(self.proven_toggle, self.proven_area, bool(self.proven_candidates))
+        self.class_no_candidates = list(class_not_blocks or [])
+        _clear(self.class_no_layout)
+        self._class_no_labels = []
+        for cand in self.class_no_candidates:
+            self._class_no_labels.append(self._line(
+                self.class_no_layout, class_not_blocks_text(cand),
+                f"{cand.above_class} → {cand.below_class}：{cand.reason}\n{cand.log}".strip(),
+                [], hover=(cand.above, cand.below)))
+        self.class_no_layout.addStretch(1)
+        self.class_no_toggle.setText(CLASS_NO_TITLE.format(k=len(self.class_no_candidates)))
+        self._show_fold(self.class_no_toggle, self.class_no_area,
+                        bool(self.class_no_candidates))
         _clear(self.ruled_layout)
         self.ruled_buttons, self._ruled_labels = [], []
         for (above, below), row in ruled.items():
@@ -456,6 +491,10 @@ class RulingsSection(QWidget):
     def indirect_texts(self) -> list[str]:
         """The 「规则已间接覆盖」 lines as shown (W3f)."""
         return [label.text() for label in self._indirect_labels]
+
+    def class_no_texts(self) -> list[str]:
+        """The 「用户已定不挡（类级）」 lines as shown (W3g)."""
+        return [label.text() for label in self._class_no_labels]
 
     def row_tips(self) -> list[str]:
         """The open rows' tooltips, in order (W3f: the sheet's hint and the 日志 line)."""

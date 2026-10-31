@@ -13,6 +13,11 @@ Review (table ``cover_ruling``) that the confirmed frames show covering becomes
 accepted``. The whitelist is the controller's suggestion layer: its unruled
 pairs are listed, and written (``source = pixels:<version>``) only with
 ``--allow-unruled``. Without either flag the run reads the rulings alone.
+Since task W3g the whitelist (``W2``) is the user's class-level rulings: each
+pair writes the row of its ``edge`` (``covered_by`` or ``blocked_by`` with mode
+``contained`` / ``physical_path``), and its ``not_blocks:`` class pairs are
+never written (listed as ``class_not_blocks``; a Review ``blocks`` ruling on
+such a pair still wins, listed as ``ruling_overrides_class``).
 
 **Dry run by default**: it prints the rows it would write and the evidence
 file, and writes nothing to the database. ``--apply`` writes; ``--undo pixels``
@@ -69,7 +74,7 @@ def _evidence(db, tax, desktop: int, args) -> Optional[tuple[list[dict], int]]:
 
 def _row_line(item: dict) -> str:
     frac = f"{item['frac'] * 100:.1f}%" if item.get("frac") is not None else "amodal ?"
-    return (f"covered_by({item['below']}, {item['above']})  {item['px']} px, {frac}, "
+    return (f"{PE.edge_text(item)}  {item['px']} px, {frac}, "
             f"{item['n_frames']} frames from step {item['first']}  [{item['source']}]")
 
 
@@ -231,17 +236,23 @@ def _print(plans: list[PE.DesktopPlan], args, refused: dict[int, list[str]]) -> 
     why: Counter = Counter()
     for plan in plans:
         rows = plan.to_write(args.allow_unruled)
-        if rows or plan.suggested or plan.rejected_by_user or plan.skipped or plan.stale:
+        if (rows or plan.suggested or plan.rejected_by_user or plan.skipped or plan.stale
+                or plan.class_not_blocks):
             print(f"{TAG} D{plan.desktop:02d}: {len(plan.review)} 条复查裁定 / ruled, "
                   f"{len(plan.whitelist)} whitelist, {len(plan.suggested)} 建议 / suggested, "
                   f"{len(plan.rejected_by_user)} 用户判不挡 / rejected, "
+                  f"{len(plan.class_not_blocks)} 类级不挡 / class not_blocks, "
                   f"{len(plan.stale)} 过期 / stale, "
                   f"{len(plan.skipped)} skipped; {plan.confirmed_frames} confirmed frames")
         for item in rows:
             print(f"{TAG}   {'WRITE' if args.apply else 'would write'} {_row_line(item)}")
+        for item in plan.ruling_overrides_class:
+            print(f"{TAG}   复查裁定压过类级不挡 / ruled blocks over class not_blocks "
+                  f"{item['above']} over {item['below']} ({item['class_pair']})")
         for item in plan.stale:
-            print(f"{TAG}   STALE ({item['why']}) covered_by({item['below']}, {item['above']}) "
-                  f"[{item['row']['source']}]: "
+            row = item["row"]
+            print(f"{TAG}   STALE ({item['why']}) {row['type']}({item['below']}, {item['above']}) "
+                  f"[{row['source']}]: "
                   + ("deleted" if args.apply else "would be deleted by --apply"))
         for item in plan.skipped:
             if item["why"] in ("would_violate", "reverse_edge", "ruled_no_pixel_evidence",
@@ -256,6 +267,9 @@ def _print(plans: list[PE.DesktopPlan], args, refused: dict[int, list[str]]) -> 
                 pairs[(item.get("whitelist_pair") or "(ruled)", name)] += 1
     for (pair, name), n in sorted(pairs.items()):
         print(f"{TAG} pair {pair}: {n} {name}")
+    no = Counter(item["class_pair"] for plan in plans for item in plan.class_not_blocks)
+    for pair, n in sorted(no.items()):
+        print(f"{TAG} 类级不挡 / class not_blocks {pair}: {n} (never written)")
     print(f"{TAG} skipped: " + (", ".join(f"{k} {v}" for k, v in sorted(why.items())) or "none"))
 
 

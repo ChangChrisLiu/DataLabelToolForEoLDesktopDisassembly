@@ -5,8 +5,9 @@
   (a rejected edge does not count); no structural reason (parent, attached
   chain, mounted_on / fastens / socket_host / cable, the support list); no
   ruling yet for the ordered pair;
-* the sheet's tags (建议收 / 存疑 / 其他, ``class`` or ``class.kind``, the most
-  exact entry wins) with the reason; ``same_pair_pending``; the order
+* the tags -- since task W3g the user's class rulings of the shipped whitelist
+  (用户已定：挡 / 其他; ``class`` or ``class.kind``, the most exact entry wins)
+  with the user's words; ``same_pair_pending``; the order
   (tag, then pixels, then keys); the batch groups; the texts.
 """
 from __future__ import annotations
@@ -22,13 +23,12 @@ from tda.ui.cover_rulings import (
     BLOCKS,
     MIN_PX,
     NOT_BLOCKS,
-    RECOMMENDED,
     SUPPORT,
     TAG_OTHER,
-    TAG_RECOMMENDED,
-    TAG_UNCERTAIN,
-    UNCERTAIN,
+    TAG_USER_BLOCKS,
+    TAG_USER_NOT_BLOCKS,
     Candidate,
+    ClassRulings,
     candidate_text,
     chassis_pairs,
     class_key,
@@ -191,8 +191,8 @@ def test_small_and_latch_parts_on_top_and_screws_connectors_cables_underneath_ar
                           ("drive_cage.01", "connector.01", 3000),
                           ("ram_latch.01", "drive_cage.01", 3000)], inst, [], {})
     assert [(c.above, c.below, c.tag) for c in kept] == [
-        ("cover.01", "cpu_socket_lever.01", TAG_RECOMMENDED),
-        ("drive_cage.01", "ram_latch.01", TAG_UNCERTAIN)]
+        ("cover.01", "cpu_socket_lever.01", TAG_OTHER),
+        ("drive_cage.01", "ram_latch.01", TAG_OTHER)]
     # by class, whatever the kind or role
     inst["screw.motherboard.01"] = rec("screw.motherboard.01", "screw",
                                        attrs={"role": "motherboard"})
@@ -204,49 +204,60 @@ def test_small_and_latch_parts_on_top_and_screws_connectors_cables_underneath_ar
 # --------------------------------------------------------------------------- #
 # tags, order, counts, texts
 # --------------------------------------------------------------------------- #
-def test_the_sheets_class_pairs_are_encoded_with_their_reasons():
-    assert len(RECOMMENDED) == 18 and len(UNCERTAIN) == 21
-    assert ("optical_drive", "motherboard") in {(a, b) for a, b, _ in RECOMMENDED}
-    # round 2: the support table wins -- a card on the board is structural, so the
-    # tag tables never recommend a pair the rule can never ask
-    for above, below, _reason in RECOMMENDED + UNCERTAIN:
+def test_the_tags_are_the_users_class_rulings_of_the_shipped_whitelist():
+    """Task W3g: the W2 whitelist replaced the sheet's 建议收 / 存疑 tables."""
+    classes = CR.class_rulings()
+    assert len(classes.blocks) == 19 and len(classes.not_blocks) == 12
+    assert ("optical_drive", "motherboard", "A2 挡") in classes.blocks
+    # the support table wins: a part on the board is a rule edge, never a tag
+    for above, below, _note in classes.blocks + classes.not_blocks:
         assert (above.split(".")[0], below.split(".")[0]) not in SUPPORT, (above, below)
     assert pair_tag("expansion_card.gpu", "motherboard")[0] == TAG_OTHER
-    assert ("drive_cage", "motherboard") in {(a, b) for a, b, _ in UNCERTAIN}
-    assert all(reason for *_pair, reason in RECOMMENDED + UNCERTAIN)
-    assert not ({(a, b) for a, b, _ in RECOMMENDED} & {(a, b) for a, b, _ in UNCERTAIN})
+    assert all(note for *_pair, note in classes.blocks + classes.not_blocks)
+    assert not ({(a, b) for a, b, _ in classes.blocks}
+                & {(a, b) for a, b, _ in classes.not_blocks})
+    assert not hasattr(CR, "RECOMMENDED") and not hasattr(CR, "UNCERTAIN")
 
 
 def test_tags_name_a_class_or_a_class_kind_and_the_most_exact_wins():
-    assert pair_tag("optical_drive", "motherboard")[0] == TAG_RECOMMENDED
-    assert pair_tag("drive_cage", "motherboard") == (TAG_UNCERTAIN, "日志里上面那件先拆的只有 65%")
-    assert pair_tag("optical_drive", "cpu_cooler.heatsink")[0] == TAG_RECOMMENDED
-    assert pair_tag("optical_drive", "cpu_cooler.fan")[0] == TAG_UNCERTAIN       # the kind decides
-    assert pair_tag("optical_drive", "cpu_cooler")[0] == TAG_OTHER                # no kind: no row
-    assert pair_tag("expansion_card.gpu", "cover")[0] == TAG_UNCERTAIN
-    assert pair_tag("expansion_card.other", "cover")[0] == TAG_OTHER
-    assert pair_tag("cover.side", "cpu")[0] == TAG_RECOMMENDED                    # class: any kind
-    assert pair_tag("case_fan", "motherboard") == (TAG_OTHER, "裁定单表 A 里没有建议：看图判断")
+    assert pair_tag("optical_drive", "motherboard") == (TAG_USER_BLOCKS, "A2 挡")
+    assert pair_tag("drive_cage", "motherboard")[0] == TAG_USER_BLOCKS
+    assert pair_tag("storage_drive.ssd", "drive_cage")[0] == TAG_USER_BLOCKS
+    assert pair_tag("storage_drive.unknown", "motherboard")[0] == TAG_OTHER   # the kind decides
+    assert pair_tag("case_fan", "cpu_cooler.fan")[0] == TAG_USER_BLOCKS
+    assert pair_tag("case_fan", "cpu_cooler.heatsink")[0] == TAG_OTHER
+    # 不挡 by class: any kind of either side
+    tag, reason = pair_tag("psu", "motherboard")
+    assert tag == TAG_USER_NOT_BLOCKS and reason.startswith("A4 不挡")
+    assert pair_tag("storage_drive.unknown", "cpu_cooler.heatsink")[0] == TAG_USER_NOT_BLOCKS
+    assert pair_tag("cover.side", "cpu") == (TAG_OTHER, "用户还没有按类别裁定这一类对：看图判断")
+    # a refined entry beats the bare class; no rulings at all: every pair is 其他
+    mine = ClassRulings(blocks=(("x", "y", "class"), ("x", "y.k", "kind")))
+    assert pair_tag("x.a", "y.k", classes=mine) == (TAG_USER_BLOCKS, "kind")
+    assert pair_tag("x", "y.z", classes=mine) == (TAG_USER_BLOCKS, "class")
+    assert pair_tag("optical_drive", "motherboard", classes=ClassRulings())[0] == TAG_OTHER
 
 
 def test_candidates_carry_classes_tag_reason_and_the_order_is_tag_then_pixels():
-    pairs = [("case_fan.01", "motherboard.01", 60_000),            # 其他
-             ("drive_cage.01", "motherboard.01", 30_000),          # 存疑
-             ("optical_drive.01", "motherboard.01", 20_000),       # 建议收
-             ("optical_drive.01", "drive_cage.01", 90_000),        # 建议收
-             ("psu.01", "motherboard.01", 30_000)]                 # 存疑, ties broken by key
+    pairs = [("case_fan.01", "motherboard.01", 60_000),            # 用户已定：挡
+             ("drive_cage.01", "motherboard.01", 30_000),          # 用户已定：挡
+             ("optical_drive.01", "motherboard.01", 20_000),       # 用户已定：挡
+             ("optical_drive.01", "drive_cage.01", 90_000),        # 用户已定：挡
+             ("psu.01", "drive_cage.01", 30_000),                  # 其他
+             ("cover.01", "drive_cage.01", 30_000),                # 其他, ties broken by key
+             ("psu.01", "motherboard.01", 30_000)]                 # 不挡 by class: not asked
     cands = pending_pairs(pairs, BASE, [], {})
     assert keys(cands) == [("optical_drive.01", "drive_cage.01"),
-                           ("optical_drive.01", "motherboard.01"),
+                           ("case_fan.01", "motherboard.01"),
                            ("drive_cage.01", "motherboard.01"),
-                           ("psu.01", "motherboard.01"),
-                           ("case_fan.01", "motherboard.01")]
-    assert [c.tag for c in cands] == [TAG_RECOMMENDED, TAG_RECOMMENDED, TAG_UNCERTAIN,
-                                      TAG_UNCERTAIN, TAG_OTHER]
+                           ("optical_drive.01", "motherboard.01"),
+                           ("cover.01", "drive_cage.01"),
+                           ("psu.01", "drive_cage.01")]
+    assert [c.tag for c in cands] == [TAG_USER_BLOCKS] * 4 + [TAG_OTHER] * 2
     first = cands[0]
     assert (first.above_class, first.below_class) == first.classes == ("optical_drive",
                                                                        "drive_cage")
-    assert first.px == 90_000 and "刚性大件" in first.reason
+    assert first.px == 90_000 and first.reason.startswith("B1 挡")
     gpu = pending_pairs([("expansion_card.gpu.01", "cover.01", 4000)], BASE, [], {})[0]
     assert gpu.classes == ("expansion_card.gpu", "cover")
     assert pending_pairs(list(reversed(pairs)), BASE, [], {}) == cands      # deterministic
@@ -259,7 +270,7 @@ def test_same_pair_pending_counts_the_other_rows_of_the_class_pair_on_this_frame
     pairs = [("optical_drive.01", "motherboard.01", 9000),
              ("optical_drive.02", "motherboard.01", 8000),
              ("optical_drive.02", "motherboard.02", 7000),
-             ("psu.01", "motherboard.01", 6000)]
+             ("psu.01", "drive_cage.01", 6000)]
     cands = pending_pairs(pairs, inst, [], {})
     assert [c.same_pair_pending for c in cands] == [2, 2, 2, 0]
     groups = class_pairs(cands)
@@ -282,8 +293,8 @@ def test_only_pairs_inside_the_chassis_are_offered():
 
 def test_the_texts():
     cand = Candidate("optical_drive.01", "motherboard.01", "optical_drive", "motherboard",
-                     68797, TAG_RECOMMENDED, "r")
-    assert candidate_text(cand) == "optical_drive.01 → motherboard.01 · 像素 68 797 · 建议收"
+                     68797, TAG_USER_BLOCKS, "r")
+    assert candidate_text(cand) == "optical_drive.01 → motherboard.01 · 像素 68 797 · 用户已定：挡"
     assert status_text(13, 7, [("optical_drive.01", "motherboard.01")], BLOCKS) \
         == "D13 第 7 帧：optical_drive.01 压着 motherboard.01 → 挡着"
     assert status_text(5, 12, [("a", "b"), ("c", "b")], NOT_BLOCKS,
