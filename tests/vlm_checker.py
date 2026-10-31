@@ -818,30 +818,35 @@ class Checker:
         if {k: v["state"] for k, v in frame.items()} != {
                 k: v for k, v in spec["start_state"].items() if k in frame}:
             _fail(record, "the start state is not the folded state of this step")
-        # the reference plan replays without an unmet edge and takes the goal out
-        sim = {k: dict(v) for k, v in frame.items()}
-        for item in spec["reference_plan"]:
-            verb, target = item["verb"], item["target"]
-            if self.unmet(verb, target, sim) or not self.applies(target, verb, sim):
-                _fail(record, f"the reference plan breaks at {verb} {target}")
-            self._apply(sim, target, verb)
-        if sim[goal]["state"] != REMOVED:
-            _fail(record, "the reference plan does not reach the goal")
-        # ... and every required state change is in it
-        for req in spec["required_actions"]:
-            got = sim.get(req["target"], {}).get("state")
-            if got not in set(req["states"]) and got != REMOVED:
-                _fail(record, f"the reference plan misses required {req['target']}")
-        # the demonstrated remainder is the log after this step, up to the goal
+        # both the graph's shortest plan and the demonstrated remainder replay
+        # without an unmet edge, take the goal out and contain every
+        # required state change
+        for name in ("reference_shortest", "demonstrated_remainder"):
+            sim = {k: dict(v) for k, v in frame.items()}
+            for item in spec[name]:
+                verb, target = item["verb"], item["target"]
+                if self.unmet(verb, target, sim) or not self.applies(target, verb, sim):
+                    _fail(record, f"{name} breaks at {verb} {target}")
+                self._apply(sim, target, verb)
+            if sim[goal]["state"] != REMOVED:
+                _fail(record, f"{name} does not reach the goal")
+            for req in spec["required_actions"]:
+                got = sim.get(req["target"], {}).get("state")
+                if got not in set(req["states"]) and got != REMOVED:
+                    _fail(record, f"{name} misses required {req['target']}")
+        # the demonstrated remainder is the log after this step, up to the goal,
+        # and it is the answer: the one plan known to work
         logged = [(a.verb, a.target) for s in self.log_steps()
                   if step < s <= int(spec["goal_removed_at"])
                   for a in self.planning_actions(s)]
         if [(i["verb"], i["target"]) for i in spec["demonstrated_remainder"]] != logged:
             _fail(record, "the demonstrated remainder is not the logged suffix")
-        if spec.get("redundancy_penalty") is not False:
-            _fail(record, "V7 must not penalise redundant steps")
-        if int(spec["plan_length"]) != len(spec["reference_plan"]):
-            _fail(record, "plan_length disagrees with the reference plan")
+        if record["label"]["answer"]["plan"] != spec["demonstrated_remainder"]:
+            _fail(record, "V7's answer is not the demonstrated remainder")
+        if spec.get("redundancy_penalty") is not False or not spec.get("any_legal_plan_scores"):
+            _fail(record, "V7 must score any legal plan and not penalise redundant steps")
+        if int(spec["plan_length"]) != len(spec["reference_shortest"]):
+            _fail(record, "plan_length disagrees with the shortest plan")
 
     def _apply(self, frame: dict[str, dict], target: str, verb: str) -> None:
         effect = self._effect(target, verb)

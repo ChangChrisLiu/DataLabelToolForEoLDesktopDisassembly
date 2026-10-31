@@ -2,7 +2,7 @@
 
 ``python scripts/vlm_to_chat.py --export <vlm_scan.jsonl> [--records <variant.jsonl>]
 --format openai|qwen|internvl --image-root <cache dir> --out <chat.jsonl>
-[--assets <dir>] [--base64] [--roi none|view|evidence] [--composite]``
+[--assets <dir>] [--base64] [--roi none|view] [--composite]``
 
 * ``openai`` -- ``{"id", "messages": [system, user]}``; the user turn is a list
   of ``text`` and ``image_url`` parts, the URL a local path or (``--base64``) a
@@ -14,10 +14,17 @@
 
 The question is followed by the lettered options (V6) and by the answer format
 of :data:`tda.core.export.vlm_check.RESPONSE_FORMATS`. ``--roi view`` crops
-each image to its pose segment's ROI (from the manifest), ``--roi evidence`` to
-the union of the record's evidence boxes with a margin (falling back to the
-view ROI); the crop offset and any ``--max-side`` scale go to
-``meta.transforms`` so ``scripts/vlm_score.py --chat`` can map boxes back.
+each image to its pose segment's fixed chassis ROI (from the manifest) -- the
+**same crop for every record of a desktop and view**; ``--roi none`` (the
+default) sends the whole frame. The crop offset and any ``--max-side`` scale
+go to ``meta.transforms`` so ``scripts/vlm_score.py --chat`` can map boxes back.
+
+There is deliberately no crop around a record's own evidence (W3b review S2):
+the evidence boxes are label side, and a crop built from them is the answer
+leaking into the picture -- every decidable V14 item has a box and no
+undecidable one does, V12's changed pairs have boxes and its no-change pairs
+none, and V8's box *is* its answer. A crop may depend on the desktop and the
+view, never on the record.
 A two-image question is two image parts, or with ``--composite`` one
 side-by-side picture -- the choice is the run's, fixed per model.
 ``meta.prompt_template_id`` (chat format + question template) lets the scorer
@@ -45,9 +52,8 @@ from tda.core.export.vlm_check import LETTERS, format_instruction  # noqa: E402
 CHAT_FORMAT_ID = "chat-v1"
 SYSTEM = ("You are shown photographs of a desktop PC being disassembled on a bench. "
           "Answer exactly in the JSON format asked for.")
-#: Margin around the evidence boxes for ``--roi evidence``.
-EVIDENCE_MARGIN = 0.25
-EVIDENCE_MIN_SIDE = 96
+#: The crops a run may use: none, or the view's fixed chassis ROI.
+ROI_MODES = ("none", "view")
 
 
 def user_text(record: dict) -> str:
@@ -71,21 +77,6 @@ def user_text(record: dict) -> str:
                                for i, o in enumerate(options)))
     parts.append(format_instruction(record))
     return "\n\n".join(parts)
-
-
-def _evidence_box(record: dict) -> Optional[tuple[float, float, float, float]]:
-    boxes = [b for b in (record["label"].get("evidence") or {}).get("bboxes", {}).values()
-             if b]
-    if not boxes:
-        return None
-    x0 = min(b[0] for b in boxes)
-    y0 = min(b[1] for b in boxes)
-    x1 = max(b[0] + b[2] for b in boxes)
-    y1 = max(b[1] + b[3] for b in boxes)
-    w, h = x1 - x0, y1 - y0
-    mx = max(w * EVIDENCE_MARGIN, (EVIDENCE_MIN_SIDE - w) / 2, 0)
-    my = max(h * EVIDENCE_MARGIN, (EVIDENCE_MIN_SIDE - h) / 2, 0)
-    return x0 - mx, y0 - my, x1 + mx, y1 + my
 
 
 class Images:
@@ -164,16 +155,19 @@ def _url(path: Path, inline: bool) -> str:
 
 def convert(record: dict, manifest: dict, images: Images, fmt: str, *,
             roi: str = "none", composite: bool = False, inline: bool = False) -> dict:
-    """One chat request for one record."""
+    """One chat request for one record.
+
+    ``roi`` is ``none`` or ``view``; the crop is read off the manifest entry of
+    the *image* (desktop, view, step), never off the record.
+    """
+    if roi not in ROI_MODES:
+        raise ValueError(f"--roi {roi!r}: only {', '.join(ROI_MODES)} -- a crop built "
+                         f"from a record's evidence would show its answer")
     shown: list[Path] = []
     transforms: list[dict] = []
     for image_id in record["prompt"].get("images") or []:
         entry = manifest[image_id]
-        box = None
-        if roi == "evidence":
-            box = _evidence_box(record)
-        if box is None and roi in ("view", "evidence") and entry.get("roi"):
-            box = tuple(entry["roi"])
+        box = tuple(entry["roi"]) if roi == "view" and entry.get("roi") else None
         path, transform = images.prepare(entry["path"], box)
         shown.append(path)
         transforms.append(transform)
@@ -231,7 +225,9 @@ def main(argv=None) -> int:
     ap.add_argument("--assets", default=None, help="where crops / composites go")
     ap.add_argument("--out", required=True)
     ap.add_argument("--base64", action="store_true", help="inline images as data URLs")
-    ap.add_argument("--roi", default="none", choices=("none", "view", "evidence"))
+    ap.add_argument("--roi", default="none", choices=ROI_MODES,
+                    help="none, or the view's fixed chassis ROI (one crop per "
+                         "desktop and view; never one built from a record)")
     ap.add_argument("--composite", action="store_true",
                     help="two-image questions as one side-by-side picture")
     ap.add_argument("--max-side", type=int, default=None)

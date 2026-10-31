@@ -105,7 +105,9 @@ def test_v6_v10_v16_take_the_image_from_any_view(scene):
 def test_captive_screws_rules(scene):
     db, tax, tmp = scene
     out = tmp / "scan.jsonl"
-    summary = export_vlm(db, tax, [W.DESKTOP], W.VIEW, str(out))
+    # unthinned: the one board screw is present on every frame, so the class
+    # prior would take all of its questions away
+    summary = export_vlm(db, tax, [W.DESKTOP], W.VIEW, str(out), balance=False)
     records = _read(out)
     # V3: steps 4-7 only loosen captive screws -- nothing a pair of pictures shows
     assert not {4, 5, 6, 7} & {r["label"]["step"] for r in _of(records, "V3")}
@@ -157,30 +159,67 @@ def test_the_cli_accepts_v5_and_rejects_a_typo(tmp_path: Path, capsys):
     assert "not a task: V55" in capsys.readouterr().out
 
 
-def test_v2_is_thinned_by_its_class_prior():
-    def rec(i, cls, state):
-        return {"id": f"rec_{i:016x}", "prompt": {"task": "V2"},
-                "label": {"answer": {"state": state},
-                          "answer_check": {"derive": "instance_state", "class": cls}}}
+def _v2(desktop, i, cls, state, prior):
+    return {"id": f"rec_{desktop:04d}{i:012x}", "prompt": {"task": "V2"},
+            "label": {"desktop": desktop, "step": i, "answer": {"state": state},
+                      "class_prior_answer": prior,
+                      "answer_check": {"derive": "instance_state", "class": cls,
+                                       "instance": f"{cls}.{i % 3 + 1:02d}"}}}
 
-    records = [rec(i, "ram_latch", "closed") for i in range(30)] + \
-              [rec(100 + i, "ram_latch", "open") for i in range(10)] + \
-              [rec(200 + i, "psu", "installed") for i in range(25)] + \
-              [rec(300 + i, "cover", "closed") for i in range(5)]
-    kept, stats = balance_v2(records)
-    latch = [r for r in kept if r["label"]["answer_check"]["class"] == "ram_latch"]
-    assert sum(r["label"]["answer"]["state"] == "closed" for r in latch) == 10
-    assert sum(r["label"]["answer"]["state"] == "open" for r in latch) == 10
-    # a class whose every answer is the prior keeps none: it would only measure it
-    assert not [r for r in kept if r["label"]["answer_check"]["class"] == "psu"]
-    # a pool too small to estimate a prior on is annotated, not thinned
-    assert len([r for r in kept if r["label"]["answer_check"]["class"] == "cover"]) == 5
+
+def _pool(desktop):
+    return ([_v2(desktop, i, "ram_latch", "closed", "closed") for i in range(30)]
+            + [_v2(desktop, 100 + i, "ram_latch", "open", "closed") for i in range(10)]
+            + [_v2(desktop, 200 + i, "psu", "installed", "installed") for i in range(25)]
+            + [_v2(desktop, 300 + i, "cpu_socket_lever", "open", "closed")
+               for i in range(6)]
+            + [_v2(desktop, 400 + i, "cpu_socket_lever", "closed", "closed")
+               for i in range(4)])
+
+
+def test_v2_is_thinned_per_desktop_so_no_answer_is_the_majority():
+    kept, stats = balance_v2(_pool(1))
+
+    def of(cls, state):
+        return sum(1 for r in kept if r["label"]["answer_check"]["class"] == cls
+                   and r["label"]["answer"]["state"] == state)
+
+    assert of("ram_latch", "closed") == 10 and of("ram_latch", "open") == 10
+    # a class whose every answer is the same keeps none: it would only measure it
+    assert of("psu", "installed") == 0
+    # neither value may be the majority -- the non-prior one is capped as well
+    assert of("cpu_socket_lever", "open") == 4 and of("cpu_socket_lever", "closed") == 4
     for r in kept:
-        assert "class_prior_answer" in r["label"] and "prior_is_correct" in r["label"]
-    assert stats["state:ram_latch"] == {"before": 40, "after": 20, "prior": "closed",
-                                        "prior_share_before": 0.75}
-    again, _ = balance_v2(records)
+        prior_right = r["label"]["answer"]["state"] == r["label"]["class_prior_answer"]
+        assert r["label"]["prior_is_correct"] is prior_right
+    assert stats["state:ram_latch"] == {"before": 40, "after": 20,
+                                        "prior_correct_before": 30}
+    again, _ = balance_v2(_pool(1))
     assert [r["id"] for r in again] == [r["id"] for r in kept]
+
+
+def test_v2_thinning_does_not_depend_on_the_other_desktops():
+    """D1 alone and D1 inside 1-66 keep exactly the same D1 questions (review M)."""
+    alone, _ = balance_v2(_pool(1))
+    together, _ = balance_v2(_pool(2) + _pool(1) + _pool(3))
+    mine = [r["id"] for r in together if r["label"]["desktop"] == 1]
+    assert mine == [r["id"] for r in alone]
+
+
+def test_v2_records_carry_the_desktops_own_prior(scene):
+    db, tax, tmp = scene
+    export_vlm(db, tax, [W.DESKTOP], W.VIEW, str(tmp / "s.jsonl"))
+    records = [r for r in _read(tmp / "s.jsonl") if r["prompt"]["task"] == "V2"]
+    assert records
+    for r in records:
+        check = r["label"]["answer_check"]
+        if check["derive"] == "instance_state" and check["class"] == "cover":
+            assert r["label"]["class_prior_answer"] == "closed"  # where it starts
+        if check["derive"] == "screw_count":
+            assert r["label"]["class_prior_answer"] == 1  # one board screw
+        assert r["label"]["prior_is_correct"] is (
+            json.dumps(r["label"]["answer"].get("state", r["label"]["answer"].get("count")))
+            == json.dumps(r["label"]["class_prior_answer"]))
 
 
 def test_the_summary_says_why_each_task_was_silent(scene):

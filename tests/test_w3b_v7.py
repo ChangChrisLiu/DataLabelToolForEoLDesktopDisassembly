@@ -75,9 +75,12 @@ def test_the_answer_is_the_remaining_legal_plan_and_its_requirements(scene):
     check = first["label"]["answer_check"]
     assert check["type"] == "goal_plan" and check["redundancy_penalty"] is False
     assert check["goal"] == W.CPU and check["goal_removed_at"] == 11
-    plan = [(a["verb"], a["target"]) for a in check["reference_plan"]]
+    plan = [(a["verb"], a["target"]) for a in check["reference_shortest"]]
     assert plan[-1] == ("remove", W.CPU)
     assert check["plan_length"] == len(plan)
+    # the answer is the demonstrated remainder; any legal plan scores
+    assert first["label"]["answer"]["plan"] == check["demonstrated_remainder"]
+    assert check["any_legal_plan_scores"] is True
     required = {r["target"]: r for r in check["required_actions"]}
     # the cooler's screws (fastened_by gates both ways of moving it), the
     # cooler, the lever, and what covers the lever -- but not the fan lead:
@@ -89,6 +92,26 @@ def test_the_answer_is_the_remaining_legal_plan_and_its_requirements(scene):
     demo = [(a["verb"], a["target"]) for a in check["demonstrated_remainder"]]
     assert demo == [W.LOG[s] for s in range(3, 12)]
     assert first["label"]["answer_check"]["previous_action"]["target"] == W.SHROUD
+
+
+@pytest.mark.parametrize("source", ["pixels:W1", "review:covers"])
+def test_both_pixel_sources_are_graph_blocked_pixels(tmp_path: Path, source):
+    """Review S1: W3a's imports (`pixels:*`) and the user's rulings (`review:*`)."""
+    from tda.core.export.vlm_tasks import is_pixel_edge
+    from tda.core.graph import Edge
+
+    assert is_pixel_edge(Edge("covered_by", "a", "b", source=source))
+    assert not is_pixel_edge(Edge("covered_by", "a", "b", source="rule"))
+    edges = [dict(e, source=source) if e.get("source") else e for e in W.EDGES]
+    db = Db(str(tmp_path / "src.sqlite"))
+    tax = W.build(db, edges=edges)
+    _, records, _ = _export(db, tax, tmp_path)
+    v4 = [r for r in records if r["prompt"]["task"] == "V4"
+          and r["label"]["answer_check"]["target"] == W.LEVER and r["label"].get("negative")]
+    assert v4 and all(r["label"]["truth_source"] == "graph_blocked_pixels" for r in v4)
+    assert {r["label"]["truth_source"] for r in _v7(records)
+            if r["label"]["step"] < 8} == {"graph_blocked_pixels"}
+    db.close()
 
 
 def test_a_desktop_whose_cooler_set_is_unresolved_asks_no_v7(tmp_path: Path):
@@ -127,6 +150,12 @@ def test_the_gold_plan_scores_one_and_extra_steps_cost_nothing(scene):
                {"verb": "open", "target": "Cover 1"}] + plan)
     g = grade(r, json.dumps({"plan": padded}), world, tax)
     assert g.score == 1.0 and g.metrics["noop_steps"] == 1
+    # the answer is the demonstrated remainder, but any legal plan scores --
+    # the graph's shortest one included
+    names = {k: v["label"] for k, v in world.instances.items()}
+    shortest = [{"verb": a["verb"], "target": names[a["target"]]}
+                for a in r["label"]["answer_check"]["reference_shortest"]]
+    assert grade(r, json.dumps({"plan": shortest}), world, tax).score == 1.0
 
 
 def test_a_plan_through_the_lever_or_without_the_cooler_is_wrong(scene):
