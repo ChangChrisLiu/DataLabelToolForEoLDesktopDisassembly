@@ -113,7 +113,9 @@ def test_the_shipped_whitelist_loads():
     assert wl.version == "W1" and wl.source == "pixels:W1"
     assert (wl.min_px, wl.min_frac) == (1000, 0.03)
     labels = [p.label() for p in wl.pairs]
-    assert labels[0] == "expansion_card.gpu -> motherboard" and len(labels) == 19
+    assert labels[0] == "optical_drive -> motherboard" and len(labels) == 18
+    # A1 is structural by the support table: never a candidate, so not the whitelist's
+    assert "expansion_card.gpu -> motherboard" not in labels
     assert "drive_cage -> motherboard" not in labels          # 存疑: commented out
     assert {p.min_frac for p in wl.pairs if p.below == "cpu"} == {0.25}
 
@@ -129,7 +131,11 @@ def test_the_shipped_whitelist_loads():
     ("drive_cage", "cable_clip", "own rules"),
     ("drive_cage", "loose_cable", "own rules"),
     ("spaceship", "motherboard", "no such class"),
-    ("cpu_cooler.turbo", "motherboard", "no kind"),
+    ("cpu_cooler.turbo", "optical_drive", "no kind"),
+    ("expansion_card.gpu", "motherboard", "support table"),
+    ("cpu_cooler.fan", "motherboard", "support table"),
+    ("ram_module", "motherboard", "support table"),
+    ("cpu", "motherboard", "support table"),
 ])
 def test_the_loader_refuses(tmp_path, above, below, said):
     path = whitelist_file(tmp_path, f"version: W1\npairs:\n  - {{above: {above}, below: {below}}}\n")
@@ -255,13 +261,14 @@ def test_without_allow_unruled_the_whitelist_only_suggests():
     assert plan.to_write(False) == [] and plan.to_write(True) == []
 
 
-def test_a_ruling_beats_the_whitelist_and_structure_refuses_only_whitelist_pairs():
+def test_structure_refuses_a_whitelist_pair_and_a_ruling_beats_it():
     # the RAM latch rides out on the board: structural, so the whitelist refuses it ...
     latch = cover("ram_latch.01", "motherboard.01")
     plan = judge([latch], whitelist=wl(min_px=1, min_frac=0, above="ram_latch",
                                        below="motherboard"))
     assert plan.skipped[0]["why"] == "structural"
-    # ... and the support table is no reason against an explicit word
+    # ... the support table is a structural reason too (the loader refuses such a
+    # pair; a hand-built whitelist that names one is still not written) ...
     gpu = bench_instances()
     gpu["expansion_card.gpu.01"] = gpu["ram_module.01"].__class__(
         key="expansion_card.gpu.01", desktop=DESKTOP, cls="expansion_card",
@@ -273,7 +280,13 @@ def test_a_ruling_beats_the_whitelist_and_structure_refuses_only_whitelist_pairs
     plan = PE.plan_desktop(DESKTOP, [card], 3, gpu,
                            propose_edges(gpu, TAX), [], [], TAX, {},
                            wl(1, 0.0, "expansion_card.gpu", "motherboard"))
-    assert len(plan.whitelist) == 1
+    assert plan.whitelist == [] and plan.skipped[0]["why"] == "structural"
+    assert plan.skipped[0]["structural"] == [SUPPORTED_BY_REASON]
+    # ... and only the user's explicit ruling wins over it
+    plan = PE.plan_desktop(DESKTOP, [card], 3, gpu, propose_edges(gpu, TAX), [], [], TAX,
+                           ruled(("expansion_card.gpu.01", "motherboard.01", "blocks")), None)
+    [item] = plan.review
+    assert item["source"] == "review:covers" and item["structural"] == [SUPPORTED_BY_REASON]
 
 
 # --------------------------------------------------------------------------- #
@@ -387,12 +400,36 @@ def test_undo_deletes_the_rows_with_an_op(env):
     add_rulings(env["db"], (PSU, HDD, "blocks"))
     version = graph_version_of(env["db"])
     assert run(env, "--apply") == EXIT_OK
-    assert run(env, "--undo") == EXIT_OK
+    assert run(env, "--undo", "all") == EXIT_OK
     assert owned_rows(env["db"]) == []
     assert [k for k, _, _ in ops(env["db"])] == ["pixel_edges", "pixel_edges_undo"]
     assert graph_version_of(env["db"]) == version
     names = sorted(p.name for p in (env["tmp"] / "backups").iterdir())
     assert any(n.startswith("tda_pre_pixel_edges_undo_") for n in names)
+    # the rulings stayed in their table, so the review rows come back with --apply
+    assert run(env, "--apply") == EXIT_OK and len(owned_rows(env["db"])) == 1
+
+
+def test_undo_needs_a_selector_and_deletes_only_that_kind(env, capsys):
+    add_rulings(env["db"], (PSU, HDD, "blocks"))
+    assert run(env, "--apply") == EXIT_OK
+    db = Db(str(env["db"]))
+    try:          # a whitelist row beside the review one
+        db.add_relation(DESKTOP, "covered_by", HDD, SCREW, source="pixels:W1",
+                        status="accepted")
+    finally:
+        db.close()
+    capsys.readouterr()
+    assert run(env, "--undo") == EXIT_ERROR
+    out = capsys.readouterr().out
+    assert "pixels" in out and "review" in out and "all" in out
+    assert run(env, "--undo", "everything") == EXIT_ERROR
+    assert len(owned_rows(env["db"])) == 2
+    assert run(env, "--undo", "pixels") == EXIT_OK
+    assert [r["source"] for r in rows_of(env["db"]) if r["target"] == HDD
+            and r["blocker"] in (PSU, SCREW)] == ["review:covers"]
+    assert run(env, "--undo", "review") == EXIT_OK
+    assert owned_rows(env["db"]) == []
 
 
 def test_the_whitelist_writes_only_when_unruled_pairs_are_allowed(env):
@@ -411,7 +448,7 @@ def test_the_whitelist_writes_only_when_unruled_pairs_are_allowed(env):
 
 def test_allow_unruled_needs_a_whitelist_and_apply_with_undo_is_refused(env):
     assert run(env, "--allow-unruled") == EXIT_ERROR
-    assert run(env, "--apply", "--undo") == EXIT_ERROR
+    assert run(env, "--apply", "--undo", "all") == EXIT_ERROR
 
 
 def test_a_running_app_refuses_the_write(env, monkeypatch, capsys):
@@ -435,6 +472,79 @@ def test_the_evidence_can_come_from_an_export_graph_directory(env):
     doc = evidence(env)
     assert doc["evidence_source"].startswith("graph-dir")
     assert [e["px"] for e in doc["edges"]] == [25]
+
+
+def stamp(path: Path, version: int) -> None:
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute("UPDATE meta SET value=? WHERE key='schema_version'", (str(version),))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_a_v6_copy_without_the_ruling_table_is_read_with_no_rulings(env):
+    """A read-only tool must not demand a migration: a copy taken before W3c's v7."""
+    from tda.core.export.graph_export import READ_ONLY_MIN_SCHEMA
+
+    assert READ_ONLY_MIN_SCHEMA == 6
+    stamp(env["db"], 6)
+    ro = ReadOnlyDb(str(env["db"]))
+    try:
+        assert ro.schema_version == 6 and cover_rulings(ro, DESKTOP) == {}
+        doc = build_desktop(ro, TAX, DESKTOP, VIEW)
+    finally:
+        ro.close()
+    assert {c["ruling"] for c in doc["covers"]} == {None}
+    assert doc["meta"]["counts"]["rulings"] == {"blocks": 0, "not_blocks": 0}
+
+
+def test_a_v7_copy_with_the_ruling_table_is_read(env):
+    """W3c's v7 adds `cover_ruling`; once this build knows v7 it reads it as it is."""
+    from tda.core.db import SCHEMA_VERSION
+
+    add_rulings(env["db"], (PSU, HDD, "blocks"))
+    stamp(env["db"], 7)
+    if SCHEMA_VERSION < 7:          # before W3c lands: a newer file is refused, one line
+        with pytest.raises(RuntimeError, match="schema version 7"):
+            ReadOnlyDb(str(env["db"]))
+        return
+    ro = ReadOnlyDb(str(env["db"]))
+    try:
+        assert cover_rulings(ro, DESKTOP)[(PSU, HDD)]["ruling"] == "blocks"
+        doc = build_desktop(ro, TAX, DESKTOP, VIEW)
+    finally:
+        ro.close()
+    assert {(c["above"], c["below"]): c["ruling"] for c in doc["covers"]}[(PSU, HDD)] == "blocks"
+
+
+def test_too_old_and_too_new_copies_are_refused(env):
+    from tda.core.db import SCHEMA_VERSION
+
+    for version in (5, SCHEMA_VERSION + 1):
+        stamp(env["db"], version)
+        with pytest.raises(RuntimeError, match=f"schema version {version}"):
+            ReadOnlyDb(str(env["db"]))
+
+
+def test_rulings_come_through_the_db_reader_when_it_has_one(env):
+    """W3c's `Db.cover_rulings(desktop)`: used when present, whatever row shape it returns."""
+    add_rulings(env["db"], (PSU, HDD, "blocks"))
+    ro = ReadOnlyDb(str(env["db"]))
+    try:
+        class Reader:
+            conn = ro.conn
+
+            def cover_rulings(self, desktop):
+                assert desktop == DESKTOP
+                return [{"above": SCREW, "below": HDD, "ruling": "not_blocks", "by": "w3c",
+                         "ts": "t", "view": VIEW, "step": 2, "note": "n"}]
+
+        got = cover_rulings(Reader(), DESKTOP)
+    finally:
+        ro.close()
+    assert got == {(SCREW, HDD): {"ruling": "not_blocks", "by": "w3c", "ts": "t",
+                                  "view": VIEW, "step": 2, "note": "n"}}
 
 
 def test_the_support_table_and_mounted_on_rule(env):

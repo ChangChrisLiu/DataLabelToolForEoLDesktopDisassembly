@@ -197,18 +197,48 @@ def cover_rulings(db, desktop: int) -> dict[tuple[str, str], dict]:
 
     The user decides in Review, per instance pair with the picture in front of
     them, whether ``above`` really blocks ``below`` (task W3c writes the table
-    and its UI). This reads it and nothing else, and answers ``{}`` on a
-    database that does not have the table yet. Read-only.
+    and its UI, schema v7). This reads it and nothing else, and answers ``{}``
+    on a database that does not have the table (a v6 copy). Read-only. Where
+    the database class has W3c's ``Db.cover_rulings(desktop)`` reader, the
+    rows come through it; otherwise straight from the table.
     """
     found = db.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
                             (RULING_TABLE,)).fetchone()
     if found is None:
         return {}
+    reader = getattr(db, "cover_rulings", None)
+    if callable(reader):
+        return _ruling_map(reader(int(desktop)))
     rows = db.conn.execute(
         f'SELECT above, below, ruling, "by", ts, view, step, note FROM {RULING_TABLE} '
         f'WHERE desktop=? ORDER BY above, below', (int(desktop),)).fetchall()
     return {(r[0], r[1]): {"ruling": r[2], "by": r[3], "ts": r[4], "view": r[5],
                            "step": r[6], "note": r[7]} for r in rows}
+
+
+_RULING_FIELDS = ("ruling", "by", "ts", "view", "step", "note")
+
+
+def _ruling_map(found) -> dict[tuple[str, str], dict]:
+    """``Db.cover_rulings``' answer as ``(above, below) -> fields``, whatever its shape.
+
+    A mapping keyed by ``(above, below)``, or an iterable of rows / dicts /
+    objects carrying ``above``, ``below`` and the ruling fields.
+    """
+    def field_of(row, name):
+        if isinstance(row, dict):
+            return row.get(name)
+        try:
+            return row[name]
+        except (KeyError, IndexError, TypeError):
+            return getattr(row, name, None)
+
+    if isinstance(found, dict):
+        items = [(tuple(k), v) for k, v in found.items()]
+    else:
+        items = [((field_of(r, "above"), field_of(r, "below")), r) for r in found or []]
+    return {key: {name: field_of(row, name) for name in _RULING_FIELDS}
+            for key, row in sorted(items, key=lambda kv: kv[0])}
 
 
 def structural_reasons(instances: dict, tax, above: str, below: str,

@@ -5,7 +5,7 @@
     python -m tda.cli pixel-edges --db <copy> --desktops 1-66
         [--whitelist configs/covers_whitelist.yaml [--allow-unruled]]
         [--graph-dir <export-graph out>] [--view scan] [--out <evidence.json>]
-        [--apply | --undo]
+        [--apply | --undo pixels|review|all]
 
 The logic is :mod:`tda.core.pixel_edges`: a pair the user ruled ``blocks`` in
 Review (table ``cover_ruling``) that the confirmed frames show covering becomes
@@ -15,8 +15,10 @@ pairs are listed, and written (``source = pixels:<version>``) only with
 ``--allow-unruled``. Without either flag the run reads the rulings alone.
 
 **Dry run by default**: it prints the rows it would write and the evidence
-file, and writes nothing to the database. ``--apply`` writes; ``--undo`` deletes
-every ``pixels:*`` / ``review:*`` row of the desktops given. Both refuse while
+file, and writes nothing to the database. ``--apply`` writes; ``--undo pixels``
+/ ``review`` / ``all`` deletes the ``pixels:*`` / ``review:*`` / both kinds of
+row of the desktops given (a bare ``--undo`` is refused; deleting the review
+rows is reversible only because the rulings stay in ``cover_ruling``). Both refuse while
 the annotator's app is running, take the single-user lock, probe for another
 writer, back the database up first (``tda_pre_pixel_edges_<stamp>.sqlite`` in
 ``backup_dir``), and log one ``op_log`` row per desktop (kind ``pixel_edges`` /
@@ -86,6 +88,10 @@ def _loops(db, tax, desktop: int, items: list[dict]) -> list[str]:
 def cmd_pixel_edges(args: argparse.Namespace) -> int:
     """Rehearse (default), write or undo the ``covered_by`` edges of Review's rulings."""
     tax = load_taxonomy()
+    if args.undo is not None and args.undo not in PE.UNDO_SELECTORS:
+        print(f"{TAG} --undo 要说删哪一种 / --undo needs one of: pixels (pixels:* rows), "
+              f"review (review:* rows), all; nothing deleted")
+        return EXIT_ERROR
     if args.apply and args.undo:
         print(f"{TAG} --apply 和 --undo 只能选一个 / pass one of --apply and --undo")
         return EXIT_ERROR
@@ -116,21 +122,23 @@ def cmd_pixel_edges(args: argparse.Namespace) -> int:
                 print(f"{TAG} 数据库正被别人写 / the database is busy ({busy}); nothing written")
                 return EXIT_ERROR
         if args.undo:
-            return _undo(paths, db, chosen)
+            return _undo(paths, db, chosen, args.undo)
         return _run(paths, db, tax, chosen, whitelist, args)
 
 
-def _undo(paths, db, chosen: list[int]) -> int:
-    doomed = {d: [e for e in edges_from_db(db, d) if PE.owned(e)] for d in chosen}
+def _undo(paths, db, chosen: list[int], which: str) -> int:
+    prefixes = PE.UNDO_SELECTORS[which]
+    doomed = {d: [e for e in edges_from_db(db, d) if PE.owned(e, prefixes)] for d in chosen}
     doomed = {d: rows for d, rows in doomed.items() if rows}
     if not doomed:
-        print(f"{TAG} 没有 pixels:* / review:* 的边，什么也没删 / no such rows; nothing deleted")
+        print(f"{TAG} 没有 {'/'.join(p + '*' for p in prefixes)} 的边，什么也没删 / no such rows; "
+              f"nothing deleted")
         return EXIT_OK
     if named_backup(paths, db, "pixel-edges", "pixel_edges_undo") is None:
         return EXIT_ERROR
     for d in sorted(doomed):
         with db.transaction():
-            out = PE.undo_edges(db, d)
+            out = PE.undo_edges(db, d, which)
         print(f"{TAG} D{d:02d}: 删了 {out['deleted']} 条 / deleted {out['deleted']} rows; "
               f"graph_version {out['graph_version'] or '-'}")
     return EXIT_OK
@@ -233,6 +241,10 @@ def _add_pixel_edges(sub) -> None:
                    help=f"evidence JSON (default <graph-dir or cwd>/{EVIDENCE_NAME})")
     p.add_argument("--apply", action="store_true",
                    help="write the rows (default: a dry run that writes nothing to the database)")
-    p.add_argument("--undo", action="store_true",
-                   help="delete every pixels:* / review:* row of the desktops given")
+    p.add_argument("--undo", nargs="?", const="", default=None, metavar="pixels|review|all",
+                   help="delete the desktops' rows of one kind: pixels (source pixels:*, the "
+                        "whitelist's), review (review:*, Review's rulings) or all; a bare "
+                        "--undo is refused. Deleting the review rows is reversible only "
+                        "because the rulings stay in the cover_ruling table: a later "
+                        "--apply writes them again")
     p.set_defaults(func=cmd_pixel_edges)
