@@ -61,9 +61,9 @@ pairs:
   - {above: storage_drive.hdd, below: drive_cage, edge: blocked_by.contained,
      note: "B5 挡：HDD 在硬盘架里，先拿走盘才能拿走架子"}
   - {above: optical_drive, below: storage_drive.ssd,
-     note: "B3 挡：光驱在盘的上面一层（待用户看图确认）"}
+     note: "B3 挡：光驱在盘的上面一层（用户 2026-10-31 看图确认：「前几个都是光驱，我确定挡着下面的部分」）"}
   - {above: optical_drive, below: storage_drive.hdd,
-     note: "B4 挡：光驱在盘的上面一层（待用户看图确认）"}
+     note: "B4 挡：光驱在盘的上面一层（用户 2026-10-31 看图确认）"}
   - {above: drive_cage, below: storage_drive.hdd, note: "B6 挡：架子先翻开才拿得到盘"}
   # ---- D: -> ram_module (挡)
   - {above: drive_cage, below: ram_module, min_frac: 0.25, note: "D1 挡：先弄走硬盘架再弄内存"}

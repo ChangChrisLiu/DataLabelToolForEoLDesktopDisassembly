@@ -83,7 +83,7 @@ def test_the_shipped_whitelist_is_the_users_rulings():
     assert {p.min_frac for p in wl.pairs if p.below in ("cpu", "cpu_socket_lever",
                                                         "ram_module")} == {0.25}
     assert all(p.note for p in wl.pairs) and all(p.note for p in wl.not_blocks)
-    assert "待用户看图确认" in wl.match("optical_drive", "storage_drive.ssd").note
+    assert "看图确认" in wl.match("optical_drive", "storage_drive.ssd").note  # confirmed 2026-10-31
     # 不挡 by class: A4, all of C (any kind of drive and cooler), D4
     no = {p.label() for p in wl.not_blocks}
     assert "psu -> motherboard" in no and "storage_drive.ssd -> ram_module" in no
