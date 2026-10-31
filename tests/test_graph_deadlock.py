@@ -275,7 +275,12 @@ GRAPHS = 200
 KINDS = (("fastened_by", None), ("covered_by", None), ("connected_to", None),
          ("locked_by", None),        # nothing can `open` a card: only
          ("blocked_by", "physical_path"),   # removing the blocker clears it
-         ("blocked_by", "tool_access"), ("blocked_by", "cable_tension"))
+         ("blocked_by", "tool_access"), ("blocked_by", "cable_tension"),
+         ("blocked_by", "mounted"))         # task W3d: only `removed` clears it
+#: The ``blocked_by`` modes whose blocker must reach a narrower set of states
+#: than the type's (task W3d), transcribed here rather than imported so the
+#: dead-end oracle below stays independent of the module under test.
+MODE_REQUIRED = {"mounted": frozenset({"removed"})}
 #: Drawn per edge, so the invariants are asserted over preferences and over
 #: rows a human has taken out of the graph as well.
 NECESSITIES = ("required", "required", "required", "recommended")
@@ -315,7 +320,11 @@ def has_dead_end(instances, edges, tax) -> bool:
     for edge in active_edges(edges):
         if edge.necessity == "recommended":
             continue
-        wanted = REQUIRED_STATES.get(edge.type, frozenset())
+        # by type and mode: a `mounted` block accepts nothing but `removed`
+        if edge.type == "blocked_by" and edge.mode in MODE_REQUIRED:
+            wanted = MODE_REQUIRED[edge.mode]
+        else:
+            wanted = REQUIRED_STATES.get(edge.type, frozenset())
         rec = instances.get(edge.blocker)
         current = state[edge.blocker].state if rec is not None else None
         if rec is None or current in wanted or current == "removed":
