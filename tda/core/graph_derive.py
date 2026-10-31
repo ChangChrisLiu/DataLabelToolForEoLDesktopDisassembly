@@ -41,7 +41,7 @@ from tda.core.graph_rules import (
     is_orphan,
     is_provisional,
 )
-from tda.core.model import InstanceRec, machine_only
+from tda.core.model import InstanceRec, teardown_only
 from tda.core.taxonomy import Taxonomy
 
 __all__ = [
@@ -71,9 +71,10 @@ def settled_instances(instances: dict[str, InstanceRec]) -> dict[str, InstanceRe
     """The desktop's instances without the Label Studio drafts (spec 3.2).
 
     Nor the 框外零件 (task U18): they are not part of the machine, so no
-    constraint edge, deadlock or plan ever names one.
+    constraint edge, deadlock or plan ever names one. Nor the gallery-only
+    parts (task U45): no step touches one, so it blocks and frees nothing.
     """
-    return {k: rec for k, rec in machine_only(instances).items() if not is_provisional(k)}
+    return {k: rec for k, rec in teardown_only(instances).items() if not is_provisional(k)}
 
 
 @dataclass(frozen=True)

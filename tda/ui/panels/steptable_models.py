@@ -32,7 +32,7 @@ from tda.core import extra as X
 from tda.core.absent import SHORT as ABSENT_SHORT
 from tda.core.implied import NOTE_ATTR as IMPLIED_NOTE
 from tda.core.implied import is_implied
-from tda.core.model import CONTEXT_LABEL, is_cage_latch, is_extra
+from tda.core.model import CONTEXT_LABEL, is_cage_latch, is_extra, is_gallery_only
 from tda.core.taxonomy import Taxonomy
 from tda.ui import context_text as CONTEXT_T
 from tda.ui.steps_absent import is_absent_row
@@ -593,6 +593,8 @@ class InstanceTableModel(_TableModel):
             return inst.attrs.get(column.field, BLANK if column.field == "head" else False)
         value = getattr(inst, column.field)
         if column.field == "raw_names":
+            if is_gallery_only(inst):  # added from a gallery shot (task U45)
+                return GALLERY_ONLY_RAW_NAMES
             if is_extra(inst):  # no sheet ever named it: say where it came from
                 return EXTRA_RAW_NAMES
             if is_implied(inst) and not value:  # nor this one: the importer made it
@@ -603,6 +605,8 @@ class InstanceTableModel(_TableModel):
 
 #: What the Raw names cell of a part added in S1 reads: it has no raw name.
 EXTRA_RAW_NAMES = "＋ 手动添加（日志里没有）/ added in S1"
+#: ... and of a gallery-only part (task U45): added from a shot, in no step.
+GALLERY_ONLY_RAW_NAMES = "仅合照（在零件合照里加的，拆解序列里没有）/ gallery-only"
 #: ... and of an implied instance (:mod:`tda.core.implied`): the importer made
 #: it, no sheet named it.
 IMPLIED_RAW_NAMES = "隐含（日志里没有）/ implied"
@@ -638,6 +642,8 @@ def extra_tooltip(inst, staged: bool = False) -> Optional[str]:
              f"({attrs.get(X.REASON_ATTR)})"]
     if attrs.get(X.NOTE_ATTR):
         lines.append(f"note: {attrs[X.NOTE_ATTR]}")
+    if is_gallery_only(inst):
+        lines.append("仅合照：只在零件合照里出现，拆解序列里没有它，不能挂父零件、不能当步骤的目标")
     lines.append("未写入：按 Apply 保存 / not applied yet" if staged
                  else "没画形状时可以右键删除 / deletable while it has no shape")
     return "\n".join(lines)

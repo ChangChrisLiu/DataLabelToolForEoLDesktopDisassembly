@@ -51,7 +51,7 @@ from .log_identity import (
     placeholder_key as _placeholder_key,
     reuse_candidates,
 )
-from .model import ActionRec, InstanceRec, StepRec
+from .model import GALLERY_ONLY_CLASSES, ActionRec, InstanceRec, StepRec
 from .states import CABLE_CLASS, CABLE_PREFIX
 from .taxonomy import (
     FALLBACK_RULE,
@@ -255,6 +255,10 @@ def loose_cable_key(ordinal: int) -> str:
 
     The connectors' ``cable:<owner>`` scheme with an ordinal, because two such
     rows are two cables: one shared node would be removed twice.
+
+    This is the **virtual** isolated-cable node (U33), not the taxonomy class
+    ``loose_cable`` of task U45 -- a cable drawn on the components gallery's
+    table, only ever a gallery-only part, which no sheet row can target.
     """
     return f"{CABLE_PREFIX}{LOOSE_CABLE_OWNER}.{ordinal:02d}"
 
@@ -427,6 +431,13 @@ class _Importer:
         if not parsed.cls:
             if not fallback:
                 self.issue(step, f"{raw_name!r} names no target class - needs manual target")
+            return UNRESOLVED
+        if parsed.cls in GALLERY_ONLY_CLASSES:
+            # a class only a gallery-only part has (task U45: loose_cable) is
+            # never a step's target, whatever a mapping rule says: the sheet's
+            # cables are the virtual cable:<owner> nodes
+            self.issue(step, f"{raw_name!r} maps to {parsed.cls!r}, a components-gallery-only "
+                             f"class - needs manual target")
             return UNRESOLVED
         return self._instance(step, raw_name, parsed, verb, result)
 

@@ -28,11 +28,14 @@ from tda.core.cache import has_no_photo
 from tda.core.db import Db
 from tda.core.logs import CHASSIS_KEY, UNRESOLVED, instance_key
 from tda.core.model import (
+    GALLERY_ONLY_ATTR,
+    GALLERY_ONLY_CLASSES,
     ActionRec,
     InstanceRec,
     StepRec,
     StepType,
     is_context,
+    is_gallery_only,
     machine_only,
 )
 from tda.core.captive_replay import record_captive_fixes
@@ -97,6 +100,23 @@ DEFAULT_VERB = "remove"
 ANNOTATOR = "ui:steps"
 #: :meth:`StepTableData.add_extras`'s "no parent given": use the class's host rule.
 DEFAULT_PARENT = object()
+
+#: Steps' refusals around a gallery-only part (task U45): it lies on the
+#: components gallery's table and no step of the teardown has it.
+GALLERY_ONLY_NO_STEP = ("{key} 是仅合照的零件，拆解序列里没有它；要让某一步拆它，"
+                        "在 Steps「＋ 添加零件」里加（可填拆下于第几步）/ a gallery-only part has no step")
+GALLERY_ONLY_NO_RELATION = ("{key} 是仅合照的零件：不挂在别的零件上，也不固定、插在别的零件上 / "
+                            "a gallery-only part carries no relation")
+GALLERY_ONLY_NOT_A_HOST = ("{key} 是仅合照的零件，拆解序列里没有它：别的零件不能挂在它上面 / "
+                           "a gallery-only part is no host")
+
+
+def _sets_something(field: str, value: Any) -> bool:
+    """Does this edit give a relation a value (rather than clear it)?"""
+    if field == "attached":
+        return as_bool(value)
+    return bool(text_of(value))
+
 
 _ACTION_FIELDS = ("verb", "tool", "direction", "result", "failure_reason", "difficulty")
 #: Relations only one class may carry (spec 7.1).
@@ -408,6 +428,9 @@ class StepTableData:
             target = str(target).strip()
             if not target.startswith(CABLE_PREFIX) and target not in self.instances:
                 raise EditError(f"D{self.desktop:02d} has no instance {target!r}")
+            if is_gallery_only(self.instances.get(target)):
+                # its events would vanish: no snapshot carries it (task U45)
+                raise EditError(GALLERY_ONLY_NO_STEP.format(key=target))
             self._check_verb(wanted, self.class_of(target), target)
         elif cls:
             target = self._create_instance(cls, dict(attrs or {}), row.raw_name, wanted).key
@@ -557,8 +580,22 @@ class StepTableData:
         「拆下于第 k 步」; ``None``: never, or with its parent), refused when it
         does not fit the log (:func:`tda.core.extra.removal_refusal`). Returns
         the new keys.
+
+        ``attrs["gallery_only"]`` (task U45) makes them gallery-only parts:
+        the components gallery lists them on every shot and the teardown never
+        asks for them, so they take no parent and no removal step. A class
+        only such a part can have (``loose_cable``) is refused without the flag.
         """
         attrs = {k: v for k, v in dict(attrs or {}).items() if v not in (None, "")}
+        gallery_only = bool(attrs.get(GALLERY_ONLY_ATTR))
+        if cls in GALLERY_ONLY_CLASSES and not gallery_only:
+            raise EditError(f"{cls!r} 只在零件合照里加（「＋ 这张里还有…」）/ a {cls} is "
+                            f"only ever a gallery-only part")
+        if gallery_only and (parent not in (DEFAULT_PARENT, None) or removed_at is not None):
+            raise EditError("只在合照里的零件不挂在别的零件上、也没有拆下的步 / a gallery-only "
+                            "part has no parent and no removal step")
+        if gallery_only:
+            parent, state = None, None     # no state event either: it has no state
         if cls in self.tax.classes:
             self._check_discriminator(cls, attrs)
         if parent is DEFAULT_PARENT:
@@ -620,6 +657,12 @@ class StepTableData:
         inst = self.instances.get(key)
         if inst is None:
             raise EditError(f"D{self.desktop:02d} has no instance {key!r}")
+        if is_gallery_only(inst) and field in (*RELATION_FIELDS, "attached", "cable") \
+                and _sets_something(field, value):
+            # a gallery-only part (task U45) lies on the gallery's table and is
+            # in no snapshot of the teardown: it rides on, fastens and plugs
+            # into nothing (clearing a stale value stays allowed)
+            raise EditError(GALLERY_ONLY_NO_RELATION.format(key=key))
         if field in RELATION_FIELDS:
             self._set_relation(inst, field, value)
         elif field == "cable":
@@ -657,6 +700,8 @@ class StepTableData:
             raise EditError(f"only a {required} carries {field!r}, {inst.key} is a {inst.cls}")
         if text and text not in self.instances:
             raise EditError(f"D{self.desktop:02d} has no instance {text!r}")
+        if text and is_gallery_only(self.instances[text]):
+            raise EditError(GALLERY_ONLY_NOT_A_HOST.format(key=text))
         if field == "parent" and text and self._would_cycle(inst.key, text):
             raise EditError(f"{text!r} is already below {inst.key} - parent would form a cycle")
         setattr(inst, field, text or None)
@@ -1005,6 +1050,11 @@ class StepTableData:
         """
         if cls not in self.tax.classes:
             raise EditError(f"{cls!r} is not a taxonomy class")
+        if cls in GALLERY_ONLY_CLASSES:
+            # a loose cable is only ever a gallery part (task U45): a step's
+            # cable is the virtual node cable:<owner>, never an instance
+            raise EditError(f"{cls!r} 只在零件合照里加（「＋ 这张里还有…」）；步骤里的线是虚拟节点 "
+                            f"cable:<owner> / a {cls} is a gallery-only class")
         self._check_verb(verb, cls, f"new {cls}")
         attrs = {k: v for k, v in attrs.items() if k != "instance_nos"}
         self._check_discriminator(cls, attrs)

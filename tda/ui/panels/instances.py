@@ -138,6 +138,10 @@ OFF_FRAME_TIP = ("这一帧画框外：零件在机器里、状态照常，但�
 #: 画框外: the drawn shape is kept as the whole part's estimate.
 OFF_FRAME_DRAWN = ("这是「画框外」：零件在机器里、这个视角拍不到，形状保留；"
                    "其实在画面里：选中按 ` 键撤回")
+#: The chip and the tooltip line of a gallery-only part (task U45).
+GALLERY_ONLY_TAG = "仅合照"
+GALLERY_ONLY_TIP = ("仅合照：在零件合照的任务卡上用「＋ 这张里还有…」加的零件，日志里没有，"
+                    "拆解序列里不会要它；Steps 里可以像别的添加零件一样删除 / gallery-only part")
 
 
 def _short(value: str) -> str:
@@ -310,6 +314,9 @@ class InstanceListPanel(QWidget):
                 tooltip = (f"{key}\nclass: {data.get('cls', '')}\n"
                            f"placement: {data.get('placement', '')}\n"
                            f"visibility: {vis}\nz {data.get('z', '')}")
+                only = bool(data.get("gallery_only"))    # 仅合照 (task U45)
+                if only:
+                    tooltip += f"\n{GALLERY_ONLY_TIP}"
                 swatch = QTableWidgetItem("")
                 if not gone:
                     swatch.setBackground(QBrush(QColor(*palette_color(key))))
@@ -318,7 +325,8 @@ class InstanceListPanel(QWidget):
                 label = str(data.get("label") or "")
                 cells = [
                     swatch,
-                    QTableWidgetItem(f"{key}  {label}" if outside and label else key),
+                    QTableWidgetItem(f"{key}  {label}" if outside and label
+                                     else f"{key}  {GALLERY_ONLY_TAG}" if only else key),
                     QTableWidgetItem(CONTEXT_STATE if outside
                                      else str(data.get("state", ""))),
                     vis_cell,

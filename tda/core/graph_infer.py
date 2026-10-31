@@ -40,6 +40,7 @@ from tda.core.model import (
     InstanceRec,
     is_context,
     is_extra,
+    is_gallery_only,
     is_provisional,
 )
 from tda.core.taxonomy import Taxonomy
@@ -64,10 +65,13 @@ def real_instances(instances: dict[str, InstanceRec], cls: str) -> list[str]:
     """Keys of the settled (non-draft) instances of ``cls``, sorted.
 
     A 框外零件 (task U18) of the class is not one: it is not in the machine.
+    Nor is a gallery-only part (task U45): a cooler on the gallery's table must
+    not make the sequence's own cooler ambiguous for its screws.
     """
     return [
         key for key, rec in sorted(instances.items())
         if rec.cls == cls and not is_provisional(key) and not is_context(rec)
+        and not is_gallery_only(rec)
     ]
 
 
@@ -293,8 +297,8 @@ def infer_relational_fields(
         filled.append(f"{rec.key}.{field} = {value}")
 
     for key, rec in sorted(instances.items()):
-        if is_provisional(key):
-            continue
+        if is_provisional(key) or is_gallery_only(rec):
+            continue        # (U45: a gallery-only part rides on nothing, ever)
         if rec.cls == "screw":
             if not is_extra(rec):  # an added screw fastens what S1 says, or nothing
                 _infer_screw(instances, rec, clock, put, filled)
