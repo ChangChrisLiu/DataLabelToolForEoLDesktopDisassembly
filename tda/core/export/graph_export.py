@@ -59,7 +59,14 @@ from urllib.parse import quote
 
 from tda.core.db import SCHEMA_VERSION, Db
 from tda.core.export.coco import DesktopCtx, load_ctx
-from tda.core.export.graph_covers import CoverScan, class_key, scan_covers
+from tda.core.export.graph_covers import (
+    BLOCKS,
+    NOT_BLOCKS,
+    CoverScan,
+    class_key,
+    scan_covers,
+    supported_by_rule,
+)
 from tda.core.export.release import model_names, public_attrs
 from tda.core.graph import (
     GATED_VERBS,
@@ -279,7 +286,10 @@ def _instances(ctx: DesktopCtx, timeline: list[int]) -> tuple[list[dict], dict]:
         out.append({
             "key": key, "class": rec.cls, "attrs": public_attrs(rec.attrs),
             "parent": rec.parent, "attached": bool(rec.attached),
-            "mounted_on": rec.mounted_on, "fastens": rec.fastens,
+            "mounted_on": rec.mounted_on,
+            # the class-level support table's answer, never written to the database (W3a)
+            "mounted_on_rule": supported_by_rule(ctx.instances, key),
+            "fastens": rec.fastens,
             "socket_host": rec.socket_host, "cable": rec.cable,
             "implied": is_implied(rec), "extra": is_extra(rec),
             "timeline": seen,
@@ -589,6 +599,10 @@ def build_desktop(db: Db, tax: Taxonomy, desktop: int, view: str = DEFAULT_VIEW)
     by_type = Counter(e.type for e in edges)
     candidates = sum(1 for c in scan.covers if c["candidate"])
     no_edge = sum(1 for c in scan.covers if c["no_edge"])
+    # the user's Review rulings (task W3a): a not_blocks pair is no candidate any
+    # more; a blocks pair stays one until `pixel-edges` makes it an edge
+    ruled = Counter(c["ruling"] for c in scan.covers if c.get("ruling"))
+    ruled_candidates = sum(1 for c in scan.covers if c["candidate"] and c.get("ruling"))
     name, sheet, name_note = model_names(meta_row)
     meta = {
         "desktop": int(desktop),
@@ -612,6 +626,9 @@ def build_desktop(db: Db, tax: Taxonomy, desktop: int, view: str = DEFAULT_VIEW)
             "confirmed_frames": scan.confirmed_frames,
             "frames_with_covers": scan.frames_with_covers,
             "covers": len(scan.covers), "no_edge": no_edge, "candidates": candidates,
+            "candidates_ruled": ruled_candidates,
+            "candidates_unruled": candidates - ruled_candidates,
+            "rulings": {BLOCKS: ruled.get(BLOCKS, 0), NOT_BLOCKS: ruled.get(NOT_BLOCKS, 0)},
             "violations": len(violations),
             "violations_timeline_disagrees": sum(
                 1 for v in violations if v["timeline_agrees"] is False),
@@ -650,6 +667,9 @@ def _desktop_row(doc: dict) -> dict:
         "confirmed_frames": counts["confirmed_frames"],
         "covers": counts["covers"], "no_edge": counts["no_edge"],
         "candidates": counts["candidates"],
+        "candidates_ruled": counts.get("candidates_ruled", 0),
+        "candidates_unruled": counts.get("candidates_unruled", counts["candidates"]),
+        "rulings": counts.get("rulings", {BLOCKS: 0, NOT_BLOCKS: 0}),
         "violations": counts["violations"],
         "violations_timeline_disagrees": counts.get("violations_timeline_disagrees", 0),
         "deadlocks": counts["deadlocks"], "dead_ends": counts["dead_ends"],
@@ -703,6 +723,9 @@ def summarize(docs: Iterable[dict], view: str, failed: Optional[dict] = None) ->
         "covers": sum(r["covers"] for r in rows),
         "no_edge": sum(r["no_edge"] for r in rows),
         "candidates": sum(r["candidates"] for r in rows),
+        "candidates_ruled": sum(r["candidates_ruled"] for r in rows),
+        "candidates_unruled": sum(r["candidates_unruled"] for r in rows),
+        "rulings": {k: sum(r["rulings"][k] for r in rows) for k in (BLOCKS, NOT_BLOCKS)},
         "candidate_class_pairs": len(ranked),
         "violations": len(violations),
         "violations_by_kind": dict(sorted(kinds.items())),
