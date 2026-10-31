@@ -27,7 +27,15 @@ from PySide6.QtGui import QEnterEvent
 from PySide6.QtWidgets import QApplication, QPushButton
 
 import app_scene
-from test_w3c_rulings_dock import box, open_window, review, ruling_ops, seed_pile, settle
+from test_w3c_rulings_dock import (  # noqa: F401 - dock_class_rulings: autouse (W3g)
+    box,
+    dock_class_rulings,
+    open_window,
+    review,
+    ruling_ops,
+    seed_pile,
+    settle,
+)
 from tda.core import masks
 from tda.core.model import ShapeKeyframe, ShapePart, ZOrderRec
 from tda.ui import app_actions as A
@@ -159,7 +167,7 @@ def test_rows_say_both_states_and_the_log(window):
     review(window)
     section = window.notes_panel.rulings
     texts = section.texts()
-    assert texts[0] == "cover.01（打开）→ psu.01（装着） · 像素 1 200 · 建议收"
+    assert texts[0] == "cover.01（打开）→ psu.01（装着） · 像素 1 200 · 用户已定：挡"
     tips = section.row_tips()
     assert tips[0].splitlines()[-1] == "日志：cover.01 第 2 步 打开，psu.01 从未拆下"
     assert all("日志：" in tip for tip in tips)
@@ -231,7 +239,7 @@ def test_the_docs_say_it():
     entries = [line for line in spec.split("## 14. 修订记录", 1)[1].splitlines()
                if line.startswith("- ")]
     # on top when it landed; whatever lands later goes above it
-    [entry] = [e for e in entries[:1] if e.startswith("- **v1.51（2026-10-31）**")]
+    [entry] = [e for e in entries[:2] if e.startswith("- **v1.51（2026-10-31）**")]
     for needed in ("（W3f，§4.4）", "`RulingsSection.sigHover", "`cover_rulings.triage_pairs`",
                    "`indirect_chain`", "`cover_log`", "`log_proof`", "`COVER_CLEAR`",
                    "间接 74、日志 21、要问 348", "间接 26、日志 10、要问 50"):

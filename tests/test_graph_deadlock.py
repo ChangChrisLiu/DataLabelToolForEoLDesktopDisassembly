@@ -276,11 +276,12 @@ KINDS = (("fastened_by", None), ("covered_by", None), ("connected_to", None),
          ("locked_by", None),        # nothing can `open` a card: only
          ("blocked_by", "physical_path"),   # removing the blocker clears it
          ("blocked_by", "tool_access"), ("blocked_by", "cable_tension"),
-         ("blocked_by", "mounted"))         # task W3d: only `removed` clears it
+         ("blocked_by", "mounted"),         # task W3d: only `removed` clears it
+         ("blocked_by", "contained"))       # task W3g: gates `remove`, wants `removed`
 #: The ``blocked_by`` modes whose blocker must reach a narrower set of states
-#: than the type's (task W3d), transcribed here rather than imported so the
+#: than the type's (tasks W3d, W3g), transcribed here rather than imported so the
 #: dead-end oracle below stays independent of the module under test.
-MODE_REQUIRED = {"mounted": frozenset({"removed"})}
+MODE_REQUIRED = {"mounted": frozenset({"removed"}), "contained": frozenset({"removed"})}
 #: Drawn per edge, so the invariants are asserted over preferences and over
 #: rows a human has taken out of the graph as well.
 NECESSITIES = ("required", "required", "required", "recommended")

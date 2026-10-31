@@ -46,6 +46,7 @@ __all__ = [
     "BLOCKED_REQUIRED",
     "CABLE_DEFAULT_STATE",
     "CABLE_PREFIX",
+    "CONTAINED_MODE",
     "INACTIVE_STATUSES",
     "LS_PREFIX",
     "MOTHERBOARD_CLASS",
@@ -102,9 +103,13 @@ REQUIRED_STATES: dict[str, frozenset[str]] = {
 #: The ``blocked_by`` mode of the rule-derived "this part is mounted on that
 #: board" edge (task W3d).
 MOUNTED_MODE = "mounted"
+#: The ``blocked_by`` mode of "the blocker is a load the part carries" (task
+#: W3g): a drive in the drive cage, the optical drive on top of it.
+CONTAINED_MODE = "contained"
 #: ``blocked_by`` is the only type that carries a mode (spec 7.1).
 #: ``physical_path`` stays first: it is the Relations panel's default.
-BLOCKED_MODES = ("physical_path", "tool_access", "cable_tension", MOUNTED_MODE)
+BLOCKED_MODES = ("physical_path", "tool_access", "cable_tension", MOUNTED_MODE,
+                 CONTAINED_MODE)
 
 #: Verbs a hard constraint can block at all (spec 7.2). ``reorient`` is a
 #: capture action on the chassis, not a disassembly step, so nothing gates it.
@@ -149,21 +154,30 @@ GATES: dict[str, frozenset[str]] = {
 #: * ``tool_access`` -- you cannot get at it at all, so every gated verb waits;
 #: * ``mounted`` (task W3d) -- the blocker is mounted on the part (a CPU, RAM
 #:   stick, cooler or card on the board): as ``physical_path``, the board can
-#:   neither be taken out nor moved, but its own screws and plugs stay reachable.
+#:   neither be taken out nor moved, but its own screws and plugs stay reachable;
+#: * ``contained`` (task W3g) -- the blocker is a load the part carries (the
+#:   drives **in** the drive cage, the optical drive **on** it, the user's
+#:   rulings B1 / B2 / B5): the cage may still be swung aside and worked on with
+#:   them inside -- D30's log does exactly that at step 9 -- but it may not leave
+#:   the machine until they are out, so only ``remove`` waits.
 BLOCKED_GATES: dict[str, frozenset[str]] = {
     "cable_tension": frozenset({"remove"}),
     "physical_path": frozenset({"remove", "displace"}),
     "tool_access": GATED_VERBS,
     "mounted": frozenset({"remove", "displace"}),
+    "contained": frozenset({"remove"}),
 }
 
 #: ``blocked_by`` modes whose blocker must reach a narrower set of states than
 #: :data:`REQUIRED_STATES` gives the type (task W3d). A part mounted on the
 #: board has to come **off**: a RAM stick swung aside is still in its slot, so
 #: ``displaced`` does not free the board (the user's 「拆掉了」; in the 60
-#: board-removing logs no CPU, RAM stick or card is ever displaced).
+#: board-removing logs no CPU, RAM stick or card is ever displaced). A drive
+#: the cage carries (``contained``, task W3g) likewise: a displaced drive is
+#: still in the cage, so only ``removed`` lets the cage leave.
 BLOCKED_REQUIRED: dict[str, frozenset[str]] = {
     "mounted": frozenset({"removed"}),
+    "contained": frozenset({"removed"}),
 }
 
 

@@ -107,8 +107,10 @@ def test_above_out_of_the_way_first_is_asked():
 def test_below_never_acted_on_is_asked():
     log = cover_log(SCENE, [act(3, "psu.01", "remove")], TAX)
     assert log_proof(log, "psu.01", "motherboard.01") is None
+    # no class rulings: the shipped W2 rules psu -> motherboard 不挡 (task W3g)
     assert keys(pending_pairs([("psu.01", "motherboard.01", 20_000)], SCENE, [], {},
-                              log=log)) == [("psu.01", "motherboard.01")]
+                              log=log, classes=CR.ClassRulings())) == [
+        ("psu.01", "motherboard.01")]
 
 
 def test_a_failed_action_proves_nothing_and_the_compound_step_counts():
