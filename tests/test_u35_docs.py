@@ -68,7 +68,7 @@ def test_v1_34_is_on_top_of_14():
     # U33's v1.32 and U34's v1.33 land at the same time; the controller orders them
     # U33 / U34 / U36 landed v1.32 / v1.33 / v1.35 the same day; the controller ordered them
     # (and U37's v1.36 has gone above them since)
-    [entry] = [e for e in entries[:12] if e.startswith("- **v1.34")]
+    [entry] = [e for e in entries[:13] if e.startswith("- **v1.34")]
     assert entry.startswith("- **v1.34（2026-10-26）**：**这一帧的说明**（U35，§3.1、§4.4）")
     for needed in ("在 review 的时候我可以加入对这一帧说明的 notes",
                    "`frame_note(desktop, view, step, text, author, updated_at)`",
@@ -90,7 +90,8 @@ def test_v1_34_is_on_top_of_14():
 def test_the_quickstart_says_it_in_two_sentences_of_the_review_section():
     quick = QUICK.read_text(encoding="utf-8")
     review = quick.split("## 4. 走完之后：Review", 1)[1].split("### 冲突从哪来", 1)[0]
-    item = review.split("\n4. ", 1)[1].replace("\n   ", "")
+    # item 5 (W3c, 「谁压着谁」) follows it since v1.48
+    item = review.split("\n4. ", 1)[1].split("\n5. ", 1)[0].replace("\n   ", "")
     for needed in ("「这一帧的说明」", "「保存」", "改了没保存就翻帧也会自动存", "`Ctrl+Z` 能撤",
                    "框里打字时快捷键不生效", "按 `Tab` 回到画面", "时间轴上带 ✎", "「说明：…」",
                    "`python -m tda.cli notes --desktop 13`",
