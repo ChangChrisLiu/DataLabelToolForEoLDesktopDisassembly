@@ -88,6 +88,8 @@ EXPECTED = {
     ("covered_by", "screw.motherboard.02", "cover.01"),
     ("covered_by", "screw.motherboard.03", "cover.01"),
     ("covered_by", "cpu.01", "cpu_cooler.fan.01"),
+    # the cooler on the CPU sits on the socket lever too (task W3a)
+    ("covered_by", "cpu_socket_lever.01", "cpu_cooler.fan.01"),
 }
 
 #: Bench classes that nothing can remove: the board-moulded latch and lever and
