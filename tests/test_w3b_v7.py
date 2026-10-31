@@ -101,6 +101,18 @@ def test_a_desktop_whose_cooler_set_is_unresolved_asks_no_v7(tmp_path: Path):
     db.close()
 
 
+def test_any_cooler_kind_over_the_cpu_resolves_the_set(tmp_path: Path):
+    """W3a's cooler rule writes ``covered_by(cpu <- heatsink)`` on the eight
+    two-cooler desktops; the skip condition reads the class, not the kind, so
+    those desktops ask V7 as soon as the edge is in the database."""
+    db = Db(str(tmp_path / "heatsink.sqlite"))
+    tax = W.build(db, cooler_kind="heatsink")
+    summary, records, _ = _export(db, tax, tmp_path)
+    assert _v7(records)
+    assert "cooler_unresolved" not in summary["skip_reasons"][str(W.DESKTOP)].get("V7", {})
+    db.close()
+
+
 def test_the_gold_plan_scores_one_and_extra_steps_cost_nothing(scene):
     db, tax, tmp = scene
     _, records, out = _export(db, tax, tmp)

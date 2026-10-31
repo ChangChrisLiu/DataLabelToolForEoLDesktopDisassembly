@@ -128,10 +128,12 @@ def _instances() -> list[InstanceRec]:
 
 
 def build(db: Db, *, views=(VIEW, OTHER), confirm=(VIEW,), edges=EDGES,
-          group: bool = False) -> Taxonomy:
+          group: bool = False, cooler_kind: str = "heatsink_fan") -> Taxonomy:
     """Seed ``db``; ``confirm`` lists the views whose frames are signed off.
 
-    ``group=True`` puts the four cooler screws in one unordered ``group_id``.
+    ``group=True`` puts the four cooler screws in one unordered ``group_id``;
+    ``cooler_kind`` is the cooler's ``kind`` (``heatsink`` is what W3a's rule
+    makes the CPU's direct cover on a two-cooler desktop).
     """
     tax = load_taxonomy()
     db.upsert_desktop(DESKTOP, {"brand": "Dell", "model_family": "OptiPlex 7020 MT",
@@ -139,6 +141,8 @@ def build(db: Db, *, views=(VIEW, OTHER), confirm=(VIEW,), edges=EDGES,
     for rec in _instances():
         if group and rec.key in SCREWS:
             rec.group_id, rec.group_order = "cooler_screws", "unordered"
+        if rec.key == COOLER:
+            rec.attrs = {"kind": cooler_kind}
         db.upsert_instance(rec)
     steps = [StepRec(DESKTOP, 1, "initial", "initial state")]
     actions = []

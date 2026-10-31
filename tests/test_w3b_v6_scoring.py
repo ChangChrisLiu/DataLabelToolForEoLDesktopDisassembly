@@ -43,9 +43,28 @@ def exported(request, tmp_path: Path):
     db.close()
 
 
-def _v6(records, step=None):
-    rows = [r for r in records if r["prompt"]["task"] == "V6"]
+def _v6(records, step=None, form="open"):
+    rows = [r for r in records if r["prompt"]["task"] == "V6"
+            and (form is None or r["label"]["v6_form"] == form)]
     return [r for r in rows if step is None or r["label"]["step"] == step]
+
+
+def test_every_frame_has_an_open_record_and_its_multiple_choice_twin(exported):
+    """W3b ruling: the open question is the headline, the choice its secondary twin."""
+    db, tax, records, out, _ = exported
+    opens, mcs = _v6(records), _v6(records, form="mc")
+    assert opens and mcs
+    by_pair = {r["label"]["v6_pair"]: r for r in opens}
+    assert len(by_pair) == len(opens)  # one open record per frame
+    for r in opens:
+        assert "options" not in r["prompt"]
+        assert r["label"]["answer_check"]["options_kind"] == "open"
+        assert r["label"]["v6_pair"] == r["id"]  # the open record's own id
+    for r in mcs:
+        twin = by_pair[r["label"]["v6_pair"]]
+        assert r["prompt"]["options"] and r["label"]["answer_check"]["options_kind"] == "listed"
+        assert r["label"]["answer"] == twin["label"]["answer"]
+        assert r["label"]["step"] == twin["label"]["step"] and r["id"] != twin["id"]
 
 
 def test_the_equivalent_set_is_the_demonstrated_action_and_its_permitted_siblings(exported):
@@ -67,7 +86,7 @@ def test_no_distractor_is_a_sibling_and_no_two_options_are_the_same_kind(exporte
     from tda.core.export.coco import load_ctx
 
     ctx = load_ctx(db, tax, W.DESKTOP, W.VIEW)
-    listed = [r for r in _v6(records) if r["label"].get("options")]
+    listed = _v6(records, form="mc")
     assert listed
     for r in listed:
         check = r["label"]["answer_check"]
@@ -83,14 +102,7 @@ def test_a_sibling_answer_matches_and_the_exact_instance_is_secondary(exported):
     db, tax, records, out, _ = exported
     world = _world(out)
     [r] = _v6(records, step=3)
-    other = {"verb": "unscrew", "target": "CPU cooler screw 3"}
-    g = grade(r, json.dumps({"verb": "unscrew", "target": "CPU cooler screw 3"}), world, tax) \
-        if not r["label"].get("options") else None
-    if g is None:  # listed: the sibling is not among the options, so ask open
-        r = json.loads(json.dumps(r))
-        r["label"]["options"] = None
-        r["prompt"].pop("options", None)
-        g = grade(r, json.dumps(other), world, tax)
+    g = grade(r, json.dumps({"verb": "unscrew", "target": "CPU cooler screw 3"}), world, tax)
     assert g.score == 1.0 and g.metrics["group_match"] and not g.metrics["exact_match"]
     g = grade(r, json.dumps({"verb": "unscrew", "target": "a CPU cooler screw"}),
               world, tax)
@@ -106,9 +118,6 @@ def test_a_certainly_blocked_answer_counts_as_blocked(exported):
     db, tax, records, out, _ = exported
     world = _world(out)
     [r] = _v6(records, step=3)
-    r = json.loads(json.dumps(r))
-    r["label"]["options"] = None
-    r["prompt"].pop("options", None)
     # the CPU is under the cooler and locked by the lever
     g = grade(r, json.dumps({"verb": "remove", "target": "CPU 1"}), world, tax)
     assert g.score == 0.0 and g.metrics["blocked"] is True
@@ -118,7 +127,7 @@ def test_a_certainly_blocked_answer_counts_as_blocked(exported):
 def test_listed_options_are_scored_by_letter(exported):
     db, tax, records, out, _ = exported
     world = _world(out)
-    for r in [r for r in _v6(records) if r["label"].get("options")]:
+    for r in _v6(records, form="mc"):
         assert grade(r, gold_reply(r, world), world, tax).score == 1.0
         wrong = next(i for i, o in enumerate(r["label"]["options"])
                      if o["kind"] in ("graph_blocked", "graph_blocked_pixels",
@@ -151,3 +160,9 @@ def test_the_scorer_leaves_undefined_frames_out_of_the_blocked_rate(exported, tm
     cell = result["strict"]["extra"]["V6"]["blocked_rate"]
     assert cell["n"] == len(defined) and cell["mean"] == 0.0
     assert len(undefined) + len(defined) == len(v6)
+    # the headline is the open form; the multiple choice is its own row
+    assert result["headline"]["v6_open"] == result["strict"]["by_task"]["V6"]
+    assert result["headline"]["v6_open"]["n"] == len(v6)
+    assert result["headline"]["v6_mc"]["n"] == len(_v6(records, form="mc"))
+    assert result["strict"]["by_layer"]["L3"]["n"] == sum(
+        1 for r in records if r["prompt"]["task"] in ("V7", "V16")) + len(v6)

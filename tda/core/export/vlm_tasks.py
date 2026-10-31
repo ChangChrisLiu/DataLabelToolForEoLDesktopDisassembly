@@ -1773,6 +1773,12 @@ V6_QUESTIONS = (
     "Looking at this frame, which action would you perform next?",
     "Name the single action to carry out next on this machine.",
 )
+#: The multiple-choice form (W3b): a secondary record beside the open one.
+V6_MC_QUESTIONS = (
+    "Which of these is the next disassembly step?",
+    "Looking at this frame, which of the following actions would you perform next?",
+    "Pick the single action to carry out next on this machine.",
+)
 #: How many graph-permitted "unknown" distractors ride along, and how many
 #: certainly-wrong ones the options list needs before it is offered at all.
 V6_UNKNOWN_OPTIONS = 2
@@ -1882,8 +1888,11 @@ def gen_v6(tc: TaskCtx, step: int) -> Iterator[dict]:
         options = stable_order(listed, seed + "|order",
                                lambda o: f"{o['verb']}|{o['target']}")
 
-    rec_id = f"V6-{frame_id(tc.desktop, tc.view, step)}"
-    index, question = pick(V6_QUESTIONS, rec_id)
+    # two record types per frame sharing `v6_pair` (W3b ruling 2026-10-31):
+    # the **open** question is V6's headline, graded group-equivalently; the
+    # multiple choice is a secondary record, because a bigram over the
+    # previous action alone picks its demonstrated option 79.9 % of the time
+    stem = f"V6-{frame_id(tc.desktop, tc.view, step)}"
     state = tc.state(step)
     chain = [observed(action.target,
                       state[action.target].state if action.target in state else None,
@@ -1892,31 +1901,40 @@ def gen_v6(tc: TaskCtx, step: int) -> Iterator[dict]:
               "target_class": target_class(tc.ctx, action.target),
               "tool": graded_tool(action.tool)}
     fields = ["verb", "target"] + (["tool"] if answer["tool"] is not None else [])
-    yield record(
-        tc, "V6", rec_id, step, [frame], question, index, answer,
-        {"type": "next_action", "reference": [action.verb, action.target],
-         "reference_step": nxt, "fields": fields,
-         "metric": "group_match_rate+blocked_rate",
-         # primary: the answer is the demonstrated action or one of its
-         # permitted siblings (same unordered group, or same verb + match
-         # class); secondary: the demonstrated instance exactly
-         "match": {"primary": "group_equivalent", "secondary": "instance_exact"},
-         "equivalent_actions": _actions_json(equivalent),
-         "match_class": [action.verb, match_class(tc.ctx, action.target)],
-         "group_id": unordered_group(tc.ctx, action.target),
-         "options_kind": "listed" if options is not None else "open",
-         # `blocked_rate` is the share of answers the graph certainly forbids;
-         # on a frame where it forbids nothing the rate is undefined, not zero,
-         # and the scorer leaves the frame out of the blocked denominator
-         "blocked_rate_defined": bool(blocked),
-         "blocked_actions": _actions_json(blocked),
-         "permitted_upper_bound": _actions_json(sorted(permitted)),
-         # the protocol-prior reference reads this and nothing else (W3b)
-         "previous_action": previous_action(tc, step)},
-        evidence({action.target: frame.pointable[action.target][1]}
-                 if action.target in frame.pointable else {}, tc),
-        R.rationale(chain), frame.verified, options=options,
-    )
+    check = {"type": "next_action", "reference": [action.verb, action.target],
+             "reference_step": nxt, "fields": fields,
+             "metric": "group_match_rate+blocked_rate",
+             # primary: the answer is the demonstrated action or one of its
+             # permitted siblings (same unordered group, or same verb + match
+             # class); secondary: the demonstrated instance exactly
+             "match": {"primary": "group_equivalent", "secondary": "instance_exact"},
+             "equivalent_actions": _actions_json(equivalent),
+             "match_class": [action.verb, match_class(tc.ctx, action.target)],
+             "group_id": unordered_group(tc.ctx, action.target),
+             # `blocked_rate` is the share of answers the graph certainly
+             # forbids; on a frame where it forbids nothing the rate is
+             # undefined, not zero, and the scorer leaves the frame out of the
+             # blocked denominator
+             "blocked_rate_defined": bool(blocked),
+             "blocked_actions": _actions_json(blocked),
+             "permitted_upper_bound": _actions_json(sorted(permitted)),
+             # the protocol-prior reference reads this and nothing else (W3b)
+             "previous_action": previous_action(tc, step)}
+    evid = evidence({action.target: frame.pointable[action.target][1]}
+                    if action.target in frame.pointable else {}, tc)
+    pair = opaque_record_id(stem)
+    forms: list[tuple[str, str, Optional[list[dict]]]] = [("open", stem, None)]
+    if options is not None:
+        forms.append(("mc", stem + "-mc", options))
+    for form, rec_id, listed_options in forms:
+        index, question = pick(V6_QUESTIONS if form == "open" else V6_MC_QUESTIONS,
+                               rec_id)
+        yield record(
+            tc, "V6", rec_id, step, [frame], question, index, answer,
+            dict(check, options_kind="listed" if form == "mc" else "open", form=form),
+            evid, R.rationale(chain), frame.verified, options=listed_options,
+            extra={"v6_form": form, "v6_pair": pair},
+        )
 
 
 def _verb_draw(tc: TaskCtx, seed: str) -> Callable[[str], float]:
