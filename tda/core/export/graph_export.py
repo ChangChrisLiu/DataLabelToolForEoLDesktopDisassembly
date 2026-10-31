@@ -112,6 +112,7 @@ __all__ = [
     "FAILED_WITHOUT_UNMET",
     "PLAN_GOALS",
     "README_NAME",
+    "READ_ONLY_MIN_SCHEMA",
     "ReadOnlyDb",
     "SUCCESS_VIOLATES",
     "SUMMARY_NAME",
@@ -125,6 +126,10 @@ __all__ = [
 
 #: Bumped when a field of the per-desktop file changes meaning or goes away.
 EXPORT_GRAPH_VERSION = 1
+#: The oldest schema :class:`ReadOnlyDb` reads (v6: ``frame_note``; every column
+#: the readers select exists from it on). A newer file up to ``SCHEMA_VERSION``
+#: is read as it is; a missing ``cover_ruling`` table means "no rulings" (W3a).
+READ_ONLY_MIN_SCHEMA = 6
 #: The view whose confirmed frames the pixel evidence is read off by default.
 DEFAULT_VIEW = "scan"
 #: The single-part goals planned from the initial state, where the desktop has them.
@@ -163,9 +168,12 @@ class ReadOnlyDb(Db):
 
     The constructor of :class:`~tda.core.db.Db` replays the DDL and stamps the
     schema version -- a write, on the live file. This one opens the file
-    read-only and only *checks* the version: an older file lacks columns the
-    readers select, a newer one has columns this build does not understand,
-    and both are refused with one line. Every reader of ``Db`` works; every
+    read-only and only *checks* the version: anything from
+    :data:`READ_ONLY_MIN_SCHEMA` (the oldest file whose columns every reader
+    here selects) up to this build's ``SCHEMA_VERSION`` is read as it is -- a
+    read-only tool must not demand a migration, so a v6 copy taken before the
+    ``cover_ruling`` table (v7, task W3c) is still exported, with no rulings --
+    and anything older or newer is refused with one line. Every reader of ``Db`` works; every
     writer raises ``sqlite3.OperationalError`` (attempt to write a readonly
     database), which is the guarantee. Opening a WAL database this way may
     leave empty ``-wal`` / ``-shm`` files next to it; the database file itself
@@ -194,10 +202,12 @@ class ReadOnlyDb(Db):
         except sqlite3.Error as exc:
             self.conn.close()
             raise RuntimeError(f"{self.path} is not a TDA database: {exc}") from None
-        if found != SCHEMA_VERSION:
+        if found is None or not READ_ONLY_MIN_SCHEMA <= found <= SCHEMA_VERSION:
             self.conn.close()
             raise RuntimeError(f"{self.path} has schema version {found}; this build reads "
-                               f"version {SCHEMA_VERSION} (open it once with the app)")
+                               f"versions {READ_ONLY_MIN_SCHEMA}-{SCHEMA_VERSION} "
+                               f"(open it once with the app)")
+        self.schema_version = found
 
 
 # --------------------------------------------------------------------------- #

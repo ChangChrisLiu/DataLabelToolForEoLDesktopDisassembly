@@ -27,9 +27,11 @@ waits for ``above`` (or a row of that triple exists in any status), when an
 edge ties them the other way (a conflict: listed), when it would make the
 recorded log break a constraint it kept before (listed -- those go back to the
 user) or close a loop of actions. A whitelist pair is also refused when the
-instance table already explains the covering structurally; the export-time
-support table (``rule.supported_by``) is a stand-in for an empty ``mounted_on``
-and does not count against an explicit word.
+instance table already explains the covering structurally, the export-time
+support table (``rule.supported_by``) included: those pairs are never
+candidates and Review never shows them, so the controller's suggestion layer
+must not write them either -- the loader refuses such a pair outright. Only an
+explicit user ruling wins over a structural reason.
 
 The rows are **imported** to :func:`tda.core.graph_derive.derive_edges`: kept
 byte for byte by every later ``constraints`` run, never re-derived, so
@@ -50,7 +52,7 @@ import yaml
 from tda.core.export.graph_covers import (
     BLOCKS,
     NOT_BLOCKS,
-    SUPPORTED_BY_REASON,
+    SUPPORTED_BY,
     class_key,
     cover_rulings,
     scan_covers,
@@ -75,7 +77,7 @@ __all__ = [
     "OWNED_PREFIXES", "PIXELS_PREFIX", "REVIEW_SOURCE", "DesktopPlan", "Whitelist",
     "WhitelistError", "WhitelistPair", "edge_of", "evidence_from_db",
     "evidence_from_graph_dir", "evidence_json", "load_whitelist", "owned", "plan_desktop",
-    "rulings_of", "split_suggestions", "undo_edges", "write_edges",
+    "UNDO_SELECTORS", "rulings_of", "split_suggestions", "undo_edges", "write_edges",
 ]
 
 COVERED_BY = "covered_by"
@@ -181,6 +183,10 @@ def _refusal(above: str, below: str) -> Optional[str]:
         return "a wlan / other expansion card rides on the board (name expansion_card.gpu)"
     if below_cls in REFUSED_BELOW or "cable" in below_cls:
         return "a screw / connector / cable below is decided by its own rules"
+    if SUPPORTED_BY.get(above.split(".", 1)[0]) == below_cls:
+        # never a candidate, never shown in Review: not the suggestion layer's to write
+        return (f"the support table makes it structural ({above.split('.', 1)[0]} sits on "
+                f"{below_cls}: rule.supported_by)")
     return None
 
 
@@ -340,8 +346,9 @@ def plan_desktop(desktop: int, covers: list[dict], confirmed_frames: int,
         if other:
             skip(item, "reverse_edge", edges=other)
             continue
-        structure = [r for r in structural_reasons(settled, tax, above, below, listed)
-                     if r != SUPPORTED_BY_REASON]
+        # a structural reason (support table included) refuses a whitelist pair;
+        # an explicit ruling wins over it
+        structure = structural_reasons(settled, tax, above, below, listed)
         item["structural"] = structure
         if not ruled:
             if structure:
@@ -438,22 +445,29 @@ def write_edges(db, desktop: int, items: list[dict]) -> dict:
     return {"written": len(edges), "graph_version": version}
 
 
-def owned(edge: Edge) -> bool:
-    return str(edge.source or "").startswith(OWNED_PREFIXES)
+#: ``--undo`` selector -> the source prefixes it deletes.
+UNDO_SELECTORS = {"pixels": (PIXELS_PREFIX,), "review": ("review:",),
+                  "all": OWNED_PREFIXES}
 
 
-def undo_edges(db, desktop: int) -> dict:
-    """Delete every ``pixels:*`` / ``review:*`` row of one desktop, with an op. **Inside a transaction.**"""
+def owned(edge: Edge, prefixes: tuple[str, ...] = OWNED_PREFIXES) -> bool:
+    return str(edge.source or "").startswith(prefixes)
+
+
+def undo_edges(db, desktop: int, which: str = "all") -> dict:
+    """Delete one desktop's rows of a :data:`UNDO_SELECTORS` kind, with an op. **Inside a transaction.**"""
     from tda import pipeline as P
 
-    gone = [e for e in edges_from_db(db, desktop) if owned(e)]
+    prefixes = UNDO_SELECTORS[which]
+    gone = [e for e in edges_from_db(db, desktop) if owned(e, prefixes)]
     for edge in gone:
         db.delete_relation(desktop, edge.type, edge.target, edge.blocker)
     version = graph_version(db, desktop)
     if gone:
         P.merge_desktop_meta(db, desktop, {"graph_version": version})
         db.log_op(desktop, OP_VIEW, OP_UNDO_KIND,
-                  {"deleted": [_edge_json(e) for e in gone], "graph_version": version},
+                  {"which": which, "deleted": [_edge_json(e) for e in gone],
+                   "graph_version": version},
                   {"restore": [_edge_json(e) for e in gone]}, ANNOTATOR)
     return {"deleted": len(gone), "graph_version": version}
 
