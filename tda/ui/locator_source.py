@@ -132,13 +132,18 @@ class Geometry:
     ``box`` is the union bounding box ``(x0, y0, x1, y1)`` (upper bounds
     exclusive) of every piece; ``outlines`` the traced outer boundaries, one
     ``(N, 2)`` array of ``x, y`` per piece; ``centre`` the point the dot goes on
-    -- inside the part, the point furthest from its edge.
+    -- inside the part, the point furthest from its edge.  ``mask`` is the
+    small binary picture (at most :data:`OUTLINE_SIDE` px) the outlines were
+    traced from, covering ``box``; ``None`` for a bench box.  Task U43 paints
+    it, holes and all: the outer outlines alone would fill a ring's hole with
+    the ring (the socket lever painted over the CPU it frames).
     """
 
     box: tuple[float, float, float, float]
     outlines: tuple = ()
     centre: tuple[float, float] = (0.0, 0.0)
     kind: str = "mask"
+    mask: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
 
 
 def geometry_from_box(box) -> Optional[Geometry]:
@@ -188,7 +193,8 @@ def geometry_from_mask(crop: np.ndarray, box) -> Optional[Geometry]:
     _min, _max, _minloc, (px, py) = cv2.minMaxLoc(dist)
     centre = (x0 + (px - 1 + 0.5) / sx, y0 + (py - 1 + 0.5) / sy)
     full = (x0, y0, x0 + float(w), y0 + float(h))
-    return Geometry(full, tuple(outlines), centre, "mask")
+    binary.setflags(write=False)
+    return Geometry(full, tuple(outlines), centre, "mask", binary)
 
 
 # --------------------------------------------------------------------------- #

@@ -36,7 +36,8 @@ def test_the_quickstart_says_it_in_two_sentences_of_the_dock_section():
     section = body.split(head, 1)[1].split("\n#", 1)[0].replace("\n", "")
     for needed in ("第一次标某个零件时", "扫描仪视角也一样", "「拆前 / 拆后」", "被拆走（或第一次变状态）",
                    "前后两步的扫描仪画面", "裁到同一处", "「第 8 帧：Heatsink · remove」",
-                   "「拆前/拆后」按钮切换", "扫描仪视角上小窗收着时按顶部「主视角」",
+                   # U43: the button names the next kind, it is no longer 「拆前/拆后」
+                   "小窗右上的按钮切换", "扫描仪视角上小窗收着时按顶部「主视角」",
                    "灰色虚线框只是猜的位置", "别的候选"):
         assert needed in section, needed
     assert "随时" not in section.split("第一次标某个零件时", 1)[1]     # round 2, N10

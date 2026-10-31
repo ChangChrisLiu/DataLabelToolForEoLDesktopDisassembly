@@ -16,7 +16,8 @@ its compiled scanner *visible* mask (the locator's
 frame compiled once).  A part with no scanner geometry on that frame is not
 painted.  No labels on the picture: the mouse names a part
 (:meth:`ChangeScene.part_at`, a lookup in a small label image at the
-thumbnail's size, each part's id painted into it once), and the panel
+thumbnail's size, each part's id painted into it once from its visible
+mask, holes kept), and the panel
 (:mod:`tda.ui.panels.locator_change`) draws it.
 
 Costs: the picture and the outlines are the locator's caches; a scene is
@@ -45,7 +46,7 @@ from tda.ui.locator_source import (
 )
 
 __all__ = ["CHANGE_CACHE", "CHANGE_NAME", "COUNT_LINE", "ChangeMaker", "ChangePart",
-           "ChangeScene", "EMPTY_CARD", "card_parts"]
+           "ChangeScene", "EMPTY_CARD", "card_parts", "paint_labels"]
 
 #: The scene's name: the caption's tail and the dock's toggle.
 CHANGE_NAME = "这一步的变化"
@@ -156,29 +157,46 @@ def paint_labels(parts: tuple[ChangePart, ...], frame_hw: tuple[int, int],
                  size: tuple[int, int]) -> tuple[np.ndarray, QImage]:
     """``(label image, colour overlay)`` at ``size``: each part's id painted once.
 
-    The larger parts go first, so a small part lying on a large one's outer
-    outline (a fan in a bracket's ring) stays on top, as it is on the frame.
+    A part with a mask (:attr:`~tda.ui.locator_source.Geometry.mask`, the
+    small visible mask its outline was traced from) is painted from it,
+    scaled nearest-neighbour into its box: a hole stays a hole, so whatever a
+    ring frames -- the CPU inside its socket lever -- is neither painted nor
+    named as the ring (U43 review S1).  A bench box (no mask) is its
+    rectangle, painted first so a mask on it wins; visible masks do not
+    overlap one another.
     """
     lh, lw = size
     h_img, w_img = frame_hw
     labels = np.zeros((lh, lw), dtype=np.uint16)
     sx, sy = lw / float(w_img), lh / float(h_img)
-
-    def area(item) -> float:
-        box = item[1].geometry.box
-        return (box[2] - box[0]) * (box[3] - box[1])
-
-    for index, part in sorted(enumerate(parts, start=1), key=area, reverse=True):
-        rings = []
-        for ring in part.geometry.outlines:
-            if len(ring) < 3:
-                continue
-            pts = np.empty((len(ring), 2), dtype=np.int32)
-            pts[:, 0] = np.floor(np.asarray(ring[:, 0], dtype=float) * sx)
-            pts[:, 1] = np.floor(np.asarray(ring[:, 1], dtype=float) * sy)
-            rings.append(pts)
-        if rings:
-            cv2.fillPoly(labels, rings, int(index))
+    order = sorted(enumerate(parts, start=1),
+                   key=lambda item: item[1].geometry.mask is not None)
+    for index, part in order:
+        geometry = part.geometry
+        if geometry.mask is None:
+            rings = []
+            for ring in geometry.outlines:
+                if len(ring) < 3:
+                    continue
+                pts = np.empty((len(ring), 2), dtype=np.int32)
+                pts[:, 0] = np.floor(np.asarray(ring[:, 0], dtype=float) * sx)
+                pts[:, 1] = np.floor(np.asarray(ring[:, 1], dtype=float) * sy)
+                rings.append(pts)
+            if rings:
+                cv2.fillPoly(labels, rings, int(index))
+            continue
+        x0, y0, x1, y1 = geometry.box
+        c0, r0 = int(np.floor(x0 * sx)), int(np.floor(y0 * sy))
+        c1 = max(c0 + 1, int(np.ceil(x1 * sx)))
+        r1 = max(r0 + 1, int(np.ceil(y1 * sy)))
+        small = cv2.resize(np.ascontiguousarray(geometry.mask, dtype=np.uint8),
+                           (c1 - c0, r1 - r0), interpolation=cv2.INTER_NEAREST)
+        # the box may reach past the label image by a rounding pixel
+        cc0, rr0, cc1, rr1 = max(c0, 0), max(r0, 0), min(c1, lw), min(r1, lh)
+        if cc1 <= cc0 or rr1 <= rr0:
+            continue
+        hit = small[rr0 - r0:rr1 - r0, cc0 - c0:cc1 - c0] > 0
+        labels[rr0:rr1, cc0:cc1][hit] = index
     lut = np.zeros(len(parts) + 1, dtype=np.uint32)
     for index, part in enumerate(parts, start=1):
         r, g, b = (int(c) & 0xFF for c in part.colour)

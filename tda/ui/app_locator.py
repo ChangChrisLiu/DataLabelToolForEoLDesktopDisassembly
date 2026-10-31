@@ -58,9 +58,9 @@ can decide is here:
   定位 a part met for the first time still gets its pair, as in U28; going
   back to 定位 with the button puts that part's first-time pair away until
   the part changes.  In 拆前/拆后 every part gets its pair.  这一步的变化 is
-  never shown on the scanner view (the canvas is that picture): there the
-  dock stays down unless the top bar's 「主视角」 asks for the part's pair, and
-  the button skips it (拆前/拆后 → 定位).
+  never shown on the scanner view (the canvas is that picture): there it
+  counts as 定位 (a first-time part gets its pair), and the button only puts
+  the part's pair away, leaving the remembered kind as it is (round 2).
 """
 from __future__ import annotations
 
@@ -288,8 +288,12 @@ class LocatorMixin:
             return bool(choice[2])
         if self.locator_mode == KIND_PAIR:
             return True
-        # the first-time pair is U28's 定位 rule only (U43)
-        return self.locator_mode == KIND_SCENE and not has_shape
+        # the first-time pair is U28's 定位 rule only (U43); on the scanner
+        # view, which has no 这一步的变化, that choice counts as 定位 (round 2, M2)
+        as_scene = (self.locator_mode == KIND_SCENE
+                    or (self.locator_mode == KIND_CHANGE
+                        and str(self.session.view) not in LOCATOR_VIEWS))
+        return as_scene and not has_shape
 
     # ------------------------------------------------------------- follow
     def _locator_stamp(self) -> tuple:
@@ -636,8 +640,8 @@ class LocatorMixin:
         part and view, and in the INI (``locator/kind``).  Back to 定位 over a
         part met for the first time puts its pair away for that part (until
         the part changes), as U28's toggle did.  On the scanner view, where
-        这一步的变化 is not shown, the pair is followed by 定位 -- which hides
-        the dock there, as taking the pair away always did.
+        这一步的变化 is not shown, a click puts the part's pair away (the
+        dock hides, as it always did) and leaves the remembered kind alone.
         """
         if self.closed or not compat.is_open(self.session):
             return
@@ -649,7 +653,11 @@ class LocatorMixin:
             self._sync_pair_button(None, target)
             return
         coming = next_kind(shown or KIND_SCENE, is_part, beside)
-        self.set_locator_mode(coming, follow=False)
+        if beside:
+            self.set_locator_mode(coming, follow=False)
+        # On the scanner view a click only puts this part's pair away: the
+        # kind remembered for the OAK / RealSense views (and the INI) stays
+        # (round 2, M1).
         self._pair_choice = ((int(self.session.current().desktop), str(target), False)
                              if coming == KIND_SCENE and is_part else None)
         self.follow_locator(force=True)
@@ -668,6 +676,11 @@ class LocatorMixin:
         self._want_locator(False)
 
     @S.guard
-    def _on_locator_menu(self, checked: bool) -> None:
-        """The window's dock menu ticked or unticked it."""
-        self._want_locator(bool(checked))
+    def _on_locator_menu(self, *_args) -> None:
+        """The window's dock menu ticked or unticked it.
+
+        The tick is read off the action: PySide6 6.11 hands a guarded slot
+        nothing for ``triggered``'s default-argument ``checked`` (U43 round 2,
+        found by the U44 review), so the slot cannot rely on getting it.
+        """
+        self._want_locator(bool(self.locator_dock.toggleViewAction().isChecked()))

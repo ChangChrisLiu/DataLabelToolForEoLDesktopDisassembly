@@ -231,6 +231,9 @@ class ChangeView(QWidget):
     def mouseReleaseEvent(self, event) -> None:  # noqa: D102 - Qt override
         if event.button() == Qt.MouseButton.LeftButton:
             self.toggle_mode()
+            # the picture moved under the mouse: name what is there now,
+            # not at the next move (round 2, N2)
+            self.hover_at(event.position())
         event.accept()
 
     def wheelEvent(self, event) -> None:  # noqa: D102 - Qt override

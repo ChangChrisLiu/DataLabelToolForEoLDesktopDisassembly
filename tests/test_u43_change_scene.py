@@ -56,8 +56,16 @@ from tda.ui.app_locator import (
     next_kind,
 )
 from tda.ui.canvas.overlay import palette_color
-from tda.ui.locator_change import CHANGE_NAME, COUNT_LINE, EMPTY_CARD, ChangeMaker
-from tda.ui.locator_source import NOT_ANNOTATED
+from tda.ui.locator_change import (
+    CHANGE_NAME,
+    COUNT_LINE,
+    EMPTY_CARD,
+    ChangeMaker,
+    ChangePart,
+    ChangeScene,
+    paint_labels,
+)
+from tda.ui.locator_source import NOT_ANNOTATED, geometry_from_mask
 from tda.ui.panels.locator import CROP, MIN_CROP_FRAC, WHOLE
 from tda.ui.session import AnnotationSession
 
@@ -177,6 +185,45 @@ def test_the_start_card_paints_every_part_and_small_ones_stay_on_top(window):
     assert set(np.unique(change.labels)) == set(range(len(change.parts) + 1))
 
 
+def _ring_and_core():
+    """A ring (a socket lever around its CPU) and the part in its hole, 64x64 frame."""
+    ring = np.zeros((64, 64), dtype=bool)
+    ring[10:50, 10:50] = True
+    ring[18:42, 18:42] = False
+    core = np.zeros((64, 64), dtype=bool)
+    core[20:40, 20:40] = True
+
+    def part(name, mask):
+        ys, xs = np.nonzero(mask)
+        box = (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+        geometry = geometry_from_mask(mask[box[1]:box[3], box[0]:box[2]], box)
+        return ChangePart(name, name, "", tuple(int(c) for c in palette_color(name)), geometry)
+
+    return part("cpu_socket_lever.01", ring), part("cpu.01", core)
+
+
+@pytest.mark.parametrize("size", [(64, 64), (128, 128), (40, 40)])
+def test_a_rings_hole_is_not_painted_and_not_named_as_the_ring(qapp, size):
+    """Review S1: the outer outline filled a ring's hole -- the CPU under its lever."""
+    ring, core = _ring_and_core()
+    labels, overlay = paint_labels((ring,), (64, 64), size)
+    scene = ChangeScene(frame_hw=(64, 64), card=(ring.instance,), parts=(ring,),
+                        labels=labels, overlay=overlay)
+    assert scene.part_at(30.0, 30.0) is None                 # the hole: the CPU
+    assert scene.part_at(12.0, 30.0) is ring                 # the ring itself
+    k = size[1] / 64.0
+    assert labels[int(30 * k), int(30 * k)] == 0
+    assert overlay.pixelColor(int(30 * k), int(30 * k)).alpha() == 0
+    assert overlay.pixelColor(int(12 * k), int(30 * k)).alpha() == 255
+    # painted only where the ring's own pixels are (give or take the scaling)
+    assert abs((labels > 0).sum() / float(size[0] * size[1]) - (1600 - 576) / 4096.0) < 0.06
+    # both on the card: the hole is the part inside it
+    labels, overlay = paint_labels((ring, core), (64, 64), size)
+    both = ChangeScene(frame_hw=(64, 64), card=(ring.instance, core.instance),
+                       parts=(ring, core), labels=labels, overlay=overlay)
+    assert both.part_at(30.0, 30.0) is core and both.part_at(12.0, 30.0) is ring
+
+
 def test_the_earlier_frame_is_said_in_the_caption(window):
     window.db.set_frame_flags(FrameKey(DESKTOP, STEP, "scan"), missing=True)
     change = window.locator_source.change(DESKTOP, STEP, card(window))
@@ -273,19 +320,39 @@ def test_in_pair_mode_every_part_gets_its_pair_and_in_scene_mode_only_a_first_ti
     assert kind(window) == "pair"                # U28's rule, in 定位
 
 
-def test_the_scanner_view_never_shows_the_change(window):
+def test_the_scanner_view_never_shows_the_change_and_counts_it_as_scene(window):
     to_change(window)
     window.act_set_view("scan")
     QApplication.processEvents()
-    select(window, CHASSIS)
-    assert kind(window) == "down"
-    select(window, COOLER)                       # never drawn there: no auto pair either
+    select(window, CHASSIS)                      # drawn there: nothing to show
     assert kind(window) == "down"
     window.locator_button.click()                # the top bar asks for this part's pair
     QApplication.processEvents()
+    assert kind(window) == "pair" and window.locator.pair().instance == CHASSIS
+    # round 2, M2: a part met for the first time gets its pair, as in 定位
+    select(window, COOLER)                       # never drawn in the scanner view
     assert kind(window) == "pair" and window.locator.pair().instance == COOLER
     assert window.locator.pair_button.text() == "定位"     # the change is skipped here
     assert window.locator_mode == KIND_CHANGE
+
+
+def test_putting_a_pair_away_on_the_scanner_view_keeps_the_chosen_kind(window):
+    # round 2, M1: the click puts this part's pair away and nothing else
+    to_change(window)
+    window.act_set_view("scan")
+    QApplication.processEvents()
+    select(window, COOLER)
+    assert kind(window) == "pair"
+    click_kind(window)
+    assert kind(window) == "down"
+    assert window.locator_mode == KIND_CHANGE
+    assert window.settings.value(KIND_SETTING) == KIND_CHANGE
+    select(window, CHASSIS)
+    select(window, COOLER)                       # another part, then back: asked afresh
+    assert kind(window) == "pair"
+    window.act_set_view("oak1")
+    QApplication.processEvents()
+    assert kind(window) == "change"
 
 
 def test_the_choice_is_there_in_the_next_session(qapp, tmp_path):
@@ -386,6 +453,37 @@ def test_a_click_toggles_whole_and_a_crop_around_the_painted_parts(window):
     assert window.session.current().step == 1     # nothing else moved
 
 
+def test_a_click_names_what_is_under_the_mouse_at_once(window):
+    """Round 2, N2: the picture moves under the mouse; the caption follows without a move."""
+    window.locator_dock.resize(320, 320)
+    goto(window, 13)
+    to_change(window)
+    view = window.locator.change_view
+    part = window.locator.change().parts[0]
+    count = "卡片上 1 个零件，扫描仪上画了 1 个"
+    pos = widget_point(view, *part.geometry.centre)      # on the latch, whole frame
+    move(view, pos)
+    assert window.locator.caption_text().split("\n")[1] == part.text
+    QTest.mouseClick(view, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                     pos.toPoint())
+    assert view.showing() == CROP
+    under = view.part_at(QPointF(pos.toPoint()))
+    assert view.hovered() == (None if under is None else under.instance)
+    assert window.locator.caption_text().split("\n")[1] == (count if under is None
+                                                              else under.text)
+    # on the latch in the crop (it fills the middle), then back to the whole frame
+    pos = widget_point(view, *part.geometry.centre)
+    move(view, pos)
+    assert view.hovered() == LATCH
+    QTest.mouseClick(view, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                     pos.toPoint())
+    assert view.showing() == WHOLE
+    under = view.part_at(QPointF(pos.toPoint()))
+    assert under is None                         # the latch is small in the whole frame
+    assert view.hovered() is None
+    assert window.locator.caption_text().split("\n")[1] == count
+
+
 def test_the_wheel_zooms_about_the_mouse_and_another_frame_starts_over(window):
     window.locator_dock.resize(320, 320)
     goto(window, 13)
@@ -465,6 +563,32 @@ def test_the_docs_say_it():
     for needed in ("「拆前/拆后」→「这一步的变化」→「定位」", "下次也记得", "半透明涂出来",
                    "标题第二行", "滚轮放大", "拖出来浮动、拉大"):
         assert needed in dock, needed
+
+
+def test_the_windows_dock_menu_opens_and_closes_it_remembered(qapp, tmp_path):
+    """Round 2 (U44 review): the menu path's slot gets no argument under PySide6 6.11."""
+    from tda.ui.app_locator import SETTING
+
+    session, paths = make_scene(tmp_path)
+    window = open_window(session, paths, show=True)     # the action follows visibility
+    try:
+        goto(window, STEP)
+        action = window.locator_dock.toggleViewAction()
+        reports = []
+        window.report_exception = lambda exc, where: reports.append((where, exc))
+        assert window.locator_shown() and action.isChecked()
+        action.trigger()                         # untick
+        QApplication.processEvents()
+        assert reports == []
+        assert not window.locator_shown() and window.locator_wanted is False
+        assert str(window.settings.value(SETTING)).lower() == "false"
+        action.trigger()                         # tick
+        QApplication.processEvents()
+        assert reports == []
+        assert window.locator_shown() and window.locator_wanted is True
+        assert str(window.settings.value(SETTING)).lower() == "true"
+    finally:
+        close_window(window)
 
 
 def test_a_forty_part_frame_builds_well_under_100_ms_with_warm_caches(window):
