@@ -81,7 +81,7 @@ def test_v1_38_is_near_the_top_of_14():
     changes = _spec().split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
     # U38's v1.37 lands alongside: the controller orders them at merge
-    [entry] = [e for e in entries[:4] if e.startswith("- **v1.38")]
+    [entry] = [e for e in entries[:5] if e.startswith("- **v1.38")]
     assert entry.startswith("- **v1.38（2026-10-27）**：**画框外**（U39，§4.2、§4.4、§3.2b）")
     for needed in ("D63 的导风罩", "`tda.core.occluder.OFF_FRAME`", "`off_frame_applies`",
                    f"第四项「{OFF_FRAME_CHOICE}」", "`marked_absent`", "`bench_missing` 不变",

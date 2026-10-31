@@ -229,13 +229,29 @@
   （`states.gallery_state`）。它们按机箱内零件的方式画**掩码**（mask 链、参与层级、缺形状挡 `Space`）；导出写
   `state = removed`、`placement = on_bench`。这一张里没有的零件标「看不见」：该帧该实例 `visibility =
   out_of_view` 且无像素 —— 合照帧上它等于"已处理"，不报 `missing_shape`（序列帧上同一行是「画框外」，v1.38 起同样不报，见 §4.2）；在合照帧上给标了
-  「看不见」的零件提交形状，同一个 op 里取消这个标签。
+  「看不见」的零件提交形状，同一个 op 里取消这个标签。**v1.44（U45）起**：去掉的是**日志里的** `connector` / `screw` 和
+  虚拟线缆 `cable:*`（它们不是实例）；**仅合照的零件**（下一条，任何类别，线缆 `cable` 也在内）照样列出，每张都列。
+  每张摆出来的零件都不一样：先画看得到的，再点任务卡标题下的「其余的都看不见」（这张里还没画、也没标「看不见」的
+  一次全部标上，一个 op、一次 `Ctrl+Z` 全部撤回；画好的不动；都处理过的张上点它，状态栏说没有要标的），然后 `Space`。
 - **日志里没有、照片里有的零件**：§3.2a「＋ 添加零件」多一项「拆下于第 __ 步」（不挂在别的零件上的默认最后一步；
   挂在别的零件上、随它离开的留空），存为该步的手工事件 `→removed`、`in_chassis→on_bench`（`evidence_view =
   s1:added`，属于这次添加：删除/撤销随它走，`import-logs --adopt-extras` 把它和初始状态一起交给表格、撤销时
   一起放回）。起始帧（`initial`）与重复帧（`dupli`）不能填：前者那时零件都还在，后者和它前面那一帧是同一个样子，
   拒绝时指出该填哪一步；默认值是最后一个能填的步。序列在那步之前要它，合照列出它；挂在父零件上又单独拆下的不再
   `attached`（它已经先出来了），拆下步不得晚于父零件离开。添加对话框的"会让哪些已确认帧回到需复核"两类视图都算。
+  **哪一步都没有的零件：仅合照（v1.44，U45）**：摆在桌上、可日志的任何一步都没提到的（一根线、表格没数到的第 9 颗
+  主板螺丝），在合照的任务卡标题下点「＋ 这张里还有…」：一个小对话框，只问类别（带 `role` / `kind`，它是键的一部分）和
+  数量，**不问**装在哪、状态、拆下于第几步，也没有"已确认帧"那句；一行说明「只在零件合照里出现，拆解序列里不会要它；
+  日志里本来就有的零件请在步骤表里加（可填拆下于第几步）」。经 `StepTableData.add_extras(…, attrs={"gallery_only":
+  true})` 建（S1 的键与细分规则：`cable.01`、`cable.sata.01`，或日志的 `screw.motherboard.08` 之后的 `.09`），立即写入
+  （`extra.write_batch`：实例行 + 一行 `op_log`，逆操作是删除；不重写步骤表、不重编事件、不动约束图），一个
+  `add_gallery_parts` op：还没画它时 `Ctrl+Z` 拿走、`Ctrl+Y` 再建（画过形状、或别处还记着它时撤销被拒、什么都不写）。
+  实例属性 `gallery_only: true`（与 `added_by` 并列，`model.is_gallery_only`）：它**是**机器的零件（`is_extra` 为真、不是
+  框外零件），但没有状态、事件和步：`states.initial_state` 像对框外零件那样不把它放进任何快照，所以序列帧的
+  `needs_geom`、任务卡、状态机的提问、`missing_shape` 与 `Space`、`cli check`、约束图与关系（`model.teardown_only`）、
+  隐含零件与机架卡扣规则、检测器的"已画"跳过、VLM 导出（`DesktopCtx.gallery_only`）都看不到它；`gallery_state` 把它
+  放到每张合照的桌上（`removed`、mask 链），任何类别。实例表的键后写「仅合照」、提示一行说明；Steps 里可以像别的添加零件
+  一样删除；`orphan` 问题不提它。
 - **没有序列语义**：没有起点帧、没有对照帧（差异图、提示框、`Tab` 闪回都没有）、没有 dupli / ✂ 行、没有状态
   （`T` 与状态框拒绝）、不改步骤表（`Shift+T` 拒绝，实例表与任务卡不提供「其实拆下来了 / 只是打开了」：
   张号不是步号，否则会改到与张号同号的那一步）、`Ctrl+K` 拒绝（用 `Enter`）、没有台面框 / ROI 编辑 / 位姿断开；层级建议只看像素
@@ -244,14 +260,20 @@
 - **界面**：`F6`–`F8` 或 `cli app --view cmp_oak1`（扫描仪的 `cmp_scan` **没有快捷键**，工具栏按钮「零件合照·扫描仪」或
   `cli app --view cmp_scan`，v1.41）；窗口标题与任务卡写「零件合照 OAK1 第 k/N 张：把这张里看得到
   的零件都画出来；不在这张里的点「看不见」」；任务卡每个零件一条（画好或「看不见」即完成），右键这一条或按
-  `I` 标「看不见」/撤回；状态栏「零件合照·OAK1」，时间轴「第 k 张」。
+  `I` 标「看不见」/撤回；状态栏「零件合照·OAK1」，时间轴「第 k 张」。任务卡标题下两个按钮（v1.44，U45，只在合照里
+  显示，**没有快捷键**）：「其余的都看不见」（状态栏「这张：n 个零件标为看不见」）与「＋ 这张里还有…」（标注模式）。
 - **导出与检查**：`export-coco --view cmp_scan|cmp_oak1|…|components` 每视图一个文件，`info.split = components`，图像
   `extra` 写 `shot`（帧号）、`source`（标注时画在上面的那张原图：OAK/RealSense 是帧的路径；`cmp_scan` 是缓存 manifest
   在连拍里选中的那张，`burst_choice` 写选择理由 `p0` / `p0_dark` / …，v1.41；没有缓存或 manifest 记的不是这一帧的连拍时退回帧的
   `P_0`、不写 `burst_choice`；`export-coco` 读 `paths.yaml` 的 `cache_dir`）、`sheet_step`（来自步骤表行时）；`export-vlm` 不出合照；`cli check`
   （按"张"计）、`status`（序列表下面单列一段）包含合照；步骤表行移进合照后又被改了类型/名字的，`cli check` 把那张
   报为问题（`sheet_shot_without_its_row`，放在最前；不自动挪回：那张上可能有工作）。`build-cache` 的合照帧取自
-  数据库（它才知道步骤表行的照片；`--db` 优先于 `paths.yaml`），帧换了照片时重新复制。
+  数据库（它才知道步骤表行的照片；`--db` 优先于 `paths.yaml`），帧换了照片时重新复制。仅合照的零件（v1.44，U45）：
+  合照的 COCO 文件按它的类别写（类别表多列 `cable`，id 25），`attributes.gallery_only = true`（只写在这些行上，别的
+  文件逐字节不变）；序列的 COCO 文件仍是 23 个类别、没有它的行；`export-vlm`、`scripts/export_scanpack.py`（序列、扫描仪）
+  都碰不到它；`cli check` 只在合照视图里提它（`[check] n gallery-only part(s) (仅合照) on every shot: …`，缺形状照常报
+  `missing_shape`），`status --desktop N` 在合照一段下面一行 `gallery-only parts (仅合照): n - …`（「added in S1」那行
+  不再列它）；`data_audit` / `index_report` 不变。
 - **量得的尺寸属于照片，不属于帧号**（所有视图）：重新加载时帧行仍指向同一个文件才保留 `hw`/`hw_source`/
   `cache_path`；换了文件（合照改指、索引修正换了来源、曾经 missing 的行又有了照片）就作废，下次编译重新量；
   变成 missing 的行只留推断尺寸（`hw_source = inferred`）。
@@ -461,7 +483,7 @@
 
 ## 6. 统一词表
 
-### 6.1 类别（23 类）
+### 6.1 类别（24 类：23 类 + 只在零件合照里的 `cable`，v1.44）
 
 | 大类 | 类别 `class` | 主要属性 |
 |---|---|---|
@@ -488,6 +510,17 @@
 |  | `cooler_latch` | — |
 |  | `cable_clip` | holds（虚拟线缆节点） |
 | 接口 | `connector` | kind（atx_24pin / cpu_power / sata_data / sata_power / fan / front_panel / usb_header / audio / molex / other）、`socket_host`、`cable` |
+|  | `cable`（v1.44，U45） | kind（sata / power / fan / front_panel / other，可选；给了就是键的一部分：`cable.sata.01`）；**只作为仅合照的零件建**（§3.2b），状态 installed / removed（默认 installed，两个都要掩码：只有合照会问） |
+
+**`cable` 类（v1.44，U45）**：摆在零件合照桌上的散线。排在最后（`configs/taxonomy.yaml` 的第 24 个），所以 23 类的 COCO
+id 1..23 不动；框外零件的 `other` 保持 24（`coco.other_category` 改为"序列类别数 + 1"），`cable` 是 25，只列在合照的
+COCO 文件里（`model.GALLERY_ONLY_CLASSES`，`coco.categories(tax, gallery=…)`）。和虚拟节点同名：序列里的线仍是虚拟节点
+`cable:<owner>`（冒号，不是实例），导入器从不建 `cable` 实例，Steps 的「＋ 添加零件」与"新建实例"都不提供这一类、
+`add_extras` 没有 `gallery_only` 时拒绝。按名字问状态的接口（`Taxonomy.states_of` / `default_state` / `needs_mask`）
+仍回答**虚拟节点**（routed / released / removed，`_defn` 先查 `virtual_nodes`）：状态机、约束规划和 VLM 导出都用
+`"cable"` 指虚拟节点，仅合照的零件从不经过状态机，所以这一类自己的状态只是描述；`group_of` 先查类别（interface）。
+中文名「线缆」（细分 SATA 线 / 电源线 / 风扇线 / 前面板线），`export_scanpack` 的 `CLASS_EN` 一行；检测器与 SAM 的配置不变
+（没有在它上面训练过）。
 
 ### 6.2 状态集与默认追踪策略
 
@@ -800,6 +833,7 @@ D:\DataSet\
 
 ## 14. 修订记录
 
+- **v1.44（2026-10-30）**：**零件合照：一键「其余的都看不见」、合照里直接加零件、线缆**（U45，§3.2b、§6.1）。用户：「ALL component 的部分加入零件的部分要容易一些，就是每一个 all component 的部分里面的 component 可能都不一样，同时可能还有 cable 的部分，把 cable 也加入 all component 的部分的考虑。」**「其余的都看不见」**：合照任务卡标题下的按钮（只在合照里，没有快捷键），这张里没有形状、也没标「看不见」的每一行一次标成「看不见」（`out_of_view`、无像素），一个 `set_frame_overrides` op（行各带自己的 `instance`，`session_ops.apply_frame_overrides` 认它），一次 `Ctrl+Z` 全部撤回；画好的、已标的不动；状态栏「这张：n 个零件标为看不见」，没有要标的张上说「这张的零件都已经画好或标了看不见」；正在画（有没提交的像素）的那一个是其中之一时拒绝（`tda/ui/session_gallery.py`、`app_gallery.act_mark_rest_absent`）。**仅合照的零件**：实例属性 `gallery_only: true`（`model.GALLERY_ONLY_ATTR` / `is_gallery_only`；`is_extra` 为真，不是框外零件）；`states.initial_state` 不把它放进任何快照（和框外零件一样），`event_problems` 跳过它，`is_gallery_part` / `gallery_state` 不论类别、不论事件都把它放到每张的桌上（`removed`、mask 链）；所以序列帧的 `needs_geom`、任务卡、`missing_shape`、`Space`、`cli check` 看不到它，`model.teardown_only`（`machine_only` 去掉它）用于约束图（`graph_derive.settled_instances`、`graph_edit`、`cli_graph`）与隐含零件 / 机架卡扣规则，检测器"已画"跳过它，`coco.DesktopCtx` 把它放进 `gallery_only`（VLM 数不到、提不到；`cls_of` 照样回答，供合照的 COCO）。**「＋ 这张里还有…」**：标题下第二个按钮（标注模式），`GalleryPartsDialog`：类别（带 `role` / `kind`）和数量，没有装在哪 / 状态 / 拆下于 / 已确认帧那句，一行「只在零件合照里出现，拆解序列里不会要它；日志里本来就有的零件请在步骤表里加（可填拆下于第几步）」；经 `StepTableData.add_extras(…, attrs={"gallery_only": True})`（键接类别的序号：`cable.01`、`cable.sata.01`、日志 `.08` 之后的 `screw.motherboard.09`；`gallery_only` 时不收父零件和拆下步、不写状态事件），立即由 `extra.write_batch` 写入（不走 `save`：不重写步骤表、不重编事件、不动约束图，也不把整台的已确认帧排队复检，只排合照视图的），一个 `add_gallery_parts` op（新的 `commands.KINDS`），`Ctrl+Z` 经 `extra.undo_op` 撤销——画过形状或别处还记着它时拒绝、什么都不写；撤销拿走了正在画的零件时编辑层也清掉。实例表键后「仅合照」、提示一行；任务卡那行"日志："处写「仅合照：在合照里加的」；Steps 里像别的添加零件一样删除。**`cable` 类**：`configs/taxonomy.yaml` 末尾第 24 类（group interface，`kind: [sata, power, fan, front_panel, other]`，states installed / removed，默认 installed，`needs_mask` 都真），只作为仅合照的零件建（Steps 的「＋ 添加零件」、"新建实例"不列它，`add_extras` 无 `gallery_only` 拒绝）；虚拟节点 `cable:<owner>` 不变。同名的处理：`Taxonomy._defn` 先查 `virtual_nodes`，按名字问状态（`states_of` / `default_state` / `needs_mask`）仍回答虚拟节点，状态机、约束规划、VLM 的结果逐字节不变；`group_of` 先查类别。**COCO id**：23 类 1..23 不动，`other` 保持 24（"序列类别数 + 1"，原来是"类别数 + 1"，会被挤到 25），`cable` = 25（`coco._class_ids`：仅合照的类别排在 `other` 之后）；序列的文件仍列 23 类，合照的文件多列 `cable`；仅合照零件的行 `attributes.gallery_only = true`（别的行没有这个键）。`export_scanpack` 的实例表跳过它，`CLASS_EN` 加一行；中文名「线缆」（SATA 线 / 电源线 / 风扇线 / 前面板线）。`cli check` 在合照视图一行 `n gallery-only part(s) (仅合照)`，`status --desktop N` 在合照一段下一行，`data_audit` / `index_report` 不变。测试按新的类别数改了几处钉住的数（`test_taxonomy` 的类别集合与掩码表一致性改读类别自己的状态、`test_export` 的类别顺序、`test_u18_export` 的 `other` id）。库结构不变（仍为 v6），没有新快捷键。
 - **v1.41（2026-10-30）**：**扫描仪的零件合照 `cmp_scan`**（U42，§3.2b）。用户：「把主视角里面能看到的 all component 也加入到程序里面」。每台拆完后零件也摆在扫描仪台上扫了 1–5 次，放在每组扫描文件夹里步骤扫描 payload 的旁边（`TAMU_B2.0_<a>-<b>_RGB_allcompoentsrgb\<payload>\<n>\<张>\P_0..P_9.png`），程序原来不知道它们。它们成为第四个合照视图 `cmp_scan`，排在 `COMPONENT_VIEWS` 最前（`(cmp_scan, cmp_oak1, cmp_oak2, cmp_rs)`，与 `VIEWS` 扫描仪在前一致），`COMPONENT_CAMERA["cmp_scan"] = "scan"`，界面叫「零件合照·扫描仪」，标题「零件合照 扫描仪 第 k/N 张」；合照的数据模型不变（每张一帧、一个位姿段 `[k, k]`、ROI 整张图、没有序列语义）。**索引**：`tda.core.sources.scanner_components_dir`（同组正则，组里名字含 `allcompo` 且范围含该台的文件夹，再是唯一的 payload、再是台号；D20 在 10-19 那批里，范围里找不到时查其他所有 allcompo 文件夹）+ `tda.core.index._add_scanner_components`（`scan_desktop` 在 `_add_scanner` 之后调用）：张文件夹名小写匹配 `^all.*rgb\d*(?:_color)?$`（`scan_shot_k`：`11` → 1、`21` → 2、单独的 `1` → 1），按 `(k, 名字)` 排序后的位置编 1..N；主图 `P_0`（缺则最小的并写 issue，不足 9 张写 issue），`aux.burst` 全部，`ts` = `P_0` 文件时间，`src_step_dir` = 从组文件夹到张文件夹的相对路径；名字不是 RGB 扫描的（D64 的 `allcomponentsseq11` / `21`，各 176 张条纹投影）或超过 20 张（`SCAN_SHOT_MAX_BURST`）的写 `cmp_scan: <文件夹> is not an RGB scan (…); left out` 并略过；没有 all-components 文件夹的台不写 issue（与 `Components` 一致）。不需要 `index_fixes.yaml` 声明。**索引文件 v4**（`SCAN_GALLERY_INDEX_VERSION`，`DesktopIndex.scan_gallery`）：`load-index` 拒收 v1–v3（`STALE_INDEX` 加上 v3 一句）。**load-index**：`GALLERY_OF` 现在含 `scan → cmp_scan`，步骤表的 "All components" 行的扫描帧进 `cmp_scan` 第 `1000 + 步号` 张（原来删掉、"moved to nowhere"）；没有照片的行写 "nowhere (it has no photo)"，并且已经移过的行上没照片的相机照旧算"已在合照里"（`_held_by_gallery`），重复 `load-index` 不再报告移动；尺寸 `infer_hw("cmp_scan") = (1600, 1600)`。**缓存**：`BURST_VIEWS = {scan, cmp_scan}`，`_select_source` / `_metrics_stale` / `_source_moved` / `_redecide` 对它用扫描仪的连拍选择；`VIEW_EXT["cmp_scan"] = "png"`；等级 gold（`configs/taxonomy.yaml` 的 `view_tiers`）。**界面**：工具栏「零件合照·扫描仪」按钮（`COMPONENT_VIEWS[0]` 前的分隔符照旧），**没有快捷键**（用户的规矩：不加新键）：`_view(view, None, …)` 的 `keys = ()`，按钮不写空括号，生成的快捷键表写「无快捷键（点工具栏按钮）」（`NO_KEY_TEXT`），"两个动作不共用一个键"的检查不受影响；`cli app --view cmp_scan`；`NOT_A_GALLERY`、引导句、`--view` 帮助、`components` 别名（四个）随之更新。**导出**：`export-coco --views cmp_scan|components` 照合照的规则（`info.split = components`）；`view_index` 里另外三个合照视图各后移一位（cmp_scan=4、cmp_oak1=5、cmp_oak2=6、cmp_rs=7，仍小于 `STEP_STRIDE`），合照的 COCO 图像号从未发布过，所以接受这次移动、不升 `EXPORT_VERSION`。`cmp_scan` 图像的 `extra.source` 是缓存 manifest 选中的那张（标注员画在上面的，可能不是 `P_0`），`extra.burst_choice` 是理由（审查第二轮；`export_coco(cache_dir=…)`，CLI 传 `paths.yaml` 的 `cache_dir`，没有记录时退回帧路径）。`status` / `check` / `db_status` / `index_report` / `scripts/data_audit.py` 都按 `COMPONENT_VIEWS` 走，四个视图；`scripts/export_scanpack.py`（HF 发布包）不在本次范围。线上库只读副本上演练：`build-index` 66 台 → **251 张**（57 台 4 张，D25/D39 5 张，D4/D48 3 张，D3/D64 2 张，D1/D2/D66 1 张），D64 的两个 `seq` 文件夹报出并略过，别的帧、缺帧与 issues 与 v3 索引逐台相同；`load-index` → 序列视图的帧行与位姿段一行不变，合照 956 → 1207 张（`cmp_scan` 251，每张一个位姿段、ROI `[0, 0, 1600, 1600]`），没有"移动"行。D66 第 13 步（"All components"）：扫描仪在序列里只有 `RGB11`–`RGB121`，第 13 步本来就没有扫描帧（索引里是缺帧），所以没有 `cmp_scan` 第 1013 张，它的零件扫描是 `cmp_scan` 第 1 张（`allcomponentsrgb11`）。`build-cache --views cmp_scan`（66 台，251 张，3.1 分钟，0.96 GB）：243 张用 `P_0`，**8 张 `p0_dark`**（D8 第 2、D11 第 3、D13 第 4、D36 第 3、D41 第 4、D46 第 2、D58 第 2、D62 第 3 张：`P_0` 平均灰度 24–28，其余九张 128–188，灯没亮），所以连拍选择对合照同样必要；`status` 的合照表四列，TOTAL `cmp_scan 251`；`check --view cmp_scan`（D1/D52/D64/D66）只报 `missing_shape`（还没人画）；`export-coco --views cmp_scan` 0 张已确认、251 张待考虑，什么都不写。库结构不变（仍为 v6）。没有新快捷键。
 - **v1.40（2026-10-29）**：**独立双机位视频精修器**。`start_video_refiner.bat` 启动 `tda.video`，导入动作初筛清单，逐段微调原片起止点、ROI、拆分/排除和确认；按 OAK 与 RealSense 两段原视频各自的实际帧时间设置同步点，固定偏移或两点线性校正生成对应机位区间。JSON 工程自动保存、撤销/重做和单写入锁；30fps 无音频成对导出带源时间、ROI 和同步参数清单，失败或取消留下明确状态。原始盘只读，不打开现有标注数据库。详见 `docs/video_refiner_guide.md` 与 `docs/superpowers/specs/2026-10-28-video-refiner-design.md`。 **筛查播放补充**：原片进度条及局部时间轴支持点击/拖动预览；拖动结束等待目标画面后恢复原播放状态。双机位联动按原片时间映射定位，独立模式不打断另一机位播放。0.25×–8× 倍速在播放中连续切换并重设播放时钟，预览速度不修改切点、同步参数或导出速度。
 
