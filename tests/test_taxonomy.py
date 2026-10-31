@@ -59,9 +59,10 @@ def test_taxonomy_states_and_verbs():
         "expansion_card", "case_fan", "misc_part", "screw", "ram_latch",
         "cpu_socket_lever", "psu_latch", "drive_latch", "card_latch", "cooler_latch",
         "cable_clip", "connector",
-        "loose_cable",  # the gallery's cables on the table, appended last (task U45)
+        "loose_cable",  # the gallery's cables on the table, appended (task U45)
+        "screw_hole",   # the fan screw holes of seven desktops, appended last (task W3e)
     }
-    assert list(t.classes)[-1] == "loose_cable"
+    assert list(t.classes)[-2:] == ["loose_cable", "screw_hole"]
     assert t.states_of("screw") == ["fastened", "loosened", "removed"]
     assert t.apply_verb("screw", {"captive": True}, "unscrew") == ("state", "loosened")
     assert t.apply_verb("screw", {"captive": False}, "unscrew") == ("state", "removed")

@@ -8,7 +8,10 @@ carries geometry, and the 23 taxonomy classes as categories 1..23 in
 U45), is a gallery-only class (:data:`~tda.core.model.GALLERY_ONLY_CLASSES`):
 it is listed in a components-gallery file only, with id **25** -- after
 ``other`` (24, the 框外零件's), which keeps the id it has had since U18 -- so
-no id any file ever carried moves (:func:`categories`).
+no id any file ever carried moves (:func:`categories`). The 25th, ``screw_hole``
+(task W3e: the fan screw holes of seven desktops, a detection category only),
+is a sequence class numbered after them, **26**, and listed in every sequence
+file; its annotations carry ``attributes.of``, the screw it is the hole of.
 
 Beyond the COCO fields every annotation carries an ``attributes`` block (state,
 placement, visibility, the ``occluder`` nobody labels that hides it -- or
@@ -122,7 +125,10 @@ from tda.core.model import (
     CONTEXT_OTHER,
     GALLERY_ONLY_ATTR,
     GALLERY_ONLY_CLASSES,
+    HOLE_OF_ATTR,
+    LATE_CLASSES,
     NO_CHANGE_STEP_TYPES,
+    SCREW_HOLE_CLASS,
     SKIP_STEP_TYPES,
     VIEWS,  # noqa: F401 - read off this module by tda.core.export.vlm
     ActionRec,
@@ -368,6 +374,9 @@ class DesktopCtx:
     step touched one, so no VLM question may count or name one; the COCO
     export of a gallery view still writes them (:meth:`cls_of` answers for
     them).
+
+    With ``keep_holes=False`` (the VLM export, task W3e) the fan screw holes
+    go too, into :attr:`holes`: a detection category, never a question.
     """
 
     desktop: int
@@ -385,6 +394,12 @@ class DesktopCtx:
     absent: dict[str, InstanceRec] = field(default_factory=dict, repr=False)
     #: The gallery-only parts, taken out of ``instances`` (U45).
     gallery_only: dict[str, InstanceRec] = field(default_factory=dict, repr=False)
+    #: ``False`` takes the fan screw holes (``screw_hole``, task W3e) out of
+    #: ``instances`` into :attr:`holes`: the VLM export's context, which may
+    #: never count, name or ask about one. COCO and the graph export keep them.
+    keep_holes: bool = True
+    #: The screw holes :meth:`__post_init__` took out (``keep_holes=False``).
+    holes: dict[str, InstanceRec] = field(default_factory=dict, repr=False)
     _states: dict[int, FrameState] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
@@ -402,6 +417,12 @@ class DesktopCtx:
         if only:
             self.gallery_only = only
             self.instances = {k: v for k, v in self.instances.items() if k not in only}
+        if not self.keep_holes:
+            holes = {k: v for k, v in self.instances.items() if v.cls == SCREW_HOLE_CLASS}
+            if holes:
+                self.holes = holes
+                self.instances = {k: v for k, v in self.instances.items()
+                                  if k not in holes}
         gone = absent_keys(self.events)
         absent = {k: v for k, v in self.instances.items() if k in gone}
         if absent:
@@ -469,8 +490,13 @@ class DesktopCtx:
         return sorted(rows, key=lambda a: a.idx)
 
 
-def load_ctx(db: Db, tax: Taxonomy, desktop: int, view: str) -> DesktopCtx:
-    """Read instances, steps, actions, events and keyframes of one desktop/view."""
+def load_ctx(db: Db, tax: Taxonomy, desktop: int, view: str,
+             holes: bool = True) -> DesktopCtx:
+    """Read instances, steps, actions, events and keyframes of one desktop/view.
+
+    ``holes=False`` leaves the fan screw holes out of ``instances``
+    (:attr:`DesktopCtx.keep_holes`, task W3e) -- what the VLM export reads.
+    """
     chains: dict[tuple[str, str, int], list[ShapeKeyframe]] = {}
     for kf in db.keyframes(desktop, view):
         chains.setdefault((kf.instance, kf.placement, kf.pose_segment), []).append(kf)
@@ -478,6 +504,7 @@ def load_ctx(db: Db, tax: Taxonomy, desktop: int, view: str) -> DesktopCtx:
         desktop=desktop, tax=tax, instances=db.instances(desktop),
         events=events_of(db, tax, desktop), actions=db.actions(desktop),
         steps={s.step: s for s in db.steps(desktop)}, keyframes=chains,
+        keep_holes=bool(holes),
     )
 
 
@@ -485,22 +512,23 @@ def load_ctx(db: Db, tax: Taxonomy, desktop: int, view: str) -> DesktopCtx:
 # categories
 # --------------------------------------------------------------------------- #
 def _class_ids(tax: Taxonomy) -> dict[str, int]:
-    """``class -> category id``: the sequence's classes 1..N, then the gallery-only ones.
+    """``class -> category id``: the original classes 1..N, then the appended ones.
 
-    The classes every view can carry are numbered in config order from 1 --
-    the 23 of spec 6.1, ids 1..23 as they always were. ``N + 1`` is ``other``,
-    the 框外零件's category (:func:`other_category`, task U18), and the classes
-    only a gallery-only part has (:data:`~tda.core.model.GALLERY_ONLY_CLASSES`,
-    task U45: ``loose_cable``) follow it, from ``N + 2``. So appending a class never
-    moves an id a file has carried.
+    The classes the taxonomy had when ``other`` took its id are numbered in
+    config order from 1 -- the 23 of spec 6.1, ids 1..23 as they always were.
+    ``N + 1`` is ``other``, the 框外零件's category (:func:`other_category`,
+    task U18), and the classes appended since
+    (:data:`~tda.core.model.LATE_CLASSES`: the gallery-only ``loose_cable`` of
+    task U45, the fan ``screw_hole`` of task W3e) follow it in config order,
+    from ``N + 2``. So appending a class never moves an id a file has carried.
     """
     ids: dict[str, int] = {}
     for name in tax.classes:
-        if name not in GALLERY_ONLY_CLASSES:
+        if name not in LATE_CLASSES:
             ids[name] = len(ids) + 1
     after = len(ids) + 2
     for name in tax.classes:
-        if name in GALLERY_ONLY_CLASSES:
+        if name in LATE_CLASSES:
             ids[name] = after
             after += 1
     return ids
@@ -509,9 +537,10 @@ def _class_ids(tax: Taxonomy) -> dict[str, int]:
 def categories(tax: Taxonomy, gallery: bool = False) -> list[dict]:
     """The taxonomy classes as COCO categories, in config order (ids: :func:`_class_ids`).
 
-    A sequence file lists the 23 classes of spec 6.1, ids 1..23; a
-    components-gallery file (``gallery``, task U45) lists the gallery-only
-    class ``loose_cable`` (id 25) after them as well -- the teardown never has one.
+    A sequence file lists the 23 classes of spec 6.1, ids 1..23, and the fan
+    ``screw_hole`` (task W3e, id 26); a components-gallery file (``gallery``,
+    task U45) lists the gallery-only class ``loose_cable`` (id 25) as well --
+    the teardown never has one.
     """
     ids = _class_ids(tax)
     return [
@@ -533,11 +562,12 @@ CONTEXT_SUPERCATEGORY = "context"
 def other_category(tax: Taxonomy) -> dict:
     """The category of a context object no taxonomy class describes (task U18).
 
-    One past the sequence's last class id (24), so it never moves a class's
-    id -- and the gallery-only classes numbered after it (task U45) never
-    move it; it is listed only in a file that has such an annotation.
+    One past the original classes' last id (24), so it never moves a class's
+    id -- and the classes appended after it (task U45 / W3e,
+    :data:`~tda.core.model.LATE_CLASSES`) never move it; it is listed only in
+    a file that has such an annotation.
     """
-    seq = sum(1 for name in tax.classes if name not in GALLERY_ONLY_CLASSES)
+    seq = sum(1 for name in tax.classes if name not in LATE_CLASSES)
     return {"id": seq + 1, "name": CONTEXT_OTHER,
             "supercategory": CONTEXT_SUPERCATEGORY}
 
@@ -717,6 +747,10 @@ def _attributes(ctx: DesktopCtx, instance: str, row: dict, step: int,
         # added from a gallery shot (task U45): no step names it; the key is
         # written on these rows only, so every other file stays as it was
         out[GALLERY_ONLY_ATTR] = True
+    if rec is not None and rec.cls == SCREW_HOLE_CLASS:
+        # a fan screw hole (task W3e) says whose hole it is; written on these
+        # rows only, so every other annotation stays as it was
+        out[HOLE_OF_ATTR] = (rec.attrs or {}).get(HOLE_OF_ATTR)
     return out
 
 

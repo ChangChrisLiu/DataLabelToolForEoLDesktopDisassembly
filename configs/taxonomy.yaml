@@ -1,6 +1,7 @@
 # TDA unified vocabulary -- encodes spec section 6 (统一词表).
 #
-#   6.1  24 classes with their attributes (`loose_cable`, the 24th, since task U45)
+#   6.1  25 classes with their attributes (`loose_cable`, the 24th, since task U45;
+#        `screw_hole`, the 25th, since task W3e)
 #   6.2  per-class state sets, default state, and which states need a mask
 #   6.3  action verbs: what they apply to and their state effect
 #   6.5  tool vocabulary
@@ -284,6 +285,28 @@ classes:
     states: [installed, removed]
     default_state: installed
     needs_mask: {installed: true, removed: true}
+
+  # --- 结构 / structure, appended (task W3e) ---------------------------------
+  # 螺丝孔: where a removed screw was. Used ONLY for the fan screws of the seven
+  # heatsink + fan desktops (D07 D08 D11 D14 D16 D18 D19), whose holes the
+  # annotator drew under the screw's label on every frame after the screw came
+  # out (用户 2026-10-31：「螺丝孔也可以只保留像素，就是只是作为探测的时候的部分」);
+  # no other hole is ever annotated. A detection category (COCO), never a VLM
+  # question target, never a node of a constraint edge, and no verb applies to
+  # it. `of` is the screw's instance key; `parent` is the screw's parent (the
+  # fan) with `attached` ticked, so the hole leaves the chassis inside the fan.
+  # `removed` is the spec-3.3 cascade's word for exactly that, never a verb's
+  # (`remove.applies_to` does not list the class), like ram_latch's.
+  # Appended LAST so no COCO category id moves: the sequence's 23 classes keep
+  # 1..23, `other` 24, `loose_cable` 25, and `screw_hole` takes 26
+  # (tda.core.export.coco numbers the classes appended after `other` from 25).
+  screw_hole:
+    group: structure
+    attrs:
+      of: []            # the screw's instance key
+    states: [present, removed]
+    default_state: present
+    needs_mask: {present: true, removed: false}
 
 # Virtual (non-visual) nodes. They are not taxonomy classes -- they never carry
 # geometry -- but verbs apply to them and they have their own state machine.
