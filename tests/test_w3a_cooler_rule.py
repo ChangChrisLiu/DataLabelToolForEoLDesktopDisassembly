@@ -164,21 +164,21 @@ def test_the_docs_say_it():
     spec = (root / "docs" / "superpowers" / "specs"
             / "2026-09-17-teardown-annotator-design.md").read_text(encoding="utf-8")
     rules = spec.split("### 7.3 生成", 1)[1].split("### 7.4", 1)[0]
-    for needed in ("**压在 CPU 上的散热器（v1.46，W3a）**", "`unresolved cooler: …`",
-                   "`covered_by(heatsink ← fan)`", "**用户在复查里裁定的遮挡边（v1.46，W3a）**",
+    for needed in ("**压在 CPU 上的散热器（v1.47，W3a）**", "`unresolved cooler: …`",
+                   "`covered_by(heatsink ← fan)`", "**用户在复查里裁定的遮挡边（v1.47，W3a）**",
                    "`source = review:covers`", "`pixels:W1`", "**imported**"):
         assert needed in rules, needed
     cv = spec.split("### 8.1 CV 导出", 1)[1].split("### 8.2", 1)[0]
     [bullet] = [line for line in cv.splitlines()
-                if line.startswith("- **遮挡裁定成边、支承表、划分（v1.46，W3a）**")]
+                if line.startswith("- **遮挡裁定成边、支承表、划分（v1.47，W3a）**")]
     for needed in ("`python -m tda.cli pixel-edges", "`python -m tda.cli set-split",
                    '["rule.supported_by"]', "`mounted_on_rule`", "`user.not_blocks`",
                    "`tda_pre_pixel_edges_<时间>.sqlite`"):
         assert needed in bullet, needed
     entries = [line for line in spec.split("## 14. 修订记录", 1)[1].splitlines()
                if line.startswith("- ")]
-    assert any(e.startswith("- **v1.46（2026-10-31）**：**压在 CPU 上的散热器、复查裁定的遮挡边")
-               for e in entries[:3])
+    assert any(e.startswith("- **v1.47（2026-10-31）**：**压在 CPU 上的散热器、复查裁定的遮挡边")
+               for e in entries[:4])
     handoff = (root / "docs" / "HANDOFF_2026-10-28.md").read_text(encoding="utf-8")
     section = handoff.split("## 5. 导出与 HuggingFace 准备", 1)[1].split("\n## ", 1)[0]
     assert sum("cli pixel-edges" in line for line in section.splitlines()) == 1
