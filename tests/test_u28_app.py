@@ -10,7 +10,7 @@ first time.
   gets the location (OAK / RealSense) or no dock (scanner view);
 * the first commit in a view flips it, and a cut copy counts as a shape;
 * the toggle next to the caption asks for the pair or takes it away, for the
-  part on screen only;
+  part on screen only (since U43 it cycles three kinds and the choice sticks);
 * nothing is read while the dock is down, a settled frame change is one
   refresh, a repeated one reads nothing new.
 """
@@ -71,6 +71,8 @@ def pair(win):
 def kind(win) -> str:
     if not win.locator_shown():
         return "down"
+    if win.locator.showing_change():             # U43's third kind
+        return "change"
     return "pair" if win.locator.showing_pair() else "location"
 
 
@@ -188,6 +190,8 @@ def test_a_cut_copy_counts_as_a_shape(window):
 
 
 def test_the_toggle_asks_for_the_pair_and_takes_it_back(window):
+    # Since U43 the button cycles 定位 → 拆前/拆后 → 这一步的变化 and the
+    # choice sticks for every part (it was U28's per-part toggle).
     select(window, LATCH)                        # drawn on oak1: the location
     assert kind(window) == "location"
     window.locator.pair_button.click()
@@ -197,20 +201,22 @@ def test_the_toggle_asks_for_the_pair_and_takes_it_back(window):
     assert pair(window).log_line == "第 14 帧：RAM clip 1 · open"
     assert window.locator.caption_text() == PAIR_HEAD     # asked for, not a first time
     assert window.locator.pair_button.isChecked()
-    window.locator.pair_button.click()
-    QApplication.processEvents()
-    assert kind(window) == "location"
-    # the choice is for that part only: the fan is still its first time
-    window.locator.pair_button.click()
-    QApplication.processEvents()
-    assert kind(window) == "pair"
     select(window, CHASSIS)
+    assert kind(window) == "pair"                # the choice sticks: another part too
+    window.locator.pair_button.click()
+    QApplication.processEvents()
+    assert kind(window) == "change"
+    window.locator.pair_button.click()
+    QApplication.processEvents()
     assert kind(window) == "location"
     select(window, LATCH)
-    assert kind(window) == "location"            # forgotten once the part changed
-    # and the first-time pair can be put away too
+    assert kind(window) == "location"
+    # and the first-time pair can be put away: 拆前/拆后 → 这一步的变化 → 定位
     select_nothing(window)
     assert kind(window) == "pair"
+    window.locator.pair_button.click()
+    QApplication.processEvents()
+    assert kind(window) == "change"
     window.locator.pair_button.click()
     QApplication.processEvents()
     assert kind(window) == "location" and window.locator.scene().instance == COOLER

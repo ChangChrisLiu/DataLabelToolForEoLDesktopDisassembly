@@ -30,7 +30,9 @@ The 「拆前 / 拆后」 pair of task U28 -- the scanner frames around the step
 part leaves at -- is built from the same pictures, outlines and frame choice
 by :mod:`tda.ui.locator_pair` (:meth:`LocatorSource.pair`), and
 :meth:`LocatorSource.own_shapes` answers whether a part is met for the first
-time in a view.
+time in a view.  「这一步的变化」 of task U43 -- the card's parts painted on the
+whole scanner frame -- is built from them too, by :mod:`tda.ui.locator_change`
+(:meth:`LocatorSource.change`).
 
 Nothing here writes to the database.
 """
@@ -130,13 +132,18 @@ class Geometry:
     ``box`` is the union bounding box ``(x0, y0, x1, y1)`` (upper bounds
     exclusive) of every piece; ``outlines`` the traced outer boundaries, one
     ``(N, 2)`` array of ``x, y`` per piece; ``centre`` the point the dot goes on
-    -- inside the part, the point furthest from its edge.
+    -- inside the part, the point furthest from its edge.  ``mask`` is the
+    small binary picture (at most :data:`OUTLINE_SIDE` px) the outlines were
+    traced from, covering ``box``; ``None`` for a bench box.  Task U43 paints
+    it, holes and all: the outer outlines alone would fill a ring's hole with
+    the ring (the socket lever painted over the CPU it frames).
     """
 
     box: tuple[float, float, float, float]
     outlines: tuple = ()
     centre: tuple[float, float] = (0.0, 0.0)
     kind: str = "mask"
+    mask: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
 
 
 def geometry_from_box(box) -> Optional[Geometry]:
@@ -186,7 +193,8 @@ def geometry_from_mask(crop: np.ndarray, box) -> Optional[Geometry]:
     _min, _max, _minloc, (px, py) = cv2.minMaxLoc(dist)
     centre = (x0 + (px - 1 + 0.5) / sx, y0 + (py - 1 + 0.5) / sy)
     full = (x0, y0, x0 + float(w), y0 + float(h))
-    return Geometry(full, tuple(outlines), centre, "mask")
+    binary.setflags(write=False)
+    return Geometry(full, tuple(outlines), centre, "mask", binary)
 
 
 # --------------------------------------------------------------------------- #
@@ -252,10 +260,12 @@ class LocatorSource:
         self._facts: dict[int, tuple[tuple, dict]] = {}
         self._pinned: Optional[tuple[int, dict]] = None
         #: Counters the tests and the report read.  ``pairs`` / ``diffs`` (task
-        #: U28): 「拆前 / 拆后」 scenes built, differences of two pictures taken.
+        #: U28): 「拆前 / 拆后」 scenes built, differences of two pictures taken;
+        #: ``changes`` (task U43): 「这一步的变化」 scenes built.
         self.stats = {"thumb_reads": 0, "row_reads": 0, "compiles": 0, "traces": 0,
-                      "pairs": 0, "diffs": 0}
+                      "pairs": 0, "diffs": 0, "changes": 0}
         self._pair_maker = None
+        self._change_maker = None
 
     # -- caches ---------------------------------------------------------------
     def forget(self) -> None:
@@ -410,18 +420,31 @@ class LocatorSource:
     # -- the part's name and state ------------------------------------------------
     def label_and_state(self, desktop: int, step: int, instance: str) -> tuple[str, str]:
         """``("导风罩 cover.01", "打开")`` -- the state at the scanner frame shown."""
+        return self.labels_and_states(desktop, step, [instance])[str(instance)]
+
+    def labels_and_states(self, desktop: int, step: int,
+                          instances) -> dict[str, tuple[str, str]]:
+        """:meth:`label_and_state` of several parts, the machine's state read once.
+
+        Task U43: 「这一步的变化」 names every painted part of a card, and one
+        fold of the state events per part would be forty for a start card.
+        """
         facts = self._desktop_facts(int(desktop))
-        rec = facts["instances"].get(str(instance))
-        label = instance_label(str(instance), getattr(rec, "cls", None),
-                               getattr(rec, "attrs", None))
-        state = ""
         try:
-            held = state_of(self.db, self.tax, int(desktop), int(step)).get(str(instance))
+            states = state_of(self.db, self.tax, int(desktop), int(step))
         except Exception:  # noqa: BLE001 - a word in a caption is never worth a failure
-            held = None
-        if held is not None and getattr(held, "state", None):
-            state = state_zh(str(held.state))
-        return label, state
+            states = {}
+        out: dict[str, tuple[str, str]] = {}
+        for instance in instances:
+            instance = str(instance)
+            rec = facts["instances"].get(instance)
+            label = instance_label(instance, getattr(rec, "cls", None),
+                                   getattr(rec, "attrs", None))
+            held = states.get(instance)
+            state = (state_zh(str(held.state))
+                     if held is not None and getattr(held, "state", None) else "")
+            out[instance] = (label, state)
+        return out
 
     def is_instance(self, desktop: int, instance: Optional[str]) -> bool:
         """Is ``instance`` a part of this machine (a card row may name a raw step)?"""
@@ -458,6 +481,23 @@ class LocatorSource:
         self._pinned = (desktop, self._desktop_facts(desktop))
         try:
             return self._pair_maker.pair(desktop, instance)
+        finally:
+            self._pinned = None
+
+    def change(self, desktop: int, step: int, instances):
+        """「这一步的变化」 of ``step`` (:class:`tda.ui.locator_change.ChangeScene`), task U43.
+
+        ``instances`` are the task card's rows on the frame on screen; the
+        scene is remembered by the card's parts and the scanner digest.
+        """
+        if self._change_maker is None:
+            from tda.ui.locator_change import ChangeMaker
+
+            self._change_maker = ChangeMaker(self)
+        desktop = int(desktop)
+        self._pinned = (desktop, self._desktop_facts(desktop))
+        try:
+            return self._change_maker.change(desktop, step, instances)
         finally:
             self._pinned = None
 

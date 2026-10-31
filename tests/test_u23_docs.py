@@ -32,7 +32,7 @@ def test_the_quickstart_has_one_short_section():
                    "任务卡当前行", "主视角 第 12 帧", "单击看整帧", "滚轮", "缺图时用前一帧",
                    NOT_DRAWN, "顶部「主视角」按钮", "记得"):
         assert needed in section, needed
-    assert len(section) < 420
+    assert len(section) < 600            # U43's paragraph (这一步的变化) is in it since
 
 
 def test_the_spec_has_the_paragraph_in_4_5_and_v1_23_on_top():
@@ -57,7 +57,7 @@ def test_the_spec_has_the_paragraph_in_4_5_and_v1_23_on_top():
                                   "- **v1.32", "- **v1.33", "- **v1.34", "- **v1.35",
                                   "- **v1.36",
                                   "- **v1.37", "- **v1.38", "- **v1.39", "- **v1.40",
-                                  "- **v1.41"))
-    [first] = [e for e in entries[:19] if e.startswith("- **v1.23")]
+                                  "- **v1.41", "- **v1.42"))
+    [first] = [e for e in entries[:20] if e.startswith("- **v1.23")]
     assert first.startswith("- **v1.23（2026-10-23）**：**主视角**（U23，§4.5）")
     assert changes.index("- **v1.23") < changes.index("- **v1.21")
