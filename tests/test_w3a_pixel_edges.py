@@ -32,6 +32,7 @@ from tda.core.export.graph_covers import (
 from tda.core.export.graph_export import ReadOnlyDb, build_desktop, summarize
 from tda.core.graph import Edge, edges_from_db, graph_version, propose_edges
 from tda.core.graph_derive import derive_edges
+from tda.core.model import EXTRA_ATTR
 from tda.core.taxonomy import load_taxonomy
 
 TAX = load_taxonomy()
@@ -114,7 +115,8 @@ def test_the_shipped_whitelist_loads():
     assert (wl.min_px, wl.min_frac) == (1000, 0.03)
     labels = [p.label() for p in wl.pairs]
     assert labels[0] == "optical_drive -> motherboard" and len(labels) == 18
-    # A1 is structural by the support table: never a candidate, so not the whitelist's
+    # A1 is a rule edge (task W3d; structural by the support table where it gets
+    # none): never a candidate, so not the whitelist's
     assert "expansion_card.gpu -> motherboard" not in labels
     assert "drive_cage -> motherboard" not in labels          # 存疑: commented out
     assert {p.min_frac for p in wl.pairs if p.below == "cpu"} == {0.25}
@@ -132,10 +134,11 @@ def test_the_shipped_whitelist_loads():
     ("drive_cage", "loose_cable", "own rules"),
     ("spaceship", "motherboard", "no such class"),
     ("cpu_cooler.turbo", "optical_drive", "no kind"),
-    ("expansion_card.gpu", "motherboard", "support table"),
-    ("cpu_cooler.fan", "motherboard", "support table"),
-    ("ram_module", "motherboard", "support table"),
-    ("cpu", "motherboard", "support table"),
+    # a rule edge since task W3d (主板上的东西先拆), structural where it gets none
+    ("expansion_card.gpu", "motherboard", "rule edge"),
+    ("cpu_cooler.fan", "motherboard", "rule edge"),
+    ("ram_module", "motherboard", "rule edge"),
+    ("cpu", "motherboard", "rule edge"),
 ])
 def test_the_loader_refuses(tmp_path, above, below, said):
     path = whitelist_file(tmp_path, f"version: W1\npairs:\n  - {{above: {above}, below: {below}}}\n")
@@ -267,16 +270,28 @@ def test_structure_refuses_a_whitelist_pair_and_a_ruling_beats_it():
     plan = judge([latch], whitelist=wl(min_px=1, min_frac=0, above="ram_latch",
                                        below="motherboard"))
     assert plan.skipped[0]["why"] == "structural"
-    # ... the support table is a structural reason too (the loader refuses such a
-    # pair; a hand-built whitelist that names one is still not written) ...
+    # ... a real card on the board is a rule edge now (task W3d): nothing to write ...
+    real = bench_instances()
+    real["expansion_card.gpu.01"] = real["ram_module.01"].__class__(
+        key="expansion_card.gpu.01", desktop=DESKTOP, cls="expansion_card",
+        attrs={"kind": "gpu"})
+    card = {**cover("expansion_card.gpu.01", "motherboard.01"),
+            "above_class": "expansion_card.gpu"}
+    plan = PE.plan_desktop(DESKTOP, [card], 3, real, propose_edges(real, TAX), [], [], TAX,
+                           {}, wl(1, 0.0, "expansion_card.gpu", "motherboard"))
+    assert plan.whitelist == [] and plan.skipped[0]["why"] == "already_an_edge"
+    # ... and for a card added in S1, which takes no rule edge, the support table
+    # is a structural reason too (the loader refuses such a pair; a hand-built
+    # whitelist that names one is still not written) ...
     gpu = bench_instances()
     gpu["expansion_card.gpu.01"] = gpu["ram_module.01"].__class__(
         key="expansion_card.gpu.01", desktop=DESKTOP, cls="expansion_card",
-        attrs={"kind": "gpu"})
+        attrs={"kind": "gpu", EXTRA_ATTR: "tester"})
+    # no edge of any type between the S1-added card and the board, either way
+    assert not [e for e in propose_edges(gpu, TAX)
+                if {e.target, e.blocker} == {"motherboard.01", "expansion_card.gpu.01"}]
     assert structural_reasons(gpu, TAX, "expansion_card.gpu.01", "motherboard.01") == [
         SUPPORTED_BY_REASON]
-    card = {**cover("expansion_card.gpu.01", "motherboard.01"),
-            "above_class": "expansion_card.gpu"}
     plan = PE.plan_desktop(DESKTOP, [card], 3, gpu,
                            propose_edges(gpu, TAX), [], [], TAX, {},
                            wl(1, 0.0, "expansion_card.gpu", "motherboard"))

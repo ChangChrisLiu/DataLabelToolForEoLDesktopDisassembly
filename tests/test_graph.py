@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 from graph_scenes import EXPECTED
 from graph_scenes import act as _act
-from graph_scenes import bench_instances
+from graph_scenes import bench_instances, clear_board
 from graph_scenes import inst as _inst
 from graph_scenes import state_after as _state
 from graph_scenes import triples as _triples
@@ -50,7 +50,8 @@ def test_proposed_edges_carry_provenance(bench, tax):
         assert edge.status == "proposed"
         assert edge.type in graph.HARD_TYPES
         assert edge.reason  # every rule edge explains itself
-        assert edge.mode is None  # mode is for blocked_by, which no rule derives
+        # mode is for blocked_by; the one rule that derives it is the mount rule (W3d)
+        assert edge.mode == ("mounted" if edge.type == "blocked_by" else None)
 
 
 def test_sata_drive_needs_only_its_own_end(bench, tax):
@@ -167,6 +168,10 @@ def test_applicable_preconditions_by_verb(bench, tax):
         ("fastened_by", "motherboard.01", "screw.motherboard.03"),
         ("connected_to", "motherboard.01", "connector.atx_24pin.01"),
         ("connected_to", "motherboard.01", "connector.sata_data.02"),
+        # everything mounted on the board comes off first (task W3d)
+        ("blocked_by", "motherboard.01", "cpu.01"),
+        ("blocked_by", "motherboard.01", "ram_module.01"),
+        ("blocked_by", "motherboard.01", "cpu_cooler.fan.01"),
     }
     # displace is gated by the structural edges only: a board whose cables are
     # still plugged can be lifted clear of its standoffs, just not taken away
@@ -193,7 +198,8 @@ def test_unmet_in_the_initial_state(bench, tax):
     edges = propose_edges(bench, tax)
     state = initial_state(bench, tax)
     gating = applicable_preconditions(edges, ("remove", "motherboard.01"))
-    assert len(unmet(gating, state)) == 5
+    # three screws, two plugs, and the CPU, cooler and RAM still on it (task W3d)
+    assert len(unmet(gating, state)) == 8
 
 
 def test_unmet_shrinks_as_blockers_change_state(bench, tax):
@@ -209,8 +215,18 @@ def test_unmet_shrinks_as_blockers_change_state(bench, tax):
     state = _state(bench, actions, tax)
     assert _triples(unmet(gating, state)) == {
         ("fastened_by", "motherboard.01", "screw.motherboard.03"),
+        ("blocked_by", "motherboard.01", "cpu.01"),
+        ("blocked_by", "motherboard.01", "ram_module.01"),
+        ("blocked_by", "motherboard.01", "cpu_cooler.fan.01"),
     }
     actions.append(_act(6, "screw.motherboard.03", "unscrew"))
+    # the screws are out; what is mounted on the board still holds it (task W3d)
+    assert _triples(unmet(gating, _state(bench, actions, tax))) == {
+        ("blocked_by", "motherboard.01", "cpu.01"),
+        ("blocked_by", "motherboard.01", "ram_module.01"),
+        ("blocked_by", "motherboard.01", "cpu_cooler.fan.01"),
+    }
+    actions.extend(clear_board(7))
     assert unmet(gating, _state(bench, actions, tax)) == []
 
 
@@ -282,7 +298,8 @@ def test_legal_actions_in_the_initial_state(bench, tax):
         ("unscrew", "screw.cpu_cooler.01"),
         ("unscrew", "screw.cpu_cooler.02"),
     }
-    # the motherboard is screwed down, plugged in, and its screws are covered
+    # the motherboard is screwed down, plugged in, its screws are covered, and
+    # the CPU, cooler and RAM are still on it (task W3d)
     assert ("remove", "motherboard.01") not in got
     assert ("unscrew", "screw.motherboard.01") not in got
     # ... and still screwed down, so it cannot be moved at all
@@ -322,18 +339,19 @@ def test_opening_the_cover_unlocks_the_motherboard_screws(bench, tax):
 def test_motherboard_becomes_removable_only_when_everything_is_clear(bench, tax):
     edges = propose_edges(bench, tax)
     actions = [
-        _act(1, "cover.01", "open"),
-        _act(2, "connector.atx_24pin.01", "disconnect"),
-        _act(3, "screw.motherboard.01", "unscrew"),
-        _act(4, "screw.motherboard.02", "unscrew"),
-        _act(5, "screw.motherboard.03", "unscrew"),
+        *clear_board(1),
+        _act(9, "cover.01", "open"),
+        _act(10, "connector.atx_24pin.01", "disconnect"),
+        _act(11, "screw.motherboard.01", "unscrew"),
+        _act(12, "screw.motherboard.02", "unscrew"),
+        _act(13, "screw.motherboard.03", "unscrew"),
     ]
     for k in range(len(actions) + 1):
         state = _state(bench, actions[:k], tax)
         got = legal_actions(bench, edges, state, tax)
         # the motherboard-side SATA plug is still in, so it is never removable
         assert ("remove", "motherboard.01") not in got
-    actions.append(_act(6, "connector.sata_data.02", "disconnect"))
+    actions.append(_act(14, "connector.sata_data.02", "disconnect"))
     got = legal_actions(bench, edges, _state(bench, actions, tax), tax)
     assert ("remove", "motherboard.01") in got
     assert ("displace", "motherboard.01") in got

@@ -728,7 +728,9 @@ def test_a_blocked_by_edge_gates_by_its_mode(tmp_path: Path, mode, open_blocked,
 
     Two edges, one target each, so each verb is decided by the mode alone: the
     latch has nothing else gating ``open``, and the board's only other edge
-    (`connected_to`) gates ``remove`` and nothing more.
+    (`connected_to`) gates ``remove`` and nothing more. The board's rule edge
+    ``blocked_by(board <- RAM, mode=mounted)`` (task W3d) is the same triple,
+    so the scene's row with the mode under test replaces it.
     """
     db = Db(str(tmp_path / f"mode_{mode}.sqlite"))
     tax = S.build(db, views=(S.VIEW,), verified_steps=(), edges=[
