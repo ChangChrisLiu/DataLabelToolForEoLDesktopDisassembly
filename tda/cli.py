@@ -685,14 +685,15 @@ def format_gallery(rows: list[dict]) -> list[str]:
 def format_desktop(db: Db, row: dict) -> str:
     """The detailed single-desktop report of ``status --desktop N``."""
     types = ", ".join(f"{k} {n}" for k, n in db.step_type_counts(row["desktop"]).items())
+    table = db.instances(row["desktop"])
+    # the gallery-only parts (task U45) are no instances of the sequence: they
+    # are counted and named under the gallery, below, and nowhere else
+    only = sorted(key for key, rec in table.items() if is_gallery_only(rec))
     lines = [
         f"Desktop {row['desktop']}  {row['brand']}",
         f"  steps {row['steps']} ({types or 'none'}), actions {row['actions']}, "
-        f"instances {row['instances']}, state events {row['events']}",
+        f"instances {row['instances'] - len(only)}, state events {row['events']}",
     ]
-    table = db.instances(row["desktop"])
-    # the gallery-only parts (task U45) are said under the gallery, below
-    only = sorted(key for key, rec in table.items() if is_gallery_only(rec))
     added = [key for key in extra_keys(table) if key not in set(only)]
     if added:
         # counted among the instances above; said apart because no sheet

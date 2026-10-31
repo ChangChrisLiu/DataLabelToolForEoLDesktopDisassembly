@@ -879,7 +879,10 @@ class DetectMixin:
                 continue        # a 框外零件 is no part of the machine (task U18)
             rec = records.get(name)
             if is_gallery_only(rec):
-                continue        # nor of the teardown: a gallery-only part (task U45)
+                # nor of the teardown: a gallery-only part (task U45). Only a
+                # sequence frame is meant -- the detector runs on no gallery
+                # view, and a gallery-only part never compiles on a sequence one
+                continue
             cls = str(getattr(rec, "cls", "") or str(name).split(".", 1)[0])
             if cls in classes and inst.box is not None:
                 out.setdefault(cls, []).append(tuple(float(v) for v in inst.box))

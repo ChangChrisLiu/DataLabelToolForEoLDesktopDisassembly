@@ -249,14 +249,112 @@ def test_steps_mode_deletes_one_like_any_extra(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# review round 3: a gallery-only part rides on nothing, and no step targets it
+# --------------------------------------------------------------------------- #
+def test_the_cascade_skips_a_gallery_only_child_of_a_part_that_leaves(tmp_path):
+    """I1: a stored `parent` on one (an old heuristic, a hand edit) is no KeyError."""
+    from dataclasses import replace
+
+    from tda.core.states import events_from_actions
+
+    session = GS.make_session(tmp_path)
+    [key] = session.add_gallery_parts("ram_latch", 1)
+    table = dict(instances_of(session.db, GS.DESKTOP))
+    table[key] = replace(table[key], parent="motherboard.01", attached=True)
+    events = events_from_actions(table, session.db.actions(GS.DESKTOP), session.tax)
+    assert events and not [e for e in events if e.target == key]
+
+
+def test_infer_relations_fills_nothing_on_one_and_does_not_fail(tmp_path):
+    """I1: `infer-relations` gave a gallery-only ram_latch the board, then raised."""
+    from tda.cli_relations import _apply_one
+
+    session = GS.make_session(tmp_path)
+    [latch] = session.add_gallery_parts("ram_latch", 1)
+    [cooler] = session.add_gallery_parts("cpu_cooler", 1, {"kind": "fan"})
+    dry = _apply_one(session.db, session.tax, GS.DESKTOP, dry_run=True)
+    assert not [line for line in dry.fills if line.startswith((latch, cooler))]
+    out = _apply_one(session.db, session.tax, GS.DESKTOP, dry_run=False)
+    assert out.status == "applied"
+    stored = session.db.instances(GS.DESKTOP)
+    assert stored[latch].parent is None and not stored[latch].attached
+    # a cooler on the table does not make the sequence's own one ambiguous
+    from tda.core.graph_infer import real_instances, unique_of_class
+
+    assert cooler not in real_instances(stored, "cpu_cooler")
+    assert unique_of_class(stored, "cpu_cooler") is not None
+
+
+def test_steps_refuses_relations_on_and_to_a_gallery_only_part(tmp_path):
+    from tda.ui.steps_model import EditError, StepTableData
+
+    session = GS.make_session(tmp_path)
+    [latch] = session.add_gallery_parts("ram_latch", 1)
+    data = StepTableData.load(session.db, GS.DESKTOP, session.tax, "tester")
+    for field, value in (("parent", "motherboard.01"), ("attached", True),
+                         ("mounted_on", "motherboard.01")):
+        with pytest.raises(EditError, match="仅合照的零件"):
+            data.apply_instance_edit(latch, field, value)
+    data.apply_instance_edit(latch, "parent", "")           # clearing stays allowed
+    data.apply_instance_edit(latch, "attached", False)
+    other = next(k for k, r in data.instances.items()
+                 if r.cls == "screw" and not is_gallery_only(r))
+    with pytest.raises(EditError, match="别的零件不能挂在它上面"):
+        data.apply_instance_edit(other, "parent", latch)
+    data.save(session.db)                                     # and the Apply works
+
+
+def test_steps_refuses_to_point_a_step_at_a_gallery_only_part(tmp_path):
+    """I2: the step's events vanished silently, and the log's screw lost its step."""
+    from tda.ui.panels.steptable_models import (
+        GALLERY_ONLY_RAW_NAMES,
+        INSTANCE_COLUMNS,
+        InstanceTableModel,
+    )
+    from tda.ui.steps_model import EditError, StepTableData
+
+    session = GS.make_session(tmp_path)
+    [screw] = session.add_gallery_parts("screw", 1, {"role": "motherboard"})
+    data = StepTableData.load(session.db, GS.DESKTOP, session.tax, "tester")
+    step = next(a.step for a in data.actions if a.target.startswith("screw.motherboard."))
+    with pytest.raises(EditError, match="仅合照的零件，拆解序列里没有它"):
+        data.change_target(step, screw)
+    # Steps' instance table says which screw came from the gallery
+    column = next(c for c in INSTANCE_COLUMNS if c.field == "raw_names")
+    assert InstanceTableModel._value(data.instances[screw], column) == GALLERY_ONLY_RAW_NAMES
+
+
+def test_the_sheet_importer_never_makes_a_gallery_only_class(tmp_path):
+    """L4: a code guard, not only the mapping tables."""
+    import yaml
+
+    from tda.core.logs import UNRESOLVED, _Importer
+    from tda.core.model import GALLERY_ONLY_CLASSES
+    from tda.core.taxonomy import ParsedTarget
+
+    root = Path(__file__).resolve().parents[1]
+    for name in ("taxonomy_map.yaml", "ls_label_map.yaml"):
+        text = yaml.safe_load((root / "configs" / name).read_text(encoding="utf-8"))
+        found = json.dumps(text)
+        assert not [c for c in GALLERY_ONLY_CLASSES if f'"{c}"' in found], name
+    importer = _Importer(GS.DESKTOP, {}, load_taxonomy())
+    parsed = ParsedTarget(cls="loose_cable", matched_rule="u45_probe", canon_group="probe")
+    assert importer._target(3, "loose cable", parsed, "normal", "remove", "success") == UNRESOLVED
+    assert any("components-gallery-only" in issue for issue in importer.out.issues)
+
+
+# --------------------------------------------------------------------------- #
 # status, check, COCO
 # --------------------------------------------------------------------------- #
 def test_status_counts_them_under_the_gallery_only(tmp_path):
     from tda.cli import format_desktop
 
     session = GS.make_session(tmp_path)
+    before = len(session.db.instances(GS.DESKTOP))
     keys = session.add_gallery_parts("loose_cable", 2)
     detail = format_desktop(session.db, P.status_rows(session.db)[0])
+    # L2: the sequence's `instances N` does not count them
+    assert f"instances {before}," in detail.splitlines()[1]
     head, _sep, gallery = detail.partition("零件合照 / components gallery")
     assert f"gallery-only parts (仅合照): 2 - {', '.join(keys)}" in gallery
     assert not [line for line in head.splitlines() if "loose_cable." in line]
@@ -476,9 +574,23 @@ def test_the_dialog_offers_cable_first_with_its_kind_and_no_parent(window):
 
     data = window.session.gallery_parts_data()
     dialog = GalleryPartsDialog(data, window)
+    from tda.ui.panels.add_parts import NO_DISCRIMINATOR, gallery_class_choices
+
     assert dialog.cls == "loose_cable" and dialog.disc_combo.isVisibleTo(dialog)
+    # review M1: undivided by default -- loose_cable.01, no kind
+    assert dialog.disc_combo.currentText() == NO_DISCRIMINATOR
+    assert dialog.keys() == ["loose_cable.01"]
+    assert dialog.values() == {"cls": "loose_cable", "count": 1, "attrs": {}}
+    dialog.disc_combo.setCurrentIndex(dialog.disc_combo.findData("sata"))
     assert dialog.keys() == ["loose_cable.sata.01"]
-    assert dialog.values() == {"cls": "loose_cable", "count": 1, "attrs": {"kind": "sata"}}
+    assert dialog.values()["attrs"] == {"kind": "sata"}
+    # a screw starts at its first role, as in the S1 dialog
+    dialog.class_combo.setCurrentIndex(dialog.class_combo.findData("screw"))
+    assert dialog.values()["attrs"] == {"role": "motherboard"}
+    # the classes moulded into their host never lie on the table on their own
+    offered = [c for _l, c in gallery_class_choices(data)]
+    assert "ram_latch" not in offered and "cpu_socket_lever" not in offered
+    assert "chassis" not in offered and "loose_cable" in offered
     assert GALLERY_INTRO == ("只在零件合照里出现，拆解序列里不会要它；"
                              "日志里本来就有的零件请在步骤表里加（可填拆下于第几步）")
     assert not hasattr(dialog, "parent_combo") and not hasattr(dialog, "removed_spin")

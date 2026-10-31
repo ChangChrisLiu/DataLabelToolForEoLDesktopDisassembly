@@ -409,8 +409,11 @@ def events_from_actions(
         if frame[target].placement == IN_CHASSIS:
             emit(action, target, ATTR_PLACEMENT, ON_BENCH)
         for child in children.get(target, ()):
-            if child in seen or child in absent:
-                continue      # a part the machine does not have is not taken out (U34)
+            if child in seen or child in absent or child not in frame:
+                # a part the machine does not have is not taken out (U34), and a
+                # part in no snapshot -- a 框外零件, a gallery-only part (U45) --
+                # has no state to take out, whatever its stored `parent` says
+                continue
             seen.add(child)
             emit(action, child, ATTR_STATE, REMOVED)
             detach(action, child, seen)

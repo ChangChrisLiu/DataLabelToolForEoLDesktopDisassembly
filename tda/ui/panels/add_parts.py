@@ -378,18 +378,22 @@ GALLERY_TITLE = f"{ADD_PARTS_BUTTON} / more parts on this shot"
 GALLERY_TIP = ADD_PARTS_TIP
 #: The one line the dialog says (the controller's brief, U45 §2.3).
 GALLERY_INTRO = ADD_PARTS_INTRO
+#: The discriminator combo's first entry: no ``kind`` / ``role`` (review M1).
+NO_DISCRIMINATOR = "（不细分）"
 
 
 def gallery_class_choices(data: StepTableData) -> list[tuple[str, str]]:
-    """``(label, class)`` a gallery-only part may have: every class but the chassis.
+    """``(label, class)`` a gallery-only part may have: every class but a few.
 
     ``loose_cable`` (task U45) among them -- it is the class this dialog exists for;
     the screws and connectors the gallery leaves out of a log's parts are
     offered too, because an annotator who adds one is saying it can be told
-    apart on the table.
+    apart on the table. Left out: the chassis, and the classes moulded into
+    their host (``host_class``: a RAM clip, the socket lever) -- they never lie
+    on the table on their own.
     """
     return [(f"{class_zh(cls)}  {cls}", cls) for cls in data.tax.classes
-            if cls != CHASSIS_KEY]
+            if cls != CHASSIS_KEY and not data.tax.host_class(cls)]
 
 
 def gallery_preview_text(keys: list[str]) -> str:
@@ -459,7 +463,7 @@ class GalleryPartsDialog(QDialog):
 
     def _attrs(self) -> dict:
         name, vocabulary = self.data.discriminator_of(self.cls)
-        value = self.disc_combo.currentText() if vocabulary else ""
+        value = str(self.disc_combo.currentData() or "") if vocabulary else ""
         return {name: value} if name and value else {}
 
     def keys(self) -> list[str]:
@@ -475,7 +479,16 @@ class GalleryPartsDialog(QDialog):
         name, vocabulary = self.data.discriminator_of(self.cls)
         self.disc_combo.blockSignals(True)
         self.disc_combo.clear()
-        self.disc_combo.addItems(vocabulary)
+        if vocabulary:
+            # 「（不细分）」 first (review M1): the discriminator is optional and
+            # only part of the key when given -- loose_cable.01 needs no kind
+            self.disc_combo.addItem(NO_DISCRIMINATOR, "")
+        for value in vocabulary:
+            self.disc_combo.addItem(value, value)
+        # a cable is left undivided unless the annotator says which; the other
+        # classes start at their first value, as the S1 dialog does
+        if vocabulary and self.cls not in GALLERY_ONLY_CLASSES:
+            self.disc_combo.setCurrentIndex(1)
         self.disc_combo.blockSignals(False)
         self.disc_label.setText(f"{name} / 细分" if vocabulary else "")
         self.disc_combo.setVisible(bool(vocabulary))
