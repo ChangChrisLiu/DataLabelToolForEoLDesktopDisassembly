@@ -55,11 +55,19 @@ def _records(path) -> list[dict]:
 # --------------------------------------------------------------------------- #
 # references
 # --------------------------------------------------------------------------- #
+def test_the_protocol_prior_refuses_without_another_desktop(export, tmp_path, capsys):
+    # one desktop: leave-one-out has nothing to fit on, and says so
+    assert vlm_references.main(["--export", str(export), "--out", str(tmp_path)]) == 2
+    assert "refused" in capsys.readouterr().out
+    assert not list(tmp_path.iterdir())  # nothing written
+
+
 def test_the_three_references_keep_ids_and_labels(export, tmp_path):
-    assert vlm_references.main(["--export", str(export), "--out", str(tmp_path)]) == 0
-    records = {r["id"]: r for r in _records(export)}
-    blind = _records(tmp_path / "blind.jsonl")
-    oracle = _records(tmp_path / "state_oracle.jsonl")
+    raw = _records(export)
+    records = {r["id"]: r for r in raw}
+    worlds, frames = IO.load_oracle(export)
+    blind = [vlm_references.blind(r) for r in raw]
+    oracle = [vlm_references.state_oracle(r, worlds, frames) for r in raw]
     assert [r["id"] for r in blind] == list(records)
     assert [r["id"] for r in oracle] == list(records)
     for r in blind:
@@ -79,6 +87,12 @@ def test_the_three_references_keep_ids_and_labels(export, tmp_path):
     assert "visible" in scan_table and "visible" not in oak_table
     undecidable = [r for r in oracle if r["label"]["image_undecidable"]]
     assert undecidable  # V6/V7/V10/V16 while two cooler screws are loose
+    # screws are shown present / removed, never loose (review M)
+    for r in oracle:
+        for table in r["prompt"]["state_tables"]:
+            assert "loosened" not in table and "fastened" not in table
+    assert any("CPU cooler screw 1: present" in t
+               for r in undecidable for t in r["prompt"]["state_tables"])
 
 
 def test_the_protocol_prior_answers_from_the_previous_action_only(export, tmp_path):
@@ -159,15 +173,22 @@ def test_roi_crop_composite_and_base64(export, tmp_path):
     manifest = IO.load_manifest(export)
     images = vlm_to_chat.Images(str(export.parent / "cache"), str(tmp_path / "assets"), None)
     v8 = next(r for r in records if r["prompt"]["task"] == "V8")
-    row = vlm_to_chat.convert(v8, manifest, images, "openai", roi="evidence")
-    [transform] = row["meta"]["transforms"]
-    crop = Image.open(row["meta"]["images"][0])
-    x, y, w, h = v8["label"]["answer"]["bbox"]
-    cx, cy = transform["crop"]
-    # the crop holds the evidence box, and the offset maps it back
-    assert 0 <= x - cx and x - cx + w <= crop.size[0]
-    assert 0 <= y - cy and y - cy + h <= crop.size[1]
-    assert crop.size != (64, 64) or transform["crop"] == [0, 0]
+    # a crop around the record's own evidence is its answer in the picture
+    # (review S2): the mode does not exist
+    with pytest.raises(ValueError):
+        vlm_to_chat.convert(v8, manifest, images, "openai", roi="evidence")
+    # the view's fixed ROI: one crop for every record of that desktop and view
+    manifest = {k: dict(v, roi=[4, 2, 60, 50]) for k, v in manifest.items()}
+    image = v8["prompt"]["images"][0]
+    same = [r for r in records if r["prompt"]["images"] == [image]]
+    assert len(same) > 1  # V1 V2 V8 V14 ... of one frame
+    crops = set()
+    for r in same:
+        row = vlm_to_chat.convert(r, manifest, images, "openai", roi="view")
+        assert row["meta"]["transforms"] == [{"crop": [4, 2], "scale": 1.0}]
+        crops.add(row["meta"]["images"][0])
+    assert len(crops) == 1
+    assert Image.open(crops.pop()).size == (56, 48)
     pair = next(r for r in records if len(r["prompt"]["images"]) == 2)
     row = vlm_to_chat.convert(pair, manifest, images, "qwen", composite=True)
     assert row["meta"]["composite"] is True and len(row["meta"]["images"]) == 1
@@ -181,8 +202,8 @@ def test_roi_crop_composite_and_base64(export, tmp_path):
 
 
 def test_a_state_oracle_record_turns_into_text(export, tmp_path):
-    vlm_references.main(["--export", str(export), "--out", str(tmp_path)])
-    oracle = _records(tmp_path / "state_oracle.jsonl")
+    worlds, frames = IO.load_oracle(export)
+    oracle = [vlm_references.state_oracle(r, worlds, frames) for r in _records(export)]
     row = vlm_to_chat.convert(oracle[0], {}, vlm_to_chat.Images(None, None, None), "openai")
     parts = row["messages"][1]["content"]
     assert [p["type"] for p in parts] == ["text"]
@@ -203,6 +224,18 @@ def test_parsing_strict_and_lenient():
     assert parse_lenient("Yes, the cover was opened.", rec) == {"changed": True}
     assert parse_lenient("no idea", {"prompt": {"task": "V3"},
                                      "label": {"answer_check": {}}}) is None
+    # apostrophes are prose, not quotes; the LAST well-formed object wins
+    assert parse_lenient("It's open now. {\"changed\": true}") == {"changed": True}
+    assert parse_lenient("It's {'changed': False}, isn't it?") == {"changed": False}
+    assert parse_lenient('Format: {"changed": true or false}. Mine: {"changed": false}') \
+        == {"changed": False}
+    assert parse_lenient('{"a": {"b": 1}} then {"changed": true}') == {"changed": True}
+    # the prose fallback reads whole answer words only and infers no negation
+    assert parse_lenient("It did not change.", rec) is None
+    assert parse_lenient("I cannot say.", rec) is None
+    assert parse_lenient("No.", rec) == {"changed": False}
+    assert parse_lenient("Yes and no.", rec) is None
+    assert parse_lenient("Not sure, but yes.", rec) == {"changed": True}
     v6 = {"prompt": {"task": "V6", "options": [{}] * 5},
           "label": {"answer_check": {}, "options": [{}] * 5}}
     assert parse_lenient("The answer is option C.", v6) == {"choice": "C"}
@@ -251,6 +284,14 @@ def test_the_scorer_with_fake_outputs(export, tmp_path):
     mc_row = next(line for line in md.splitlines() if line.startswith("| V6-mc |"))
     assert mc_row.rstrip().endswith("| 79.9% |")
     assert result["headline"]["v6_open"] == strict["by_task"]["V6"]
+    # V2's headline row is the prior-wrong subset, every V2 question secondary
+    v2 = [r for r in records if r["prompt"]["task"] == "V2"]
+    wrong = [r for r in v2 if r["label"]["prior_is_correct"] is False]
+    assert wrong and len(wrong) < len(v2)
+    assert strict["by_task"]["V2"]["n"] == len(wrong)
+    assert strict["by_task"]["V2-all"]["n"] == len(v2)
+    assert result["headline"]["v2_prior_wrong"] == strict["by_task"]["V2"]
+    assert "| V2-all |" in md
     # seeded: the same inputs give the same intervals
     again = vlm_score.score(export, preds, resamples=200)
     assert again["strict"]["by_task"] == strict["by_task"]

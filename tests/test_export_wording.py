@@ -73,7 +73,7 @@ def test_a_taxonomy_label_wins_over_the_derived_one():
 
 def test_the_question_carries_the_readable_label(db, tax, tmp_path: Path):
     out = tmp_path / "vlm.jsonl"
-    export_vlm(db, tax, [DESKTOP], VIEW, str(out), tasks=("V2",))
+    export_vlm(db, tax, [DESKTOP], VIEW, str(out), tasks=("V2",), balance=False)
     # the record id is hashed now; the readable one is label-side
     states = [r for r in _records(out) if "-state-" in r["readable_id"]]
     assert states

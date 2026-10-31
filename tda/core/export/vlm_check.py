@@ -96,10 +96,6 @@ RESPONSE_FORMATS = {
 
 #: Option letters, in the order the options are listed.
 LETTERS = "ABCDEFGHIJ"
-#: Tasks whose ``answer_check`` carries the verb vocabulary in play.
-_BOOL_TRUE = ("yes", "true", "same", "possible", "can", "valid", "changed")
-_BOOL_FALSE = ("no", "false", "not", "cannot", "can't", "invalid", "different",
-               "unchanged")
 
 
 def format_key(record: dict) -> str:
@@ -148,68 +144,92 @@ def parse_strict(raw: Optional[str]) -> Optional[dict]:
     return value if isinstance(value, dict) else None
 
 
-def _balanced(text: str) -> list[str]:
-    """Every top-level ``{...}`` substring, in order."""
-    out, depth, start = [], 0, None
-    in_str, esc, quote = False, False, ""
+def _candidates(text: str) -> list[str]:
+    """Every ``{...}`` substring whose braces balance, outermost first, in order.
+
+    Only double quotes open a string here: an apostrophe in the prose ("It's
+    open") is not a quote, and treating it as one swallowed every object after
+    it. Braces inside double-quoted strings do not count.
+    """
+    out: list[str] = []
+    stack: list[int] = []
+    in_str = esc = False
     for i, ch in enumerate(text):
         if in_str:
             if esc:
                 esc = False
             elif ch == "\\":
                 esc = True
-            elif ch == quote:
+            elif ch == '"':
                 in_str = False
             continue
-        if ch in "\"'":
-            in_str, quote = True, ch
+        if ch == '"':
+            in_str = True
         elif ch == "{":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif ch == "}" and depth:
-            depth -= 1
-            if depth == 0 and start is not None:
+            stack.append(i)
+        elif ch == "}" and stack:
+            start = stack.pop()
+            if not stack:
                 out.append(text[start:i + 1])
     return out
 
 
+def _as_object(chunk: str) -> Optional[dict]:
+    """``chunk`` as a dict: JSON, else a Python literal (single quotes, True)."""
+    try:
+        value = json.loads(chunk)
+    except ValueError:
+        value = None
+    if isinstance(value, dict):
+        return value
+    try:
+        value = ast.literal_eval(re.sub(r"\btrue\b", "True",
+                                        re.sub(r"\bfalse\b", "False",
+                                               re.sub(r"\bnull\b", "None", chunk))))
+    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+        value = None
+    return value if isinstance(value, dict) else None
+
+
 def parse_lenient(raw: Optional[str], record: Optional[dict] = None) -> Optional[dict]:
-    """A forgiving reading: the first object found, else the prose, per task."""
+    """A forgiving reading: the **last** well-formed object in the reply, else the prose.
+
+    The last, because a model that thinks aloud quotes the format first
+    (``{"changed": true or false}`` is no object) and answers at the end. The
+    prose fallback reads only whole words of the answer vocabulary and never
+    infers a negation (:func:`_yes_no`).
+    """
     strict = parse_strict(raw)
     if strict is not None:
         return strict
     if raw is None:
         return None
     text = str(raw)
-    for chunk in _balanced(text):
-        for attempt in (chunk, chunk.replace("'", '"')):
-            try:
-                value = json.loads(attempt)
-            except ValueError:
-                value = None
-            if isinstance(value, dict):
-                return value
-        try:
-            value = ast.literal_eval(chunk.replace("true", "True")
-                                     .replace("false", "False").replace("null", "None"))
-        except (ValueError, SyntaxError):
-            value = None
-        if isinstance(value, dict):
+    for chunk in reversed(_candidates(text)):
+        value = _as_object(chunk)
+        if value is not None:
             return value
     if record is None:
         return None
     return _from_prose(text, record)
 
 
+#: The answer vocabulary of a yes / no question, whole words only.
+_YES = frozenset({"yes", "true"})
+_NO = frozenset({"no", "false"})
+
+
 def _yes_no(text: str) -> Optional[bool]:
-    words = re.findall(r"[a-z']+", text.lower())
-    for word in words[:12]:
-        if word in _BOOL_FALSE:
-            return False
-        if word in _BOOL_TRUE:
-            return True
-    return None
+    """``yes`` / ``true`` or ``no`` / ``false`` as whole words -- one polarity only.
+
+    No negation is inferred: "it cannot be said that it did not change" is not
+    read as anything, and a reply that says both "yes" and "no" is unreadable.
+    """
+    words = set(re.findall(r"[a-z]+", text.lower()))
+    yes, no = bool(words & _YES), bool(words & _NO)
+    if yes == no:
+        return None
+    return yes
 
 
 def _from_prose(text: str, record: dict) -> Optional[dict]:
@@ -632,7 +652,7 @@ def _g_v7(record, answer, world, tax, transform) -> Grade:
         raise ValueError("V7 needs the world and the taxonomy")
     sim: dict[str, InstState] = {k: InstState(state=v, placement="in_chassis")
                                  for k, v in check["start_state"].items()}
-    eligible_pairs = [(i["verb"], i["target"]) for i in check["reference_plan"]] + \
+    eligible_pairs = [(i["verb"], i["target"]) for i in check["reference_shortest"]] + \
         [(i["verb"], i["target"]) for i in check["demonstrated_remainder"]]
     steps = _pairs_grounded(answer.get("plan"), world, eligible_pairs)
     violations, first_violation, unresolved, noop = 0, None, 0, 0

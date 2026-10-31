@@ -210,6 +210,18 @@ def siblings(out_jsonl: str) -> list[Path]:
 # --------------------------------------------------------------------------- #
 # loading one view
 # --------------------------------------------------------------------------- #
+def _seconds(ts) -> Optional[float]:
+    """An ISO ``frame.ts`` as epoch-like seconds, or ``None``."""
+    if not ts:
+        return None
+    from datetime import datetime
+
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
 def view_has_confirmed(db: Db, desktop: int, view: str) -> bool:
     """Has anybody confirmed anything of this view on this desktop? (W3b)
 
@@ -264,7 +276,7 @@ def _read_view(db: Db, ctx: DesktopCtx, desktop: int, view: str,
             step=step, image=frame_file_name(row, key),
             image_id=opaque_image_id(desktop, view, step), verified=verified,
             rows=slim, pointable=pointable_rows(ctx, slim, only_verified),
-            confirmed=labelled,
+            confirmed=labelled, ts=_seconds(row.get("ts")),
         )
         order.append(step)
     return frames, order

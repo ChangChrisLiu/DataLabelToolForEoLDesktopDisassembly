@@ -170,8 +170,11 @@ V7_GOAL_CLASS = "cpu"
 #: The cooler class whose ``covered_by(cpu <- cooler)`` edge says the desktop's
 #: cooler set is resolved; without one the CPU plan lifts the CPU through it.
 V7_COOLER_CLASS = "cpu_cooler"
-#: An edge imported from confirmed-frame pixels (W3a, ``source = 'pixels:W1'``).
-PIXEL_SOURCE_PREFIX = "pixels:"
+#: Edges whose certainty rests on confirmed-frame pixels: imported by W3a
+#: (``source = 'pixels:W1'``) or written from the user's covering rulings
+#: (``source = 'review:covers'``). A "no" resting only on such edges is
+#: ``graph_blocked_pixels`` (:func:`is_pixel_edge`).
+PIXEL_SOURCE_PREFIXES = ("pixels:", "review:")
 
 #: The closed set of ``answer_check.type`` values. A record carrying anything
 #: else is a record no checker can execute, and :func:`record` refuses it.
@@ -351,6 +354,8 @@ class FrameData:
     #: are empty, so no mask and no visibility of that view is ever used or
     #: implied by a record about it, and V3 / V12 ask it about large parts only.
     confirmed: bool = True
+    #: ``frame.ts`` in seconds, when the frame row has one (V15-moment's check).
+    ts: Optional[float] = None
 
 
 def slim_row(row: dict) -> dict:
@@ -803,8 +808,12 @@ def image_undecidable(tc: "TaskCtx", rec: dict) -> bool:
 
 
 def is_pixel_edge(edge: Edge) -> bool:
-    """Was this edge imported from confirmed-frame pixels (W3a's ``pixels:W*``)?"""
-    return str(getattr(edge, "source", "") or "").startswith(PIXEL_SOURCE_PREFIX)
+    """Does this edge rest on pixels -- ``pixels:*`` (W3a) or ``review:*`` (rulings)?
+
+    The one predicate V4, V6, V16 and V7 ask (through :func:`graph_kind` and
+    :func:`required_actions`), so the four cannot disagree about a source.
+    """
+    return str(getattr(edge, "source", "") or "").startswith(PIXEL_SOURCE_PREFIXES)
 
 
 def graph_kind(edges: Sequence[Edge]) -> str:
@@ -1373,6 +1382,12 @@ def _v2_states(tc: TaskCtx, frame: FrameData) -> Iterator[dict]:
         if screw:
             # tightness was never annotated: a screw is asked present / removed
             check["state_space"] = "presence"
+        # the class prior: where this part starts, as a picture shows it --
+        # what "the PSU screw" alone would answer (W3b, per desktop)
+        start = tc.state(0).get(instance)
+        prior = visible_state(tc.ctx, instance,
+                              start.state if start is not None
+                              else tc.tax.default_state(cls))
         yield record(
             tc, "V2", rec_id, frame.step, [frame],
             template.format(label=tc.label(instance)), index,
@@ -1381,6 +1396,7 @@ def _v2_states(tc: TaskCtx, frame: FrameData) -> Iterator[dict]:
             R.rationale([R.observe(instance, value, tc.view, box,
                                    row.get("visibility"), occluder=row.get("occluder"))]),
             row_verified([row], frame.verified),
+            extra={"class_prior_answer": prior},
         )
 
 
@@ -1406,6 +1422,7 @@ def _v2_counts(tc: TaskCtx, frame: FrameData) -> Iterator[dict]:
     enter the chain as ``propagate_state``.
     """
     state = tc.state(frame.step)
+    initial = tc.state(0)
     for role in counted_roles(tc, frame):
         # "still in place" = present (W3b: tightness was never annotated, a
         # drawn screw is a fastened one); captive screws are not counted
@@ -1430,16 +1447,20 @@ def _v2_counts(tc: TaskCtx, frame: FrameData) -> Iterator[dict]:
             R.rationale([observed(k, "present", tc, frame.pointable) for k in fastened]),
             row_verified([frame.pointable[k][0] for k in fastened
                           if k in frame.pointable], frame.verified),
+            # the prior: how many of them the machine starts with
+            extra={"class_prior_answer": sum(
+                1 for key, rec in tc.ctx.instances.items()
+                if rec.cls == "screw" and str(rec.attrs.get("role") or "other") == role
+                and not rec.attrs.get("captive")
+                and visible_state(tc.ctx, key, initial[key].state
+                                  if key in initial else None) == "present")},
         )
 
 
-#: The most a class's majority answer may make up of that class's V2 questions
+#: The most one answer may make up of a class's V2 questions on one desktop
 #: after balancing (W3b). The day-1 export had 59 884 V2 records, 64 % of the
 #: file, and the class alone answered 80.6 % of them.
 V2_PRIOR_CAP = 0.5
-#: A class prior estimated on fewer questions than this is noise: such a pool is
-#: annotated (``class_prior_answer``) but not thinned.
-V2_BALANCE_MIN_POOL = 20
 
 
 def v2_prior_key(record: dict) -> Optional[tuple[str, str]]:
@@ -1457,52 +1478,66 @@ def _v2_value(record: dict) -> Any:
     return answer.get("state") if "state" in answer else answer.get("count")
 
 
+def _v2_draw_key(record: dict) -> str:
+    """What a V2 record's place in the thinning order is seeded by.
+
+    Desktop, the instance (or the screw role a count is about) and the step --
+    nothing about the rest of the export, so a desktop exported alone and the
+    same desktop inside 1-66 keep exactly the same questions.
+    """
+    label, check = record["label"], record["label"]["answer_check"]
+    what = check.get("instance") or f"role:{check.get('role')}"
+    return f"V2thin|D{label['desktop']}|{what}|s{label['step']}"
+
+
 def balance_v2(records: list[dict], cap: float = V2_PRIOR_CAP) -> tuple[list[dict], dict]:
-    """Thin V2 so no class answers its own questions more than ``cap`` of the time.
+    """Thin V2 so no answer makes up more than ``cap`` of a class's questions.
 
-    The **class prior** of a key (:func:`v2_prior_key`) is its commonest answer
-    across this export *before* thinning -- what a model that reads only "the
-    PSU screw" would say. Every record whose answer is not the prior is kept
-    (a loosened screw, an open latch, a displaced part: the frames worth
-    asking); the prior-answer records are kept up to ``cap / (1 - cap)`` times
-    their number, in a permutation seeded by the record id, so the export stays
-    byte-identical. A key whose every answer is the prior keeps none of them:
-    the question would only measure the prior. A pool smaller than
-    :data:`V2_BALANCE_MIN_POOL` is annotated but left whole.
+    Per desktop and per key (:func:`v2_prior_key`: a class, or a screw role for
+    the counts): every answer value is kept at most as often as all the other
+    values together (``cap = 0.5``), the survivors chosen by a hash of
+    :func:`_v2_draw_key` -- per desktop, so the result never depends on which
+    other desktops are exported (review M). A key whose every answer is the
+    same keeps none: those questions would only measure the prior.
 
-    Every V2 record kept carries ``class_prior_answer`` and ``prior_is_correct``;
+    The **class prior** a record is labelled with is set by the generator, not
+    here: the instance's state at the start of the teardown as a picture shows
+    it (a screw present, a latch closed, a part installed) or, for a count, the
+    number of non-captive screws of that role the machine starts with. It is
+    what a model that reads only "the PSU screw" would answer, and it depends
+    on the desktop alone. ``prior_is_correct`` is whether the answer is that;
     the scorer's V2 headline is accuracy on ``prior_is_correct = false``.
     Records of other tasks pass through untouched, in order.
     """
-    pools: dict[tuple[str, str], list[dict]] = {}
+    pools: dict[tuple, list[dict]] = {}
     for rec in records:
         if rec["prompt"]["task"] == "V2":
             key = v2_prior_key(rec)
             if key is not None:
-                pools.setdefault(key, []).append(rec)
+                pools.setdefault((int(rec["label"]["desktop"]), key), []).append(rec)
     keep: set[str] = set()
     stats: dict[str, dict] = {}
-    for key, pool in sorted(pools.items()):
-        counts: dict[str, int] = {}
+    share = cap / (1.0 - cap) if cap < 1.0 else float("inf")
+    for (desktop, key), pool in sorted(pools.items()):
+        by_value: dict[str, list[dict]] = {}
         for rec in pool:
-            value = json_key(_v2_value(rec))
-            counts[value] = counts.get(value, 0) + 1
-        prior = min(counts, key=lambda v: (-counts[v], v))
-        rest = [r for r in pool if json_key(_v2_value(r)) != prior]
-        hits = [r for r in pool if json_key(_v2_value(r)) == prior]
-        allowed = (int(len(rest) * cap / (1.0 - cap))
-                   if cap < 1.0 and len(pool) >= V2_BALANCE_MIN_POOL else len(hits))
-        chosen = stable_order(hits, f"V2prior|{key[0]}|{key[1]}",
-                              lambda r: r["id"])[:allowed]
-        for rec in [*rest, *chosen]:
-            keep.add(rec["id"])
-        prior_value = json.loads(prior)
+            by_value.setdefault(json_key(_v2_value(rec)), []).append(rec)
+        kept = 0
+        for value, rows in sorted(by_value.items()):
+            others = len(pool) - len(rows)
+            allowed = len(rows) if share == float("inf") else int(others * share)
+            chosen = sorted(rows, key=lambda r: hashlib.sha256(
+                _v2_draw_key(r).encode("utf-8")).hexdigest())[:allowed]
+            keep.update(r["id"] for r in chosen)
+            kept += len(chosen)
         for rec in pool:
-            rec["label"]["class_prior_answer"] = prior_value
-            rec["label"]["prior_is_correct"] = json_key(_v2_value(rec)) == prior
-        stats[f"{key[0]}:{key[1]}"] = {
-            "before": len(pool), "after": len(rest) + len(chosen), "prior": prior_value,
-            "prior_share_before": round(len(hits) / len(pool), 4)}
+            prior = rec["label"].get("class_prior_answer")
+            rec["label"]["prior_is_correct"] = (json_key(_v2_value(rec)) == json_key(prior))
+        row = stats.setdefault(f"{key[0]}:{key[1]}", {"before": 0, "after": 0,
+                                                       "prior_correct_before": 0})
+        row["before"] += len(pool)
+        row["after"] += kept
+        row["prior_correct_before"] += sum(1 for r in pool if r["label"]["prior_is_correct"])
     out = [r for r in records
            if r["prompt"]["task"] != "V2" or v2_prior_key(r) is None or r["id"] in keep]
     return out, stats
@@ -2308,6 +2343,14 @@ V15_MOMENT_QUESTIONS = (
 #: Out to six steps (W3b): the negative needs a large part to have changed, and
 #: three steps of screws often change none.
 V15_MOMENT_OFFSETS = (2, -2, 1, -1, 3, -3, 4, -4, 5, -5, 6, -6)
+#: The views on one capture clock: OAK1, OAK2 and the RealSense are triggered
+#: together, so one step's frames are seconds apart. The scanner's ``ts`` is
+#: not a capture time (consecutive scanner frames are 2 s apart and days off
+#: the cameras' clock), so no pair with the scanner is checked by time.
+SYNCED_VIEWS = frozenset({"oak1", "oak2", "rs"})
+#: The most two synced frames of one step may be apart and still be "the same
+#: moment" (review M: D42 RS steps 16-17 are a known raw-data shift of ~36 s).
+V15_MAX_DT_S = 20.0
 
 
 def gen_v15(tc: TaskCtx, step: int) -> Iterator[dict]:
@@ -2392,7 +2435,15 @@ def _v15_moment(tc: TaskCtx, step: int, frame: FrameData, other: str,
     :data:`V15_MOMENT_OFFSETS`.
     """
     here = tc.state(step)
-    candidates: list[tuple[bool, FrameData, list[str]]] = [(True, frames[step], [])]
+    mate_now = frames[step]
+    if (tc.view in SYNCED_VIEWS and other in SYNCED_VIEWS
+            and frame.ts is not None and mate_now.ts is not None
+            and abs(frame.ts - mate_now.ts) > V15_MAX_DT_S):
+        # the two cameras did not fire together here: "same moment" is not
+        # certain, so neither half of the pair is asked
+        tc.skip("V15", f"moment_ts_mismatch_{other}")
+        return
+    candidates: list[tuple[bool, FrameData, list[str]]] = [(True, mate_now, [])]
     for delta in V15_MOMENT_OFFSETS:
         mate = frames.get(step + delta)
         if mate is None or mate.step == step:
@@ -2869,22 +2920,29 @@ def _v7_record(tc: TaskCtx, frame: FrameData, goal: str,
         chain.append(R.check_precondition(req.target, sorted(req.states), current,
                                           False))
     pixel = any(r.pixel_only for r in required)
-    listed = _actions_seq(plan)
+    shortest = _actions_seq(plan)
+    shown = _actions_seq(demonstrated)
+    # the answer is the **demonstrated** remainder: the one plan known to work.
+    # The graph's shortest plan is only an upper-bound construction (the graph
+    # is incomplete), so it is a reference, not the answer; and the check
+    # accepts any plan at all that breaks no edge, contains every required
+    # action and reaches the goal (review M, 2026-10-31)
     return record(
         tc, "V7", rec_id, step, [frame], template.format(goal=goal_words), index,
-        {"plan": listed, "goal": goal},
+        {"plan": shown, "goal": goal},
         {"type": "goal_plan", "goal": goal, "goal_state": REMOVED,
          "start_step": step, "goal_removed_at": removal,
          "metric": "violation_free+required_recall+goal_reached",
+         "any_legal_plan_scores": True,
          "redundancy_penalty": False, "necessity": "required",
          "required_actions": [r.as_json() for r in required],
-         "reference_plan": listed, "demonstrated_remainder": _actions_seq(demonstrated),
-         "plan_length": len(listed), "demonstrated_length": len(demonstrated),
+         "reference_shortest": shortest, "demonstrated_remainder": shown,
+         "plan_length": len(shortest), "demonstrated_length": len(demonstrated),
          "started": sorted(set(started)),
          "start_state": {k: v.state for k, v in sorted(state.items())},
          "previous_action": previous_action(tc, step)},
         evidence({r.target: frame.pointable[r.target][1] for r in required
-                  if r.target in frame.pointable}, tc, plan_length=len(listed)),
+                  if r.target in frame.pointable}, tc, plan_length=len(shown)),
         R.rationale(chain), frame.verified,
         truth_source=GRAPH_BLOCKED_PIXELS if pixel else GRAPH_BLOCKED,
     )

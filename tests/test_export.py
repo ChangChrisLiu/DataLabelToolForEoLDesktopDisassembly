@@ -397,7 +397,7 @@ def _confirm(d: Db, tax, steps) -> None:
 
 def test_vlm_writes_at_least_one_record_per_task(db, tax, tmp_path: Path):
     out = tmp_path / "vlm.jsonl"
-    summary = export_vlm(db, tax, [DESKTOP], VIEW, str(out))
+    summary = export_vlm(db, tax, [DESKTOP], VIEW, str(out), balance=False)
     records = _records(out)
 
     assert summary["records"] == len(records)
@@ -463,7 +463,7 @@ def test_vlm_v1_lists_the_visible_components(db, tax, tmp_path: Path):
 
 def test_vlm_v2_asks_states_and_counts(db, tax, tmp_path: Path):
     out = tmp_path / "vlm.jsonl"
-    export_vlm(db, tax, [DESKTOP], VIEW, str(out), tasks=("V2",))
+    export_vlm(db, tax, [DESKTOP], VIEW, str(out), tasks=("V2",), balance=False)
     records = _records(out)
     states = [r for r in records if "state" in r["answer"]]
     counts = [r for r in records if "count" in r["answer"]]
@@ -718,7 +718,7 @@ def test_a_draft_screw_is_counted_by_nothing_and_named_by_nothing(
     """
     _add_draft_screw(db)
     out = tmp_path / "v.jsonl"
-    export_vlm(db, tax, [DESKTOP], VIEW, str(out))
+    export_vlm(db, tax, [DESKTOP], VIEW, str(out), balance=False)
     records = _records(out)
 
     counts = {r["step"]: r["answer"]["count"] for r in records
@@ -738,7 +738,7 @@ def test_no_road_through_either_export_reaches_a_draft(db, tax, tmp_path: Path):
     assert "ls:" not in json.dumps(doc)
 
     out = tmp_path / "v.jsonl"
-    export_vlm(db, tax, [DESKTOP], VIEW, str(out))
+    export_vlm(db, tax, [DESKTOP], VIEW, str(out), balance=False)
     assert {r["task"] for r in _records(out)} >= {"V1", "V2", "V3"}
     assert "ls:" not in out.read_text(encoding="utf-8")
 

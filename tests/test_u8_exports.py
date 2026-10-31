@@ -48,7 +48,7 @@ def test_a_duplicate_frame_carries_the_state_into_v12(scene, tmp_path: Path):
     assert [(e.step, e.old, e.new) for e in patch.after] == [
         (2, "closed", "open"), (STEP, "open", "closed")]
     out = tmp_path / "v.jsonl"
-    export_vlm(db, tax, [S.DESKTOP], S.VIEW, str(out))
+    export_vlm(db, tax, [S.DESKTOP], S.VIEW, str(out), balance=False)
     records = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()
                if line]
     v12 = [{**r["prompt"], **r["label"]} for r in records if r["prompt"]["task"] == "V12"]
@@ -64,7 +64,7 @@ def test_coco_and_vlm_carry_the_corrected_state(scene, tmp_path: Path):
         (STEP, "closed", "open"), (STEP + 1, "open", "closed")]
 
     out = tmp_path / "v.jsonl"
-    export_vlm(db, tax, [S.DESKTOP], S.VIEW, str(out))
+    export_vlm(db, tax, [S.DESKTOP], S.VIEW, str(out), balance=False)
     records = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()
                if line]
     asked = {}

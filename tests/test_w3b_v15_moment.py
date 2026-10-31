@@ -94,6 +94,39 @@ def test_a_missing_mate_frame_asks_nothing(scene):
     assert 4 not in {r["label"]["answer_check"]["other_step"] for r in moments}
 
 
+def test_synced_cameras_more_than_twenty_seconds_apart_are_no_moment(tmp_path: Path):
+    """Review M: D42's RS steps 16-17 sit ~36 s off the OAKs (a raw-data shift)."""
+    db = Db(str(tmp_path / "ts.sqlite"))
+    tax = W.build(db, views=(W.OTHER, "rs"), confirm=())
+    with db.conn:
+        db.conn.execute("UPDATE frame SET ts='2025-06-01T09:00:36' "
+                        "WHERE desktop=? AND view='rs' AND step=5", (W.DESKTOP,))
+        db.conn.execute("UPDATE frame SET ts='2025-06-01T09:00:15' "
+                        "WHERE desktop=? AND view='rs' AND step=6", (W.DESKTOP,))
+    out = tmp_path / "oak1.jsonl"
+    summary = export_vlm(db, tax, [W.DESKTOP], W.OTHER, str(out))
+    moments = _moments(_read(out))
+    steps = {r["label"]["step"] for r in moments}
+    assert 5 not in steps          # 36 s apart: skipped, both halves
+    assert 6 in steps              # 15 s apart: still the same moment
+    assert summary["skip_reasons"][str(W.DESKTOP)]["V15"]["moment_ts_mismatch_rs"] == 1
+    db.close()
+
+
+def test_the_scanner_clock_is_not_checked(tmp_path: Path):
+    """Scanner ``ts`` is no capture time: its pairs are never dropped for it."""
+    db = Db(str(tmp_path / "ts2.sqlite"))
+    tax = W.build(db)
+    with db.conn:
+        db.conn.execute("UPDATE frame SET ts='2025-06-09T09:00:00' "
+                        "WHERE desktop=? AND view=?", (W.DESKTOP, W.VIEW))
+    out = tmp_path / "scan.jsonl"
+    before = len(_moments(_read(out))) if out.exists() else None
+    export_vlm(db, tax, [W.DESKTOP], W.VIEW, str(out))
+    assert _moments(_read(out)) and before is None
+    db.close()
+
+
 def test_every_later_view_pair_is_asked_once(tmp_path: Path):
     """scan+oak1 from the scanner's file, oak1+... from OAK1's: one file per pair."""
     db = Db(str(tmp_path / "v15b.sqlite"))

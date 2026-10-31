@@ -18,9 +18,13 @@ Reads one export and its sidecars -- never the database -- and writes:
 * ``state_oracle.jsonl`` -- every record with each image replaced by the
   structured state table of that moment (instances with state, placement and,
   only where that view has confirmed rows, visibility): the "perfect
-  perception" upper bound. Records whose truth rests on a captive screw's
-  tightness keep ``label.image_undecidable = true`` so the oracle-vs-VLM gap
-  can leave them out.
+  perception" upper bound. A screw is shown as present / removed, never as
+  tight or loose -- no picture shows that either. Records whose truth rests on
+  a captive screw's tightness keep ``label.image_undecidable = true`` so the
+  oracle-vs-VLM gap can leave them out.
+
+The protocol prior refuses (exit 2, nothing written) when a desktop has no
+other desktop's log to be fitted on.
 
 Each variant keeps the record ids and the label side (``answer_check``
 included); only ``prompt`` changes, and ``label.reference`` says which variant
@@ -41,8 +45,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vlm_io as IO  # noqa: E402
 from tda.core.export.vlm_check import LETTERS, World, grade  # noqa: E402
+from tda.core.export.vlm_tasks import SCREW_PRESENCE  # noqa: E402
 
 START = ("<start>", "<start>")
+
+
+class PriorRefused(RuntimeError):
+    """The protocol prior has no other desktop's data to be fitted on."""
 #: Tasks the protocol prior answers.
 PRIOR_TASKS = ("V6", "V7", "V16")
 
@@ -70,7 +79,12 @@ def state_table_text(frame: Optional[dict], world: Optional[World]) -> str:
         name = inst.get("label") if inst else key
         if key.startswith("cable:"):
             name = "cable of the " + key.split(":", 1)[1].replace("_", " ")
-        bits = [entry.get("state") or "?", entry.get("placement") or "?"]
+        state = entry.get("state") or "?"
+        if inst and inst.get("class") == "screw":
+            # a picture shows a screw's presence, never its tightness: neither
+            # does the "perfect perception" table (review M)
+            state = SCREW_PRESENCE.get(state, state)
+        bits = [state, entry.get("placement") or "?"]
         if entry.get("visibility"):
             bits.append(entry["visibility"])
         lines.append(f"- {name}: " + ", ".join(bits))
@@ -242,6 +256,13 @@ def protocol_prior(records: list[dict], worlds: dict[int, World], tax,
             pool = sorted(train) if train else [d for d in desks if d != desktop]
             pool = [d for d in pool if d != desktop and d in worlds]
             seqs = [_sequence(worlds[d]) for d in pool]
+            if not any(seqs):
+                # a prior fitted on nothing answers uniformly, and a number
+                # from it would be reported as the protocol's (review M)
+                raise PriorRefused(
+                    f"protocol prior: no other desktop's log to fit D{desktop} on "
+                    f"(training pool {pool or 'empty'}); export more desktops or "
+                    f"pass --train-desktops with desktops other than D{desktop}")
             fine, coarse = Bigram(seqs), Bigram(seqs, coarse=True)
             cut = _fit_threshold([r for r in v16 if IO.desktop_of(r) in set(pool)],
                                  fine, worlds)
@@ -301,11 +322,16 @@ def main(argv=None) -> int:
     records = list(IO.read_jsonl(args.export))
     worlds, frames = IO.load_oracle(args.export)
     out = Path(args.out)
+    train = _parse_range(args.train_desktops) if args.train_desktops else None
+    try:
+        variant, predictions, report = protocol_prior(records, worlds, load_taxonomy(),
+                                                      train)
+    except PriorRefused as exc:
+        print(f"[vlm-references] refused: {exc}")
+        return 2
     n_blind = IO.write_jsonl(out / "blind.jsonl", (blind(r) for r in records))
     n_oracle = IO.write_jsonl(out / "state_oracle.jsonl",
                               (state_oracle(r, worlds, frames) for r in records))
-    train = _parse_range(args.train_desktops) if args.train_desktops else None
-    variant, predictions, report = protocol_prior(records, worlds, load_taxonomy(), train)
     IO.write_jsonl(out / "protocol_prior.jsonl", variant)
     IO.write_jsonl(out / "protocol_prior.predictions.jsonl", predictions)
     (out / "protocol_prior.report.json").write_text(

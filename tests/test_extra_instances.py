@@ -564,7 +564,7 @@ def test_the_vlm_export_asks_its_state_and_nothing_else_about_it(exported_scene,
 
     db, tax = exported_scene
     out = tmp_path / "v.jsonl"
-    export_vlm(db, tax, [VS.DESKTOP], VS.VIEW, str(out))
+    export_vlm(db, tax, [VS.DESKTOP], VS.VIEW, str(out), balance=False)
     records = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
     assert Checker(db, tax, VS.DESKTOP).check_all(records) == len(records)
 
