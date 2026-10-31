@@ -90,7 +90,7 @@ def test_v1_34_is_on_top_of_14():
 def test_the_quickstart_says_it_in_two_sentences_of_the_review_section():
     quick = QUICK.read_text(encoding="utf-8")
     review = quick.split("## 4. 走完之后：Review", 1)[1].split("### 冲突从哪来", 1)[0]
-    # item 5 (W3c, 「谁压着谁」) follows it since v1.48
+    # item 5 (W3c, 「谁压着谁」) follows it since v1.46
     item = review.split("\n4. ", 1)[1].split("\n5. ", 1)[0].replace("\n   ", "")
     for needed in ("「这一帧的说明」", "「保存」", "改了没保存就翻帧也会自动存", "`Ctrl+Z` 能撤",
                    "框里打字时快捷键不生效", "按 `Tab` 回到画面", "时间轴上带 ✎", "「说明：…」",

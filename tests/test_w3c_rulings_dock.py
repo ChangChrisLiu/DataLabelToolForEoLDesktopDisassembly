@@ -282,7 +282,7 @@ def test_the_docs_say_it():
     bullets = [line for line in review_section.splitlines() if line.startswith("- **")]
     heads = [b.split("**")[1] for b in bullets]
     assert heads.index("谁压着谁的裁定") == heads.index("说明窗与遮挡顺序") + 1
-    [bullet] = [b for b in bullets if b.startswith("- **谁压着谁的裁定**（v1.48，W3c）")]
+    [bullet] = [b for b in bullets if b.startswith("- **谁压着谁的裁定**（v1.46，W3c）")]
     for needed in ("「谁压着谁需要我结合图去给出", "`cover_ruling (desktop, above, below, ruling ∈ "
                    "{blocks, not_blocks}, by, ts, view, step, note)`", "库结构 **v7**",
                    "**W3a 的 `pixel-edges` 按这些列名读它**", "**≥ 1000**", "**支承表**",
@@ -293,7 +293,7 @@ def test_the_docs_say_it():
     changes = spec.split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
     # on top when it landed; W3a / W3b (v1.46 / v1.47) are ordered at their merges
-    assert any(e.startswith("- **v1.48（2026-10-31）**：**复查里的「谁压着谁」裁定**（W3c，§4.4）")
+    assert any(e.startswith("- **v1.46（2026-10-31）**：**复查里的「谁压着谁」裁定**（W3c，§4.4）")
                for e in entries[:3])
     quick = (ROOT / "docs" / "trial_quickstart.md").read_text(encoding="utf-8")
     review_part = quick.split("## 4. 走完之后：Review", 1)[1].split("### 冲突从哪来", 1)[0]
