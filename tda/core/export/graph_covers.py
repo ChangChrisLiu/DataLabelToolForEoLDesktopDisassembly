@@ -16,7 +16,9 @@ already ordered, the pixels are one outline against the other) and no relation
 in the instance table (``structural``: one is attached to, mounted on, plugged
 into or screwing down the other, the upper one rides out with a parent whose
 own covering of the same part is listed, or the
-lower part is the chassis, which never moves). ``no_edge`` keeps the brief's
+lower part is the chassis, which never moves; task W3a adds the class-level
+support table -- a CPU, RAM, cooler or card over the motherboard sits on it --
+and the user's own ``not_blocks`` ruling from Review). ``no_edge`` keeps the brief's
 own definition beside it (no edge either way, whatever the instance table says).
 
 What is read, and nothing else:
@@ -70,23 +72,32 @@ from tda.core.compiler import keyframe_amodal
 from tda.core.db import Db
 from tda.core.export.coco import DesktopCtx, frame_is_verified
 from tda.core.graph import GATED_VERBS, Edge
+from tda.core.graph_infer import unique_of_class
 from tda.core.graph_rules import active_edges, verb_effect
 from tda.core.model import FrameKey, is_context_key
 from tda.core.states import IN_CHASSIS
 from tda.core.truth_inputs import pose_segment_of
 
 __all__ = [
+    "BLOCKS",
     "EXPLAINING_TYPES",
+    "NOT_BLOCKS",
+    "NOT_BLOCKS_REASON",
     "ORDER_SOURCES",
     "PAIR_OVERRIDE",
     "PER_FRAME_MASK",
+    "RULING_TABLE",
+    "SUPPORTED_BY",
+    "SUPPORTED_BY_REASON",
     "ZORDER",
     "CoverScan",
     "class_key",
+    "cover_rulings",
     "explaining_edges",
     "reverse_edges",
     "scan_covers",
     "structural_reasons",
+    "supported_by_rule",
 ]
 
 ZORDER = "zorder"
@@ -148,6 +159,57 @@ def reverse_edges(edges: list[Edge], above: str, below: str) -> list[str]:
 #: The relational fields that make a covering a matter of build, not of order.
 _STRUCTURE_FIELDS = ("mounted_on", "socket_host", "fastens")
 
+#: Class-level physical support, read **at export time only** (task W3a): a part
+#: of one of these classes sits on the desktop's one motherboard. ``mounted_on``
+#: is empty on every instance of the real database, so the X-over-motherboard
+#: coverings topped the candidate list; this table explains them without writing
+#: a field. The socket levers and RAM latches are already ``attached`` to the
+#: board, so they need no row here.
+SUPPORTED_BY = {
+    "cpu": "motherboard",
+    "ram_module": "motherboard",
+    "cpu_cooler": "motherboard",
+    "expansion_card": "motherboard",
+}
+#: ``structural`` reason of a pair the support table explains.
+SUPPORTED_BY_REASON = "rule.supported_by"
+#: ``structural`` reason of a pair the user ruled ``not_blocks`` in Review.
+NOT_BLOCKS_REASON = "user.not_blocks"
+#: ``cover_ruling.ruling`` values (the Review table of task W3c).
+BLOCKS = "blocks"
+NOT_BLOCKS = "not_blocks"
+RULING_TABLE = "cover_ruling"
+
+
+def supported_by_rule(instances: dict, key: str) -> Optional[str]:
+    """The instance ``key`` sits on by the class-level :data:`SUPPORTED_BY` table, or ``None``.
+
+    ``None`` when the class has no row, or the desktop has no single settled
+    instance of the supporting class -- never a guess.
+    """
+    rec = instances.get(key)
+    host = SUPPORTED_BY.get(rec.cls) if rec is not None else None
+    return unique_of_class(instances, host) if host else None
+
+
+def cover_rulings(db, desktop: int) -> dict[tuple[str, str], dict]:
+    """``(above, below) -> ruling row`` of one desktop, from Review's ``cover_ruling`` table.
+
+    The user decides in Review, per instance pair with the picture in front of
+    them, whether ``above`` really blocks ``below`` (task W3c writes the table
+    and its UI). This reads it and nothing else, and answers ``{}`` on a
+    database that does not have the table yet. Read-only.
+    """
+    found = db.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                            (RULING_TABLE,)).fetchone()
+    if found is None:
+        return {}
+    rows = db.conn.execute(
+        f'SELECT above, below, ruling, "by", ts, view, step, note FROM {RULING_TABLE} '
+        f'WHERE desktop=? ORDER BY above, below', (int(desktop),)).fetchall()
+    return {(r[0], r[1]): {"ruling": r[2], "by": r[3], "ts": r[4], "view": r[5],
+                           "step": r[6], "note": r[7]} for r in rows}
+
 
 def structural_reasons(instances: dict, tax, above: str, below: str,
                        listed: Optional[set] = None) -> list[str]:
@@ -167,7 +229,11 @@ def structural_reasons(instances: dict, tax, above: str, below: str,
     * ``above.mounted_on`` / ``above.socket_host`` / ``above.fastens`` and the
       ``below.*`` mirror -- one sits on, plugs into or screws down the other;
     * ``below_fixed`` -- the lower part has no verb that changes its state
-      (the chassis): covering it can hold nothing up.
+      (the chassis): covering it can hold nothing up;
+    * ``rule.supported_by`` -- the upper part sits on the lower one by the
+      class-level support table (:data:`SUPPORTED_BY`: a CPU, RAM stick,
+      cooler or expansion card over the motherboard), the export-time stand-in
+      for the ``mounted_on`` nobody filled in (task W3a).
     Sorted; empty when the instance table says nothing about the pair.
     """
     out: set[str] = set()
@@ -196,6 +262,8 @@ def structural_reasons(instances: dict, tax, above: str, below: str,
             verb_effect(tax, low.cls, low.attrs or {}, verb) is not None
             for verb in sorted(GATED_VERBS)):
         out.add("below_fixed")
+    if supported_by_rule(instances, above) == below:
+        out.add(SUPPORTED_BY_REASON)
     return sorted(out)
 
 
@@ -204,6 +272,7 @@ class _Pair:
     """What one ordered pair accumulates over the frames."""
 
     px: dict[int, int] = field(default_factory=dict)        # step -> pixels taken
+    amodal: dict[int, int] = field(default_factory=dict)    # step -> below's whole area
     sources: Counter = field(default_factory=Counter)        # order source -> frames
     segments: set[int] = field(default_factory=set)
 
@@ -259,13 +328,19 @@ def _frame_pairs(vis: dict[str, dict], amodal: dict[str, dict]
 
 
 def scan_covers(db: Db, ctx: DesktopCtx, view: str, edges: list[Edge],
-                removed_at: dict[str, Optional[int]]) -> CoverScan:
+                removed_at: dict[str, Optional[int]],
+                rulings: Optional[dict] = None) -> CoverScan:
     """Every ordered covering pair of one desktop's confirmed ``view`` frames.
 
     ``removed_at`` is the step each instance first reads ``removed`` in the
     state timeline (``None``: the log never takes it out); it is copied onto
     each pair so a reader sees at once whether the covering part did come out
     first. Read-only: SELECTs and run-length arithmetic, nothing written.
+
+    ``rulings`` is :func:`cover_rulings` (read here when not given): each pair
+    carries the user's Review ruling, ``blocks`` / ``not_blocks`` / ``None``,
+    and a ``not_blocks`` pair is explained by ``user.not_blocks`` -- the user
+    looked and said it holds nothing up -- so it is no candidate (task W3a).
     """
     desktop = ctx.desktop
     disputed = {int(r["step"]) for r in db.conflicts(desktop, view, open_only=True)}
@@ -318,21 +393,31 @@ def scan_covers(db: Db, ctx: DesktopCtx, view: str, edges: list[Edge],
         pairs = _frame_pairs(vis, amodal)
         if pairs:
             with_covers += 1
+        areas: dict[str, int] = {}
         for above, below, px in pairs:
             acc = found.setdefault((above, below), _Pair())
             acc.px[step] = px
+            if below not in areas:
+                areas[below] = int(coco_mask.area(amodal[below]))
+            acc.amodal[step] = areas[below]
             acc.sources[_order_source(above, below, hand_drawn, seg_pairs[seg])] += 1
             acc.segments.add(int(seg))
 
     covers = []
     listed = set(found)
+    rulings = cover_rulings(db, desktop) if rulings is None else rulings
     for (above, below), acc in sorted(found.items()):
         steps = sorted(acc.px)
         explained = explaining_edges(edges, above, below)
         reverse = reverse_edges(edges, above, below)
         structure = structural_reasons(ctx.instances, ctx.tax, above, below, listed)
+        ruling = (rulings.get((above, below)) or {}).get("ruling")
+        if ruling == NOT_BLOCKS:
+            structure = sorted({*structure, NOT_BLOCKS_REASON})
         top = max(ORDER_SOURCES, key=lambda s: (acc.sources.get(s, 0),
                                                 -ORDER_SOURCES.index(s)))
+        peak = max(acc.px.values())
+        at_peak = min(s for s in steps if acc.px[s] == peak)
         covers.append({
             "above": above,
             "below": below,
@@ -340,7 +425,11 @@ def scan_covers(db: Db, ctx: DesktopCtx, view: str, edges: list[Edge],
             "below_class": class_key(ctx.instances.get(below)),
             "frames": steps,
             "n_frames": len(steps),
-            "max_px": max(acc.px.values()),
+            "max_px": peak,
+            # the frame of max_px, and below's whole (amodal) area there (task W3a)
+            "max_px_step": at_peak,
+            "below_amodal_px": acc.amodal.get(at_peak),
+            "ruling": ruling,
             "first": steps[0],
             "last": steps[-1],
             "explained_by": explained,

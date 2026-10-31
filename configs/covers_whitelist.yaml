@@ -1,0 +1,67 @@
+# Class-pair whitelist for `python -m tda.cli pixel-edges` (task W3a) -- the controller's
+# SUGGESTION layer, not the user's decision.
+#
+# Who blocks whom is decided by the user in Review, per instance pair, with the picture in
+# front of them (table `cover_ruling`, task W3c); `pixel-edges` turns a `blocks` ruling into a
+# `covered_by` edge (source `review:covers`). This file only says which UNRULED pairs would
+# also qualify: without `--allow-unruled` it writes nothing and lists them as suggestions;
+# with `--allow-unruled` they are written with source `pixels:<version>` and listed apart.
+#
+# A pair `(above, below)` of one desktop qualifies when it is a covering on the confirmed
+# scan frames that nothing accounts for (no edge either way, no structural reason -- the
+# export-time support table `rule.supported_by` does not count), and
+#     max_px >= max(min_px, min_frac * amodal_area(below))
+# where amodal_area is below's whole-shape area on the frame of max_px (`min_px` alone, and
+# the pair flagged, when that area is unknown). `above` / `below` name a class (`optical_drive`)
+# or a class refined by its kind (`cpu_cooler.heatsink`); a pair may override the thresholds.
+#
+# Refused by the loader (decided elsewhere, or too noisy): `cover -> motherboard`,
+# `expansion_card.wlan|other -> *` (and a bare `expansion_card` above), and any `below`
+# that is a screw, a connector or a cable.
+#
+# Initial content: table A of
+# docs/superpowers/discussions/2026-10-30-vlm-paper-scope/06-covering-adjudication.md --
+# the 建议收 rows active, the 存疑 rows commented out. Small lower parts (the CPU, the
+# socket lever, the cooler bracket) use min_frac 0.25.
+version: W1
+defaults:
+  min_px: 1000
+  min_frac: 0.03
+pairs:
+  # ---- 建议收 (A1-A19): rigid large parts; the log removes `above` first on every desktop
+  - {above: expansion_card.gpu, below: motherboard, note: "A1 24/24 desktops, 100% above first"}
+  - {above: optical_drive, below: motherboard, note: "A2 22/22, 95%"}
+  - {above: optical_drive, below: drive_cage, note: "A3 19/19, 100%"}
+  - {above: cover, below: cpu_socket_lever, min_frac: 0.25, note: "A4 13/13, 100%"}
+  - {above: optical_drive, below: storage_drive.ssd, note: "A5 12/13, 100%"}
+  - {above: cover, below: cpu, min_frac: 0.25, note: "A6 12/12, 100%"}
+  - {above: drive_cage, below: cpu_socket_lever, min_frac: 0.25, note: "A7 9/9, 100%"}
+  - {above: optical_drive, below: cpu_cooler.heatsink, note: "A8 8/8, 100%"}
+  - {above: drive_cage, below: cpu_cooler.heatsink, note: "A9 8/8, 100%"}
+  - {above: optical_drive, below: cpu_socket_lever, min_frac: 0.25, note: "A10 8/8, 100%"}
+  - {above: optical_drive, below: cpu, min_frac: 0.25, note: "A11 8/8, 100%"}
+  - {above: drive_cage, below: cpu, min_frac: 0.25, note: "A12 8/8, 100%"}
+  - {above: optical_drive, below: storage_drive.hdd, note: "A13 6/7, 100%"}
+  - {above: drive_cage, below: storage_drive.hdd, note: "A14 2/2, 100%"}
+  - {above: cpu_cooler.heatsink, below: cooler_bracket, min_frac: 0.25, note: "A15 2/2, 100%"}
+  - {above: cover, below: psu, note: "A16 2/2, 100%"}
+  - {above: cover, below: cpu_cooler.heatsink, note: "A17 2/2, 100%"}
+  - {above: optical_drive, below: optical_drive, note: "A18 1/1, 100%"}
+  - {above: optical_drive, below: cover, note: "A19 1/1, 100%"}
+  # ---- 存疑 (A20-A40): the user decides; uncomment a row to suggest it
+  # - {above: drive_cage, below: motherboard, note: "A20 34/34, only 65% above first"}
+  # - {above: drive_cage, below: ram_module, note: "A22 21/32; RAM may slide out under a Dell MT cage"}
+  # - {above: optical_drive, below: ram_module, note: "A23 19/32; RAM may slide out"}
+  # - {above: psu, below: cover, note: "A24 17/17, 71%"}
+  # - {above: psu, below: motherboard, note: "A25 12/12, 100%; the PSU overhangs a corner of the board"}
+  # - {above: cover, below: cover, note: "A28 3/3, 33%"}
+  # - {above: expansion_card.gpu, below: cover, note: "A29 3/3, 0%"}
+  # - {above: cover, below: ram_module, note: "A30 3/5, 100%"}
+  # - {above: cpu_cooler.fan, below: cooler_latch, note: "A32 2/2, 0%"}
+  # - {above: optical_drive, below: cpu_cooler.fan, note: "A34 2/2, median < 1000 px"}
+  # - {above: psu, below: storage_drive.ssd, note: "A36 1/1, 0%"}
+  # - {above: drive_cage, below: optical_drive, note: "A37 1/1, < 1000 px"}
+  # - {above: psu, below: cpu_socket_lever, min_frac: 0.25, note: "A38 1/1, 0%"}
+  # - {above: cpu_cooler.fan, below: drive_cage, note: "A39 1/1, < 1000 px"}
+  # A21 / A26 / A27 / A31 (-> ram_latch), A33 (-> card_latch), A35 (fan -> ram_module) and
+  # A40 (gpu -> expansion_card.other) are latch / noise-level rows and are not listed here.

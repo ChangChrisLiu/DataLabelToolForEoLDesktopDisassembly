@@ -19,8 +19,10 @@ _SUMMARY_ZH = """\
 `instances`（零件、关系字段、是否推断 / 手加、状态时间线，第 0 步是初始状态）；
 `steps`（步骤与动作，含失败的尝试）；`edges`（全部生效的硬约束边，及日志在第几步满足了它 `demonstrated_at`）；
 `covers`（已确认帧上「谁盖住了谁」的像素证据：上面的零件可见掩码占了下面零件完整形状的多少像素、哪些帧、
-被哪些边解释 `explained_by`；没有任何边（正反向都没有）、零件表里也没有关系（装在 / 插在 / 拧住 / 随父件拆下且父件自己也盖住它、下面是机箱）的就是**候选**，
-供人工判断要不要补 `covered_by` / `blocked_by`）；
+被哪些边解释 `explained_by`；没有任何边（正反向都没有）、零件表里也没有关系（装在 / 插在 / 拧住 / 随父件拆下且父件自己也盖住它、下面是机箱、
+类级支承表：CPU / 内存 / 散热器 / 扩展卡在主板上）、用户在复查里也没判「不挡」的就是**候选**，
+供人工判断要不要补 `covered_by` / `blocked_by`；`ruling` 是用户在复查里对这一对的裁定）；
+`instances[].mounted_on_rule` 是支承表推出的「装在谁上」（导出时推导，不写库）；
 `legal_by_step`（每一步之后严格 / 放宽的合法动作集、下一步实际做了什么、是否合法；`reorient` 和没写清是哪个零件的 `?` 不判）；
 `plans`（从初始状态拆下主板 / CPU / 电源的最短合法计划；「全部」= 日志拆下的全部零件按日志顺序逐个规划的合法计划，不保证整体最短；
 都和演示用的动作数对比；每步之后「全部」还剩几步，即 V10 的进度标签）；
@@ -58,7 +60,9 @@ hash of the stored constraint graph -- the one the VLM export quotes), `export_g
 (this file format, `1`), `view` (the view whose confirmed frames the pixel evidence was read
 from), `pixel_views` (`[view]` when it had any confirmed frame, else `[]`), and `counts`
 (`instances`, `steps`, `actions`, `edges`, `edges_by_type`, `confirmed_frames`,
-`frames_with_covers`, `covers`, `no_edge`, `candidates`, `violations`,
+`frames_with_covers`, `covers`, `no_edge`, `candidates`, `candidates_ruled` /
+`candidates_unruled` (candidates the user has / has not ruled on in Review), `rulings`
+(`{blocks, not_blocks}`: covering pairs per Review ruling), `violations`,
 `violations_timeline_disagrees`, `deadlocks`, `dead_ends`).
 
 ### `instances[]`
@@ -68,7 +72,10 @@ machine does not have, no part only the components gallery shows. `key`, `class`
 (facts about the part as annotated: `kind`, `role`, `captive`, `head`, `of`, `cable_owner`,
 `sheet_no`, ...; our bookkeeping -- who added a part, when, notes, how a flag was guessed -- is
 left out, as in the scanner package),
-`parent` + `attached` (leaves the chassis together with the parent), `mounted_on`, `fastens`
+`parent` + `attached` (leaves the chassis together with the parent), `mounted_on` (as
+annotated; empty so far), `mounted_on_rule` (what the class-level support table says the part
+sits on: the desktop's one `motherboard` for a `cpu`, `ram_module`, `cpu_cooler` or
+`expansion_card`, else `null`; derived at export time, never stored), `fastens`
 (screws), `socket_host` and `cable` (connectors), `implied` (created by a rule, not named by
 the sheet), `extra` (added by hand in the tool), and `timeline`: `[{step, state, placement}]`,
 the initial state at step 0 first, then one entry each time the state or placement changes.
@@ -102,7 +109,10 @@ lies under `above`'s confirmed visible mask:
 `below`'s whole shape is the keyframe the compiler selects on that frame, under that frame's
 stored transform (the COCO export's `amodal_segmentation`); visible masks are the confirmed
 rows as stored. Fields: `above`, `below`, `above_class`, `below_class` (class, refined by
-`kind` or a screw's `role`), `frames` (steps), `n_frames`, `max_px`, `first`, `last`,
+`kind` or a screw's `role`), `frames` (steps), `n_frames`, `max_px`, `max_px_step` (the
+frame of `max_px`), `below_amodal_px` (`below`'s whole-shape area on that frame), `ruling`
+(the user's call in Review on this very pair: `blocks`, `not_blocks`, or `null` when nobody
+has ruled), `first`, `last`,
 `explained_by` (labels of the active edges the covering agrees with: `below` waits for `above`
 by any type, or a `covered_by` / `blocked_by` between the two either way round),
 `reverse_edges` (active edges the other way: `above` waits for `below` -- the two are already
@@ -112,7 +122,10 @@ inside the other; `above.mounted_on`, `above.socket_host`, `above.fastens` and t
 mirrors; `above.rides_with_parent` -- the upper part leaves with a third one (its parent, at
 any depth) **and** that parent's own covering of the same lower part is listed, so the pair
 that can order anything is that one; a child whose parent covers nothing there stays a
-candidate; `below_fixed` -- the lower part has no verb that changes it, the chassis),
+candidate; `below_fixed` -- the lower part has no verb that changes it, the chassis;
+`rule.supported_by` -- the upper part sits on the lower one by the class-level support table,
+a CPU, RAM stick, cooler or expansion card over the motherboard; `user.not_blocks` -- the user
+looked at the pair in Review and ruled that it holds nothing up),
 `no_edge` (`explained_by` and `reverse_edges` both empty), `candidate` (`no_edge` and
 `structural` empty: a covering nothing accounts for -- the triage list), `order_source` (what
 gave `above` those pixels on most of the frames: `zorder` -- the pose segment's layer order,
@@ -183,11 +196,13 @@ because nothing clears an edge in the way. Both should be empty.
 ## `summary.json`
 
 `export_graph_version`, `view`, `desktops`, `totals` (`desktops`, `edges`, `edges_by_type`,
-`confirmed_frames`, `covers`, `no_edge`, `candidates`, `candidate_class_pairs` -- how many
+`confirmed_frames`, `covers`, `no_edge`, `candidates`, `candidates_ruled` /
+`candidates_unruled`, `rulings`, `candidate_class_pairs` -- how many
 class pairs the candidates fall into, `violations`, `violations_by_kind` -- per `kind`,
 `violations_timeline_agrees` / `violations_timeline_disagrees`, `deadlocks`, `dead_ends`,
 `next_is_legal` -- legal / judged / ratio over every judged step), `per_desktop[]` (edges and
-edges by type, confirmed frames, covers, `no_edge`, candidates, violations,
+edges by type, confirmed frames, covers, `no_edge`, candidates, `candidates_ruled` /
+`candidates_unruled`, `rulings`, violations,
 `violations_timeline_disagrees`, deadlocks, dead ends, `next_is_legal` as legal / judged /
 ratio, plan lengths against demonstrated lengths), `candidates_by_class_pair[]` (`pair` = `above_class →
 below_class`, `n_desktops`, `desktops`, `n_pairs`, `pairs`, `below_removed` = pairs whose
@@ -209,7 +224,9 @@ def _numbers(summary: dict) -> str:
         f"- confirmed frames read: {t['confirmed_frames']}",
         f"- covering pairs: {t['covers']}; with no edge either way: {t['no_edge']}; "
         f"candidates (nothing accounts for them): {t['candidates']} "
-        f"in {t['candidate_class_pairs']} class pairs",
+        f"in {t['candidate_class_pairs']} class pairs"
+        f"; ruled in Review: {t.get('candidates_ruled', 0)}, not yet: "
+        f"{t.get('candidates_unruled', t['candidates'])}",
         f"- violations: {t['violations']}"
         + (" (" + ", ".join(f"{k} {v}" for k, v in t["violations_by_kind"].items()) + ")"
            if t["violations"] else "")
