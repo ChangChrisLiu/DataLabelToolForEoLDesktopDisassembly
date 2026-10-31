@@ -155,6 +155,10 @@ class NotesWindowMixin:
             dock.setVisible(shown)
         if shown:
             self._schedule_notes_order()
+        else:
+            clear = getattr(self, "_clear_rulings_hover", None)   # W3f: no outline left behind
+            if callable(clear):
+                clear()
 
     def _want_notes(self, wanted: bool) -> None:
         if self.closed:          # a floating dock closed with the window is no wish

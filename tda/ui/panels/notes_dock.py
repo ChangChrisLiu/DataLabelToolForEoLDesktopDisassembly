@@ -22,6 +22,16 @@ more rows, and the folded 「已裁定（k）」 with 「撤销」.  It reports
 (:attr:`RulingsSection.sigRule`, :attr:`RulingsSection.sigClear`); the window
 writes.  It is collapsible, and whether it is open is remembered
 (``QSettings notes/rulings_open``, the window's).
+
+Task W3f makes the rows readable: each says both parts' states at the frame
+(「cover.01（打开）→ motherboard.01（装着）」) and its tooltip what the log did
+to each (「日志：…」); **resting the pointer on any row** -- open, folded or
+ruled -- reports the pair (:attr:`RulingsSection.sigHover`; ``("", "")`` when
+it leaves) and the window outlines the two parts on the canvas.  Two folded
+lists take the pairs nobody needs to rule: 「规则已间接覆盖（k）」 (the graph
+orders them through another part; the chain in words, no button) and
+「日志已证明不挡（k）」 (the log acted on the lower part with the upper one
+still in the way; one 「不挡」 per row for the record, never 「挡着」).
 """
 from __future__ import annotations
 
@@ -50,14 +60,18 @@ from tda.ui.cover_rulings import (
     RULING_TEXT,
     Candidate,
     candidate_text,
+    chain_tip,
     class_pairs,
+    indirect_text,
+    proven_text,
     ruled_text,
 )
 from tda.ui.occlusion_order import FLOOR_NOTE, OrderLine, header_text, line_text
 from tda.ui.panels.frame_note import FrameNoteBox
 
-__all__ = ["BATCH_TEXT", "DOCK_TITLE", "NONE_PENDING", "ORDER_TITLE", "ORDER_TIP",
-           "INSTANCE_ROLE", "NotesDock", "NotesPanel", "OcclusionList", "RULED_TITLE",
+__all__ = ["BATCH_TEXT", "DOCK_TITLE", "INDIRECT_TIP", "INDIRECT_TITLE", "NONE_PENDING",
+           "ORDER_TITLE", "ORDER_TIP", "INSTANCE_ROLE", "NotesDock", "NotesPanel",
+           "OcclusionList", "PROVEN_TIP", "PROVEN_TITLE", "RULED_TITLE",
            "RULINGS_TIP", "RULINGS_TITLE", "RulingsSection", "UNDO_RULING"]
 
 DOCK_TITLE = "说明"
@@ -80,7 +94,16 @@ RULINGS_TIP = ("这一帧上重叠的对（像素 ≥ 1000，机箱里），还�
                "拧住、主板上的 CPU / 内存 / 散热器 / 扩展卡）、这台也还没裁定的。看图判断："
                "「挡着」= 拆下面那件之前必须先拿走上面那件；「不挡」= 只是画面上重叠。每对这台只问一次。"
                "「建议收」/「存疑」是裁定单按类别给的提示（悬停一行看理由），不是裁定。没有快捷键；"
-               "Ctrl+Z 撤回最近一次裁定，「已裁定」里的「撤销」去掉任一条。")
+               "Ctrl+Z 撤回最近一次裁定，「已裁定」里的「撤销」去掉任一条。"
+               "鼠标停在任一行上，画布上框出这两件：橙框 = 压在上面的，蓝框 = 被压的（只是显示）。"
+               "括号里是这一帧的状态；悬停看日志对两件做了什么。")
+#: The two folded lists of pairs nobody needs to rule (task W3f).
+INDIRECT_TITLE = "规则已间接覆盖（{k}）"
+INDIRECT_TIP = ("图里已经有边通过别的零件定了这两件的先后（例：盖板挡着主板螺丝、螺丝拧住主板），"
+                "不用再裁定。悬停看是哪几条边。")
+PROVEN_TITLE = "日志已证明不挡（{k}）"
+PROVEN_TIP = ("日志里下面那件被拆下 / 打开 / 挪开的时候，上面那件还在原处：它显然没挡着，"
+              "「挡着」这条边会和日志矛盾，所以不问。想留个记录可以点「不挡」。")
 #: The two areas' tallest heights: the dock keeps most of its room for the note.
 PENDING_MAX_HEIGHT = 220
 RULED_MAX_HEIGHT = 140
@@ -123,6 +146,25 @@ def _scroll(inner: QWidget, tallest: int) -> QScrollArea:
     return area
 
 
+class _HoverRow(QWidget):
+    """One line of the section that says when the pointer comes onto it and leaves it (W3f)."""
+
+    def __init__(self, on_hover: Optional[Callable[[bool], None]] = None,
+                 parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._on_hover = on_hover
+
+    def enterEvent(self, event) -> None:  # noqa: D102 - Qt override
+        super().enterEvent(event)
+        if self._on_hover is not None:
+            self._on_hover(True)
+
+    def leaveEvent(self, event) -> None:  # noqa: D102 - Qt override
+        super().leaveEvent(event)
+        if self._on_hover is not None:
+            self._on_hover(False)
+
+
 def _clear(layout) -> None:
     while layout.count():
         item = layout.takeAt(0)
@@ -142,6 +184,9 @@ class RulingsSection(QWidget):
     sigClear = Signal(str, str)
     #: The section was folded (``False``) or unfolded (``True``) by the annotator.
     sigToggled = Signal(bool)
+    #: ``(above, below)``: the pointer rests on that pair's row; ``("", "")``:
+    #: it left (or the rows were rebuilt under it).  Display only (task W3f).
+    sigHover = Signal(str, str)
 
     def __init__(self, parent: Optional[QWidget] = None, opened: bool = True) -> None:
         super().__init__(parent)
@@ -164,6 +209,11 @@ class RulingsSection(QWidget):
         self.ruled_layout.setSpacing(1)
         self.ruled_area = _scroll(self.ruled, RULED_MAX_HEIGHT)
         self.ruled_area.setVisible(False)
+        # task W3f: the two folded lists of pairs nobody needs to rule
+        self.indirect_toggle, self.indirect, self.indirect_layout, self.indirect_area = \
+            self._folded(INDIRECT_TITLE.format(k=0), INDIRECT_TIP)
+        self.proven_toggle, self.proven, self.proven_layout, self.proven_area = \
+            self._folded(PROVEN_TITLE.format(k=0), PROVEN_TIP)
         for widget in (self, self.toggle, self.empty, self.ruled_toggle):
             widget.setToolTip(RULINGS_TIP)
         inner = QVBoxLayout(self.body)
@@ -171,6 +221,10 @@ class RulingsSection(QWidget):
         inner.setSpacing(2)
         inner.addWidget(self.empty)
         inner.addWidget(self.pending_area)
+        inner.addWidget(self.indirect_toggle)
+        inner.addWidget(self.indirect_area)
+        inner.addWidget(self.proven_toggle)
+        inner.addWidget(self.proven_area)
         inner.addWidget(self.ruled_toggle)
         inner.addWidget(self.ruled_area)
         layout = QVBoxLayout(self)
@@ -187,6 +241,34 @@ class RulingsSection(QWidget):
         self.ruled_buttons: list[tuple[tuple[str, str], QPushButton]] = []
         self._row_labels: list[QLabel] = []
         self._ruled_labels: list[QLabel] = []
+        #: The folded lists (W3f): what is in them, and 「不挡」 per proven row.
+        self.indirect_candidates: list[Candidate] = []
+        self.proven_candidates: list[Candidate] = []
+        self.proven_buttons: list[tuple[Candidate, QPushButton]] = []
+        self._indirect_labels: list[QLabel] = []
+        self._proven_labels: list[QLabel] = []
+        #: Every hoverable line: ``(pair, row widget)`` (tests drive enter / leave).
+        self.hover_rows: list[tuple[tuple[str, str], QWidget]] = []
+        #: The pair the pointer rests on, or ``None``.
+        self.hovered: Optional[tuple[str, str]] = None
+
+    def _folded(self, title: str, tip: str):
+        """A folded list under its own toggle (closed until clicked)."""
+        toggle = _fold(title, False)
+        toggle.setToolTip(tip)
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(1)
+        area = _scroll(inner, RULED_MAX_HEIGHT)
+        area.setVisible(False)
+
+        def opened(on: bool) -> None:
+            toggle.setArrowType(Qt.ArrowType.DownArrow if on else Qt.ArrowType.RightArrow)
+            area.setVisible(bool(on))
+
+        toggle.toggled.connect(opened)
+        return toggle, inner, layout, area
 
     # ------------------------------------------------------------ folding
     def is_open(self) -> bool:
@@ -215,8 +297,19 @@ class RulingsSection(QWidget):
 
     # ------------------------------------------------------------- content
     def set_rulings(self, candidates: list[Candidate],
-                    ruled: Mapping[tuple[str, str], Mapping]) -> None:
-        """Show the frame's ``candidates`` (in order) and the desktop's ``ruled`` rows."""
+                    ruled: Mapping[tuple[str, str], Mapping],
+                    proven: Optional[list[Candidate]] = None,
+                    indirect: Optional[list[Candidate]] = None) -> None:
+        """Show the frame's ``candidates`` (in order) and the desktop's ``ruled`` rows.
+
+        ``proven`` / ``indirect`` (task W3f) fill the two folded lists; a fold
+        with nothing in it is not shown.  Rebuilding under a resting pointer
+        reports the hover gone (``sigHover("", "")``): its row is no more.
+        """
+        if self.hovered is not None:
+            self.hovered = None
+            self.sigHover.emit("", "")
+        self.hover_rows = []
         self.candidates = list(candidates)
         self.toggle.setText(RULINGS_TITLE.format(n=len(self.candidates)))
         self.ruled_toggle.setText(RULED_TITLE.format(k=len(ruled)))
@@ -229,6 +322,24 @@ class RulingsSection(QWidget):
         self.pending_layout.addStretch(1)
         self.empty.setVisible(not self.candidates)
         self.pending_area.setVisible(bool(self.candidates))
+        self.indirect_candidates = list(indirect or [])
+        _clear(self.indirect_layout)
+        self._indirect_labels = []
+        for cand in self.indirect_candidates:
+            self._indirect_labels.append(self._line(
+                self.indirect_layout, indirect_text(cand),
+                f"{chain_tip(cand)}\n{cand.log}".strip(), [], hover=(cand.above, cand.below)))
+        self.indirect_layout.addStretch(1)
+        self.indirect_toggle.setText(INDIRECT_TITLE.format(k=len(self.indirect_candidates)))
+        self._show_fold(self.indirect_toggle, self.indirect_area, bool(self.indirect_candidates))
+        self.proven_candidates = list(proven or [])
+        _clear(self.proven_layout)
+        self.proven_buttons, self._proven_labels = [], []
+        for cand in self.proven_candidates:
+            self._add_proven(cand)
+        self.proven_layout.addStretch(1)
+        self.proven_toggle.setText(PROVEN_TITLE.format(k=len(self.proven_candidates)))
+        self._show_fold(self.proven_toggle, self.proven_area, bool(self.proven_candidates))
         _clear(self.ruled_layout)
         self.ruled_buttons, self._ruled_labels = [], []
         for (above, below), row in ruled.items():
@@ -236,10 +347,28 @@ class RulingsSection(QWidget):
         self.ruled_layout.addStretch(1)
 
     @staticmethod
-    def _line(layout, text: str, tip: str, buttons: list[QPushButton],
-              bold: bool = False) -> QLabel:
-        """One line into ``layout``: the words (tooltip ``tip``), then the buttons."""
-        row = QWidget()
+    def _show_fold(toggle: QToolButton, area: QScrollArea, any_rows: bool) -> None:
+        toggle.setVisible(any_rows)
+        area.setVisible(any_rows and toggle.isChecked())
+
+    def _hover(self, pair: tuple[str, str], entered: bool) -> None:
+        if entered:
+            self.hovered = pair
+            self.sigHover.emit(pair[0], pair[1])
+        elif self.hovered == pair:
+            self.hovered = None
+            self.sigHover.emit("", "")
+
+    def _line(self, layout, text: str, tip: str, buttons: list[QPushButton],
+              bold: bool = False, hover: Optional[tuple[str, str]] = None) -> QLabel:
+        """One line into ``layout``: the words (tooltip ``tip``), then the buttons.
+
+        ``hover`` is the pair the line is about: resting the pointer on it
+        reports the pair (:attr:`sigHover`, task W3f).
+        """
+        row = _HoverRow(None if hover is None else partial(self._hover, tuple(hover)))
+        if hover is not None:
+            self.hover_rows.append((tuple(hover), row))
         box = QHBoxLayout(row)
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(4)
@@ -257,16 +386,32 @@ class RulingsSection(QWidget):
         layout.addWidget(row)
         return label
 
-    def _add_row(self, cand: Candidate) -> None:
+    @staticmethod
+    def _tip(cand: Candidate) -> str:
+        """The sheet's hint, then the 日志 line (task W3f) when the log is known."""
         tip = f"{cand.above_class} → {cand.below_class}：{cand.reason}"
+        return f"{tip}\n{cand.log}" if cand.log else tip
+
+    def _add_row(self, cand: Candidate) -> None:
         blocks = _button(RULING_TEXT[BLOCKS], "挡着：拆下面那件之前必须先拿走上面那件")
         free = _button(RULING_TEXT[NOT_BLOCKS], "不挡：只是画面上重叠，下面那件拿得出来")
         pairs = [(cand.above, cand.below)]
         blocks.clicked.connect(partial(self._emit_rule, pairs, BLOCKS, None))
         free.clicked.connect(partial(self._emit_rule, pairs, NOT_BLOCKS, None))
-        self._row_labels.append(self._line(self.pending_layout, candidate_text(cand), tip,
-                                           [blocks, free]))
+        self._row_labels.append(self._line(self.pending_layout, candidate_text(cand),
+                                           self._tip(cand), [blocks, free],
+                                           hover=(cand.above, cand.below)))
         self.row_buttons.append((cand, blocks, free))
+
+    def _add_proven(self, cand: Candidate) -> None:
+        """A 日志已证明不挡 row: one 「不挡」 for the record, never 「挡着」 (W3f)."""
+        free = _button(RULING_TEXT[NOT_BLOCKS], "记一条「不挡」（日志已经说明了，不点也不会问）")
+        free.clicked.connect(partial(self._emit_rule, [(cand.above, cand.below)], NOT_BLOCKS,
+                                     None))
+        self._proven_labels.append(self._line(self.proven_layout, proven_text(cand),
+                                              self._tip(cand), [free],
+                                              hover=(cand.above, cand.below)))
+        self.proven_buttons.append((cand, free))
 
     def _add_batch(self, classes: tuple[str, str], group: list[Candidate]) -> None:
         text = BATCH_TEXT.format(above=classes[0], below=classes[1], n=len(group))
@@ -285,7 +430,7 @@ class RulingsSection(QWidget):
         undo.clicked.connect(partial(self._emit_clear, above, below))
         tip = f"{row.get('by') or '-'} · {row.get('ts') or '-'}"
         self._ruled_labels.append(self._line(self.ruled_layout, ruled_text(above, below, row),
-                                             tip, [undo]))
+                                             tip, [undo], hover=(above, below)))
         self.ruled_buttons.append(((above, below), undo))
 
     def _emit_rule(self, pairs: list, ruling: str, classes, *_args) -> None:
@@ -303,6 +448,18 @@ class RulingsSection(QWidget):
     def ruled_texts(self) -> list[str]:
         """The 「已裁定」 lines as shown."""
         return [label.text() for label in self._ruled_labels]
+
+    def proven_texts(self) -> list[str]:
+        """The 「日志已证明不挡」 lines as shown (W3f)."""
+        return [label.text() for label in self._proven_labels]
+
+    def indirect_texts(self) -> list[str]:
+        """The 「规则已间接覆盖」 lines as shown (W3f)."""
+        return [label.text() for label in self._indirect_labels]
+
+    def row_tips(self) -> list[str]:
+        """The open rows' tooltips, in order (W3f: the sheet's hint and the 日志 line)."""
+        return [label.toolTip() for label in self._row_labels]
 
 
 class OcclusionList(QWidget):

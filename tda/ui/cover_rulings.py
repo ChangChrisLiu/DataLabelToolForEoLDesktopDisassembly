@@ -38,27 +38,57 @@ adjudication sheet (``docs/superpowers/discussions/2026-10-30-vlm-paper-scope/
 06-covering-adjudication.md`` table A): 「建议收」 (:data:`RECOMMENDED`),
 「存疑」 (:data:`UNCERTAIN`) or 「其他」, with the sheet's one-line reason --
 a hint, never a ruling.  No Qt here.
+
+**Task W3f: two kinds of pair are no longer asked** (:func:`triage_pairs`; the
+dock folds them away).  The user could not tell what a row was about, and on
+D04 frame 21 was asked ``psu.01 → cover.01`` although the log had opened the
+cover at step 22 with the PSU still in place.
+
+* **规则已间接覆盖** (:func:`indirect_chain`): the active hard edges already
+  order the pair through a third part -- ``below`` waits for X, X (perhaps
+  through more parts) waits for ``above``.  ``cover.of = motherboard_screws``
+  covers the board's screws and the screws fasten the board, so
+  ``cover.01 → motherboard.01`` is answered by
+  ``cover.01 → screw.motherboard.03 → motherboard.01`` (controller addendum,
+  the user's 「盖板不打开 … 也就没法拆掉主板」).  Checked first: the graph knows.
+* **日志已证明不挡** (:func:`log_proof`): the recorded log acted on ``below``
+  with a verb a ``covered_by(below <- above)`` edge would gate (every gated
+  verb: :data:`COVER_GATED`) while ``above`` was in none of the states that
+  free it (:data:`COVER_CLEAR`: open / removed / displaced) -- exactly what
+  W3a's ``pixel-edges`` refuses as ``would_violate``.  The replay is the one
+  :func:`tda.core.graph.validate_sequence` does (:func:`cover_log`): actions in
+  ``(step, idx)`` order, the hand-written initial states, the settled parts.
+
+Rows also carry both parts' states at the frame (``states``) and, with the
+log, the 「日志：…」 line of the tooltip (:func:`log_line`).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Iterable, Mapping, Optional, Union
 
 from tda.core.export.graph_covers import SUPPORT
 from tda.core.graph import active_edges
+from tda.core.graph_derive import settled_instances
+from tda.core.graph_rules import HARD_TYPES, gated_verbs, required_states
 from tda.core.model import (
     is_context,
     is_context_key,
     is_gallery_only,
     is_provisional,
 )
+from tda.core.states import REMOVED, events_from_actions, state_at
+from tda.ui.class_names import state_zh
 
-__all__ = ["BLOCKS", "Candidate", "FIXED_CLASSES", "MIN_PX", "NOT_BLOCKS", "RECOMMENDED",
+__all__ = ["BLOCKS", "COVER_CLEAR", "COVER_GATED", "Candidate", "CoverLog", "FIXED_CLASSES",
+           "LogMove", "MIN_PX", "MOVE_ZH", "NOT_BLOCKS", "RECOMMENDED",
            "RULINGS", "RULING_MARK", "RULING_TEXT", "SMALL_ABOVE", "SMALL_BELOW", "SUPPORT",
            "TAGS", "TAG_OTHER",
-           "TAG_RECOMMENDED", "TAG_UNCERTAIN", "UNCERTAIN", "candidate_text", "chassis_pairs",
-           "class_key", "class_pairs", "excluded_part", "joined_by_edge", "pair_tag",
-           "pending_pairs", "ruled_text", "status_text", "structural_reasons"]
+           "TAG_RECOMMENDED", "TAG_UNCERTAIN", "Triage", "UNCERTAIN", "candidate_text",
+           "chain_text", "chain_tip", "chassis_pairs", "class_key", "class_pairs", "cover_log",
+           "excluded_part", "indirect_chain", "indirect_text", "joined_by_edge", "log_line",
+           "log_proof", "pair_tag", "pending_pairs", "proven_text", "ruled_text", "status_text",
+           "structural_reasons", "triage_pairs"]
 
 #: The smallest covering asked about, in pixels of the lower part's shape.
 #: Below it are screws, latches and connectors -- pixel noise for this
@@ -182,6 +212,16 @@ class Candidate:
     #: screen is known here -- the desktop's other frames are not compiled --
     #: so this counts the other pending pairs of **this frame**.
     same_pair_pending: int = 0
+    #: Both parts' states at the frame on screen (task W3f; ``""``: not known).
+    above_state: str = ""
+    below_state: str = ""
+    #: 「日志：…」, what the log did to each part (W3f; ``""`` without a log).
+    log: str = ""
+    #: The log's action that proves 不挡 (:func:`log_proof`), or ``None``.
+    proof: Optional["LogMove"] = None
+    #: The active edges ordering the pair through other parts, from ``below``
+    #: up to ``above`` (:func:`indirect_chain`); empty: none.
+    chain: tuple = ()
 
     @property
     def classes(self) -> tuple[str, str]:
@@ -322,17 +362,184 @@ def chassis_pairs(compiled, pairs: Mapping[tuple[str, str], int]) -> list[tuple[
             if a in inside and b in inside]
 
 
-def pending_pairs(frame_pairs: PairsLike, instances: Mapping, edges: Iterable,
-                  rulings: Mapping, min_px: int = MIN_PX) -> list[Candidate]:
-    """The candidates of one frame (see the module docstring), in the order the dock lists them.
+# --------------------------------------------------------------------------- #
+# what the log already says (task W3f)
+# --------------------------------------------------------------------------- #
+#: The verbs a ``covered_by`` edge holds back on its target: all the gated ones
+#: (``graph_rules.GATES``) -- removing, displacing or opening ``below`` all wait.
+COVER_GATED = gated_verbs("covered_by")
+#: The states of the upper part that let them through (``REQUIRED_STATES``).
+COVER_CLEAR = required_states("covered_by")
+#: The three verbs that move a part out of the way, as the 日志 line says them.
+MOVE_ZH = {"remove": "拆下", "open": "打开", "displace": "挪开"}
+_ALL_STEPS = 10**9
+
+
+@dataclass(frozen=True)
+class LogMove:
+    """One successful action of the log that a ``covered_by`` edge on its target would gate (W3f)."""
+
+    step: int
+    idx: int
+    verb: str
+    target: str
+    #: Every part's state the moment before the action (``validate_sequence``'s
+    #: replay); not compared, so two moves compare on what they are.
+    before: Mapping[str, str] = field(default_factory=dict, compare=False, repr=False)
+
+
+@dataclass(frozen=True)
+class CoverLog:
+    """The desktop's gated actions, each with the state before it (:func:`cover_log`, W3f)."""
+
+    moves: tuple[LogMove, ...] = ()
+
+    def of(self, key: str) -> list[LogMove]:
+        """``key``'s own moves, in log order."""
+        return [m for m in self.moves if m.target == key]
+
+
+def cover_log(instances: Mapping, actions: Iterable, tax,
+              initial: Optional[Mapping[str, str]] = None) -> CoverLog:
+    """Replay the log the way :func:`tda.core.graph.validate_sequence` does. Pure.
+
+    ``instances``: the desktop's records (the settled ones are replayed:
+    :func:`tda.core.graph_derive.settled_instances`); ``actions``: its
+    :class:`~tda.core.model.ActionRec` rows; ``initial``:
+    :func:`tda.core.states.initial_overrides` of its hand-written events (a part
+    whose initial state is ``removed`` is one the machine does not have: its
+    actions are not replayed).  Every **successful** action whose verb is in
+    :data:`COVER_GATED` becomes a :class:`LogMove` carrying the state of every
+    part just before it -- earlier actions of the same compound step included.
+    """
+    settled = settled_instances(dict(instances))
+    ordered = sorted(actions, key=lambda a: (int(a.step), int(a.idx)))
+    gone = {key for key, state in (initial or {}).items() if state == REMOVED}
+    moves: list[LogMove] = []
+    for i, action in enumerate(ordered):
+        if (action.target in gone or action.result != "success"
+                or action.verb not in COVER_GATED):
+            continue
+        events = events_from_actions(settled, ordered[:i], tax, initial=initial)
+        state = state_at(settled, events, _ALL_STEPS, tax, initial=initial)
+        moves.append(LogMove(int(action.step), int(action.idx), str(action.verb),
+                             str(action.target), {k: v.state for k, v in state.items()}))
+    return CoverLog(tuple(moves))
+
+
+def log_proof(log: Optional[CoverLog], above: str, below: str) -> Optional[LogMove]:
+    """The first action on ``below`` taken while ``above`` was still in the way, or ``None``.
+
+    "In the way": ``above`` is a part of the replay and its state just before
+    the action is none of :data:`COVER_CLEAR` -- a ``covered_by(below <- above)``
+    edge would make that very action a breach, so the pair can never become
+    that edge (``pixel-edges`` would skip it as ``would_violate``) and the user
+    is not asked.  A part opened and closed again before the action is in the
+    way again, as the edge would see it.  ``below`` taken out only with its
+    parent (no action of its own), or never touched, proves nothing.
+    """
+    if log is None:
+        return None
+    for move in log.moves:
+        if move.target != below:
+            continue
+        held = move.before.get(above)
+        if held is not None and held not in COVER_CLEAR:
+            return move
+    return None
+
+
+def _moves_words(log: CoverLog, key: str) -> list[str]:
+    """「第 22 步 打开」, 「第 40 步 拆下」: the first of each way out of the way, up to the removal."""
+    words, seen = [], set()
+    for move in log.of(key):
+        if move.verb not in MOVE_ZH or move.verb in seen:
+            continue
+        seen.add(move.verb)
+        words.append(f"第 {move.step} 步 {MOVE_ZH[move.verb]}")
+        if move.verb == "remove":
+            break
+    return words
+
+
+def log_line(log: Optional[CoverLog], above: str, below: str) -> str:
+    """「日志：cover.01 第 22 步 打开，psu.01 第 39 步 拆下」 (or 从未动过 / 从未拆下); ``""`` without a log."""
+    if log is None:
+        return ""
+    up = "、".join(_moves_words(log, above)) or "从未动过"
+    low = "、".join(_moves_words(log, below)) or "从未拆下"
+    return f"日志：{above} {up}，{below} {low}"
+
+
+def indirect_chain(edges: Iterable, above: str, below: str) -> tuple:
+    """The shortest chain of active hard edges by which ``below`` already waits for ``above``.
+
+    ``below`` is the target of an edge whose blocker is X, X the target of one
+    whose blocker is ... ``above`` -- any depth, any hard type
+    (:data:`~tda.core.graph_rules.HARD_TYPES`), :func:`active_edges` only.
+    Returned from ``below`` upwards, as the edges; ``()`` when there is none
+    or only the direct edge (which :func:`joined_by_edge` handles).  Ties go to
+    the alphabetically first blocker, so the chain is deterministic.
+    """
+    up: dict[str, list] = {}
+    for edge in active_edges(list(edges)):
+        if edge.type in HARD_TYPES:
+            up.setdefault(edge.target, []).append(edge)
+    for kids in up.values():
+        kids.sort(key=lambda e: (e.blocker, e.type))
+    came: dict[str, tuple] = {below: ()}
+    frontier = [below]
+    while frontier:
+        nxt = []
+        for node in frontier:
+            for edge in up.get(node, ()):
+                if edge.blocker in came:
+                    continue
+                path = came[node] + (edge,)
+                if edge.blocker == above:
+                    return path if len(path) >= 2 else ()
+                came[edge.blocker] = path
+                nxt.append(edge.blocker)
+        frontier = nxt
+    return ()
+
+
+@dataclass
+class Triage:
+    """The frame's pairs, sorted three ways (:func:`triage_pairs`, W3f)."""
+
+    #: Open questions: the rows with 「挡着」 / 「不挡」.
+    asked: list[Candidate] = field(default_factory=list)
+    #: 日志已证明不挡: each with its :attr:`Candidate.proof`.
+    proven: list[Candidate] = field(default_factory=list)
+    #: 规则已间接覆盖: each with its :attr:`Candidate.chain`.
+    indirect: list[Candidate] = field(default_factory=list)
+
+
+def _order(cand: Candidate) -> tuple:
+    return (TAGS.index(cand.tag), -cand.px, cand.above, cand.below)
+
+
+def triage_pairs(frame_pairs: PairsLike, instances: Mapping, edges: Iterable,
+                 rulings: Mapping, min_px: int = MIN_PX, *, log: Optional[CoverLog] = None,
+                 states: Optional[Mapping[str, str]] = None) -> Triage:
+    """The candidates of one frame (see the module docstring), sorted into the three lists.
 
     ``frame_pairs``: ``(above, below, px)`` triples (or ``{(above, below): px}``)
     of the frame on screen; ``instances``: the desktop's records; ``edges``:
     its relation rows as :class:`~tda.core.graph.Edge` (only active ones
-    count); ``rulings``: its ``cover_ruling`` rows by ``(above, below)``.
-    Ordered by tag (「建议收」 first), then pixels (most first), then keys.
+    count); ``rulings``: its ``cover_ruling`` rows by ``(above, below)`` (a
+    ruled pair is in none of the lists); ``log``: :func:`cover_log` of the
+    desktop (``None``: nothing is proven by the log, and no 日志 line);
+    ``states``: each part's state at the frame (``{key: state}``), for the row
+    text.  A pair the graph orders indirectly goes to ``indirect`` (whatever
+    the log says), else one the log proves goes to ``proven``, else it is
+    asked.  Each list is ordered by tag (「建议收」 first), then pixels (most
+    first), then keys; :attr:`Candidate.same_pair_pending` counts the asked
+    list only (the batch lines are made of it).  Pure.
     """
     edges = list(edges)
+    states = states or {}
     picked = []
     for above, below, px in _triples(frame_pairs):
         if above == below or px < int(min_px) or (above, below) in rulings:
@@ -346,14 +553,34 @@ def pending_pairs(frame_pairs: PairsLike, instances: Mapping, edges: Iterable,
             continue
         classes = (class_key(up), class_key(low))
         tag, reason = pair_tag(*classes)
-        picked.append((above, below, classes, px, tag, reason))
+        chain = indirect_chain(edges, above, below)
+        proof = None if chain else log_proof(log, above, below)
+        picked.append(Candidate(above, below, classes[0], classes[1], px, tag, reason, 0,
+                                str(states.get(above) or ""), str(states.get(below) or ""),
+                                log_line(log, above, below), proof, chain))
+    out = Triage()
+    for cand in picked:
+        (out.indirect if cand.chain else out.proven if cand.proof else out.asked).append(cand)
     counts: dict[tuple[str, str], int] = {}
-    for _a, _b, classes, *_rest in picked:
-        counts[classes] = counts.get(classes, 0) + 1
-    out = [Candidate(a, b, classes[0], classes[1], px, tag, reason, counts[classes] - 1)
-           for a, b, classes, px, tag, reason in picked]
-    out.sort(key=lambda c: (TAGS.index(c.tag), -c.px, c.above, c.below))
+    for cand in out.asked:
+        counts[cand.classes] = counts.get(cand.classes, 0) + 1
+    out.asked = [replace(cand, same_pair_pending=counts[cand.classes] - 1)
+                 for cand in out.asked]
+    for name in ("asked", "proven", "indirect"):
+        getattr(out, name).sort(key=_order)
     return out
+
+
+def pending_pairs(frame_pairs: PairsLike, instances: Mapping, edges: Iterable,
+                  rulings: Mapping, min_px: int = MIN_PX, *, log: Optional[CoverLog] = None,
+                  states: Optional[Mapping[str, str]] = None) -> list[Candidate]:
+    """The open questions of one frame: :func:`triage_pairs`' ``asked`` list.
+
+    Without ``log`` only the pairs the graph orders indirectly (task W3f) are
+    left out besides W3c's rule.
+    """
+    return triage_pairs(frame_pairs, instances, edges, rulings, min_px, log=log,
+                        states=states).asked
 
 
 def class_pairs(candidates: Iterable[Candidate]) -> list[tuple[tuple[str, str], list[Candidate]]]:
@@ -371,9 +598,51 @@ def _px(n: int) -> str:
     return f"{int(n):,}".replace(",", " ")
 
 
+def _with_state(key: str, state: str) -> str:
+    return f"{key}（{state_zh(state)}）" if state else key
+
+
+def _pair_words(cand: Candidate) -> str:
+    """「cover.01（打开）→ motherboard.01（装着）」; without states the old 「a → b」."""
+    if not (cand.above_state or cand.below_state):
+        return f"{cand.above} → {cand.below}"
+    return f"{_with_state(cand.above, cand.above_state)}→ {_with_state(cand.below, cand.below_state)}"
+
+
 def candidate_text(cand: Candidate) -> str:
-    """「optical_drive.01 → motherboard.01 · 像素 68 797 · 建议收」."""
-    return f"{cand.above} → {cand.below} · 像素 {_px(cand.px)} · {cand.tag}"
+    """「optical_drive.01（装着）→ motherboard.01（装着） · 像素 68 797 · 建议收」.
+
+    The states are the parts' states at the frame on screen (task W3f); a
+    candidate made without them reads 「optical_drive.01 → motherboard.01 · …」.
+    """
+    return f"{_pair_words(cand)} · 像素 {_px(cand.px)} · {cand.tag}"
+
+
+def proven_text(cand: Candidate) -> str:
+    """A 日志已证明不挡 row: 「psu.01（装着）→ cover.01（关上） · 像素 1 535 · 第 22 步 cover.01 打开时 psu.01 还是装着」."""
+    move = cand.proof
+    if move is None:
+        return candidate_text(cand)
+    verb = MOVE_ZH.get(move.verb, move.verb)
+    held = state_zh(move.before.get(cand.above, ""))
+    return (f"{_pair_words(cand)} · 像素 {_px(cand.px)} · 第 {move.step} 步 {cand.below} "
+            f"{verb}时 {cand.above} 还是{held}")
+
+
+def chain_text(cand: Candidate) -> str:
+    """「cover.01 → screw.motherboard.03 → motherboard.01」: the chain, top part first."""
+    keys = [cand.below] + [edge.blocker for edge in cand.chain]
+    return " → ".join(reversed(keys))
+
+
+def indirect_text(cand: Candidate) -> str:
+    """A 规则已间接覆盖 row: the chain in words, then the pixels."""
+    return f"{chain_text(cand)} · 像素 {_px(cand.px)}"
+
+
+def chain_tip(cand: Candidate) -> str:
+    """The edges of the chain, one per line (the row's tooltip)."""
+    return "\n".join(f"{edge.target} 等 {edge.blocker}（{edge.type}）" for edge in cand.chain)
 
 
 def ruled_text(above: str, below: str, row: Mapping) -> str:
