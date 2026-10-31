@@ -292,12 +292,13 @@ def test_structure_refuses_a_whitelist_pair_and_a_ruling_beats_it():
 # --------------------------------------------------------------------------- #
 # the command
 # --------------------------------------------------------------------------- #
-def test_without_a_ruling_table_nothing_is_written(env, capsys):
+def test_without_a_ruling_nothing_is_written(env):
     before = table(env["db"], "SELECT * FROM relation ORDER BY id")
     assert run(env, "--apply") == EXIT_OK
     assert table(env["db"], "SELECT * FROM relation ORDER BY id") == before
-    assert "no cover_ruling table yet" in capsys.readouterr().out
-    assert evidence(env)["rulings_table"] is False
+    doc = evidence(env)
+    assert doc["rulings_table"] is True and doc["counts"]["edges"] == 0
+    assert ops(env["db"]) == [] and not list((env["tmp"] / "backups").iterdir())
 
 
 def test_dry_run_writes_nothing_but_the_evidence(env, capsys):
@@ -489,6 +490,12 @@ def test_a_v6_copy_without_the_ruling_table_is_read_with_no_rulings(env):
 
     assert READ_ONLY_MIN_SCHEMA == 6
     stamp(env["db"], 6)
+    conn = sqlite3.connect(str(env["db"]))
+    try:                                  # what a copy taken before W3c looks like
+        conn.execute("DROP TABLE IF EXISTS cover_ruling")
+        conn.commit()
+    finally:
+        conn.close()
     ro = ReadOnlyDb(str(env["db"]))
     try:
         assert ro.schema_version == 6 and cover_rulings(ro, DESKTOP) == {}
@@ -500,18 +507,17 @@ def test_a_v6_copy_without_the_ruling_table_is_read_with_no_rulings(env):
 
 
 def test_a_v7_copy_with_the_ruling_table_is_read(env):
-    """W3c's v7 adds `cover_ruling`; once this build knows v7 it reads it as it is."""
+    """W3c's v7 adds `cover_ruling`, read through `Db.cover_rulings`."""
     from tda.core.db import SCHEMA_VERSION
 
+    assert SCHEMA_VERSION >= 7
     add_rulings(env["db"], (PSU, HDD, "blocks"))
     stamp(env["db"], 7)
-    if SCHEMA_VERSION < 7:          # before W3c lands: a newer file is refused, one line
-        with pytest.raises(RuntimeError, match="schema version 7"):
-            ReadOnlyDb(str(env["db"]))
-        return
     ro = ReadOnlyDb(str(env["db"]))
     try:
+        assert ro.schema_version == 7
         assert cover_rulings(ro, DESKTOP)[(PSU, HDD)]["ruling"] == "blocks"
+        assert cover_rulings(ro, DESKTOP)[(PSU, HDD)]["by"] == "user"
         doc = build_desktop(ro, TAX, DESKTOP, VIEW)
     finally:
         ro.close()
