@@ -172,7 +172,7 @@ def test_coco_loads_in_pycocotools_with_23_categories(db, tax, tmp_path: Path):
 
 def test_categories_follow_taxonomy_order(tax):
     cats = categories(tax)
-    # a sequence file: the 23 classes; the gallery-only `cable` (task U45, the
+    # a sequence file: the 23 classes; the gallery-only `loose_cable` (task U45, the
     # taxonomy's last) only in a gallery file, after `other` (24)
     assert [c["name"] for c in cats] == list(tax.classes)[:23]
     assert [c["id"] for c in cats] == list(range(1, 24))
@@ -180,7 +180,7 @@ def test_categories_follow_taxonomy_order(tax):
         "structure", "part", "fastener", "latch", "interface"
     }
     assert categories(tax, gallery=True) == cats + [
-        {"id": 25, "name": "cable", "supercategory": "interface"}]
+        {"id": 25, "name": "loose_cable", "supercategory": "interface"}]
 
 
 def test_only_verified_filters_rows_and_images(db, tax, tmp_path: Path):

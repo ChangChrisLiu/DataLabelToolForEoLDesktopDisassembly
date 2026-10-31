@@ -59,24 +59,12 @@ class Taxonomy:
 
     # -- class queries ------------------------------------------------------
     def _defn(self, cls: str) -> dict:
-        """The state definition ``cls`` names: a virtual node's before a class's.
-
-        One name is both since task U45: ``cable`` is the virtual node every
-        ``cable:<owner>`` target folds through (the state machine, the graph
-        planner and the VLM export ask ``default_state("cable")`` and mean
-        ``routed``) and the class of the loose cables drawn in the components
-        gallery. A gallery-only part is never folded through the state
-        machine, so the name-keyed state queries keep answering for the node
-        -- every reading that existed before the class did is unchanged -- and
-        the class's own entry is read where only a class can be meant
-        (:meth:`group_of`, ``classes`` itself: the COCO categories, the pickers).
-        """
         try:
-            return self.virtual_nodes[cls]
+            return self.classes[cls]
         except KeyError:
             pass
         try:
-            return self.classes[cls]
+            return self.virtual_nodes[cls]
         except KeyError:
             raise KeyError(f"unknown taxonomy class: {cls!r}") from None
 
@@ -89,11 +77,8 @@ class Taxonomy:
         A rough statement of how deep in the machine a class sits, which is what
         lets a caller order instances the way they are physically stacked; an
         unknown class simply has no group rather than raising, since this is
-        only ever used to sort. A class's group wins over a virtual node of
-        the same name, which has none (``cable``, task U45).
+        only ever used to sort.
         """
-        if cls in self.classes:
-            return str(self.classes[cls].get("group") or "")
         try:
             return str(self._defn(cls).get("group") or "")
         except KeyError:

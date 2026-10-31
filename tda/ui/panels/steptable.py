@@ -688,7 +688,7 @@ class StepTablePanel(MergeIntoMixin, ReclassMenuMixin, AbsentMenuMixin, QWidget)
         silently start a parallel ordinal run.
         """
         cls, ok = QInputDialog.getItem(
-            # not a gallery-only class (cable, task U45): no step names one
+            # not a gallery-only class (loose_cable, task U45): no step names one
             self, "New instance", "Taxonomy class:",
             sorted(c for c in self.tax.classes if c not in GALLERY_ONLY_CLASSES), 0, False
         )

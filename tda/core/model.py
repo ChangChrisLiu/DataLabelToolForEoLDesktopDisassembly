@@ -37,10 +37,11 @@ COMPONENT_CAMERA = {"cmp_scan": "scan", "cmp_oak1": "oak1", "cmp_oak2": "oak2",
 #: the annotator added from the shot itself is listed whatever its class.
 GALLERY_EXCLUDED_CLASSES = frozenset({"connector", "cable", "screw"})
 #: Classes whose instances are only ever made as gallery-only parts (task U45):
-#: the taxonomy class ``cable`` -- a loose cable laid out on the table. The
-#: sequence never names one (its cables are the virtual ``cable:<owner>``
-#: nodes), so the sequence's COCO files do not list the category either.
-GALLERY_ONLY_CLASSES = frozenset({"cable"})
+#: the taxonomy class ``loose_cable`` -- a cable laid out loose on the table.
+#: The sequence never names one (its cables are the virtual ``cable:<owner>``
+#: nodes, a name the class keeps clear of), so the sequence's COCO files do
+#: not list the category either.
+GALLERY_ONLY_CLASSES = frozenset({"loose_cable"})
 
 
 def is_component_view(view: Optional[str]) -> bool:

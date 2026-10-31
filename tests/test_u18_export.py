@@ -74,7 +74,7 @@ def test_coco_writes_them_under_their_class_with_their_own_attributes(scene, tmp
     assert ann["attributes"]["state"] is None and ann["attributes"]["placement"] is None
     assert ann["area"] == 12 * 12
     # `other` is a category of its own, one past the sequence's 23 classes (24,
-    # kept when the gallery-only `cable` came after it, U45), listed because used
+    # kept when the gallery-only `loose_cable` came after it, U45), listed because used
     other = _ann(doc, STEP, cup)
     assert other["category_id"] == len(categories(session.tax)) + 1 == 24
     assert other_category(session.tax) in doc["categories"]

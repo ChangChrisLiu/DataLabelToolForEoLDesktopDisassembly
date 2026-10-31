@@ -563,7 +563,7 @@ class StepTableData:
         ``attrs["gallery_only"]`` (task U45) makes them gallery-only parts:
         the components gallery lists them on every shot and the teardown never
         asks for them, so they take no parent and no removal step. A class
-        only such a part can have (``cable``) is refused without the flag.
+        only such a part can have (``loose_cable``) is refused without the flag.
         """
         attrs = {k: v for k, v in dict(attrs or {}).items() if v not in (None, "")}
         gallery_only = bool(attrs.get(GALLERY_ONLY_ATTR))

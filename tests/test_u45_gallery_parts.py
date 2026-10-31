@@ -9,9 +9,10 @@ the parts, and there are cables on the table too. So:
   shot lists them, whatever their class, and nothing of the teardown sequence
   -- geometry, the card, the compiler (so ``missing_shape`` and ``Space``),
   ``cli check``, the graph, the VLM context -- ever sees one;
-* the taxonomy has a class ``cable`` (24th, last), made only as a gallery-only
-  part; the virtual ``cable:<owner>`` node keeps its own states, and the COCO
-  ids of the 23 classes and of ``other`` do not move (``cable`` is 25).
+* the taxonomy has a class ``loose_cable`` (24th, last), made only as a
+  gallery-only part; the virtual ``cable`` node (``cable:<owner>``) is untouched
+  -- a name of its own since round 2 -- and the COCO ids of the 23 classes and
+  of ``other`` do not move (``loose_cable`` is 25).
 
 The scene is :mod:`gallery_scene`: the real D13 sheet, three shots per gallery
 view.
@@ -125,13 +126,13 @@ def test_the_rest_absent_refuses_while_one_of_them_is_being_drawn(tmp_path):
 def test_added_cables_are_listed_on_every_shot_of_every_gallery_view(tmp_path):
     session = GS.make_session(tmp_path)
     depth = len(session.undo_stack.ops)
-    keys = session.add_gallery_parts("cable", 2, {"kind": "sata"})
-    assert keys == ["cable.sata.01", "cable.sata.02"]
+    keys = session.add_gallery_parts("loose_cable", 2, {"kind": "sata"})
+    assert keys == ["loose_cable.sata.01", "loose_cable.sata.02"]
     assert len(session.undo_stack.ops) == depth + 1
     stored = session.db.instances(GS.DESKTOP)
     for key in keys:
         rec = stored[key]
-        assert rec.cls == "cable" and rec.attrs[GALLERY_ONLY_ATTR] is True
+        assert rec.cls == "loose_cable" and rec.attrs[GALLERY_ONLY_ATTR] is True
         assert is_gallery_only(rec) and is_extra(rec)
         assert rec.parent is None and not rec.attached and rec.raw_names == []
     # no hand-written event: it has no state, no step
@@ -163,11 +164,11 @@ def test_an_added_screw_follows_the_logs_ordinal_run_whatever_the_gallery_exclud
 
 def test_the_cable_key_rule_and_its_refusals(tmp_path):
     session = GS.make_session(tmp_path)
-    assert session.add_gallery_parts("cable", 1) == ["cable.01"]
-    assert session.add_gallery_parts("cable", 1, {"kind": "power"}) == ["cable.power.01"]
-    assert session.add_gallery_parts("cable", 1) == ["cable.02"]
+    assert session.add_gallery_parts("loose_cable", 1) == ["loose_cable.01"]
+    assert session.add_gallery_parts("loose_cable", 1, {"kind": "power"}) == ["loose_cable.power.01"]
+    assert session.add_gallery_parts("loose_cable", 1) == ["loose_cable.02"]
     with pytest.raises(SessionRefusal, match="kind"):
-        session.add_gallery_parts("cable", 1, {"kind": "hdmi"})
+        session.add_gallery_parts("loose_cable", 1, {"kind": "hdmi"})
     with pytest.raises(SessionRefusal):
         session.add_gallery_parts("chassis", 1)
     # a cable is never a part of the sequence: Steps refuses one without the flag
@@ -175,20 +176,20 @@ def test_the_cable_key_rule_and_its_refusals(tmp_path):
 
     data = StepTableData.load(session.db, GS.DESKTOP, session.tax, "tester")
     with pytest.raises(EditError, match="只在零件合照里加"):
-        data.add_extras("cable", 1)
+        data.add_extras("loose_cable", 1)
     from tda.ui.panels.add_parts import class_choices, gallery_class_choices
 
-    assert "cable" not in [c for _l, c in class_choices(data)]
-    assert "cable" in [c for _l, c in gallery_class_choices(data)]
+    assert "loose_cable" not in [c for _l, c in class_choices(data)]
+    assert "loose_cable" in [c for _l, c in gallery_class_choices(data)]
     # and nowhere but the gallery
     session.open(GS.DESKTOP, "scan")
     with pytest.raises(SessionRefusal, match="只在零件合照里用"):
-        session.add_gallery_parts("cable", 1)
+        session.add_gallery_parts("loose_cable", 1)
 
 
 def test_the_sequence_never_sees_a_gallery_only_part(tmp_path):
     session = GS.make_session(tmp_path)
-    keys = session.add_gallery_parts("cable", 1, {"kind": "fan"})
+    keys = session.add_gallery_parts("loose_cable", 1, {"kind": "fan"})
     keys += session.add_gallery_parts("ram_latch", 1)
     db, tax = session.db, session.tax
     instances = instances_of(db, GS.DESKTOP)
@@ -217,7 +218,7 @@ def test_the_sequence_never_sees_a_gallery_only_part(tmp_path):
 
 def test_ctrl_z_takes_them_back_until_one_is_drawn(tmp_path):
     session = GS.make_session(tmp_path)
-    keys = session.add_gallery_parts("cable", 2)
+    keys = session.add_gallery_parts("loose_cable", 2)
     assert session.undo()
     assert not set(keys) & set(session.db.instances(GS.DESKTOP))
     assert not set(keys) & set(_card(session))
@@ -239,7 +240,7 @@ def test_steps_mode_deletes_one_like_any_extra(tmp_path):
     from tda.ui.steps_model import StepTableData
 
     session = GS.make_session(tmp_path)
-    [key] = session.add_gallery_parts("cable", 1)
+    [key] = session.add_gallery_parts("loose_cable", 1)
     data = StepTableData.load(session.db, GS.DESKTOP, session.tax, "tester")
     assert key in data.instances
     assert not [i for i in data.issues if key in i]      # no orphan question about it
@@ -254,11 +255,11 @@ def test_status_counts_them_under_the_gallery_only(tmp_path):
     from tda.cli import format_desktop
 
     session = GS.make_session(tmp_path)
-    keys = session.add_gallery_parts("cable", 2)
+    keys = session.add_gallery_parts("loose_cable", 2)
     detail = format_desktop(session.db, P.status_rows(session.db)[0])
     head, _sep, gallery = detail.partition("零件合照 / components gallery")
     assert f"gallery-only parts (仅合照): 2 - {', '.join(keys)}" in gallery
-    assert not [line for line in head.splitlines() if "cable." in line]
+    assert not [line for line in head.splitlines() if "loose_cable." in line]
 
 
 def test_cli_check_names_them_in_the_gallery_and_not_in_the_sequence(tmp_path, capsys):
@@ -274,7 +275,7 @@ def test_cli_check_names_them_in_the_gallery_and_not_in_the_sequence(tmp_path, c
                                 "tester")
     session.sweeper_enabled = False
     session.open(GS.DESKTOP, VIEW)
-    [key] = session.add_gallery_parts("cable", 1)
+    [key] = session.add_gallery_parts("loose_cable", 1)
     session.close(force=True)
     db.close()
     capsys.readouterr()
@@ -288,23 +289,23 @@ def test_cli_check_names_them_in_the_gallery_and_not_in_the_sequence(tmp_path, c
 
 def test_coco_writes_the_cable_category_and_the_flag_on_the_gallery_only(tmp_path):
     session = GS.make_session(tmp_path)
-    [key] = session.add_gallery_parts("cable", 1, {"kind": "sata"})
+    [key] = session.add_gallery_parts("loose_cable", 1, {"kind": "sata"})
     _draw(session, key)
     session.mark_rest_absent()
     assert session.confirm_frame()
     doc = export_coco(session.db, session.tax, [GS.DESKTOP], VIEW,
                       str(tmp_path / "coco_gallery.json"), only_verified=True)
     [ann] = [a for a in doc["annotations"] if a["attributes"]["instance_key"] == key]
-    assert ann["category_id"] == category_ids(session.tax)["cable"] == 25
+    assert ann["category_id"] == category_ids(session.tax)["loose_cable"] == 25
     assert ann["attributes"]["gallery_only"] is True
     assert (ann["attributes"]["state"], ann["attributes"]["placement"]) == (
         "removed", "on_bench")
     names = {c["name"]: c["id"] for c in doc["categories"]}
-    assert names["cable"] == 25 and names["connector"] == 23 and len(names) == 24
+    assert names["loose_cable"] == 25 and names["connector"] == 23 and len(names) == 24
     # the sequence's file: no cable category, no gallery_only key anywhere
     seq = export_coco(session.db, session.tax, [GS.DESKTOP], "scan",
                       str(tmp_path / "coco_scan.json"), only_verified=False)
-    assert "cable" not in {c["name"] for c in seq["categories"]}
+    assert "loose_cable" not in {c["name"] for c in seq["categories"]}
     assert len(seq["categories"]) == 23
     assert not [a for a in seq["annotations"] if "gallery_only" in a["attributes"]]
     assert key not in json.dumps(seq)
@@ -313,17 +314,20 @@ def test_coco_writes_the_cable_category_and_the_flag_on_the_gallery_only(tmp_pat
 # --------------------------------------------------------------------------- #
 # the taxonomy and the keys
 # --------------------------------------------------------------------------- #
-def test_the_taxonomy_has_24_classes_cable_last_and_the_virtual_node_is_unchanged():
+def test_the_taxonomy_has_24_classes_loose_cable_last_and_the_virtual_node_is_unchanged():
     tax = load_taxonomy()
-    assert len(tax.classes) == 24 and list(tax.classes)[-1] == "cable"
-    cable = tax.classes["cable"]
+    assert len(tax.classes) == 24 and list(tax.classes)[-1] == "loose_cable"
+    cable = tax.classes["loose_cable"]
     assert cable["group"] == "interface"
     assert cable["attrs"]["kind"] == ["sata", "power", "fan", "front_panel", "other"]
     assert cable["states"] == ["installed", "removed"]
     assert cable["default_state"] == "installed"
     assert cable["needs_mask"] == {"installed": True, "removed": True}
-    assert tax.group_of("cable") == "interface"
-    # the name-keyed state queries are the virtual node's, as before (U33)
+    assert tax.group_of("loose_cable") == "interface"
+    assert tax.states_of("loose_cable") == ["installed", "removed"]
+    assert tax.default_state("loose_cable") == "installed"
+    # a name of its own (U45 round 2): "cable" is the virtual node, as before (U33)
+    assert "cable" not in tax.classes and "loose_cable" not in tax.virtual_nodes
     assert tax.states_of("cable") == ["routed", "released", "removed"]
     assert tax.default_state("cable") == "routed"
     assert tax.apply_verb("cable", {}, "release") == ("state", "released")
@@ -332,7 +336,7 @@ def test_the_taxonomy_has_24_classes_cable_last_and_the_virtual_node_is_unchange
     assert [ids[c] for c in list(tax.classes)[:23]] == list(range(1, 24))
     from tda.core.export.coco import other_category
 
-    assert other_category(tax)["id"] == 24 and ids["cable"] == 25
+    assert other_category(tax)["id"] == 24 and ids["loose_cable"] == 25
 
 
 def test_the_class_has_a_chinese_name_and_an_english_line():
@@ -340,13 +344,14 @@ def test_the_class_has_a_chinese_name_and_an_english_line():
 
     from tda.ui.class_names import class_zh
 
-    assert class_zh("cable") == "线缆" and class_zh("cable", {"kind": "sata"}) == "SATA 线"
+    assert class_zh("loose_cable") == "线缆"
+    assert class_zh("loose_cable", {"kind": "sata"}) == "SATA 线"
     root = Path(__file__).resolve().parents[1]
     spec = importlib.util.spec_from_file_location("export_scanpack_u45",
                                                   root / "scripts" / "export_scanpack.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert "cable" in module.CLASS_EN
+    assert "loose_cable" in module.CLASS_EN
     assert set(load_taxonomy().classes) <= set(module.CLASS_EN)
 
 
@@ -360,8 +365,8 @@ def test_the_docs_say_it():
                    "「只在零件合照里出现，拆解序列里不会要它；"):
         assert needed in gallery, needed
     classes = spec.split("### 6.1 类别", 1)[1].split("### 6.2", 1)[0]
-    assert "（24 类" in classes and "| `cable`（v1.44，U45） |" in classes
-    assert "`cable` 是 25" in classes and "`other` 保持 24" in classes
+    assert "（24 类" in classes and "| `loose_cable`（v1.44，U45） |" in classes
+    assert "`loose_cable` 是 25" in classes and "`other` 保持 24" in classes
     changes = spec.split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
     assert any(e.startswith("- **v1.44（2026-10-30）**：**零件合照：一键「其余的都看不见」")
@@ -450,19 +455,19 @@ def test_the_add_button_makes_them_and_the_card_lists_them(window):
 
     def answer(data):
         seen.append(data)
-        return {"cls": "cable", "count": 1, "attrs": {"kind": "front_panel"}}
+        return {"cls": "loose_cable", "count": 1, "attrs": {"kind": "front_panel"}}
 
     window.ask_gallery_parts = answer
     window.task_card.add_parts_button.click()
     QApplication.processEvents()
-    assert seen and "cable.front_panel.01" in reported[-1]
+    assert seen and "loose_cable.front_panel.01" in reported[-1]
     rows = {r["instance"]: r for r in window.task_card.rows()}
-    assert "cable.front_panel.01" in rows
-    assert window.task_card.current_instance() == "cable.front_panel.01"
+    assert "loose_cable.front_panel.01" in rows
+    assert window.task_card.current_instance() == "loose_cable.front_panel.01"
     # the instance table marks it 仅合照
-    _draw(window.session, "cable.front_panel.01")
+    _draw(window.session, "loose_cable.front_panel.01")
     window.instances.refresh()
-    row = window.instances.row_of("cable.front_panel.01")
+    row = window.instances.row_of("loose_cable.front_panel.01")
     assert row and row.get("gallery_only")
 
 
@@ -471,9 +476,9 @@ def test_the_dialog_offers_cable_first_with_its_kind_and_no_parent(window):
 
     data = window.session.gallery_parts_data()
     dialog = GalleryPartsDialog(data, window)
-    assert dialog.cls == "cable" and dialog.disc_combo.isVisibleTo(dialog)
-    assert dialog.keys() == ["cable.sata.01"]
-    assert dialog.values() == {"cls": "cable", "count": 1, "attrs": {"kind": "sata"}}
+    assert dialog.cls == "loose_cable" and dialog.disc_combo.isVisibleTo(dialog)
+    assert dialog.keys() == ["loose_cable.sata.01"]
+    assert dialog.values() == {"cls": "loose_cable", "count": 1, "attrs": {"kind": "sata"}}
     assert GALLERY_INTRO == ("只在零件合照里出现，拆解序列里不会要它；"
                              "日志里本来就有的零件请在步骤表里加（可填拆下于第几步）")
     assert not hasattr(dialog, "parent_combo") and not hasattr(dialog, "removed_spin")

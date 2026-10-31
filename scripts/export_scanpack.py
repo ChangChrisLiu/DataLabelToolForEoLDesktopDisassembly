@@ -212,8 +212,8 @@ CLASS_EN: dict[str, str] = {
                     "machines) a frame around the fan.",
     "cable_clip": "A clip holding a cable.",
     "connector": "A cable plug in its socket (tracked only while plugged in).",
-    "cable": "A loose cable laid out with the removed parts (attrs.kind: sata, power, fan, "
-             "front_panel, other); drawn in the components gallery only.",
+    "loose_cable": "A cable laid out loose with the removed parts (attrs.kind: sata, power, fan, "
+                   "front_panel, other); drawn in the components gallery only.",
     "other": "An object outside the machine (context), named by its label.",
 }
 

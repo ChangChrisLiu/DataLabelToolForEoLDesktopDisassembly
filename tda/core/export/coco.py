@@ -4,7 +4,7 @@
 file: one image per frame that has a compiled row, one annotation per row that
 carries geometry, and the 23 taxonomy classes as categories 1..23 in
 ``Taxonomy.classes`` order, so category ids are stable across exports as long as
-``configs/taxonomy.yaml`` keeps its order. The 24th class, ``cable`` (task
+``configs/taxonomy.yaml`` keeps its order. The 24th class, ``loose_cable`` (task
 U45), is a gallery-only class (:data:`~tda.core.model.GALLERY_ONLY_CLASSES`):
 it is listed in a components-gallery file only, with id **25** -- after
 ``other`` (24, the 框外零件's), which keeps the id it has had since U18 -- so
@@ -87,7 +87,7 @@ Gallery-only parts (task U45)
 -----------------------------
 A part added from a components-gallery shot (``attrs.gallery_only``) is
 written on the gallery's files like every part on the table, under its class
--- ``cable`` among them -- with ``attributes.gallery_only = true`` (the key is
+-- ``loose_cable`` among them -- with ``attributes.gallery_only = true`` (the key is
 absent on every other row, so the sequence's files are unchanged). No
 sequence frame ever compiles one, and :class:`DesktopCtx` keeps them out of
 ``instances``, so the VLM export cannot count or name one either.
@@ -491,7 +491,7 @@ def _class_ids(tax: Taxonomy) -> dict[str, int]:
     the 23 of spec 6.1, ids 1..23 as they always were. ``N + 1`` is ``other``,
     the 框外零件's category (:func:`other_category`, task U18), and the classes
     only a gallery-only part has (:data:`~tda.core.model.GALLERY_ONLY_CLASSES`,
-    task U45: ``cable``) follow it, from ``N + 2``. So appending a class never
+    task U45: ``loose_cable``) follow it, from ``N + 2``. So appending a class never
     moves an id a file has carried.
     """
     ids: dict[str, int] = {}
@@ -511,7 +511,7 @@ def categories(tax: Taxonomy, gallery: bool = False) -> list[dict]:
 
     A sequence file lists the 23 classes of spec 6.1, ids 1..23; a
     components-gallery file (``gallery``, task U45) lists the gallery-only
-    class ``cable`` (id 25) after them as well -- the teardown never has one.
+    class ``loose_cable`` (id 25) after them as well -- the teardown never has one.
     """
     ids = _class_ids(tax)
     return [
@@ -1050,7 +1050,7 @@ def export_coco(
         "licenses": [],
         "images": [],
         "annotations": [],
-        # the gallery's files also list its gallery-only class (cable, U45)
+        # the gallery's files also list its gallery-only class (loose_cable, U45)
         "categories": categories(tax, gallery=gallery),
     }
     cat_of = category_ids(tax)

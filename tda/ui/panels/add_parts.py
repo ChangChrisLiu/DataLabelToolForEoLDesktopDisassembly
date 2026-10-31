@@ -37,7 +37,7 @@ names at all -- a loose cable, a screw the sheet never counted -- is added from
 the shot itself (task U45): :class:`GalleryPartsDialog`, the task card's
 「＋ 这张里还有…」, asks only for the class (with its ``role`` / ``kind``) and
 how many; the parts are ``gallery_only`` and the teardown never asks for them.
-The class ``cable`` is offered there only.
+The class ``loose_cable`` is offered there only.
 """
 from __future__ import annotations
 
@@ -124,7 +124,7 @@ def class_choices(data: StepTableData) -> list[tuple[str, str]]:
     """``(label, class)`` for every class an extra may have, taxonomy order.
 
     The chassis is unique per desktop and is left out, and so is a class only
-    a gallery-only part can have (``cable``, task U45): it is added from the
+    a gallery-only part can have (``loose_cable``, task U45): it is added from the
     shot, with 「＋ 这张里还有…」 (:class:`GalleryPartsDialog`).
     """
     return [(f"{class_zh(cls)}  {cls}", cls) for cls in data.tax.classes
@@ -383,7 +383,7 @@ GALLERY_INTRO = ADD_PARTS_INTRO
 def gallery_class_choices(data: StepTableData) -> list[tuple[str, str]]:
     """``(label, class)`` a gallery-only part may have: every class but the chassis.
 
-    ``cable`` (task U45) among them -- it is the class this dialog exists for;
+    ``loose_cable`` (task U45) among them -- it is the class this dialog exists for;
     the screws and connectors the gallery leaves out of a log's parts are
     offered too, because an annotator who adds one is saying it can be told
     apart on the table.
@@ -405,7 +405,7 @@ class GalleryPartsDialog(QDialog):
     """A class and a count for gallery-only parts (task U45): no parent, state or step.
 
     The class picker and the count are :class:`AddPartsDialog`'s (and its
-    ``role`` / ``kind`` combo, which is part of the key: ``cable.sata.01``,
+    ``role`` / ``kind`` combo, which is part of the key: ``loose_cable.sata.01``,
     ``screw.motherboard.09``). It only reads ``data``; :meth:`values` is what
     the window hands to the session, which stages them through
     :meth:`~tda.ui.steps_model.StepTableData.add_extras` with
@@ -445,7 +445,7 @@ class GalleryPartsDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(self.preview)
         layout.addWidget(self.buttons)
-        index = self.class_combo.findData(cls or "cable")
+        index = self.class_combo.findData(cls or "loose_cable")
         if index >= 0:
             self.class_combo.setCurrentIndex(index)
         self.class_combo.currentIndexChanged.connect(self._on_class)

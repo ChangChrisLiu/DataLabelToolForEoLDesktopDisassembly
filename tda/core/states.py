@@ -735,7 +735,7 @@ def gallery_state(instances: dict[str, InstanceRec], events: list[StateEvent],
 
     The gallery-only parts (task U45), which no snapshot of the teardown
     carries, join them on the table: ``removed`` like every part there, any
-    class -- a loose ``cable``, a ``screw`` the sheet never counted.
+    class -- a ``loose_cable``, a ``screw`` the sheet never counted.
     """
     excluded = frozenset(excluded)
     final = state_at(instances, events, AFTER_LAST_STEP, tax)
