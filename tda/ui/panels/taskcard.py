@@ -37,10 +37,12 @@ from typing import Collection, Optional
 from PySide6.QtCore import QEvent, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import (
+    QHBoxLayout,
     QLabel,
     QListView,
     QListWidget,
     QListWidgetItem,
+    QPushButton,
     QStyle,
     QStyledItemDelegate,
     QVBoxLayout,
@@ -56,14 +58,18 @@ from tda.core.truth_refusals import (
     is_blocking,
 )
 from tda.core.empty_visible import EMPTY_VISIBLE, NO_SHAPE, classify
-from tda.core.model import CAGE_LATCH_RULE, EXTRA_ATTR, IMPLIED_RULE_ATTR
+from tda.core.model import CAGE_LATCH_RULE, EXTRA_ATTR, GALLERY_ONLY_ATTR, IMPLIED_RULE_ATTR
 from tda.ui import app_actions as A
 from tda.ui import session_api as api
 from tda.ui.class_names import instance_label, state_zh, visibility_zh
 from tda.ui.gallery import (
     ABSENT_CHIP,
     ABSENT_KEY,
+    ADD_PARTS_BUTTON,
+    ADD_PARTS_TIP,
     GALLERY_SENTENCE,
+    REST_ABSENT_BUTTON,
+    REST_ABSENT_TIP,
     gallery_header,
     is_component_view,
 )
@@ -434,6 +440,9 @@ def row_view(row: dict, editing: Optional[str] = None, bench: bool = False,
         chip = CHIP_TODO
     if raw:
         raw = f"日志：{raw}"
+    elif (row.get("attrs") or {}).get(GALLERY_ONLY_ATTR):
+        # added from a gallery shot (task U45): only the gallery has it
+        raw = GALLERY_ONLY_RAW
     elif (row.get("attrs") or {}).get(EXTRA_ATTR):
         # a part added in S1 has no name in the log: say so rather than nothing
         raw = ADDED_RAW
@@ -448,6 +457,8 @@ def row_view(row: dict, editing: Optional[str] = None, bench: bool = False,
 #: What a row of a part added in S1 (:mod:`tda.core.extra`) shows where the
 #: others show their name in the log.
 ADDED_RAW = "S1 手动添加（日志里没有）"
+#: ... and of a gallery-only part (task U45), added from a shot.
+GALLERY_ONLY_RAW = "仅合照：在合照里加的（日志里没有，拆解序列里不要它）"
 
 
 def row_tooltip(row: dict, view: dict, blockers: int = 0, confirmed: bool = False) -> str:
@@ -790,6 +801,10 @@ class TaskCardPanel(QWidget):
     sigOpenConflict = Signal(int)
     #: 「看不见」 / its undo was chosen on a components-gallery row (task U10).
     sigMarkAbsent = Signal(str)
+    #: The gallery header's 「其余的都看不见」 was clicked (task U45).
+    sigMarkRestAbsent = Signal()
+    #: The gallery header's 「＋ 这张里还有…」 was clicked (task U45).
+    sigAddGalleryParts = Signal()
 
     def __init__(self, session: Optional[api.SessionLike] = None,
                  parent: Optional[QWidget] = None) -> None:
@@ -828,6 +843,24 @@ class TaskCardPanel(QWidget):
         self.note_line = NoteLine()
         self.note_line.setVisible(False)
         self._note_enabled = True
+        #: A components-gallery shot's two buttons (task U45), under the header;
+        #: hidden on every other frame. No key for either.
+        self.gallery_bar = QWidget()
+        bar = QHBoxLayout(self.gallery_bar)
+        bar.setContentsMargins(0, 0, 0, 0)
+        bar.setSpacing(4)
+        self.rest_absent_button = QPushButton(REST_ABSENT_BUTTON)
+        self.rest_absent_button.setToolTip(REST_ABSENT_TIP)
+        self.rest_absent_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.rest_absent_button.clicked.connect(lambda: self.sigMarkRestAbsent.emit())
+        self.add_parts_button = QPushButton(ADD_PARTS_BUTTON)
+        self.add_parts_button.setToolTip(ADD_PARTS_TIP)
+        self.add_parts_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.add_parts_button.clicked.connect(lambda: self.sigAddGalleryParts.emit())
+        bar.addWidget(self.rest_absent_button)
+        bar.addWidget(self.add_parts_button)
+        bar.addStretch(1)
+        self.gallery_bar.setVisible(False)
 
         self._list = QListWidget()
         self._list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
@@ -868,6 +901,7 @@ class TaskCardPanel(QWidget):
         title.setToolTip(ICON_LEGEND)
         layout.addWidget(title)
         layout.addWidget(self.header)
+        layout.addWidget(self.gallery_bar)
         layout.addWidget(self.note_line)
         layout.addWidget(self._list, 1)
         layout.addWidget(self._problems_label)
@@ -936,6 +970,7 @@ class TaskCardPanel(QWidget):
         self._blockers = self.problem_count()
         self._paint_header()
         self._show_note()
+        self._show_gallery_bar()
         first_open = -1
         for i, row in enumerate(rows):
             kind = str(row.get("kind", api.KIND_CONFIRM))
@@ -958,6 +993,18 @@ class TaskCardPanel(QWidget):
             item.setFont(font)
             self._list.addItem(item)
         self._list.setCurrentRow(first_open)
+
+    def _show_gallery_bar(self) -> None:
+        """The two gallery buttons (task U45): on a components-gallery shot only.
+
+        「其余的都看不见」 stays clickable on a settled shot: the window says
+        there is nothing left to mark rather than a grey button saying nothing.
+        """
+        self.gallery_bar.setVisible(bool((self._header_args or {}).get("gallery")))
+
+    def gallery_buttons_visible(self) -> bool:
+        """Are the gallery's two header buttons shown (the frame is a shot)?"""
+        return not self.gallery_bar.isHidden()
 
     def _gallery_text(self, step: Optional[int]) -> str:
         """The components-gallery shot's sentence (task U10), ``""`` elsewhere."""

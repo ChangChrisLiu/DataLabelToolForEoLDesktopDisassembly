@@ -31,6 +31,13 @@ extra: the button 「框外零件…」 (task U18, shown when the panel wires it
 the dialog and hands over to the window, which makes a context object in
 Annotate mode (:mod:`tda.ui.panels.context_object`). Nothing about adding parts
 changes.
+
+A part that lies on the table in the **components gallery** and that no step
+names at all -- a loose cable, a screw the sheet never counted -- is added from
+the shot itself (task U45): :class:`GalleryPartsDialog`, the task card's
+「＋ 这张里还有…」, asks only for the class (with its ``role`` / ``kind``) and
+how many; the parts are ``gallery_only`` and the teardown never asks for them.
+The class ``loose_cable`` is offered there only.
 """
 from __future__ import annotations
 
@@ -50,12 +57,16 @@ from PySide6.QtWidgets import (
 
 from tda.core import extra as X
 from tda.core.logs import CHASSIS_KEY
+from tda.core.model import GALLERY_ONLY_CLASSES
 from tda.ui.class_names import class_zh, state_zh
+from tda.ui.gallery import ADD_PARTS_BUTTON, ADD_PARTS_INTRO, ADD_PARTS_TIP
 from tda.ui.guide import steps_text
 from tda.ui.steps_model import StepTableData
 
-__all__ = ["AddPartsDialog", "BUTTON", "CONTEXT_BUTTON", "DEMOTION", "HINT", "NO_PARENT",
-           "TIP", "TITLE", "class_choices", "demotion_text", "preview_text"]
+__all__ = ["AddPartsDialog", "BUTTON", "CONTEXT_BUTTON", "DEMOTION", "GALLERY_BUTTON",
+           "GALLERY_INTRO", "GALLERY_TIP", "GALLERY_TITLE", "GalleryPartsDialog", "HINT",
+           "NO_PARENT", "TIP", "TITLE", "class_choices", "demotion_text",
+           "gallery_class_choices", "gallery_preview_text", "preview_text"]
 
 TITLE = "＋ 添加零件 / Add parts"
 #: The button above the Instances table that opens the dialog.
@@ -112,10 +123,12 @@ def elsewhere_text(others: dict) -> str:
 def class_choices(data: StepTableData) -> list[tuple[str, str]]:
     """``(label, class)`` for every class an extra may have, taxonomy order.
 
-    The chassis is unique per desktop and is left out.
+    The chassis is unique per desktop and is left out, and so is a class only
+    a gallery-only part can have (``loose_cable``, task U45): it is added from the
+    shot, with 「＋ 这张里还有…」 (:class:`GalleryPartsDialog`).
     """
     return [(f"{class_zh(cls)}  {cls}", cls) for cls in data.tax.classes
-            if cls != CHASSIS_KEY]
+            if cls != CHASSIS_KEY and cls not in GALLERY_ONLY_CLASSES]
 
 
 def preview_text(keys: list[str], parent: Optional[str]) -> str:
@@ -353,3 +366,136 @@ class AddPartsDialog(QDialog):
         text = "".join(t for t in (text, elsewhere) if t)
         self.warning.setText(text)
         self.warning.setVisible(bool(text))
+
+
+# --------------------------------------------------------------------------- #
+# 「＋ 这张里还有…」: a gallery-only part, from the shot (task U45)
+# --------------------------------------------------------------------------- #
+#: The task card's button on a components-gallery shot (:mod:`tda.ui.gallery`
+#: says it, for the card and the guide), and the dialog's title.
+GALLERY_BUTTON = ADD_PARTS_BUTTON
+GALLERY_TITLE = f"{ADD_PARTS_BUTTON} / more parts on this shot"
+GALLERY_TIP = ADD_PARTS_TIP
+#: The one line the dialog says (the controller's brief, U45 §2.3).
+GALLERY_INTRO = ADD_PARTS_INTRO
+#: The discriminator combo's first entry: no ``kind`` / ``role`` (review M1).
+NO_DISCRIMINATOR = "（不细分）"
+
+
+def gallery_class_choices(data: StepTableData) -> list[tuple[str, str]]:
+    """``(label, class)`` a gallery-only part may have: every class but a few.
+
+    ``loose_cable`` (task U45) among them -- it is the class this dialog exists for;
+    the screws and connectors the gallery leaves out of a log's parts are
+    offered too, because an annotator who adds one is saying it can be told
+    apart on the table. Left out: the chassis, and the classes moulded into
+    their host (``host_class``: a RAM clip, the socket lever) -- they never lie
+    on the table on their own.
+    """
+    return [(f"{class_zh(cls)}  {cls}", cls) for cls in data.tax.classes
+            if cls != CHASSIS_KEY and not data.tax.host_class(cls)]
+
+
+def gallery_preview_text(keys: list[str]) -> str:
+    """The line under the form: the keys the parts will get."""
+    if not keys:
+        return "（这个类别不能添加 / this class cannot be added）"
+    shown = keys if len(keys) <= PREVIEW_SHOWN else [*keys[:PREVIEW_SHOWN - 1], "…", keys[-1]]
+    return (f"将新建 / will create: {', '.join(shown)}\n"
+            f"每张合照都会列出它们：不在的那张标「看不见」")
+
+
+class GalleryPartsDialog(QDialog):
+    """A class and a count for gallery-only parts (task U45): no parent, state or step.
+
+    The class picker and the count are :class:`AddPartsDialog`'s (and its
+    ``role`` / ``kind`` combo, which is part of the key: ``loose_cable.sata.01``,
+    ``screw.motherboard.09``). It only reads ``data``; :meth:`values` is what
+    the window hands to the session, which stages them through
+    :meth:`~tda.ui.steps_model.StepTableData.add_extras` with
+    ``gallery_only: true`` and saves at once.
+    """
+
+    def __init__(self, data: StepTableData, parent: Optional[QWidget] = None,
+                 cls: Optional[str] = None) -> None:
+        super().__init__(parent)
+        self.data = data
+        self.setWindowTitle(GALLERY_TITLE)
+        self.class_combo = QComboBox(self)
+        for label, name in gallery_class_choices(data):
+            self.class_combo.addItem(label, name)
+        self.disc_label = QLabel("", self)
+        self.disc_combo = QComboBox(self)
+        self.count_spin = QSpinBox(self)
+        self.count_spin.setRange(X.MIN_COUNT, X.MAX_COUNT)
+        self.count_spin.setValue(1)
+        self.preview = QLabel("", self)
+        self.preview.setWordWrap(True)
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("添加 / Add")
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        intro = QLabel(GALLERY_INTRO, self)
+        intro.setWordWrap(True)
+        form = QFormLayout()
+        form.addRow("类别 / class", self.class_combo)
+        form.addRow(self.disc_label, self.disc_combo)
+        form.addRow("数量 / count", self.count_spin)
+        layout = QVBoxLayout(self)
+        layout.addWidget(intro)
+        layout.addLayout(form)
+        layout.addWidget(self.preview)
+        layout.addWidget(self.buttons)
+        index = self.class_combo.findData(cls or "loose_cable")
+        if index >= 0:
+            self.class_combo.setCurrentIndex(index)
+        self.class_combo.currentIndexChanged.connect(self._on_class)
+        self.disc_combo.currentIndexChanged.connect(self._refresh_preview)
+        self.count_spin.valueChanged.connect(self._refresh_preview)
+        self._on_class()
+
+    @property
+    def cls(self) -> str:
+        return str(self.class_combo.currentData() or "")
+
+    def _attrs(self) -> dict:
+        name, vocabulary = self.data.discriminator_of(self.cls)
+        value = str(self.disc_combo.currentData() or "") if vocabulary else ""
+        return {name: value} if name and value else {}
+
+    def keys(self) -> list[str]:
+        """The keys the dialog would create as it stands."""
+        return self.data.preview_extras(self.cls, self.count_spin.value(), self._attrs())
+
+    def values(self) -> dict:
+        """``cls``, ``count`` and ``attrs`` -- the gallery-only flag is the session's to add."""
+        return {"cls": self.cls, "count": int(self.count_spin.value()),
+                "attrs": self._attrs()}
+
+    def _on_class(self, *_args) -> None:
+        name, vocabulary = self.data.discriminator_of(self.cls)
+        self.disc_combo.blockSignals(True)
+        self.disc_combo.clear()
+        if vocabulary:
+            # 「（不细分）」 first (review M1): the discriminator is optional and
+            # only part of the key when given -- loose_cable.01 needs no kind
+            self.disc_combo.addItem(NO_DISCRIMINATOR, "")
+        for value in vocabulary:
+            self.disc_combo.addItem(value, value)
+        # a cable is left undivided unless the annotator says which; the other
+        # classes start at their first value, as the S1 dialog does
+        if vocabulary and self.cls not in GALLERY_ONLY_CLASSES:
+            self.disc_combo.setCurrentIndex(1)
+        self.disc_combo.blockSignals(False)
+        self.disc_label.setText(f"{name} / 细分" if vocabulary else "")
+        self.disc_combo.setVisible(bool(vocabulary))
+        self.disc_label.setVisible(bool(vocabulary))
+        self._refresh_preview()
+
+    def _refresh_preview(self, *_args) -> None:
+        keys = self.keys()
+        self.preview.setText(gallery_preview_text(keys))
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(bool(keys))

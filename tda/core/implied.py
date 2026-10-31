@@ -59,7 +59,8 @@ from tda.core.model import (
     is_cage_latch,
     is_context,
     is_extra,
-    machine_only,
+    is_gallery_only,
+    teardown_only,
 )
 from tda.core.states import removal_steps
 from tda.core.taxonomy import Taxonomy
@@ -184,7 +185,9 @@ def implied_instances(
     there is nothing to imply, so a caller can write ``for rec in ...``
     unconditionally.
     """
-    instances = machine_only(instances)     # a 框外零件 is never implied (task U18)
+    # a 框外零件 is never implied (task U18), and a gallery-only part (U45) is
+    # no part the sequence has: a board on the table does not stand in for one
+    instances = teardown_only(instances)
     if not instances:
         return []
     desktop = next(iter(instances.values())).desktop
@@ -573,7 +576,8 @@ def cage_latches(
     idempotent: run on its own result it adopts the same latch and keeps the
     created ones.
     """
-    machine = {key: rec for key, rec in machine_only(instances).items()
+    # nor is a gallery-only part (task U45) a cage or a cage's latch
+    machine = {key: rec for key, rec in teardown_only(instances).items()
                if not is_provisional(key)}
     plan = CageLatches()
     deletions = _deletions(deleted, rename)
@@ -585,7 +589,8 @@ def cage_latches(
     alone = set(removal_steps(machine, actions, tax,
                               [k for k, r in machine.items() if r.cls == LATCH_CLASS]))
     side = {key: rec for key, rec in (extras or {}).items()
-            if key not in machine and not is_context(rec) and not is_provisional(key)}
+            if key not in machine and not is_context(rec) and not is_provisional(key)
+            and not is_gallery_only(rec)}
     pool = {**side, **machine}
     busy = set(instances) | set(side)
     stored = dict(stored or {})

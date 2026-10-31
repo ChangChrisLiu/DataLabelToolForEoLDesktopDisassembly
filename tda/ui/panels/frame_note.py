@@ -1,4 +1,8 @@
-"""「这一帧的说明」: the note box under the Review panel's queues (task U35).
+"""「这一帧的说明」: the note box of Review mode (task U35).
+
+Since task U44 it lives in the 「说明」 dock (:mod:`tda.ui.panels.notes_dock`),
+under the frame's occlusion order, and takes the dock's spare height
+(:meth:`FrameNoteBox.set_tall`); what it does is unchanged.
 
 The annotator types what they want the next reader to know about the frame on
 screen -- what is odd on it, what they decided, what the picture shows; part
@@ -112,6 +116,20 @@ class FrameNoteBox(QWidget):
         layout.addWidget(self.edit)
         self._sync()
 
+    def set_tall(self, tall: bool) -> None:
+        """Let the text box take the height it is given (task U44: the 「说明」 dock).
+
+        Under the Review panel's queues it was three or four lines; in the dock
+        it is the thing the user asked to be bigger.  At least as tall as before.
+        """
+        if tall:
+            self.edit.setMinimumHeight(self.EDIT_HEIGHT)
+            self.edit.setMaximumHeight(16777215)          # QWIDGETSIZE_MAX
+            self.edit.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                    QSizePolicy.Policy.Expanding)
+        else:
+            self.edit.setFixedHeight(self.EDIT_HEIGHT)
+
     # -- content ------------------------------------------------------------
     def show_frame(self, key: Optional[FrameKey], note: Optional[dict]) -> None:
         """Show the note of ``key`` (``None``: no frame), dropping what was typed."""
@@ -204,7 +222,7 @@ def note_tooltip(note: Optional[dict]) -> str:
     if not note:
         return ""
     return (f"{TITLE}（{note.get('author') or '-'}，{when_text(note.get('updated_at'))}）：\n"
-            f"{note.get('text') or ''}\n\n在复查模式（Review）面板下方的「{TITLE}」里改。")
+            f"{note.get('text') or ''}\n\n在复查模式（Review）右侧的「说明」窗里改。")
 
 
 class NoteLine(QLabel):

@@ -53,7 +53,7 @@ def test_v1_30_is_on_top_of_14():
                                   "- **v1.37", "- **v1.38", "- **v1.39", "- **v1.40",
                                   "- **v1.41", "- **v1.42", "- **v1.43", "- **v1.44",
                                   "- **v1.45"))
-    [entry] = [e for e in entries[:14] if e.startswith("- **v1.30")]
+    [entry] = [e for e in entries[:16] if e.startswith("- **v1.30")]
     assert entry.startswith("- **v1.30（2026-10-25）**：**检测器与 SAM 头用全部已确认帧重训；"
                             "按类置信度下限**（L6，§4.5、§5.1）")
     for needed in ("923 个已确认扫描仪帧", "`conf_by_class: {screw: 0.15}`", "F / S_F", "是假设",

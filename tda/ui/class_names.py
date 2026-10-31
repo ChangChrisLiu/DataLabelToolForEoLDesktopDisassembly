@@ -86,6 +86,7 @@ CLASS_ZH: dict[str, str] = {
     "cable_clip": "理线夹",
     "connector": "接头",
     "cable": "线缆",
+    "loose_cable": "线缆",       # the gallery's cables on the table (task U45)
 }
 
 #: ``(class, attribute) -> {value: name}`` where one attribute renames the part.
@@ -114,6 +115,10 @@ _REFINED: dict[tuple[str, str], dict[str, str]] = {
         "sata_data": "SATA 数据接头", "sata_power": "SATA 供电接头",
         "fan": "风扇接头", "front_panel": "前面板接头", "usb_header": "USB 接头",
         "audio": "音频接头", "molex": "大 4pin 接头",
+    },
+    # a loose cable on the gallery's table (task U45, the class `loose_cable`)
+    ("loose_cable", "kind"): {
+        "sata": "SATA 线", "power": "电源线", "fan": "风扇线", "front_panel": "前面板线",
     },
 }
 

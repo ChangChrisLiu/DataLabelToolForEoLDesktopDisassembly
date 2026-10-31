@@ -16,11 +16,20 @@ one is what it does on any other.  Three things are its own and live here:
   ``Enter`` -- and ``Ctrl+K``, its alias since task U16 -- is a plain commit:
   a shot is a segment of its own, with no frames behind it to keep.
 * **the title**: 「零件合照 OAK1 第 k/N 张」 in the window's title bar.
+* **the card header's two buttons** (task U45, no key for either):
+  「其余的都看不见」 marks every row of the shot not drawn and not 看不见 yet
+  as 看不见 in one op (:meth:`GalleryMixin.act_mark_rest_absent`), and
+  「＋ 这张里还有…」 adds gallery-only parts of a class and a count -- a loose
+  cable, a screw the log never counted -- which every shot lists from then on
+  and the teardown never asks for (:meth:`GalleryMixin.act_add_gallery_parts`).
 """
 from __future__ import annotations
 
 from typing import Optional
 
+from PySide6.QtWidgets import QDialog
+
+from tda.ui import app_actions as A
 from tda.ui import app_compat as compat
 from tda.ui import app_support as S
 from tda.ui.class_names import instance_label
@@ -31,7 +40,8 @@ from tda.ui.gallery import (
     is_component_view,
 )
 
-__all__ = ["GalleryMixin", "NOT_A_GALLERY", "PICK_A_PART"]
+__all__ = ["ADD_PARTS_MODE", "ADDED", "GalleryMixin", "NOT_A_GALLERY", "PICK_A_PART",
+           "REST_MARKED"]
 
 #: 看不见 (`````` since task U22) outside the gallery.
 NOT_A_GALLERY = ("「看不见」只用在零件合照里（F6–F8 和工具栏的「零件合照·扫描仪」）；"
@@ -39,14 +49,23 @@ NOT_A_GALLERY = ("「看不见」只用在零件合照里（F6–F8 和工具栏
                  "\"not in this shot\" is for the components gallery")
 #: 看不见 with nothing to act on.
 PICK_A_PART = "先在任务卡上点一条零件，再按 ` 键（看不见）/ pick a part on the card first"
+#: 「其余的都看不见」 done (task U45): how many, and the way back.
+REST_MARKED = "这张：{n} 个零件标为看不见（Ctrl+Z 一次全部撤回）"
+#: 「＋ 这张里还有…」 outside Annotate mode.
+ADD_PARTS_MODE = "切到标注模式再加合照里的零件 / switch to Annotate mode"
+#: ... and done.
+ADDED = ("加了 {keys}：只在零件合照里，每张都会列出（不在的那张标看不见）；"
+         "还没画的时候 Ctrl+Z 撤销")
 
 
 class GalleryMixin:
     """The components gallery's gestures and refusals in the main window."""
 
     def _init_gallery(self) -> None:
-        """The card's right-click 「看不见」 goes where ``I`` goes."""
+        """The card's right-click 「看不见」 goes where ``I`` goes; its two buttons (U45)."""
         self.task_card.sigMarkAbsent.connect(self.act_mark_absent)
+        self.task_card.sigMarkRestAbsent.connect(self.act_mark_rest_absent)
+        self.task_card.sigAddGalleryParts.connect(self.act_add_gallery_parts)
 
     # ------------------------------------------------------------- state
     def in_gallery(self) -> bool:
@@ -182,3 +201,86 @@ class GalleryMixin:
         self.update_status()
         self.report(f"{label}：" + ("回到待画（Ctrl+Z 撤销）" if back else
                                    "看不见，不在这张里（再按 ` 键或 Ctrl+Z 撤销）"))
+
+    # ------------------------------------------------- 其余的都看不见 (U45)
+    def _after_gallery_change(self) -> None:
+        """The panels follow a write on the shot (both buttons' tail)."""
+        self.refresh_overlay()
+        self.task_card.refresh()
+        self.instances.refresh()
+        self.timeline.refresh_statuses()
+        self.update_status()
+
+    @S.guard
+    def act_mark_rest_absent(self) -> None:
+        """「其余的都看不见」: every open row of this shot is 看不见, in one op (task U45).
+
+        The rows already drawn (and the ones 看不见 already) are not touched; a
+        shot with no open row says so and writes nothing.
+        """
+        if not self.in_gallery():
+            self.report(NOT_A_GALLERY)
+            return
+        from tda.ui.session_gallery import ALL_SETTLED
+
+        targets = self.session.rest_absent_targets()
+        if not targets:
+            self.report(ALL_SETTLED)
+            return
+        editing = getattr(self.session, "editing_instance", None)
+        if editing in targets and self.has_uncommitted_edit():
+            label = self._label_of(editing)[0] or editing
+            self.report(f"{label} 正在画：先 Q 提交或 Esc 放弃，再点「其余的都看不见」")
+            return
+        marked = self.session.mark_rest_absent()["marked"]
+        if editing in marked:
+            self.set_sam_instance(None)
+            self._sync_editing_layer()
+        self._after_gallery_change()
+        self.report(REST_MARKED.format(n=len(marked)))
+
+    # -------------------------------------------------- ＋ 这张里还有… (U45)
+    def ask_gallery_parts(self, data) -> Optional[dict]:
+        """Show the dialog; ``None`` when cancelled (a method, so a test answers it)."""
+        from tda.ui.panels.add_parts import GalleryPartsDialog
+
+        dialog = GalleryPartsDialog(data, self, cls=self.__dict__.get("_last_gallery_class"))
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dialog.values()
+
+    @S.guard
+    def act_add_gallery_parts(self) -> list[str]:
+        """「＋ 这张里还有…」: gallery-only parts of a class and a count (task U45).
+
+        Written at once, one op (``Ctrl+Z`` takes them back while nothing is
+        drawn on them); the card lists them on this shot and every other one.
+        Returns the new keys (empty when refused or cancelled).
+        """
+        if not self.in_gallery():
+            self.report(NOT_A_GALLERY)
+            return []
+        if self.mode != A.MODE_ANNOTATE:
+            self.report(ADD_PARTS_MODE)
+            return []
+        if not self.can_leave_edit():
+            return []
+        try:
+            data = self.session.gallery_parts_data()
+        except ValueError as refused:            # SessionRefusal is one
+            self.report(str(refused))
+            return []
+        answer = self.ask_gallery_parts(data)
+        if not answer:
+            return []
+        try:
+            keys = self.session.add_gallery_parts(**answer)
+        except ValueError as refused:
+            self.report(str(refused))
+            return []
+        self.__dict__["_last_gallery_class"] = str(answer.get("cls") or "") or None
+        self._after_gallery_change()
+        if keys:
+            self.task_card.select_instance(keys[0])
+        self.report(ADDED.format(keys="、".join(keys)))
+        return keys

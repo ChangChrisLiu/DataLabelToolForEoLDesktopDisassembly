@@ -27,7 +27,7 @@ from tda.core.compiler import CompiledFrame
 from tda.core.db import Db
 from tda.core.context import context_label
 from tda.core.frame_notes import OP_KIND as NOTE_OP
-from tda.core.model import FrameKey, is_component_view, is_context_key
+from tda.core.model import FrameKey, is_component_view, is_context_key, is_gallery_only
 from tda.core.taxonomy import Taxonomy
 from tda.core.truth import TruthService
 from tda.core.truth_inputs import instances_of, state_of
@@ -61,6 +61,8 @@ from tda.ui.session_visruns import VisRunsMixin, apply_sync
 from tda.ui.session_absent import OP_KIND as ABSENT_OP
 from tda.ui.session_absent import AbsentMixin, apply_absent
 from tda.ui.session_notes import NotesMixin
+from tda.ui.session_gallery import OP_KIND as GALLERY_PARTS_OP
+from tda.ui.session_gallery import GalleryPartsMixin, apply_gallery_parts
 
 __all__ = ["AnnotationSession"]
 
@@ -68,7 +70,8 @@ log = logging.getLogger("tda.session")
 
 class AnnotationSession(CommitMixin, ReviewMixin, ResignMixin, StateMixin, VerbMixin,
                         CaptiveMixin, ReclassMixin, CableMixin, ContextMixin, VisReviewMixin,
-                        VisRunsMixin, AbsentMixin, NotesMixin, TruthCacheMixin, QObject):
+                        VisRunsMixin, AbsentMixin, NotesMixin, GalleryPartsMixin,
+                        TruthCacheMixin, QObject):
     """One annotator's working set: a desktop, a view, and the frame in hand."""
 
     #: The current frame changed; payload is a :class:`~tda.core.model.FrameKey`.
@@ -163,6 +166,19 @@ class AnnotationSession(CommitMixin, ReviewMixin, ResignMixin, StateMixin, VerbM
         ):
             handler = self._make_handler(apply)
             self.undo_stack.register(kind, handler, handler)
+        # ＋ 这张里还有… (task U45): gallery-only parts made, or taken back --
+        # and the layer of one an undo took away goes with it
+        parts = self._make_handler(apply_gallery_parts)
+
+        def gallery_parts_handler(payload: dict) -> None:
+            parts(payload)
+            editing = self.layer.instance
+            if editing and editing not in self.db.instances(self.desktop):
+                self.layer.clear()
+                self.sigEditingChanged.emit(None)
+
+        self.undo_stack.register(GALLERY_PARTS_OP, gallery_parts_handler,
+                                 gallery_parts_handler)
         # 框外零件 (task U18): made, or taken back with its shapes -- and the
         # layer of one an undo took away goes with it
         made = self._make_handler(apply_context)
@@ -523,6 +539,10 @@ class AnnotationSession(CommitMixin, ReviewMixin, ResignMixin, StateMixin, VerbM
         # which can be said to be taken out after all (task U9): its button
         found = self._with_state_choices(found, state, instances)
         found = self._with_verb_offers(found, state, instances)
+        # 仅合照 (task U45): a part added from a gallery shot -- only a shot has it
+        for row in found:
+            if is_gallery_only(instances.get(str(row["key"]))):
+                row["gallery_only"] = True
         # the 框外零件 (task U18): their own block, last -- the ones this frame
         # has, then the others, which are not drawn here (「—」) but can be
         machine = [row for row in found if not is_context_key(row.get("key"))]

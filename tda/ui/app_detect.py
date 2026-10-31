@@ -45,7 +45,7 @@ from typing import Any, Callable, Optional
 
 from PySide6.QtCore import QObject, Qt, Signal
 
-from tda.core.model import FrameKey, is_context_key
+from tda.core.model import FrameKey, is_context_key, is_gallery_only
 from tda.models.det_engine import DetectionEngine, PlanItem
 from tda.models.load_gate import Turn, heavy
 from tda.models.detector import (
@@ -878,6 +878,11 @@ class DetectMixin:
             if is_context_key(name):
                 continue        # a 框外零件 is no part of the machine (task U18)
             rec = records.get(name)
+            if is_gallery_only(rec):
+                # nor of the teardown: a gallery-only part (task U45). Only a
+                # sequence frame is meant -- the detector runs on no gallery
+                # view, and a gallery-only part never compiles on a sequence one
+                continue
             cls = str(getattr(rec, "cls", "") or str(name).split(".", 1)[0])
             if cls in classes and inst.box is not None:
                 out.setdefault(cls, []).append(tuple(float(v) for v in inst.box))

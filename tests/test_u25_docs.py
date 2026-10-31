@@ -38,7 +38,7 @@ def test_v1_25_is_on_top_of_14():
                                   "- **v1.37", "- **v1.38", "- **v1.39", "- **v1.40",
                                   "- **v1.41", "- **v1.42", "- **v1.43", "- **v1.44",
                                   "- **v1.45"))
-    [first] = [e for e in entries[:19] if e.startswith("- **v1.25")]
+    [first] = [e for e in entries[:21] if e.startswith("- **v1.25")]
     assert first.startswith("- **v1.25（2026-10-24）**：**`dupli` 行不是步；扫描仪按自己的编号对齐**"
                             "（U25，§2.2、§2.3）")
     for needed in ("`scan-align", "`duplicate_folders`", "dupli_replaces",

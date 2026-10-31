@@ -65,7 +65,7 @@ from tda.core.graph_infer import (
 )
 from tda.core.implied import OP_KIND as IMPLIED_OP_KIND
 from tda.core.implied import implied_instances
-from tda.core.model import InstanceRec, is_context, is_extra, is_provisional, machine_only
+from tda.core.model import InstanceRec, is_context, is_extra, is_provisional, teardown_only
 from tda.core.relation_replay import OP_RELATION_FIX, fix_rows, relation_changes
 from tda.core.states import events_from_actions, initial_overrides
 from tda.core.taxonomy import Taxonomy, load_taxonomy
@@ -228,8 +228,10 @@ def _apply_one(db: Db, tax: Taxonomy, desktop: int, dry_run: bool,
     """
     declined = set() if reset_declined else db.declined_implied(desktop)
     # the machine's table: a 框外零件 (task U18) neither implies nor is implied,
-    # and no heuristic fills a field on one
-    instances = machine_only(db.instances(desktop))
+    # and no heuristic fills a field on one -- nor on a gallery-only part (task
+    # U45), which rides on nothing; only the changed keys are written back, so
+    # leaving them out of the table drops nothing
+    instances = teardown_only(db.instances(desktop))
     actions = db.actions(desktop)
     new_instances = (implied_instances(instances, actions, tax, declined)
                      if add_implied else [])

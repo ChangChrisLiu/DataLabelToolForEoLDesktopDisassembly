@@ -134,7 +134,7 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateM
         self._init_context()    # 框外零件 (task U18): the canvas' right-click menu
         self._init_visreview()  # 可见性审查 (task U24): Review's fifth tab
         self._init_refreeze()   # 重签 (task U32): Review's two buttons
-        self._init_notes()      # 这一帧的说明 (task U35): Review's note box
+        self._init_notes()      # 这一帧的说明 (task U35) and its 「说明」 dock (U44)
         self._init_guide()      # last: it reads the bars and the raw-drive state
         self._connect_session()
 
@@ -142,6 +142,7 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateM
         self.logger.info("window open: annotator=%s db=%s", self.annotator,
                          self.paths.get("db_path", ""))
         self.restore_window_state()
+        self.follow_notes_dock()    # a saved layout does not decide the mode's docks (U44)
         QApplication.instance().installEventFilter(self)
         for name, why in compat.ADAPTED.items():
             self.logger.info("session gap adapted: %s (%s)", name, why)
@@ -357,6 +358,7 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateM
                 self.canvas if self.tools_enabled else self.placeholder_label
             )
         self.review_dock.setVisible(mode == A.MODE_REVIEW)
+        self.follow_notes_dock()        # 「说明」 (U44): with Review, when wanted
         # the note is the box's in Review, the card's read-only line elsewhere (U35)
         self.task_card.set_note_line_enabled(mode != A.MODE_REVIEW)
         self.follow_visibility_mode()   # 可见性审查 (U24): listed while Review shows it

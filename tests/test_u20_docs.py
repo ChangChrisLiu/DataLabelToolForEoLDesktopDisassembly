@@ -70,5 +70,5 @@ def test_the_spec_has_the_paragraph_in_3_2_and_v1_20_on_top():
                                   "- **v1.41", "- **v1.42", "- **v1.43", "- **v1.44",
                                   "- **v1.45"))
     assert any(e.startswith("- **v1.20（2026-10-22）**：**机架自带卡扣**（U20，§3.2）")
-               for e in entries[:24])
+               for e in entries[:26])
     assert changes.index("- **v1.20") < changes.index("- **v1.19")

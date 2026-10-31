@@ -524,7 +524,7 @@ def test_the_docs_say_it():
         assert needed in gallery, needed
     changes = spec.split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
-    # on top when it landed; U43's v1.42 has gone above it since
+    # on top when it landed; U44's v1.43 (and U43's v1.42) went above it since
     assert any(e.startswith("- **v1.41（2026-10-30）**：**扫描仪的零件合照 `cmp_scan`**（U42")
                for e in entries)
     guide = GUIDE.read_text(encoding="utf-8")

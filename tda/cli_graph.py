@@ -72,7 +72,7 @@ from tda.core.graph import (
     validate_sequence,
 )
 from tda.core.graph_derive import Derivation, derive_edges, write_derivation
-from tda.core.model import VIEWS, machine_only
+from tda.core.model import VIEWS, teardown_only
 from tda.core.states import initial_overrides
 from tda.core.taxonomy import Taxonomy, load_taxonomy
 
@@ -220,9 +220,10 @@ def _settled(db: Db, desktop: int) -> dict:
     A ``ls:*`` row is a *shape* somebody drew, not a part anybody has decided
     exists (spec 3.2). Deriving constraints from one would invent edges that
     disappear the moment S1 merges or deletes it. Nor a 框外零件 (task U18):
-    it is not part of the machine.
+    it is not part of the machine. Nor a gallery-only part (task U45): no
+    step of the teardown touches it.
     """
-    return {k: rec for k, rec in machine_only(db.instances(desktop)).items()
+    return {k: rec for k, rec in teardown_only(db.instances(desktop)).items()
             if not is_provisional(k)}
 
 
