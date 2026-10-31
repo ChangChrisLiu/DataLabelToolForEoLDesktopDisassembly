@@ -25,9 +25,10 @@ from typing import Optional
 from tda.core.model import COMPONENT_CAMERA, is_component_view
 
 __all__ = [
-    "ABSENT", "ABSENT_CHIP", "ABSENT_KEY", "GALLERY_REFUSALS", "GALLERY_SENTENCE",
-    "NO_STATE", "NO_VERB", "camera_label", "gallery_header", "gallery_refusal", "gallery_title",
-    "is_component_view", "view_label",
+    "ABSENT", "ABSENT_CHIP", "ABSENT_KEY", "ADD_PARTS_BUTTON", "ADD_PARTS_INTRO",
+    "ADD_PARTS_TIP", "GALLERY_REFUSALS", "GALLERY_SENTENCE", "NO_STATE", "NO_VERB",
+    "REST_ABSENT_BUTTON", "REST_ABSENT_TIP", "camera_label", "gallery_header",
+    "gallery_refusal", "gallery_title", "is_component_view", "view_label",
 ]
 
 #: The camera of each gallery view, as the annotator says it.
@@ -43,6 +44,18 @@ ABSENT_CHIP = "看不见"
 #: What a gallery row asks for.
 GALLERY_SENTENCE = (f"这张里看得到就画出它（整个零件）；不在这张里：点「看不见」"
                     f"（右键这一条，或按 {ABSENT_KEY} 键）")
+#: The two buttons under a shot's card header (task U45) -- no key for either.
+#: 「其余的都看不见」: every row of this shot not drawn and not 看不见 yet.
+REST_ABSENT_BUTTON = "其余的都看不见"
+REST_ABSENT_TIP = ("这张里还没画、也没标看不见的零件全部标「看不见」（一次 Ctrl+Z 全部撤回）；"
+                   "画好的不动。先画看得到的，再点它，然后 Space")
+#: 「＋ 这张里还有…」: a part on the table the card does not list (a loose cable).
+ADD_PARTS_BUTTON = "＋ 这张里还有…"
+ADD_PARTS_TIP = ("这张照片里有、任务卡上没有的零件（一根线、日志没数到的螺丝）：选类别和数量，"
+                 "马上写入，每张合照都会列出它；还没画它的时候 Ctrl+Z 撤销")
+#: The one line its dialog says.
+ADD_PARTS_INTRO = ("只在零件合照里出现，拆解序列里不会要它；"
+                   "日志里本来就有的零件请在步骤表里加（可填拆下于第几步）")
 #: Why a gallery shot has no state to set (``T``, the state combo).
 NO_STATE = "零件合照里没有状态：桌上的零件都是拆下来的，只画它本身"
 #: Why a gallery shot does not change the step table (``Shift+T``, the 「其实…」 button):

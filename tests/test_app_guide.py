@@ -702,7 +702,10 @@ def test_the_task_card_has_no_action_buttons_of_its_own(window):
     for name in ("commit_button", "override_button", "split_button", "confirm_button"):
         assert not hasattr(card, name), name
     assert not hasattr(card, "sigCommit") and not hasattr(card, "sigConfirm")
-    assert card.findChildren(QPushButton) == []
+    # the components gallery's two header buttons (task U45) are no palette
+    # action: no key, no palette button -- nothing else is a button here
+    assert set(card.findChildren(QPushButton)) == {card.rest_absent_button,
+                                                    card.add_parts_button}
     assert not hasattr(window, "on_panel_commit")
 
 

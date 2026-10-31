@@ -4,7 +4,11 @@
 file: one image per frame that has a compiled row, one annotation per row that
 carries geometry, and the 23 taxonomy classes as categories 1..23 in
 ``Taxonomy.classes`` order, so category ids are stable across exports as long as
-``configs/taxonomy.yaml`` keeps its order.
+``configs/taxonomy.yaml`` keeps its order. The 24th class, ``cable`` (task
+U45), is a gallery-only class (:data:`~tda.core.model.GALLERY_ONLY_CLASSES`):
+it is listed in a components-gallery file only, with id **25** -- after
+``other`` (24, the 框外零件's), which keeps the id it has had since U18 -- so
+no id any file ever carried moves (:func:`categories`).
 
 Beyond the COCO fields every annotation carries an ``attributes`` block (state,
 placement, visibility, the ``occluder`` nobody labels that hides it -- or
@@ -79,6 +83,15 @@ listed only in a file that has one), ``attributes.context = true``, its
 ``roi_crop`` it is kept **only when it intersects the ROI** (cropped to it like
 any row); one lying wholly outside is dropped.
 
+Gallery-only parts (task U45)
+-----------------------------
+A part added from a components-gallery shot (``attrs.gallery_only``) is
+written on the gallery's files like every part on the table, under its class
+-- ``cable`` among them -- with ``attributes.gallery_only = true`` (the key is
+absent on every other row, so the sequence's files are unchanged). No
+sequence frame ever compiles one, and :class:`DesktopCtx` keeps them out of
+``instances``, so the VLM export cannot count or name one either.
+
 This module also owns the identity helpers shared with
 :mod:`tda.core.export.vlm` -- image ids, cache-relative file names, frame size,
 the per-desktop state context and the keyframe lookup -- so that both exports
@@ -107,6 +120,8 @@ from tda.core.model import (
     ALL_VIEWS,
     CONTEXT_LABEL,
     CONTEXT_OTHER,
+    GALLERY_ONLY_ATTR,
+    GALLERY_ONLY_CLASSES,
     NO_CHANGE_STEP_TYPES,
     SKIP_STEP_TYPES,
     VIEWS,  # noqa: F401 - read off this module by tda.core.export.vlm
@@ -120,6 +135,7 @@ from tda.core.model import (
     Visibility,
     is_component_view,
     is_context,
+    is_gallery_only,
     is_provisional,
     step_is_annotatable,
 )
@@ -346,6 +362,12 @@ class DesktopCtx:
     U34, :func:`tda.core.states.absent_keys`), into :attr:`absent`, and the
     sheet's actions on them with them: D34's failed "remove the optical
     drive" is no history of anything in the pictures.
+
+    And so are the gallery-only parts (task U45,
+    :func:`tda.core.model.is_gallery_only`), into :attr:`gallery_only`: no
+    step touched one, so no VLM question may count or name one; the COCO
+    export of a gallery view still writes them (:meth:`cls_of` answers for
+    them).
     """
 
     desktop: int
@@ -361,6 +383,8 @@ class DesktopCtx:
     context: dict[str, InstanceRec] = field(default_factory=dict, repr=False)
     #: The parts the machine does not have, taken out of ``instances`` (U34).
     absent: dict[str, InstanceRec] = field(default_factory=dict, repr=False)
+    #: The gallery-only parts, taken out of ``instances`` (U45).
+    gallery_only: dict[str, InstanceRec] = field(default_factory=dict, repr=False)
     _states: dict[int, FrameState] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
@@ -374,6 +398,10 @@ class DesktopCtx:
             self.context = context
             self.instances = {k: v for k, v in self.instances.items()
                               if k not in context}
+        only = {k: v for k, v in self.instances.items() if is_gallery_only(v)}
+        if only:
+            self.gallery_only = only
+            self.instances = {k: v for k, v in self.instances.items() if k not in only}
         gone = absent_keys(self.events)
         absent = {k: v for k, v in self.instances.items() if k in gone}
         if absent:
@@ -404,8 +432,11 @@ class DesktopCtx:
         table at all, one carrying a class the taxonomy does not know, and a
         Label Studio draft -- which is not in ``instances`` to begin with, so
         this answers ``None`` for it without a rule of its own.
+
+        A gallery-only part (task U45) is answered from :attr:`gallery_only`:
+        only a gallery shot ever compiles a row of one.
         """
-        rec = self.instances.get(instance)
+        rec = self.instances.get(instance) or self.gallery_only.get(instance)
         if rec is None or rec.cls not in self.tax.classes:
             return None
         return rec.cls
@@ -453,17 +484,46 @@ def load_ctx(db: Db, tax: Taxonomy, desktop: int, view: str) -> DesktopCtx:
 # --------------------------------------------------------------------------- #
 # categories
 # --------------------------------------------------------------------------- #
-def categories(tax: Taxonomy) -> list[dict]:
-    """The 23 taxonomy classes as COCO categories, ids 1..23 in config order."""
+def _class_ids(tax: Taxonomy) -> dict[str, int]:
+    """``class -> category id``: the sequence's classes 1..N, then the gallery-only ones.
+
+    The classes every view can carry are numbered in config order from 1 --
+    the 23 of spec 6.1, ids 1..23 as they always were. ``N + 1`` is ``other``,
+    the 框外零件's category (:func:`other_category`, task U18), and the classes
+    only a gallery-only part has (:data:`~tda.core.model.GALLERY_ONLY_CLASSES`,
+    task U45: ``cable``) follow it, from ``N + 2``. So appending a class never
+    moves an id a file has carried.
+    """
+    ids: dict[str, int] = {}
+    for name in tax.classes:
+        if name not in GALLERY_ONLY_CLASSES:
+            ids[name] = len(ids) + 1
+    after = len(ids) + 2
+    for name in tax.classes:
+        if name in GALLERY_ONLY_CLASSES:
+            ids[name] = after
+            after += 1
+    return ids
+
+
+def categories(tax: Taxonomy, gallery: bool = False) -> list[dict]:
+    """The taxonomy classes as COCO categories, in config order (ids: :func:`_class_ids`).
+
+    A sequence file lists the 23 classes of spec 6.1, ids 1..23; a
+    components-gallery file (``gallery``, task U45) lists the gallery-only
+    class ``cable`` (id 25) after them as well -- the teardown never has one.
+    """
+    ids = _class_ids(tax)
     return [
-        {"id": i, "name": name, "supercategory": defn.get("group") or "other"}
-        for i, (name, defn) in enumerate(tax.classes.items(), start=1)
+        {"id": ids[name], "name": name, "supercategory": defn.get("group") or "other"}
+        for name, defn in tax.classes.items()
+        if gallery or name not in GALLERY_ONLY_CLASSES
     ]
 
 
 def category_ids(tax: Taxonomy) -> dict[str, int]:
-    """``class name -> category id``."""
-    return {c["name"]: c["id"] for c in categories(tax)}
+    """``class name -> category id``, every class (the gallery-only ones too)."""
+    return dict(_class_ids(tax))
 
 
 #: ``supercategory`` of the ``other`` category of the 框外零件 (task U18).
@@ -473,10 +533,12 @@ CONTEXT_SUPERCATEGORY = "context"
 def other_category(tax: Taxonomy) -> dict:
     """The category of a context object no taxonomy class describes (task U18).
 
-    One past the taxonomy's last id, so it never moves a class's id; it is
-    listed only in a file that has such an annotation.
+    One past the sequence's last class id (24), so it never moves a class's
+    id -- and the gallery-only classes numbered after it (task U45) never
+    move it; it is listed only in a file that has such an annotation.
     """
-    return {"id": len(tax.classes) + 1, "name": CONTEXT_OTHER,
+    seq = sum(1 for name in tax.classes if name not in GALLERY_ONLY_CLASSES)
+    return {"id": seq + 1, "name": CONTEXT_OTHER,
             "supercategory": CONTEXT_SUPERCATEGORY}
 
 
@@ -616,6 +678,7 @@ def _attributes(ctx: DesktopCtx, instance: str, row: dict, step: int,
 
     ``gallery`` is a components-gallery shot (task U10): every part on it is
     ``removed`` and ``on_bench`` (:data:`~tda.core.states.GALLERY_EXPORT_STATE`).
+    A gallery-only part (task U45) also carries ``gallery_only: true``.
 
     ``occluder`` is why a part in its place is (partly) not seen on this frame
     -- ``"cable"`` / ``"other_unlabeled"``, nothing annotated covers it, or
@@ -637,7 +700,7 @@ def _attributes(ctx: DesktopCtx, instance: str, row: dict, step: int,
         # a part laid out for the components gallery (task U10): taken out of
         # the machine and lying on the table, whatever chain it is drawn in
         state, placement = GALLERY_EXPORT_STATE
-    return {
+    out = {
         "instance_key": instance,
         "state": state,
         "placement": placement,
@@ -650,6 +713,11 @@ def _attributes(ctx: DesktopCtx, instance: str, row: dict, step: int,
         "tier": tier,
         "verified": not disputed and row.get("status") == VERIFIED,
     }
+    if instance in ctx.gallery_only:
+        # added from a gallery shot (task U45): no step names it; the key is
+        # written on these rows only, so every other file stays as it was
+        out[GALLERY_ONLY_ATTR] = True
+    return out
 
 
 def _context_attributes(ctx: DesktopCtx, instance: str, row: dict,
@@ -982,7 +1050,8 @@ def export_coco(
         "licenses": [],
         "images": [],
         "annotations": [],
-        "categories": categories(tax),
+        # the gallery's files also list its gallery-only class (cable, U45)
+        "categories": categories(tax, gallery=gallery),
     }
     cat_of = category_ids(tax)
     ann_id = 1

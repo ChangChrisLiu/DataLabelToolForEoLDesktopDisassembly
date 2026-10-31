@@ -59,7 +59,9 @@ def test_taxonomy_states_and_verbs():
         "expansion_card", "case_fan", "misc_part", "screw", "ram_latch",
         "cpu_socket_lever", "psu_latch", "drive_latch", "card_latch", "cooler_latch",
         "cable_clip", "connector",
+        "cable",        # the gallery's loose cables, appended last (task U45)
     }
+    assert list(t.classes)[-1] == "cable"
     assert t.states_of("screw") == ["fastened", "loosened", "removed"]
     assert t.apply_verb("screw", {"captive": True}, "unscrew") == ("state", "loosened")
     assert t.apply_verb("screw", {"captive": False}, "unscrew") == ("state", "removed")
@@ -147,7 +149,10 @@ def test_needs_mask_covers_every_state_of_every_class():
     t = load_taxonomy()
     for cls in t.classes:
         table = t.classes[cls]["needs_mask"]
-        assert set(table) == set(t.states_of(cls)), cls
+        # the class's own entry: `cable` is also the virtual node's name, whose
+        # states the name-keyed query answers with (task U45)
+        assert set(table) == set(t.classes[cls]["states"]), cls
+        assert t.classes[cls]["default_state"] in t.classes[cls]["states"], cls
 
 
 def test_verbs_and_tools_match_spec():

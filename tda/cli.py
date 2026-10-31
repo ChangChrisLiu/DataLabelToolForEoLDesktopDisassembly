@@ -83,7 +83,14 @@ from tda.core.index import (
 )
 from tda.core.index_report import write_report
 from tda.core.logs import sheet_rows_by_desktop
-from tda.core.model import ALL_VIEWS, COMPONENT_VIEWS, VIEWS, is_cage_latch, is_context
+from tda.core.model import (
+    ALL_VIEWS,
+    COMPONENT_VIEWS,
+    VIEWS,
+    is_cage_latch,
+    is_context,
+    is_gallery_only,
+)
 from tda.core.taxonomy import load_taxonomy
 
 __all__ = ["main"]
@@ -684,7 +691,9 @@ def format_desktop(db: Db, row: dict) -> str:
         f"instances {row['instances']}, state events {row['events']}",
     ]
     table = db.instances(row["desktop"])
-    added = extra_keys(table)
+    # the gallery-only parts (task U45) are said under the gallery, below
+    only = sorted(key for key, rec in table.items() if is_gallery_only(rec))
+    added = [key for key in extra_keys(table) if key not in set(only)]
     if added:
         # counted among the instances above; said apart because no sheet
         # names them, so nothing but this line says they exist (task U5b)
@@ -722,6 +731,9 @@ def format_desktop(db: Db, row: dict) -> str:
             lines.append(
                 f"  {view:<9}{counts['frames']:>5} shots{counts['keyframes']:>8} kf"
                 f"{counts['done']:>7}/{counts['work']:<4}")
+        if only:
+            # added from a shot (task U45): every shot lists them, no step does
+            lines.append(f"  gallery-only parts (仅合照): {len(only)} - {', '.join(only)}")
     for view in ALL_VIEWS:
         waiting = row["views"].get(view, {}).get("rechecks", 0)
         if waiting:

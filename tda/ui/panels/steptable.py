@@ -59,6 +59,7 @@ from PySide6.QtWidgets import (
 from tda.core import context as C
 from tda.core.db import Db
 from tda.core.frame_notes import notes_by_step
+from tda.core.model import GALLERY_ONLY_CLASSES
 from tda.core.taxonomy import Taxonomy, load_taxonomy
 from tda.ui.panels.add_parts import BUTTON as ADD_PARTS_BUTTON
 from tda.ui.panels.add_parts import HINT as ADD_PARTS_HINT
@@ -687,7 +688,9 @@ class StepTablePanel(MergeIntoMixin, ReclassMenuMixin, AbsentMenuMixin, QWidget)
         silently start a parallel ordinal run.
         """
         cls, ok = QInputDialog.getItem(
-            self, "New instance", "Taxonomy class:", sorted(self.tax.classes), 0, False
+            # not a gallery-only class (cable, task U45): no step names one
+            self, "New instance", "Taxonomy class:",
+            sorted(c for c in self.tax.classes if c not in GALLERY_ONLY_CLASSES), 0, False
         )
         if not ok or not cls:
             return

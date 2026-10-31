@@ -212,6 +212,8 @@ CLASS_EN: dict[str, str] = {
                     "machines) a frame around the fan.",
     "cable_clip": "A clip holding a cable.",
     "connector": "A cable plug in its socket (tracked only while plugged in).",
+    "cable": "A loose cable laid out with the removed parts (attrs.kind: sata, power, fan, "
+             "front_panel, other); drawn in the components gallery only.",
     "other": "An object outside the machine (context), named by its label.",
 }
 
@@ -627,8 +629,9 @@ def build_desktop(db: Db, tax: Taxonomy, truth: TruthService, desktop: int, out:
     ddir = out / desktop_dir(desktop)
     ctx = load_ctx(db, tax, desktop, VIEW)
     # a part said absent from the start (U34) is out of the ids, the instances
-    # and the action rows alike, as it is out of the COCO and VLM exports
-    key_to_id = instance_ids(db, desktop, skip=ctx.absent)
+    # and the action rows alike, as it is out of the COCO and VLM exports --
+    # and so is a gallery-only part (U45): the scanner's sequence never has one
+    key_to_id = instance_ids(db, desktop, skip={**ctx.absent, **ctx.gallery_only})
     all_insts = {k: r for k, r in db.instances(desktop).items() if k in key_to_id}
     cat_of = category_ids(tax)
 

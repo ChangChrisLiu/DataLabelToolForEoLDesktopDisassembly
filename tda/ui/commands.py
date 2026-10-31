@@ -43,6 +43,7 @@ KINDS: frozenset[str] = frozenset(
         "sync_visibility",  # 同步到其他视角: a run's verdict onto the other views (U36)
         "absent_from_start",  # 这台没有这个零件: a logged part removed from step 0 (U34)
         "set_frame_note",  # 这一帧的说明: the annotator's note on one frame (U35)
+        "add_gallery_parts",  # ＋ 这张里还有…: gallery-only parts, made or taken back (U45)
     }
 )
 

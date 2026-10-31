@@ -31,8 +31,16 @@ ALL_VIEWS = VIEWS + COMPONENT_VIEWS
 COMPONENT_CAMERA = {"cmp_scan": "scan", "cmp_oak1": "oak1", "cmp_oak2": "oak2",
                     "cmp_rs": "rs"}
 #: Classes that are not drawn in a layout photo: a plug, a cable and a screw
-#: cannot be told apart from the next one lying beside it.
+#: cannot be told apart from the next one lying beside it. This is about the
+#: parts the **log** names (and the virtual ``cable:*`` nodes, which are no
+#: instances at all); a gallery-only part (:func:`is_gallery_only`, task U45)
+#: the annotator added from the shot itself is listed whatever its class.
 GALLERY_EXCLUDED_CLASSES = frozenset({"connector", "cable", "screw"})
+#: Classes whose instances are only ever made as gallery-only parts (task U45):
+#: the taxonomy class ``cable`` -- a loose cable laid out on the table. The
+#: sequence never names one (its cables are the virtual ``cable:<owner>``
+#: nodes), so the sequence's COCO files do not list the category either.
+GALLERY_ONLY_CLASSES = frozenset({"cable"})
 
 
 def is_component_view(view: Optional[str]) -> bool:
@@ -164,6 +172,44 @@ def machine_only(instances: dict) -> dict:
     """``instances`` without the context objects: the machine's own table."""
     return {key: rec for key, rec in instances.items()
             if not is_context_key(key) and not is_context(rec)}
+
+
+# --------------------------------------------------------------------------- #
+# gallery-only parts (task U45, spec 3.2b)
+# --------------------------------------------------------------------------- #
+#: ``attrs`` flag of a part added from a components-gallery shot: it lies on
+#: the table in the gallery, and the teardown sequence never asks for it.
+GALLERY_ONLY_ATTR = "gallery_only"
+
+
+def is_gallery_only(rec: Optional["InstanceRec"]) -> bool:
+    """Is this a part of the machine that only the components gallery knows (U45)?
+
+    Every shot shows a different subset of the parts, and some of them -- a
+    loose cable, the eighth screw of a run the sheet stopped at seven -- are
+    named by no step at all. The annotator adds them from the shot itself
+    (「＋ 这张里还有…」); they carry ``gallery_only: true`` in ``attrs`` next to
+    the ``added_by`` every extra has, so they **are** parts of the machine
+    (:func:`is_extra` is true, :func:`is_context` false) -- but they have no
+    state, no event and no step. :func:`tda.core.states.initial_state` leaves
+    them out of every snapshot the way it leaves a 框外零件 out, so nothing
+    that walks the teardown -- geometry, the task card, ``Space``, the
+    cascade, the validation -- ever sees one; :func:`tda.core.states.gallery_state`
+    puts each on the table of every shot whatever its class.
+    """
+    return (rec is not None and bool((rec.attrs or {}).get(GALLERY_ONLY_ATTR))
+            and not is_context(rec))
+
+
+def teardown_only(instances: dict) -> dict:
+    """``instances`` as the teardown sequence knows them (task U45).
+
+    :func:`machine_only` without the gallery-only parts: what the constraint
+    graph, the implied-part rules and the sequence's exports read, so none of
+    them can count, name or reason about a part no step ever touched.
+    """
+    return {key: rec for key, rec in machine_only(instances).items()
+            if not is_gallery_only(rec)}
 
 
 # --------------------------------------------------------------------------- #

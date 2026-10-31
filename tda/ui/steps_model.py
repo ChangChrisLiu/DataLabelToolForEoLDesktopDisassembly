@@ -28,6 +28,8 @@ from tda.core.cache import has_no_photo
 from tda.core.db import Db
 from tda.core.logs import CHASSIS_KEY, UNRESOLVED, instance_key
 from tda.core.model import (
+    GALLERY_ONLY_ATTR,
+    GALLERY_ONLY_CLASSES,
     ActionRec,
     InstanceRec,
     StepRec,
@@ -557,8 +559,22 @@ class StepTableData:
         「拆下于第 k 步」; ``None``: never, or with its parent), refused when it
         does not fit the log (:func:`tda.core.extra.removal_refusal`). Returns
         the new keys.
+
+        ``attrs["gallery_only"]`` (task U45) makes them gallery-only parts:
+        the components gallery lists them on every shot and the teardown never
+        asks for them, so they take no parent and no removal step. A class
+        only such a part can have (``cable``) is refused without the flag.
         """
         attrs = {k: v for k, v in dict(attrs or {}).items() if v not in (None, "")}
+        gallery_only = bool(attrs.get(GALLERY_ONLY_ATTR))
+        if cls in GALLERY_ONLY_CLASSES and not gallery_only:
+            raise EditError(f"{cls!r} 只在零件合照里加（「＋ 这张里还有…」）/ a {cls} is "
+                            f"only ever a gallery-only part")
+        if gallery_only and (parent not in (DEFAULT_PARENT, None) or removed_at is not None):
+            raise EditError("只在合照里的零件不挂在别的零件上、也没有拆下的步 / a gallery-only "
+                            "part has no parent and no removal step")
+        if gallery_only:
+            parent, state = None, None     # no state event either: it has no state
         if cls in self.tax.classes:
             self._check_discriminator(cls, attrs)
         if parent is DEFAULT_PARENT:
@@ -1005,6 +1021,11 @@ class StepTableData:
         """
         if cls not in self.tax.classes:
             raise EditError(f"{cls!r} is not a taxonomy class")
+        if cls in GALLERY_ONLY_CLASSES:
+            # a loose cable is only ever a gallery part (task U45): a step's
+            # cable is the virtual node cable:<owner>, never an instance
+            raise EditError(f"{cls!r} 只在零件合照里加（「＋ 这张里还有…」）；步骤里的线是虚拟节点 "
+                            f"cable:<owner> / a {cls} is a gallery-only class")
         self._check_verb(verb, cls, f"new {cls}")
         attrs = {k: v for k, v in attrs.items() if k != "instance_nos"}
         self._check_discriminator(cls, attrs)

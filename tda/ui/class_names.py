@@ -115,6 +115,10 @@ _REFINED: dict[tuple[str, str], dict[str, str]] = {
         "fan": "风扇接头", "front_panel": "前面板接头", "usb_header": "USB 接头",
         "audio": "音频接头", "molex": "大 4pin 接头",
     },
+    # a loose cable on the gallery's table (task U45, the class `cable`)
+    ("cable", "kind"): {
+        "sata": "SATA 线", "power": "电源线", "fan": "风扇线", "front_panel": "前面板线",
+    },
 }
 
 

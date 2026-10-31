@@ -19,7 +19,7 @@ from pycocotools.coco import COCO
 
 from session_scene import CHASSIS, DESKTOP, VIEW, make_session, rect, seed_shapes
 from tda.core.export import export_coco, export_vlm
-from tda.core.export.coco import category_ids, load_ctx, other_category
+from tda.core.export.coco import categories, category_ids, load_ctx, other_category
 from tda.core.export.vlm import _read_view
 from tda.core.model import FrameKey
 from tda.ui.session_api import SCOPE_KEYFRAME
@@ -73,9 +73,10 @@ def test_coco_writes_them_under_their_class_with_their_own_attributes(scene, tmp
     assert ann["attributes"]["instance_key"] == bracket
     assert ann["attributes"]["state"] is None and ann["attributes"]["placement"] is None
     assert ann["area"] == 12 * 12
-    # `other` is a category of its own, one past the taxonomy, listed because used
+    # `other` is a category of its own, one past the sequence's 23 classes (24,
+    # kept when the gallery-only `cable` came after it, U45), listed because used
     other = _ann(doc, STEP, cup)
-    assert other["category_id"] == len(session.tax.classes) + 1
+    assert other["category_id"] == len(categories(session.tax)) + 1 == 24
     assert other_category(session.tax) in doc["categories"]
     assert other["attributes"]["label"] == "茶杯"
     # the machine's parts are written as they always were
@@ -92,7 +93,7 @@ def test_no_other_category_without_an_other_object(scene, tmp_path):
     session.db.delete_keyframe(session.db.keyframes(DESKTOP, VIEW, cup)[0].id)
     doc = export_coco(session.db, session.tax, [DESKTOP], VIEW, str(tmp_path / "c.json"),
                       only_verified=False)
-    assert len(doc["categories"]) == len(session.tax.classes)
+    assert len(doc["categories"]) == len(categories(session.tax))    # the sequence's 23
     assert all(a["attributes"]["instance_key"] != cup for a in doc["annotations"])
 
 

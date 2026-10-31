@@ -456,6 +456,14 @@ def _check_one(db, tax, args: argparse.Namespace, desktop: int, view: str) -> in
     if stats["pending"]:
         print(f"[check] {len(stats['pending'])} frames are still queued for "
               f"a re-check: {sorted(stats['pending'])[:10]}")
+    if is_component_view(view):
+        # added from a shot (U45): counted where they are work, the gallery only
+        from tda.core.model import is_gallery_only
+
+        only = sorted(k for k, rec in db.instances(desktop).items() if is_gallery_only(rec))
+        if only:
+            print(f"[check] {len(only)} gallery-only part(s) (仅合照) on every shot: "
+                  + ", ".join(only[:10]))
     _print_empty_visible(expected, unexplained)
     if stale:
         print(f"[check] {len(stale)} confirmed frame(s) still carry the shape from "

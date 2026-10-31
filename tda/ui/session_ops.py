@@ -487,12 +487,14 @@ def apply_frame_overrides(db: Db, truth: TruthService, payload: dict,
 
     The range form of :func:`apply_frame_override` (task U15, ``Ctrl+I``): one
     op, one row per frame in ``payload["frames"]`` (``{"step", "exists",
-    "visible_rle", "visibility", "occluder"}``), one transaction.
+    "visible_rle", "visibility", "occluder"}``), one transaction. A row may
+    name its own ``instance`` (task U45: 「其余的都看不见」 is several parts of
+    one shot); without one it is ``payload["instance"]``'s.
     """
     with db.transaction():
         for state in payload["frames"]:
             key = FrameKey(payload["desktop"], int(state["step"]), payload["view"])
-            _write_override(db, key, payload["instance"], state)
+            _write_override(db, key, state.get("instance") or payload["instance"], state)
     return settle(db, truth, payload["desktop"], payload["view"], payload["steps"], current)
 
 

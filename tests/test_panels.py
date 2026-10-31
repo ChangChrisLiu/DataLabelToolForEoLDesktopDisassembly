@@ -573,7 +573,11 @@ def test_taskcard_has_no_commit_or_confirm_buttons(session: StubSession) -> None
     from PySide6.QtWidgets import QPushButton
 
     panel = TaskCardPanel(session)
-    assert panel.findChildren(QPushButton) == []
+    # only the components gallery's two header buttons (task U45), which no
+    # palette button and no key duplicates, and they show on a shot only
+    assert set(panel.findChildren(QPushButton)) == {panel.rest_absent_button,
+                                                     panel.add_parts_button}
+    assert not panel.gallery_buttons_visible()
     for name in ("commit_button", "override_button", "split_button",
                  "confirm_button", "sigCommit", "sigConfirm"):
         assert not hasattr(panel, name), name

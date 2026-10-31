@@ -1,6 +1,6 @@
 # TDA unified vocabulary -- encodes spec section 6 (统一词表).
 #
-#   6.1  23 classes with their attributes
+#   6.1  24 classes with their attributes (`cable`, the 24th, since task U45)
 #   6.2  per-class state sets, default state, and which states need a mask
 #   6.3  action verbs: what they apply to and their state effect
 #   6.5  tool vocabulary
@@ -269,8 +269,29 @@ classes:
     # `unplugged` is explicitly NOT tracked with geometry (spec 6.2).
     needs_mask: {plugged: true, unplugged: false, removed: false}
 
+  # A loose cable laid out on the table in the components gallery (task U45,
+  # spec 3.2b). Appended LAST so no COCO category id of the 23 classes above
+  # moves (tda.core.export.coco numbers them in this order; `other`, the 框外零件
+  # category, keeps id 24 and `cable` takes 25). It is only ever made as a
+  # gallery-only part (instance attr `gallery_only: true`, 「＋ 这张里还有…」 on a
+  # shot): the sequence's cables stay the virtual `cable:<owner>` nodes below,
+  # which share the name. Where a name-keyed query cannot tell the two apart
+  # (Taxonomy.states_of / default_state / needs_mask) the VIRTUAL node answers,
+  # because the state machine and the VLM export ask about it by that name; a
+  # gallery-only part is never folded through the state machine, so the states
+  # here describe the class and nothing reads them by name.
+  cable:
+    group: interface
+    attrs:
+      kind: [sata, power, fan, front_panel, other]
+    states: [installed, removed]
+    default_state: installed
+    needs_mask: {installed: true, removed: true}
+
 # Virtual (non-visual) nodes. They are not taxonomy classes -- they never carry
 # geometry -- but verbs apply to them and they have their own state machine.
+# (The class `cable` above, task U45, is the gallery's drawn cable; this node
+# keeps its own states, and a name-keyed state query answers with them.)
 # `removed` (task U33): a loose cable taken out whole -- D36 step 2 "Remove 1
 # isolated cable from motherboard" -- is a cable event, not a part to draw.
 virtual_nodes:

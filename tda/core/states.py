@@ -59,6 +59,7 @@ from tda.core.model import (
     StateEvent,
     is_cage_latch,
     is_context,
+    is_gallery_only,
     is_provisional,
 )
 from tda.core.taxonomy import Taxonomy
@@ -198,13 +199,17 @@ def initial_state(
 
     An override of ``removed`` is a part this machine does not have (task
     U34): it starts :data:`ABSENT_PLACEMENT` and marked ``absent``.
+
+    A gallery-only part (:func:`tda.core.model.is_gallery_only`, task U45) is
+    left out the same way: no step ever touched it, so the teardown never
+    asks for it; :func:`gallery_state` puts it on the table.
     """
     over = initial or {}
     out: FrameState = {
         key: InstState(state=over.get(key) or tax.default_state(rec.cls),
                        placement=IN_CHASSIS)
         for key, rec in instances.items()
-        if not is_context(rec)
+        if not is_context(rec) and not is_gallery_only(rec)
     }
     for key, state in over.items():
         if state == REMOVED and key in out:
@@ -701,8 +706,14 @@ def is_gallery_part(instances: dict[str, InstanceRec], final: FrameState, key: s
     (:func:`gone_with_parent`: the clips on the board are *in* the board) --
     except the classes in ``excluded`` (:data:`tda.core.model.GALLERY_EXCLUDED_CLASSES`),
     which are not identifiable in a layout. A Label Studio draft never is.
+
+    A gallery-only part (task U45) always is, whatever its class and whatever
+    ``final`` says: it is in no snapshot of the teardown (it has no events),
+    and the annotator added it because it lies on the table.
     """
     rec = instances.get(key)
+    if rec is not None and is_gallery_only(rec) and not is_provisional(key):
+        return True
     inst = final.get(key)
     if rec is None or inst is None or is_provisional(key):
         return False
@@ -721,6 +732,10 @@ def gallery_state(instances: dict[str, InstanceRec], events: list[StateEvent],
     it) in :data:`GALLERY_PLACEMENT`, keeping its ``removed`` state; every other
     instance -- what stayed in the chassis, the excluded classes, the children
     that went out inside a parent -- is ``elsewhere``, out of the picture.
+
+    The gallery-only parts (task U45), which no snapshot of the teardown
+    carries, join them on the table: ``removed`` like every part there, any
+    class -- a loose ``cable``, a ``screw`` the sheet never counted.
     """
     excluded = frozenset(excluded)
     final = state_at(instances, events, AFTER_LAST_STEP, tax)
@@ -731,6 +746,9 @@ def gallery_state(instances: dict[str, InstanceRec], events: list[StateEvent],
                                  gallery=True)
         else:
             out[key] = InstState(state=inst.state, placement=ELSEWHERE)
+    for key in instances:
+        if key not in out and is_gallery_part(instances, final, key, excluded):
+            out[key] = InstState(state=REMOVED, placement=GALLERY_PLACEMENT, gallery=True)
     return out
 
 
@@ -789,8 +807,8 @@ def event_problems(
 
     for event in sorted(events, key=lambda e: e.step):  # stable: keeps intra-step order
         rec = instances.get(event.target)
-        if rec is not None and is_context(rec):
-            continue        # a 框外零件 (task U18): no state, nothing to validate
+        if rec is not None and (is_context(rec) or is_gallery_only(rec)):
+            continue        # a 框外零件 (U18) or a gallery-only part (U45): no state
         if event.target in gone:
             continue        # absent (U34): whatever is said about it is a no-op
         if rec is not None:
