@@ -1,8 +1,12 @@
 """One generator per VLM task of spec 8.2, P0 set (task B6).
 
-``V1 V2 V3 V4 V5 V6 V8 V10 V12 V14 V15 V16`` -- twelve questions, each with a
-structured answer and an ``answer_check`` block saying how a checker re-derives
-it. **A question whose answer cannot be checked by program is not emitted.**
+``V1 V2 V3 V4 V5 V6 V7 V8 V10 V12 V14 V15 V16`` -- thirteen questions, each
+with a structured answer and an ``answer_check`` block saying how a checker
+re-derives it. **A question whose answer cannot be checked by program is not
+emitted.** W3b (spec v1.48) added V7-cpu, took V5 out of the default
+:data:`TASKS`, made V6 group-equivalent, asked V15-moment without the
+``verified`` gate, and taught V2 / V3 / V12 / V14 that a 2D image shows a
+screw's presence, never its tightness (:data:`SCREW_PRESENCE`, ``captive``).
 
 What the graph knows, and what it does not
 ------------------------------------------
@@ -56,6 +60,7 @@ files and the refusals.
 from __future__ import annotations
 
 import hashlib
+import json
 import zlib
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Optional, Sequence
@@ -72,10 +77,19 @@ from tda.core.graph import (
     REQUIRED_STATES,
     applicable_preconditions,
     find_deadlocks,
+    gated_verbs,
     legal_actions,
+    remaining_plan,
     unmet,
 )
-from tda.core.graph_rules import CABLE_PREFIX, active_edges, cable_nodes, verb_applies
+from tda.core.graph_rules import (
+    CABLE_PREFIX,
+    active_edges,
+    blocker_state,
+    cable_nodes,
+    verb_applies,
+    verb_effect,
+)
 from tda.core.implied import is_implied
 from tda.core.model import (
     NO_CHANGE_STEP_TYPES,
@@ -89,6 +103,8 @@ from tda.core.states import FrameState, InstState, gone_with_parent, initial_ove
 from tda.core.taxonomy import Taxonomy
 
 __all__ = [
+    "ALL_TASKS",
+    "BIG_PARTS",
     "CHASSIS_CLASS",
     "CHECK_TYPES",
     "GENERATORS",
@@ -104,30 +120,61 @@ __all__ = [
     "exclusion_reason",
     "illegal_steps",
     "instance_label",
+    "match_class",
     "opaque_image_id",
     "record",
+    "required_actions",
     "row_verified",
     "unresolved_action_targets",
 ]
 
-#: The P0 task set of spec 8.2, in the order records are written per frame.
-TASKS = ("V1", "V2", "V3", "V4", "V5", "V6", "V8", "V10", "V12", "V14", "V15", "V16")
+#: Every task this module can generate, in the order records are written per
+#: frame. ``--tasks V5`` still reaches V5 through this tuple.
+ALL_TASKS = ("V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V10", "V12", "V14",
+             "V15", "V16")
+
+#: The default task set (W3b, spec 8.2 v1.48): V5 is out of it. Its legal set is
+#: the graph's upper bound, a median of 37 actions per step (p90 57, max 76), so
+#: "list what can be done now" is graded on one demonstrated element and on a
+#: count of blocked ones -- a number too format-sensitive to mean anything. V4
+#: already asks the affordance question one action at a time. V7 (CPU goal,
+#: asked from frames where the CPU sub-plan is under way) joins the set.
+TASKS = tuple(t for t in ALL_TASKS if t != "V5")
 
 #: Tasks whose answer is read off the compiled truth table of one view.
 PERCEPTION_TASKS = frozenset({"V1", "V2", "V8", "V12", "V14", "V15"})
 #: Tasks whose answer is the step log, the state machine and the graph.
-PLANNING_TASKS = frozenset({"V3", "V4", "V5", "V6", "V10", "V16"})
+PLANNING_TASKS = frozenset({"V3", "V4", "V5", "V6", "V7", "V10", "V16"})
 #: Tasks that cannot be derived without a trustworthy constraint graph.
-GRAPH_TASKS = frozenset({"V4", "V5", "V6", "V16"})
+GRAPH_TASKS = frozenset({"V4", "V5", "V6", "V7", "V16"})
 
 #: Spec 8.2's capability layers. V3/V12 are single- and two-frame perception, so
 #: L1; V10 is history and progress, which the spec files under planning, so L3.
 LAYERS = {
     "V1": "L1", "V2": "L1", "V3": "L1", "V12": "L1", "V8": "L1",
     "V4": "L2", "V5": "L2",
-    "V6": "L3", "V10": "L3", "V16": "L3",
+    "V6": "L3", "V7": "L3", "V10": "L3", "V16": "L3",
     "V14": "L4", "V15": "L4",
 }
+
+#: The large parts (W3b): a state change of one of these is decidable at
+#: RealSense / OAK2 resolution, a screw or a plug is not. V15's "not the same
+#: moment" negatives and V3 / V12 on a view without confirmed rows are only
+#: asked when one of them changed between the two frames.
+BIG_PARTS = frozenset({"psu", "motherboard", "drive_cage", "optical_drive", "cover",
+                       "cpu_cooler", "expansion_card", "ram_module"})
+
+#: V7's goal class: the one removal target the paper keeps (minutes 2026-10-31
+#: §3 -- the motherboard plan crosses parts the graph does not know are on it).
+V7_GOAL_CLASS = "cpu"
+#: The cooler class whose ``covered_by(cpu <- cooler)`` edge says the desktop's
+#: cooler set is resolved; without one the CPU plan lifts the CPU through it.
+V7_COOLER_CLASS = "cpu_cooler"
+#: Edges whose certainty rests on confirmed-frame pixels: imported by W3a
+#: (``source = 'pixels:W1'``) or written from the user's covering rulings
+#: (``source = 'review:covers'``). A "no" resting only on such edges is
+#: ``graph_blocked_pixels`` (:func:`is_pixel_edge`).
+PIXEL_SOURCE_PREFIXES = ("pixels:", "review:")
 
 #: The closed set of ``answer_check.type`` values. A record carrying anything
 #: else is a record no checker can execute, and :func:`record` refuses it.
@@ -139,12 +186,20 @@ CHECK_TYPES = frozenset({
     "next_action",   # V6: the demonstrated next action, plus the blocked set
     "history",       # V10: the done set, the remaining count and the bin
     "plan",          # V16: validity, the first bad index and the violated edge
+    "goal_plan",     # V7: violations, required-action recall, goal reached
 })
 
 #: Where a V4 label's certainty comes from (the governing principle, above).
+#: ``graph_blocked_pixels`` is a graph "no" that rests **only** on edges
+#: imported from confirmed-frame pixels (W3a, ``source = 'pixels:W*'``): the
+#: paper writes those as "class rule x overlap in the annotation", not as an
+#: observed constraint, so a sample has to say which kind it is.
 TRUTH_SOURCES = ("demonstrated", "graph_blocked", "state_inapplicable",
-                 "failed_attempt")
-DEMONSTRATED, GRAPH_BLOCKED, STATE_INAPPLICABLE, FAILED_ATTEMPT = TRUTH_SOURCES
+                 "failed_attempt", "graph_blocked_pixels")
+(DEMONSTRATED, GRAPH_BLOCKED, STATE_INAPPLICABLE, FAILED_ATTEMPT,
+ GRAPH_BLOCKED_PIXELS) = TRUTH_SOURCES
+#: The two kinds of graph-certain "no".
+GRAPH_KINDS = frozenset({GRAPH_BLOCKED, GRAPH_BLOCKED_PIXELS})
 
 #: The three corruptions V16 builds a certainly-wrong plan with.
 CORRUPTIONS = ("swap", "move", "substitute")
@@ -293,6 +348,14 @@ class FrameData:
     verified: bool
     rows: dict[str, dict] = field(default_factory=dict)
     pointable: dict[str, tuple[dict, list]] = field(default_factory=dict)
+    #: Is this image from a view with confirmed rows on this desktop (W3b)? An
+    #: image from a view without one -- every OAK1 / OAK2 / RealSense frame
+    #: today -- is a picture and nothing more: its ``rows`` and ``pointable``
+    #: are empty, so no mask and no visibility of that view is ever used or
+    #: implied by a record about it, and V3 / V12 ask it about large parts only.
+    confirmed: bool = True
+    #: ``frame.ts`` in seconds, when the frame row has one (V15-moment's check).
+    ts: Optional[float] = None
 
 
 def slim_row(row: dict) -> dict:
@@ -377,6 +440,9 @@ class TaskCtx:
     excluded: Optional[str] = None
     #: how many hard negatives one frame may contribute per task.
     budget: int = 2
+    #: ``task -> reason -> count`` of what a generator declined to ask and why,
+    #: so the summary can say it (W3b: the paper cites these).
+    skips: dict[str, dict[str, int]] = field(default_factory=dict)
     _legal: dict[tuple[int, bool], list] = field(default_factory=dict, repr=False)
     _blocked: dict[int, list] = field(default_factory=dict, repr=False)
     _inapplicable: dict[int, list] = field(default_factory=dict, repr=False)
@@ -384,6 +450,7 @@ class TaskCtx:
     _v12: Optional[set[int]] = field(default=None, repr=False)
     _first_app: Optional[dict] = field(default=None, repr=False)
     _verbs: Optional[frozenset] = field(default=None, repr=False)
+    _v7_plan0: dict = field(default_factory=dict, repr=False)
 
     # -- shorthand ---------------------------------------------------------- #
     @property
@@ -564,10 +631,19 @@ class TaskCtx:
         return hit
 
     def certainly_wrong(self, step: int) -> list[Candidate]:
-        """Everything that certainly cannot be done at ``step``, both kinds."""
-        return [*(Candidate(v, t, GRAPH_BLOCKED, tuple(e))
+        """Everything that certainly cannot be done at ``step``, both kinds.
+
+        A graph "no" that rests only on pixel-imported edges is kind
+        ``graph_blocked_pixels`` (:func:`graph_kind`), so the label says so.
+        """
+        return [*(Candidate(v, t, graph_kind(e), tuple(e))
                   for v, t, e in self.blocked(step) if self.askable(t)),
                 *self.inapplicable(step)]
+
+    def skip(self, task: str, reason: str) -> None:
+        """Count one question a generator declined to ask, by reason."""
+        bucket = self.skips.setdefault(task, {})
+        bucket[reason] = bucket.get(reason, 0) + 1
 
     def matched(self, candidates: Sequence[Candidate], verb: str,
                 cls: Optional[str], seed: str) -> list[Candidate]:
@@ -590,7 +666,7 @@ class TaskCtx:
             # actually uses: a verb that is only ever a negative -- `displace`,
             # which no sheet records -- is a giveaway of its own
             spoken = 0 if c.verb in used else 1
-            kind = 0 if c.kind == GRAPH_BLOCKED else 1
+            kind = 0 if c.kind in GRAPH_KINDS else 1
             return (tier, spoken, kind,
                     zlib.crc32(f"{seed}|{c.verb}|{c.target}".encode("utf-8")),
                     c.verb, c.target)
@@ -619,20 +695,47 @@ class TaskCtx:
             negative, positive = [], []
             for step in sorted(self.frames):
                 before = self.frame(step - 1)
-                if before is None or not (before.verified
-                                          and self.frames[step].verified):
+                if before is None:
+                    continue
+                frame = self.frames[step]
+                verified = before.verified and frame.verified
+                # a view without confirmed rows (W3b) asks too, but its "yes"
+                # must be a large part: a lone screw is undecidable at RS / OAK2
+                # resolution. "No change" (a dupli pair) is decidable anywhere.
+                unlabelled = not (before.confirmed and frame.confirmed)
+                if not (verified or unlabelled):
                     continue
                 rec = self.ctx.steps.get(step)
                 kind = self.ctx.step_type(step)
                 if kind == StepType.DUPLI.value or (rec is not None and rec.dupli):
                     negative.append(step)
+                elif captive_only_step(self, step):
+                    # the log moved, the picture did not: a "no visible change"
+                    # negative of its own kind, never a "yes" (W3b)
+                    negative.append(step)
                 elif kind not in NO_CHANGE_STEP_TYPES and kind != StepType.FAILED.value:
                     if self.state(step - 1) != self.state(step):
+                        if unlabelled and not big_changes(self, step - 1, step):
+                            continue
                         positive.append(step)
             chosen = stable_order(positive, f"D{self.desktop}|{self.view}|V12",
                                   str)[:len(negative)]
             self._v12 = set(negative) | set(chosen)
         return self._v12
+
+
+def captive_only_step(tc: "TaskCtx", step: int) -> bool:
+    """Is every state change of ``step`` the loosening of a captive screw? (W3b)
+
+    281 of the 2 740 logged steps are: the cooler's screws are turned and stay
+    where they were, so frames ``step - 1`` and ``step`` show the same machine.
+    """
+    actions = tc.ctx.actions_at(step)
+    if not actions or not all(invisible_action(tc.ctx, a) for a in actions):
+        return False
+    old, new = tc.state(step - 1), tc.state(step)
+    moved = [k for k in old.keys() & new.keys() if old[k].state != new[k].state]
+    return bool(moved) and all(is_captive_screw(tc.ctx, k) for k in moved)
 
 
 def target_class(ctx: DesktopCtx, target: str) -> Optional[str]:
@@ -645,6 +748,126 @@ def target_class(ctx: DesktopCtx, target: str) -> Optional[str]:
 def graded_tool(tool: Optional[str]) -> Optional[str]:
     """The tool if it is a fact, else ``None`` -- ``unknown`` is never graded (I3)."""
     return None if tool in UNGRADED_TOOLS else tool
+
+
+#: What a 2D image can say about a screw (W3b, the user's data facts): whether
+#: it is still there. Tightness was never annotated -- a drawn screw is a
+#: fastened one, an unscrewed one is gone from the frame -- so ``fastened`` and
+#: ``loosened`` are one visible state.
+SCREW_PRESENCE = {"fastened": "present", "loosened": "present", "removed": "removed"}
+#: The state space a screw question is asked in.
+PRESENCE_STATES = ("present", "removed")
+#: V12's second "no visible change" source: a step whose every action is the
+#: unscrewing of a captive screw, which stays on its fan and looks the same.
+CAPTIVE_LOOSENED = "captive_screw_loosened"
+
+
+def is_captive_screw(ctx: DesktopCtx, key: str) -> bool:
+    """A screw that stays on its part when unscrewed (``attrs.captive``)."""
+    rec = ctx.instances.get(key)
+    return bool(rec is not None and rec.cls == "screw" and rec.attrs.get("captive"))
+
+
+def visible_state(ctx: DesktopCtx, key: str, state: Optional[str]) -> Optional[str]:
+    """The state as a picture can show it: a screw's presence, else the state."""
+    rec = ctx.instances.get(key)
+    if rec is not None and rec.cls == "screw" and state is not None:
+        return SCREW_PRESENCE.get(state, state)
+    return state
+
+
+def invisible_action(ctx: DesktopCtx, action: ActionRec) -> bool:
+    """``unscrew`` on a captive screw: the log moved, the picture did not."""
+    return action.verb == "unscrew" and is_captive_screw(ctx, action.target)
+
+
+#: Tasks whose answer can hinge on which captive screws are already loose.
+TIGHTNESS_TASKS = frozenset({"V4", "V5", "V6", "V7", "V10", "V16"})
+
+
+def image_undecidable(tc: "TaskCtx", rec: dict) -> bool:
+    """Does this record's truth rest on a captive screw's tightness? (W3b)
+
+    True when, at the record's step, a captive screw is ``loosened`` and the
+    answer or its check names a captive screw: the picture of a loose captive
+    screw is the picture of a tight one, so which of them are left is in the
+    log and nowhere in the image. The state-oracle reference may show it; the
+    oracle-vs-VLM gap analysis leaves these out.
+    """
+    if rec["prompt"]["task"] not in TIGHTNESS_TASKS:
+        return False
+    state = tc.state(int(rec["label"]["step"]))
+    captive = [k for k in tc.ctx.instances if is_captive_screw(tc.ctx, k)]
+    if not any(state.get(k) is not None and state[k].state == "loosened"
+               for k in captive):
+        return False
+    check = {k: v for k, v in rec["label"]["answer_check"].items()
+             if k != "start_state"}
+    text = json.dumps([rec["label"]["answer"], check], ensure_ascii=False)
+    return any(f'"{k}"' in text for k in captive)
+
+
+def is_pixel_edge(edge: Edge) -> bool:
+    """Does this edge rest on pixels -- ``pixels:*`` (W3a) or ``review:*`` (rulings)?
+
+    The one predicate V4, V6, V16 and V7 ask (through :func:`graph_kind` and
+    :func:`required_actions`), so the four cannot disagree about a source.
+    """
+    return str(getattr(edge, "source", "") or "").startswith(PIXEL_SOURCE_PREFIXES)
+
+
+def graph_kind(edges: Sequence[Edge]) -> str:
+    """``graph_blocked_pixels`` when every edge saying "no" is pixel-imported.
+
+    One ordinary edge among them is enough for the plain ``graph_blocked``: the
+    "no" is then certain without the pixels.
+    """
+    edges = list(edges)
+    if edges and all(is_pixel_edge(e) for e in edges):
+        return GRAPH_BLOCKED_PIXELS
+    return GRAPH_BLOCKED
+
+
+def match_class(ctx: DesktopCtx, target: str) -> Optional[str]:
+    """The class two actions must share to count as interchangeable (V6, W3b).
+
+    The taxonomy class, refined where the class alone would pair parts nobody
+    would swap: a screw by its ``role`` (a PSU screw is not a cooler screw), a
+    ``cpu_cooler`` by its ``kind`` (the fan is not the heatsink) and a
+    connector by its ``kind`` (the front-panel loom is not the ATX plug). Four
+    unordered cooler screws all answer ``screw.cpu_cooler``.
+    """
+    cls = target_class(ctx, target)
+    if cls is None:
+        return None
+    rec = ctx.instances.get(target)
+    if rec is None:
+        return cls
+    if cls == "screw" and rec.attrs.get("role"):
+        return f"screw.{rec.attrs['role']}"
+    if cls in ("cpu_cooler", "connector") and rec.attrs.get("kind"):
+        return f"{cls}.{rec.attrs['kind']}"
+    return cls
+
+
+def unordered_group(ctx: DesktopCtx, target: str) -> Optional[str]:
+    """The instance's ``group_id`` when its group is ``unordered``, else ``None``."""
+    rec = ctx.instances.get(target)
+    if rec is None or not rec.group_id or rec.group_order != "unordered":
+        return None
+    return str(rec.group_id)
+
+
+def big_changes(tc: "TaskCtx", before: int, after: int) -> list[str]:
+    """The large parts (:data:`BIG_PARTS`) whose state differs between two steps."""
+    old, new = tc.state(before), tc.state(after)
+    out = []
+    for key in sorted(old.keys() & new.keys()):
+        if old[key].state == new[key].state:
+            continue
+        if tc.ctx.cls_of(key) in BIG_PARTS:
+            out.append(key)
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -691,7 +914,7 @@ def blocked_in(tc: TaskCtx, state: FrameState) -> list[Candidate]:
                 continue
             bad = unmet_for(tc, verb, key, state)
             if bad:
-                out.append(Candidate(verb, key, GRAPH_BLOCKED, tuple(bad)))
+                out.append(Candidate(verb, key, graph_kind(bad), tuple(bad)))
     return out
 
 
@@ -712,6 +935,10 @@ def inapplicable_in(tc: TaskCtx, state: FrameState, step: int) -> list[Candidate
         if inst is None:
             continue
         reason = inapplicable_reason(state, key)
+        if reason == "already_loosened" and is_captive_screw(tc.ctx, key):
+            # "it is already loosened" is the one state a picture of a captive
+            # screw cannot show (W3b): no certain negative of it
+            continue
         for verb in tc.tax.verbs:
             if verb_applies(tc.tax, rec.cls, rec.attrs, verb, inst.state):
                 continue
@@ -882,7 +1109,9 @@ def record(tc: TaskCtx, task: str, rec_id: str, step: int,
            *, views: Optional[Sequence[str]] = None,
            options: Optional[Sequence[dict]] = None,
            negative: Optional[str] = None,
-           truth_source: Optional[str] = None) -> dict:
+           truth_source: Optional[str] = None,
+           view_confirmed: Optional[bool] = None,
+           extra: Optional[dict] = None) -> dict:
     """One JSONL record, split into what the model sees and what grades it.
 
     ``prompt`` is everything a model may be shown: the task id, the **opaque**
@@ -895,8 +1124,9 @@ def record(tc: TaskCtx, task: str, rec_id: str, step: int,
     raises here rather than shipping a question nobody can grade.
 
     ``model_family`` travels with every record so a platform-disjoint split can
-    be made later (spec 8.1). Nothing else in a record may depend on a split:
-    there is none yet, and inventing one now would bake it into the corpus.
+    be made (spec 8.1), and ``split`` (W3b) is the desktop's own
+    ``desktop.split`` as written by ``cli set-split`` -- copied, never invented,
+    ``null`` while no split is cut. Nothing else in a record depends on it.
     """
     if check.get("type") not in CHECK_TYPES:
         raise ValueError(f"{rec_id}: answer_check type {check.get('type')!r} "
@@ -928,6 +1158,10 @@ def record(tc: TaskCtx, task: str, rec_id: str, step: int,
         "graph_version": tc.graph_version,
         "model_family": tc.meta.get("model_family"),
         "chassis_type": tc.meta.get("chassis_type"),
+        # the desktop's split (W3b; W3a's `cli set-split` writes it): public
+        # metadata, label side only, so the eval set filters to test desktops
+        # without another lookup. Null until a split is cut.
+        "split": tc.meta.get("split") or None,
     }
     if views:
         label["views"] = list(views)
@@ -937,6 +1171,13 @@ def record(tc: TaskCtx, task: str, rec_id: str, step: int,
         label["negative"] = negative
     if truth_source:
         label["truth_source"] = truth_source
+    # does every image of this record carry confirmed rows (W3b)? A record about
+    # an OAK / RealSense frame says `false`: its truth is the state machine, and
+    # nothing of that view's masks or visibility went into it
+    label["view_confirmed"] = (all(f.confirmed for f in frames)
+                               if view_confirmed is None else bool(view_confirmed))
+    if extra:
+        label.update(extra)
     return {"id": opaque_record_id(rec_id), "prompt": prompt, "label": label}
 
 
@@ -1097,9 +1338,15 @@ V2_STATE_QUESTIONS = (
     "In this image, what state is {label} in?",
     "Report the current state of {label}.",
 )
+#: A screw is asked whether it is still there, never how tight it is (W3b).
+V2_PRESENCE_QUESTIONS = (
+    "Is {label} still in place, or has it been removed? Answer present or removed.",
+    "In this image, is {label} still there (present) or already taken out (removed)?",
+    "Report whether {label} is present or removed.",
+)
 V2_COUNT_QUESTIONS = (
-    "How many {role} screws are still fastened?",
-    "Count the {role} screws that are still fastened in this image.",
+    "How many {role} screws are still in place?",
+    "Count the {role} screws that are still in place in this image.",
 )
 
 
@@ -1118,33 +1365,56 @@ def _v2_states(tc: TaskCtx, frame: FrameData) -> Iterator[dict]:
         inst = state.get(instance)
         if cls is None or inst is None or not state_is_askable(tc.tax, cls):
             continue
+        if is_captive_screw(tc.ctx, instance):
+            # it stays on its fan, tight or not, until the cooler leaves: there
+            # is no state a picture of it can show (W3b, user data fact b)
+            tc.skip("V2", "captive_screw")
+            continue
+        screw = cls == "screw"
+        value = visible_state(tc.ctx, instance, inst.state)
         rec_id = f"V2-{frame_id(tc.desktop, tc.view, frame.step)}-state-{instance}"
-        index, template = pick(V2_STATE_QUESTIONS, rec_id)
+        index, template = pick(V2_PRESENCE_QUESTIONS if screw else V2_STATE_QUESTIONS,
+                               rec_id)
+        check = {"type": "exact", "derive": "instance_state", "instance": instance,
+                 "class": cls, "fields": ["state"],
+                 "allowed": (list(PRESENCE_STATES) if screw
+                             else sorted(tc.tax.states_of(cls)))}
+        if screw:
+            # tightness was never annotated: a screw is asked present / removed
+            check["state_space"] = "presence"
+        # the class prior: where this part starts, as a picture shows it --
+        # what "the PSU screw" alone would answer (W3b, per desktop)
+        start = tc.state(0).get(instance)
+        prior = visible_state(tc.ctx, instance,
+                              start.state if start is not None
+                              else tc.tax.default_state(cls))
         yield record(
             tc, "V2", rec_id, frame.step, [frame],
             template.format(label=tc.label(instance)), index,
-            {"state": inst.state},
-            {"type": "exact", "derive": "instance_state", "instance": instance,
-             "class": cls, "fields": ["state"],
-             "allowed": sorted(tc.tax.states_of(cls))},
+            {"state": value}, check,
             evidence({instance: box}, tc, {instance: seen_as(row)}),
-            R.rationale([R.observe(instance, inst.state, tc.view, box,
+            R.rationale([R.observe(instance, value, tc.view, box,
                                    row.get("visibility"), occluder=row.get("occluder"))]),
             row_verified([row], frame.verified),
+            extra={"class_prior_answer": prior},
         )
 
 
 def counted_roles(tc: TaskCtx, frame: FrameData) -> list[str]:
-    """Screw roles this frame asks a V2 counting question about."""
+    """Screw roles this frame asks a V2 counting question about.
+
+    Captive screws count for nothing (W3b): they stay on their part, so "how
+    many are still in place" about them is a question about the cooler.
+    """
     return sorted({
         str(rec.attrs.get("role") or "other")
         for key, rec in tc.ctx.instances.items()
-        if rec.cls == "screw" and key in frame.pointable
+        if rec.cls == "screw" and key in frame.pointable and not rec.attrs.get("captive")
     })
 
 
 def _v2_counts(tc: TaskCtx, frame: FrameData) -> Iterator[dict]:
-    """"How many <role> screws are still fastened?" -- counted on the state machine.
+    """"How many <role> screws are still in place?" -- counted on the state machine.
 
     The count covers every screw of that role on the machine, not only the ones
     this view can see, because that is what the question asks; the evidence
@@ -1152,11 +1422,16 @@ def _v2_counts(tc: TaskCtx, frame: FrameData) -> Iterator[dict]:
     enter the chain as ``propagate_state``.
     """
     state = tc.state(frame.step)
+    initial = tc.state(0)
     for role in counted_roles(tc, frame):
+        # "still in place" = present (W3b: tightness was never annotated, a
+        # drawn screw is a fastened one); captive screws are not counted
         fastened = [
             key for key, rec in sorted(tc.ctx.instances.items())
             if rec.cls == "screw" and str(rec.attrs.get("role") or "other") == role
-            and (state.get(key).state if state.get(key) else None) == "fastened"
+            and not rec.attrs.get("captive")
+            and visible_state(tc.ctx, key, state.get(key).state if state.get(key)
+                              else None) == "present"
         ]
         bboxes = {k: frame.pointable[k][1] for k in fastened if k in frame.pointable}
         rec_id = f"V2-{frame_id(tc.desktop, tc.view, frame.step)}-count-{role}"
@@ -1166,12 +1441,111 @@ def _v2_counts(tc: TaskCtx, frame: FrameData) -> Iterator[dict]:
             template.format(role=role.replace("_", " ")), index,
             {"count": len(fastened)},
             {"type": "exact", "derive": "screw_count", "role": role,
-             "state": "fastened", "fields": ["count"]},
+             "state": "present", "state_space": "presence", "captive": False,
+             "fields": ["count"]},
             evidence(bboxes, tc),
-            R.rationale([observed(k, "fastened", tc, frame.pointable) for k in fastened]),
+            R.rationale([observed(k, "present", tc, frame.pointable) for k in fastened]),
             row_verified([frame.pointable[k][0] for k in fastened
                           if k in frame.pointable], frame.verified),
+            # the prior: how many of them the machine starts with
+            extra={"class_prior_answer": sum(
+                1 for key, rec in tc.ctx.instances.items()
+                if rec.cls == "screw" and str(rec.attrs.get("role") or "other") == role
+                and not rec.attrs.get("captive")
+                and visible_state(tc.ctx, key, initial[key].state
+                                  if key in initial else None) == "present")},
         )
+
+
+#: The most one answer may make up of a class's V2 questions on one desktop
+#: after balancing (W3b). The day-1 export had 59 884 V2 records, 64 % of the
+#: file, and the class alone answered 80.6 % of them.
+V2_PRIOR_CAP = 0.5
+
+
+def v2_prior_key(record: dict) -> Optional[tuple[str, str]]:
+    """``("state", class)`` or ``("count", role)``: what a text-only prior keys on."""
+    check = record["label"]["answer_check"]
+    if check.get("derive") == "instance_state":
+        return ("state", str(check.get("class")))
+    if check.get("derive") == "screw_count":
+        return ("count", str(check.get("role")))
+    return None
+
+
+def _v2_value(record: dict) -> Any:
+    answer = record["label"]["answer"]
+    return answer.get("state") if "state" in answer else answer.get("count")
+
+
+def _v2_draw_key(record: dict) -> str:
+    """What a V2 record's place in the thinning order is seeded by.
+
+    Desktop, the instance (or the screw role a count is about) and the step --
+    nothing about the rest of the export, so a desktop exported alone and the
+    same desktop inside 1-66 keep exactly the same questions.
+    """
+    label, check = record["label"], record["label"]["answer_check"]
+    what = check.get("instance") or f"role:{check.get('role')}"
+    return f"V2thin|D{label['desktop']}|{what}|s{label['step']}"
+
+
+def balance_v2(records: list[dict], cap: float = V2_PRIOR_CAP) -> tuple[list[dict], dict]:
+    """Thin V2 so no answer makes up more than ``cap`` of a class's questions.
+
+    Per desktop and per key (:func:`v2_prior_key`: a class, or a screw role for
+    the counts): every answer value is kept at most as often as all the other
+    values together (``cap = 0.5``), the survivors chosen by a hash of
+    :func:`_v2_draw_key` -- per desktop, so the result never depends on which
+    other desktops are exported (review M). A key whose every answer is the
+    same keeps none: those questions would only measure the prior.
+
+    The **class prior** a record is labelled with is set by the generator, not
+    here: the instance's state at the start of the teardown as a picture shows
+    it (a screw present, a latch closed, a part installed) or, for a count, the
+    number of non-captive screws of that role the machine starts with. It is
+    what a model that reads only "the PSU screw" would answer, and it depends
+    on the desktop alone. ``prior_is_correct`` is whether the answer is that;
+    the scorer's V2 headline is accuracy on ``prior_is_correct = false``.
+    Records of other tasks pass through untouched, in order.
+    """
+    pools: dict[tuple, list[dict]] = {}
+    for rec in records:
+        if rec["prompt"]["task"] == "V2":
+            key = v2_prior_key(rec)
+            if key is not None:
+                pools.setdefault((int(rec["label"]["desktop"]), key), []).append(rec)
+    keep: set[str] = set()
+    stats: dict[str, dict] = {}
+    share = cap / (1.0 - cap) if cap < 1.0 else float("inf")
+    for (desktop, key), pool in sorted(pools.items()):
+        by_value: dict[str, list[dict]] = {}
+        for rec in pool:
+            by_value.setdefault(json_key(_v2_value(rec)), []).append(rec)
+        kept = 0
+        for value, rows in sorted(by_value.items()):
+            others = len(pool) - len(rows)
+            allowed = len(rows) if share == float("inf") else int(others * share)
+            chosen = sorted(rows, key=lambda r: hashlib.sha256(
+                _v2_draw_key(r).encode("utf-8")).hexdigest())[:allowed]
+            keep.update(r["id"] for r in chosen)
+            kept += len(chosen)
+        for rec in pool:
+            prior = rec["label"].get("class_prior_answer")
+            rec["label"]["prior_is_correct"] = (json_key(_v2_value(rec)) == json_key(prior))
+        row = stats.setdefault(f"{key[0]}:{key[1]}", {"before": 0, "after": 0,
+                                                       "prior_correct_before": 0})
+        row["before"] += len(pool)
+        row["after"] += kept
+        row["prior_correct_before"] += sum(1 for r in pool if r["label"]["prior_is_correct"])
+    out = [r for r in records
+           if r["prompt"]["task"] != "V2" or v2_prior_key(r) is None or r["id"] in keep]
+    return out, stats
+
+
+def json_key(value: Any) -> str:
+    """A hashable, order-stable spelling of an answer value."""
+    return json.dumps(value, sort_keys=True, ensure_ascii=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -1198,6 +1572,20 @@ def gen_v3(tc: TaskCtx, step: int) -> Iterator[dict]:
     named = tc.named_actions(step)
     if not named:
         return
+    # unscrewing a captive screw leaves it on its fan, looking exactly as it
+    # did (W3b, user data fact b): not an action a pair of pictures can show
+    named = [a for a in named if not invisible_action(tc.ctx, a)]
+    if not named:
+        tc.skip("V3", CAPTIVE_LOOSENED)
+        return
+    # a view without confirmed rows (W3b): a screw or a plug may be invisible
+    # at that resolution, and "you cannot tell from here" is then the honest
+    # answer -- so only a large part's action is asked, and the record says so
+    confirmed = before.confirmed and frame.confirmed
+    big = big_changes(tc, step - 1, step)
+    if not confirmed and tc.ctx.cls_of(named[0].target) not in BIG_PARTS:
+        tc.skip("V3", "unconfirmed_view_small_change")
+        return
     answer = _slots(tc, named[0])
     if len(named) > 1:  # a compound step: keep every slot set, first one on top
         answer["actions"] = [_slots(tc, a) for a in named]
@@ -1218,12 +1606,14 @@ def gen_v3(tc: TaskCtx, step: int) -> Iterator[dict]:
              observed(target, answer["verb"], tc, source, step=source_step)]
     yield record(
         tc, "V3", rec_id, step, [before, frame], question, index, answer,
-        {"type": "exact", "derive": "action_slots", "fields": fields},
+        {"type": "exact", "derive": "action_slots", "fields": fields,
+         "visible_only": True},
         evidence(bboxes, tc, from_step=source_step), R.rationale(chain),
         # the grade follows the frame the answer was actually read off, which
         # for a V3 pair is usually the earlier one: the part is gone from the later
         row_verified([source[target][0]] if target in source else [],
                      (before if source_step == step - 1 else frame).verified),
+        view_confirmed=confirmed, extra={"big_change": big},
     )
 
 
@@ -1313,12 +1703,23 @@ def gen_v4(tc: TaskCtx, step: int) -> Iterator[dict]:
     state = tc.state(step)
     if action.target not in state:
         return
-    yield _v4_record(tc, frame, action.verb, action.target, (), V4_QUESTIONS,
-                     DEMONSTRATED)
-
     # one certain "no" for each certain "yes", matched to the positive's verb
     # and class so the pair cannot be told apart without looking at the picture
-    matched = tc.matched(tc.certainly_wrong(step), action.verb,
+    candidates = tc.certainly_wrong(step)
+    if not frame.confirmed:
+        # a view without confirmed rows (W3b): "the plug is already out" needs
+        # the picture to show a plug, which RS / OAK2 may not -- only the
+        # graph's "no" and a large part's state stay certain from here. And
+        # the pair is asked only when the "no" shares the "yes"'s verb: with
+        # the small-part negatives gone, an unpaired verb is a giveaway
+        candidates = [c for c in candidates if c.kind in GRAPH_KINDS
+                      or tc.ctx.cls_of(c.target) in BIG_PARTS]
+        if not any(c.verb == action.verb for c in candidates):
+            tc.skip("V4", "unconfirmed_view_no_same_verb_negative")
+            return
+    yield _v4_record(tc, frame, action.verb, action.target, (), V4_QUESTIONS,
+                     DEMONSTRATED)
+    matched = tc.matched(candidates, action.verb,
                          target_class(tc.ctx, action.target), tc.seed(step, "V4"))
     for candidate in matched[:1]:
         yield _v4_record(tc, frame, candidate.verb, candidate.target,
@@ -1407,6 +1808,12 @@ V6_QUESTIONS = (
     "Looking at this frame, which action would you perform next?",
     "Name the single action to carry out next on this machine.",
 )
+#: The multiple-choice form (W3b): a secondary record beside the open one.
+V6_MC_QUESTIONS = (
+    "Which of these is the next disassembly step?",
+    "Looking at this frame, which of the following actions would you perform next?",
+    "Pick the single action to carry out next on this machine.",
+)
 #: How many graph-permitted "unknown" distractors ride along, and how many
 #: certainly-wrong ones the options list needs before it is offered at all.
 V6_UNKNOWN_OPTIONS = 2
@@ -1439,18 +1846,69 @@ def gen_v6(tc: TaskCtx, step: int) -> Iterator[dict]:
 
     seed = tc.seed(step, "V6")
     blocked = [(v, t) for v, t, _ in tc.blocked(step)]
+    # group-equivalent matching (W3b): 60.7 % of steps have a second legal
+    # action with the demonstrated verb on an interchangeable part -- four
+    # unordered cooler screws -- and an answer naming .03 when the operator
+    # took .04 is right. The equivalent set is the demonstrated action plus
+    # every *permitted* sibling: same unordered group, or same verb and
+    # match class (:func:`match_class`)
+    equivalent = v6_siblings(tc, action.verb, action.target, permitted)
     # the wrong options match the demonstrated verb wherever they can: "pick the
     # option whose verb is never blocked" scored 45 % against 20 % random while
     # the only certainly-wrong options were graph-blocked ones, and no edge
     # gates a connector or a latch
-    wrong = tc.matched(tc.certainly_wrong(step), action.verb, None,
-                       seed + "|wrong")[:V6_WRONG_OPTIONS]
+    every_wrong = tc.matched(tc.certainly_wrong(step), action.verb, None,
+                             seed + "|wrong")
+    # ... and, inside the verb, a part of *another* match class first: the
+    # certainly-wrong same-class ones are mostly the siblings already done
+    # (screws 1 and 2 out, 3 demonstrated), and "pick the highest ordinal"
+    # then answers without the picture
+    mine = match_class(tc.ctx, action.target)
+    # where another verb has to stand in, draw it in proportion to how often
+    # this teardown uses it (a seeded weighted order): `remove` applies to
+    # nearly everything, and filling every gap with it made "never pick remove"
+    # a shortcut of its own
+    verb_key = _verb_draw(tc, seed)
+    every_wrong = sorted(every_wrong, key=lambda c: (
+        c.verb != action.verb,
+        verb_key(c.verb) if c.verb != action.verb else 0.0,
+        match_class(tc.ctx, c.target) == mine))
     # the distractors match the demonstrated verb too, or "which option has the
-    # verb that is usually right?" answers the question without the picture
-    unknown = tc.matched([Candidate(v, t, "permitted_unknown")
-                          for v, t in sorted(permitted
-                                             - {(action.verb, action.target)})],
-                         action.verb, None, seed + "|unknown")[:V6_UNKNOWN_OPTIONS]
+    # verb that is usually right?" answers the question without the picture --
+    # but never a sibling of the demonstrated action: that one is also right.
+    # And **no two options are the same kind of action** (verb + match class):
+    # with the siblings gone, the demonstrated one was otherwise the odd one
+    # out among four motherboard screws, and "pick the option whose kind
+    # appears once" scored 49 % against 20 % random (W3b probe, D1-D12)
+    others = tc.matched([Candidate(v, t, "permitted_unknown")
+                         for v, t in sorted(permitted - set(equivalent)
+                                            - {(action.verb, action.target)})],
+                        action.verb, None, seed + "|unknown")
+    kinds_used = {(action.verb, mine)}
+
+    def take(pool, limit, verb_rule) -> list[Candidate]:
+        got: list[Candidate] = []
+        for c in pool:
+            if len(got) >= limit:
+                break
+            if not verb_rule(c):
+                continue
+            kind = (c.verb, match_class(tc.ctx, c.target))
+            if kind in kinds_used:
+                continue
+            kinds_used.add(kind)
+            got.append(c)
+        return got
+
+    wrong = take(every_wrong, V6_WRONG_OPTIONS, lambda c: True)
+    unknown = take(others, V6_UNKNOWN_OPTIONS, lambda c: c.verb == action.verb)
+    # a slot no same-verb permitted action can fill takes another certainly
+    # wrong one of that verb first, a permitted one of another verb last
+    room = V6_UNKNOWN_OPTIONS - len(unknown)
+    extra = take(every_wrong, room, lambda c: c.verb == action.verb)
+    wrong += extra
+    unknown += take(sorted(others, key=lambda c: verb_key(c.verb)),
+                    room - len(extra), lambda c: c.verb != action.verb)
     # a frame with only one certainly-wrong action left is no multiple choice --
     # so the question is asked open-ended instead of being dropped, and says so
     options: Optional[list[dict]] = None
@@ -1465,8 +1923,11 @@ def gen_v6(tc: TaskCtx, step: int) -> Iterator[dict]:
         options = stable_order(listed, seed + "|order",
                                lambda o: f"{o['verb']}|{o['target']}")
 
-    rec_id = f"V6-{frame_id(tc.desktop, tc.view, step)}"
-    index, question = pick(V6_QUESTIONS, rec_id)
+    # two record types per frame sharing `v6_pair` (W3b ruling 2026-10-31):
+    # the **open** question is V6's headline, graded group-equivalently; the
+    # multiple choice is a secondary record, because a bigram over the
+    # previous action alone picks its demonstrated option 79.9 % of the time
+    stem = f"V6-{frame_id(tc.desktop, tc.view, step)}"
     state = tc.state(step)
     chain = [observed(action.target,
                       state[action.target].state if action.target in state else None,
@@ -1475,21 +1936,95 @@ def gen_v6(tc: TaskCtx, step: int) -> Iterator[dict]:
               "target_class": target_class(tc.ctx, action.target),
               "tool": graded_tool(action.tool)}
     fields = ["verb", "target"] + (["tool"] if answer["tool"] is not None else [])
-    yield record(
-        tc, "V6", rec_id, step, [frame], question, index, answer,
-        {"type": "next_action", "reference": [action.verb, action.target],
-         "reference_step": nxt, "fields": fields,
-         "metric": "match_rate+blocked_rate",
-         "options_kind": "listed" if options is not None else "open",
-         # `blocked_rate` is the share of answers the graph certainly forbids;
-         # on a frame where it forbids nothing the rate is undefined, not zero
-         "blocked_rate_defined": bool(blocked),
-         "blocked_actions": _actions_json(blocked),
-         "permitted_upper_bound": _actions_json(sorted(permitted))},
-        evidence({action.target: frame.pointable[action.target][1]}
-                 if action.target in frame.pointable else {}, tc),
-        R.rationale(chain), frame.verified, options=options,
-    )
+    check = {"type": "next_action", "reference": [action.verb, action.target],
+             "reference_step": nxt, "fields": fields,
+             "metric": "group_match_rate+blocked_rate",
+             # primary: the answer is the demonstrated action or one of its
+             # permitted siblings (same unordered group, or same verb + match
+             # class); secondary: the demonstrated instance exactly
+             "match": {"primary": "group_equivalent", "secondary": "instance_exact"},
+             "equivalent_actions": _actions_json(equivalent),
+             "match_class": [action.verb, match_class(tc.ctx, action.target)],
+             "group_id": unordered_group(tc.ctx, action.target),
+             # `blocked_rate` is the share of answers the graph certainly
+             # forbids; on a frame where it forbids nothing the rate is
+             # undefined, not zero, and the scorer leaves the frame out of the
+             # blocked denominator
+             "blocked_rate_defined": bool(blocked),
+             "blocked_actions": _actions_json(blocked),
+             "permitted_upper_bound": _actions_json(sorted(permitted)),
+             # the protocol-prior reference reads this and nothing else (W3b)
+             "previous_action": previous_action(tc, step)}
+    evid = evidence({action.target: frame.pointable[action.target][1]}
+                    if action.target in frame.pointable else {}, tc)
+    pair = opaque_record_id(stem)
+    forms: list[tuple[str, str, Optional[list[dict]]]] = [("open", stem, None)]
+    if options is not None:
+        forms.append(("mc", stem + "-mc", options))
+    for form, rec_id, listed_options in forms:
+        index, question = pick(V6_QUESTIONS if form == "open" else V6_MC_QUESTIONS,
+                               rec_id)
+        yield record(
+            tc, "V6", rec_id, step, [frame], question, index, answer,
+            dict(check, options_kind="listed" if form == "mc" else "open", form=form),
+            evid, R.rationale(chain), frame.verified, options=listed_options,
+            extra={"v6_form": form, "v6_pair": pair},
+        )
+
+
+def _verb_draw(tc: TaskCtx, seed: str) -> Callable[[str], float]:
+    """A seeded weighted order of verbs, weighted by this log's use of each.
+
+    The Efraimidis-Spirakis key ``-ln(u) / w``: sorting by it draws verbs
+    without replacement with probability proportional to ``w``, so the verbs of
+    stand-in distractors follow the verbs of the answers.
+    """
+    import math
+
+    counts: dict[str, int] = {}
+    for step in tc.log_steps:
+        for action in tc.named_actions(step):
+            counts[action.verb] = counts.get(action.verb, 0) + 1
+
+    def key(verb: str) -> float:
+        u = (zlib.crc32(f"{seed}|verbdraw|{verb}".encode("utf-8")) + 1) / (2 ** 32 + 2)
+        return -math.log(u) / max(counts.get(verb, 0), 0.01)
+    return key
+
+
+def v6_siblings(tc: TaskCtx, verb: str, target: str,
+                permitted: set[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The demonstrated action and every permitted action interchangeable with it.
+
+    Interchangeable = same verb and either the same unordered ``group_id`` or
+    the same :func:`match_class`. Sorted, the demonstrated one included.
+    """
+    group = unordered_group(tc.ctx, target)
+    cls = match_class(tc.ctx, target)
+    out = {(verb, target)}
+    for v, t in permitted:
+        if v != verb:
+            continue
+        if (group is not None and unordered_group(tc.ctx, t) == group) or \
+                (cls is not None and match_class(tc.ctx, t) == cls):
+            out.add((v, t))
+    return sorted(out)
+
+
+def previous_action(tc: TaskCtx, step: int) -> Optional[dict]:
+    """The last named, state-changing action at or before ``step`` (or ``None``).
+
+    The one input the protocol-prior reference (``scripts/vlm_references.py``)
+    is allowed: "what did the operator do last".
+    """
+    for candidate in reversed([s for s in tc.log_steps if s <= step]):
+        for action in reversed(tc.named_actions(candidate)):
+            if tc.changes_state(action):
+                return {"verb": action.verb, "target": action.target,
+                        "class": target_class(tc.ctx, action.target),
+                        "match_class": match_class(tc.ctx, action.target),
+                        "step": int(candidate)}
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -1649,12 +2184,27 @@ def gen_v12(tc: TaskCtx, step: int) -> Iterator[dict]:
     frame, before = tc.frame(step), tc.frame(step - 1)
     if frame is None or before is None:
         return
-    if not (frame.verified and before.verified) or step not in tc.v12_steps:
+    confirmed = frame.confirmed and before.confirmed
+    if confirmed and not (frame.verified and before.verified):
+        return
+    if step not in tc.v12_steps:
         return
     kind = tc.ctx.step_type(step)
     rec = tc.ctx.steps.get(step)
+    hidden: list[dict] = []
+    reason = None
     if kind == StepType.DUPLI.value or (rec is not None and rec.dupli):
         changed, events = False, []
+        reason = "dupli"
+    elif captive_only_step(tc, step):
+        # the log loosened the cooler's captive screws; the pictures cannot
+        # show it, so the honest answer is "no visible change" (W3b)
+        old, new = tc.state(step - 1), tc.state(step)
+        hidden = [{"target": key, "old": old[key].state, "new": new[key].state}
+                  for key in sorted(old.keys() & new.keys())
+                  if old[key].state != new[key].state]
+        changed, events = False, []
+        reason = CAPTIVE_LOOSENED
     elif kind in NO_CHANGE_STEP_TYPES or kind == StepType.FAILED.value:
         return
     else:
@@ -1670,18 +2220,30 @@ def gen_v12(tc: TaskCtx, step: int) -> Iterator[dict]:
     rec_id = f"V12-{frame_id(tc.desktop, tc.view, step)}"
     index, question = pick(V12_QUESTIONS, rec_id)
     touched = [e["target"] for e in events]
+    big = big_changes(tc, step - 1, step) if changed else []
+    check = {"type": "exact", "derive": "changed",
+             # on a view without confirmed rows only "did it change" is graded:
+             # the small events riding along with the large one may not show
+             "fields": ["changed", "events"] if confirmed else ["changed"],
+             "step_type": kind}
+    if reason:
+        check["reason"] = reason
+    if hidden:
+        check["hidden_events"] = hidden  # what the log did that no picture shows
     yield record(
         tc, "V12", rec_id, step, [before, frame], question, index,
-        {"changed": changed, "events": events},
-        {"type": "exact", "derive": "changed", "fields": ["changed", "events"],
-         "step_type": kind},
+        {"changed": changed, "events": events}, check,
         evidence({k: before.pointable[k][1] for k in touched if k in before.pointable},
                  tc),
         R.rationale([R.compare_frames([step - 1, step], tc.view),
                      *(observed(k, "changed", tc, before.pointable, step=step - 1)
                        for k in touched[:tc.budget])]),
         frame.verified and before.verified,
-        negative=None if changed else "dupli_no_change",
+        negative=(None if changed else
+                  CAPTIVE_LOOSENED if reason == CAPTIVE_LOOSENED else "dupli_no_change"),
+        view_confirmed=confirmed,
+        extra={"big_change": big, "change_visible": changed,
+               **({"reason": reason} if reason else {})},
     )
 
 
@@ -1714,10 +2276,13 @@ def gen_v14(tc: TaskCtx, step: int) -> Iterator[dict]:
         return
     state = tc.state(step)
     seed = tc.seed(step, "V14")
+    # tightness is undecidable from any 2D view by construction (W3b): a captive
+    # screw has no visible state at all, so it is no V14 item either way, and
+    # a screw's state is asked as presence only
     askable = [(key, row) for key, row in sorted(frame.rows.items())
                if tc.ctx.cls_of(key) is not None
                and state_is_askable(tc.tax, tc.ctx.cls_of(key))
-               and key in state]
+               and key in state and not is_captive_screw(tc.ctx, key)]
     blind = [(k, r) for k, r in askable if r.get("visibility") not in ANSWERABLE]
     seen = [(k, r) for k, r in askable if r.get("visibility") in ANSWERABLE]
     take = min(len(blind), len(seen), tc.budget)
@@ -1729,9 +2294,10 @@ def gen_v14(tc: TaskCtx, step: int) -> Iterator[dict]:
         answerable = row.get("visibility") in ANSWERABLE
         rec_id = f"V14-{frame_id(tc.desktop, tc.view, step)}-{instance}"
         index, template = pick(V14_QUESTIONS, rec_id)
+        shown = visible_state(tc.ctx, instance, state[instance].state)
         if answerable:
             box = frame.pointable[instance][1]
-            chain = R.rationale([R.observe(instance, state[instance].state, tc.view,
+            chain = R.rationale([R.observe(instance, shown, tc.view,
                                            box, row.get("visibility"),
                                            occluder=row.get("occluder"))])
             bboxes = {instance: box}
@@ -1745,9 +2311,11 @@ def gen_v14(tc: TaskCtx, step: int) -> Iterator[dict]:
             tc, "V14", rec_id, step, [frame],
             template.format(label=tc.label(instance)), index,
             {"answerable": answerable,
-             "state": state[instance].state if answerable else None},
+             "state": shown if answerable else None},
             {"type": "exact", "derive": "answerable", "instance": instance,
-             "fields": ["answerable", "state"], "metric": "risk_coverage"},
+             "fields": ["answerable", "state"], "metric": "risk_coverage",
+             **({"state_space": "presence"}
+                if tc.ctx.cls_of(instance) == "screw" else {})},
             evidence(bboxes, tc, {instance: seen_as(row)}),
             chain, row_verified([row], frame.verified),
             negative=None if answerable else "unanswerable",
@@ -1766,10 +2334,23 @@ V15_CROSS_QUESTIONS = (
 V15_MOMENT_QUESTIONS = (
     "Are these two images the same machine at the same moment of the teardown?",
     "Do these two views show the same disassembly state of the same machine?",
+    "Two cameras, two pictures: were they taken at the same point of the "
+    "disassembly?",
+    "Is the machine in the second image in exactly the state shown in the first?",
 )
 #: How far away the negative half of the same-moment question may be taken from,
 #: nearest first: a neighbouring step is the hardest honest negative there is.
-V15_MOMENT_OFFSETS = (2, -2, 1, -1, 3, -3)
+#: Out to six steps (W3b): the negative needs a large part to have changed, and
+#: three steps of screws often change none.
+V15_MOMENT_OFFSETS = (2, -2, 1, -1, 3, -3, 4, -4, 5, -5, 6, -6)
+#: The views on one capture clock: OAK1, OAK2 and the RealSense are triggered
+#: together, so one step's frames are seconds apart. The scanner's ``ts`` is
+#: not a capture time (consecutive scanner frames are 2 s apart and days off
+#: the cameras' clock), so no pair with the scanner is checked by time.
+SYNCED_VIEWS = frozenset({"oak1", "oak2", "rs"})
+#: The most two synced frames of one step may be apart and still be "the same
+#: moment" (review M: D42 RS steps 16-17 are a known raw-data shift of ~36 s).
+V15_MAX_DT_S = 20.0
 
 
 def gen_v15(tc: TaskCtx, step: int) -> Iterator[dict]:
@@ -1783,14 +2364,18 @@ def gen_v15(tc: TaskCtx, step: int) -> Iterator[dict]:
     two frames are the same moment at all.
     """
     frame = tc.frame(step)
-    if frame is None or not frame.verified:
+    if frame is None:
         return
     state = tc.state(step)
     for other, frames in sorted(tc.others.items()):
         mate = frames.get(step)
-        if mate is None or not mate.verified:
-            continue
-        yield from _v15_cross(tc, step, frame, other, mate, state)
+        if mate is None:
+            continue  # the other camera has no picture of this step (missing)
+        # cross needs both views confirmed: it reads a visibility in each
+        if frame.verified and mate.verified:
+            yield from _v15_cross(tc, step, frame, other, mate, state)
+        # moment needs nothing of either view's annotation (W3b): the four
+        # cameras fire on one key press, so the same step *is* the same moment
         yield from _v15_moment(tc, step, frame, other, frames)
 
 
@@ -1801,7 +2386,8 @@ def _v15_cross(tc: TaskCtx, step: int, frame: FrameData, other: str,
              if row.get("visibility") not in ANSWERABLE
              and key in mate.pointable and key in state
              and tc.ctx.cls_of(key) is not None
-             and state_is_askable(tc.tax, tc.ctx.cls_of(key))]
+             and state_is_askable(tc.tax, tc.ctx.cls_of(key))
+             and not is_captive_screw(tc.ctx, key)]
     for instance in stable_order(blind, seed)[:tc.budget]:
         row, box = mate.pointable[instance]
         here = frame.rows[instance]
@@ -1810,10 +2396,13 @@ def _v15_cross(tc: TaskCtx, step: int, frame: FrameData, other: str,
         yield record(
             tc, "V15", rec_id, step, [frame, mate],
             template.format(label=tc.label(instance)), index,
-            {"state": state[instance].state, "best_view": other},
+            {"state": visible_state(tc.ctx, instance, state[instance].state),
+             "best_view": other},
             {"type": "exact", "derive": "cross_view", "instance": instance,
              "blind_view": tc.view, "answer_view": other,
-             "fields": ["state", "best_view"]},
+             "fields": ["state", "best_view"],
+             **({"state_space": "presence"}
+                if tc.ctx.cls_of(instance) == "screw" else {})},
             evidence({instance: box}, tc,
                      {instance: seen_as(here) | {
                          f"visibility_{other}": row.get("visibility")}}),
@@ -1824,7 +2413,7 @@ def _v15_cross(tc: TaskCtx, step: int, frame: FrameData, other: str,
                           occluder=row.get("occluder")),
             ]),
             row_verified([row], frame.verified and mate.verified),
-            views=[tc.view, other],
+            views=[tc.view, other], extra={"v15_variant": "cross"},
         )
 
 
@@ -1837,23 +2426,40 @@ def _v15_moment(tc: TaskCtx, step: int, frame: FrameData, other: str,
     ``dupli`` pair or a pair of ``reorient`` steps leaves the machine in exactly
     the same state, and "no" would then be the wrong answer to "do these show
     the same disassembly state?".
+
+    W3b: no ``verified`` gate on either frame -- the answer is the step
+    alignment and the state machine, never a mask -- and the negative must
+    differ by a **large part** (:data:`BIG_PARTS`): a one-screw difference is
+    undecidable at RealSense / OAK2 resolution, so "not the same moment" would
+    be a question about the log, not the pictures. Nearest offset first, out to
+    :data:`V15_MOMENT_OFFSETS`.
     """
-    shared = sorted(set(frame.rows) & set(frames[step].rows))
-    if not shared:
-        return
     here = tc.state(step)
-    candidates: list[tuple[bool, FrameData]] = [(True, frames[step])]
+    mate_now = frames[step]
+    if (tc.view in SYNCED_VIEWS and other in SYNCED_VIEWS
+            and frame.ts is not None and mate_now.ts is not None
+            and abs(frame.ts - mate_now.ts) > V15_MAX_DT_S):
+        # the two cameras did not fire together here: "same moment" is not
+        # certain, so neither half of the pair is asked
+        tc.skip("V15", f"moment_ts_mismatch_{other}")
+        return
+    candidates: list[tuple[bool, FrameData, list[str]]] = [(True, mate_now, [])]
     for delta in V15_MOMENT_OFFSETS:
         mate = frames.get(step + delta)
-        if mate is None or not mate.verified or mate.step == step:
+        if mate is None or mate.step == step:
             continue
         if tc.state(mate.step) == here:
             continue  # the same state at another step: "no" would be a lie
-        candidates.append((False, mate))
+        big = big_changes(tc, min(step, mate.step), max(step, mate.step))
+        if not big:
+            continue  # only small parts differ: not decidable from these views
+        candidates.append((False, mate, big))
         break
     if len(candidates) == 1:
+        tc.skip("V15", f"moment_no_big_negative_{other}")
         return  # no honest negative near this frame: skip the pair entirely
-    for same, mate in candidates:
+    shared = sorted(set(frame.rows) & set(frames[step].rows))
+    for same, mate, big in candidates:
         rec_id = (f"V15m-{frame_id(tc.desktop, tc.view, step)}-{other}"
                   f"-s{mate.step:03d}")
         index, question = pick(V15_MOMENT_QUESTIONS, rec_id)
@@ -1862,11 +2468,12 @@ def _v15_moment(tc: TaskCtx, step: int, frame: FrameData, other: str,
             {"same_moment": same},
             {"type": "exact", "derive": "same_moment", "same_moment": same,
              "fields": ["same_moment"], "other_view": other,
-             "other_step": mate.step},
+             "other_step": mate.step, "variant": "moment"},
             evidence({}, tc, {k: {} for k in shared[:tc.budget]}),
             R.rationale([R.compare_frames([step, mate.step], other)]),
             frame.verified and mate.verified, views=[tc.view, other],
             negative=None if same else "different_moment",
+            extra={"big_change": big, "v15_variant": "moment"},
         )
 
 
@@ -2022,7 +2629,7 @@ def _plan_record(tc: TaskCtx, frame: FrameData, plan: Sequence[tuple[str, str]],
                               tc, frame.pointable) for _, t in plan[:tc.budget])
     labels = [e.label() for e in edges]
     source = (DEMONSTRATED if first_bad is None
-              else GRAPH_BLOCKED if edges else STATE_INAPPLICABLE)
+              else graph_kind(edges) if edges else STATE_INAPPLICABLE)
     check = {"type": "plan", "plan": listed, "metric": "accuracy+localisation",
              "truth_source": source}
     if family is not None:
@@ -2109,9 +2716,246 @@ def gen_v16(tc: TaskCtx, step: int) -> Iterator[dict]:
     yield _plan_record(tc, frame, corrupted, bad_at, broken, tag, family, reason)
 
 
+# --------------------------------------------------------------------------- #
+# V7 -- the rest of the CPU plan, asked half-way through it
+# --------------------------------------------------------------------------- #
+V7_QUESTIONS = (
+    "The goal is to take {goal} out of this machine, and the work towards it has "
+    "already started. List, in order, the actions still needed to remove it.",
+    "Some of the steps towards removing {goal} have been done. What remains? "
+    "Give the remaining actions in order.",
+    "Plan the rest of the job: starting from the machine as it is now, which "
+    "actions, in which order, get {goal} out?",
+    "Removal of {goal} is under way. Write the sequence of actions that "
+    "finishes it from this state.",
+    "Looking at the machine as it stands, give the ordered list of disassembly "
+    "actions that still have to happen before {goal} can be lifted out.",
+    "Continue the teardown towards {goal}: list every remaining action, one per "
+    "step, ending with its removal.",
+)
+
+
+@dataclass(frozen=True)
+class Requirement:
+    """One state change every legal plan from here must contain (V7)."""
+
+    target: str
+    states: frozenset
+    via: tuple = ()          # the edges that make it necessary, goal-side first
+    pixel_only: bool = False  # an edge on its path is pixel-imported
+
+    def as_json(self) -> dict:
+        return {"target": self.target, "states": sorted(self.states),
+                "via": [e.label() for e in self.via], "pixel_only": self.pixel_only}
+
+
+def _candidate_verbs(tc: TaskCtx, key: str, current: str,
+                     wanted: frozenset) -> list[str]:
+    """Every verb that takes ``key`` from ``current`` into ``wanted`` in one step.
+
+    Removing always satisfies an edge (``unmet`` counts a removed blocker as
+    clear), so ``remove`` is a candidate whenever it applies.
+    """
+    rec = tc.ctx.instances.get(key)
+    cls = rec.cls if rec is not None else (
+        CABLE_CLASS if key.startswith(CABLE_PREFIX) else None)
+    if cls is None:
+        return []
+    attrs = rec.attrs if rec is not None else {}
+    out = []
+    for verb in tc.tax.verbs:
+        if not verb_applies(tc.tax, cls, attrs, verb, current):
+            continue
+        new = verb_effect(tc.tax, cls, attrs, verb)
+        if new in wanted or new == REMOVED:
+            out.append(verb)
+    return out
+
+
+def required_actions(tc: TaskCtx, state: FrameState, goal: str) -> list[Requirement]:
+    """The state changes **every** legal plan from ``state`` to ``goal`` removed contains.
+
+    The goal itself has to reach ``removed``. Then, recursively: an unmet edge
+    on a required node is itself required when it gates **every** verb that
+    could bring that node where it has to be -- a cooler can be swung aside or
+    taken out, both are gated by its screws (``fastened_by``), only the second
+    by its fan lead (``connected_to``), so the screws are required and the lead
+    is not. That is the strongest claim the graph supports: anything else a plan
+    does may be needed or may be redundant, and V7 does not penalise it.
+    """
+    out: dict[tuple[str, frozenset], Requirement] = {}
+    seen: set[tuple[str, frozenset]] = set()
+
+    def need(key: str, wanted: frozenset, via: tuple) -> None:
+        current = blocker_state(state, key)
+        if current is None or current == REMOVED or current in wanted:
+            return
+        mark = (key, wanted)
+        if mark in seen:
+            return
+        seen.add(mark)
+        # a requirement exists only because of every edge on its path, so one
+        # pixel-imported edge on it makes it a pixel-certain requirement
+        pixel_only = any(is_pixel_edge(e) for e in via)
+        out[mark] = Requirement(key, wanted, via, pixel_only)
+        verbs = _candidate_verbs(tc, key, current, wanted)
+        if not verbs:
+            return
+        for edge in tc.by_target.get(key, ()):
+            if not unmet([edge], state, "required"):
+                continue
+            if not all(v in gated_verbs(edge.type, edge.mode) for v in verbs):
+                continue
+            need(edge.blocker, REQUIRED_STATES.get(edge.type, frozenset()),
+                 via + (edge,))
+
+    need(goal, frozenset({REMOVED}), ())
+    return sorted(out.values(), key=lambda r: (len(r.via), r.target,
+                                               sorted(r.states)))
+
+
+def _v7_goal_ok(tc: TaskCtx, goal: str) -> Optional[str]:
+    """Why ``goal`` cannot be a V7 goal on this desktop, or ``None``."""
+    if not tc.askable(goal):
+        return "goal_not_askable"
+    covered = [e for e in tc.by_target.get(goal, ())
+               if e.type == "covered_by"
+               and tc.ctx.cls_of(e.blocker) == V7_COOLER_CLASS]
+    if not covered:
+        # W3a's S1 report: a desktop whose cooler set is unresolved has no
+        # `covered_by(cpu <- cooler)` edge, and its plan lifts the CPU through
+        # the cooler. Until W3a's rule lands those desktops ask no V7.
+        return "cooler_unresolved"
+    return None
+
+
+def gen_v7(tc: TaskCtx, step: int) -> Iterator[dict]:
+    """The remaining CPU plan, from a frame where it is **in progress**.
+
+    From the first frame this is a generic recipe -- [open the shroud] ->
+    unscrew the cooler x4 -> lift the cooler -> open the lever -> lift the CPU
+    -- that a model writes without looking. Half-way it is not: two screws out
+    and the shroud open is something only the picture says. So a frame is asked
+    only when at least one action of the plan from the initial state has been
+    done and the CPU is still in.
+
+    The answer is graded on three things the incomplete graph makes certain
+    (``answer_check``): (a) no step violates an existing required edge, (b)
+    every :func:`required_actions` state change is in the plan, (c) the goal is
+    reached. **No redundancy penalty**: a plan that also takes out the drive
+    cage on its way may be exactly right and the graph would not know.
+    """
+    frame = tc.frame(step)
+    if frame is None or tc.excluded:
+        return
+    goals = sorted(k for k, rec in tc.ctx.instances.items()
+                   if rec.cls == V7_GOAL_CLASS)
+    for goal in goals:
+        why = _v7_goal_ok(tc, goal)
+        if why:
+            tc.skip("V7", why)
+            continue
+        here = tc.state(step)
+        inst = here.get(goal)
+        if inst is None or inst.state == REMOVED:
+            continue  # nothing left to plan
+        removal = next((s for s in tc.log_steps if s > step
+                        and tc.state(s).get(goal) is not None
+                        and tc.state(s)[goal].state == REMOVED), None)
+        if removal is None:
+            tc.skip("V7", "goal_never_removed")
+            continue
+        initial = tc.state(0)
+        if goal not in tc._v7_plan0:
+            tc._v7_plan0[goal] = remaining_plan(tc.ctx.instances, tc.edges, initial,
+                                                goal, tc.tax)
+        plan0 = tc._v7_plan0[goal]
+        if not plan0:
+            tc.skip("V7", "no_initial_plan")
+            continue
+        started = [t for _, t in plan0
+                   if blocker_state(here, t) != blocker_state(initial, t)]
+        # the progress has to be one a picture shows (W3b): a loosened captive
+        # cooler screw looks like a tight one
+        if not [t for t in started if not is_captive_screw(tc.ctx, t)]:
+            tc.skip("V7", "not_started_visibly" if started else "not_started")
+            continue
+        if any(s in tc.illegal for s in tc.log_steps if step < s <= removal):
+            tc.skip("V7", "illegal_step_ahead")
+            continue
+        plan = remaining_plan(tc.ctx.instances, tc.edges, here, goal, tc.tax)
+        if not plan:
+            tc.skip("V7", "no_plan")
+            continue
+        demonstrated = [(a.verb, a.target) for s in tc.log_steps
+                        if step < s <= removal for a in tc.named_actions(s)
+                        if (a.target in tc.ctx.instances
+                            or a.target.startswith(CABLE_PREFIX))
+                        and tc.changes_state(a)]
+        bad_at, _, _ = _simulate(tc, step, demonstrated)
+        if bad_at is not None:
+            tc.skip("V7", "demonstrated_does_not_replay")
+            continue
+        yield _v7_record(tc, frame, goal, plan, demonstrated, started, removal)
+
+
+def _v7_record(tc: TaskCtx, frame: FrameData, goal: str,
+               plan: Sequence[tuple[str, str]],
+               demonstrated: Sequence[tuple[str, str]], started: Sequence[str],
+               removal: int) -> dict:
+    step = frame.step
+    state = tc.state(step)
+    required = required_actions(tc, state, goal)
+    many = sum(1 for r in tc.ctx.instances.values() if r.cls == V7_GOAL_CLASS) > 1
+    goal_words = tc.label(goal) if many else "the CPU"
+    rec_id = f"V7-{frame_id(tc.desktop, tc.view, step)}-{goal}"
+    index, template = pick(V7_QUESTIONS, rec_id)
+    chain: list[dict] = [observed(goal, state[goal].state, tc, frame.pointable)]
+    for req in required[1:1 + tc.budget]:
+        edge = req.via[-1]
+        current = blocker_state(state, req.target)
+        chain.append(R.recall_relation(edge.type, edge.target, edge.blocker,
+                                       edge.necessity, edge.mode))
+        chain.append(observed(req.target, current, tc, frame.pointable))
+        chain.append(R.check_precondition(req.target, sorted(req.states), current,
+                                          False))
+    pixel = any(r.pixel_only for r in required)
+    shortest = _actions_seq(plan)
+    shown = _actions_seq(demonstrated)
+    # the answer is the **demonstrated** remainder: the one plan known to work.
+    # The graph's shortest plan is only an upper-bound construction (the graph
+    # is incomplete), so it is a reference, not the answer; and the check
+    # accepts any plan at all that breaks no edge, contains every required
+    # action and reaches the goal (review M, 2026-10-31)
+    return record(
+        tc, "V7", rec_id, step, [frame], template.format(goal=goal_words), index,
+        {"plan": shown, "goal": goal},
+        {"type": "goal_plan", "goal": goal, "goal_state": REMOVED,
+         "start_step": step, "goal_removed_at": removal,
+         "metric": "violation_free+required_recall+goal_reached",
+         "any_legal_plan_scores": True,
+         "redundancy_penalty": False, "necessity": "required",
+         "required_actions": [r.as_json() for r in required],
+         "reference_shortest": shortest, "demonstrated_remainder": shown,
+         "plan_length": len(shortest), "demonstrated_length": len(demonstrated),
+         "started": sorted(set(started)),
+         "start_state": {k: v.state for k, v in sorted(state.items())},
+         "previous_action": previous_action(tc, step)},
+        evidence({r.target: frame.pointable[r.target][1] for r in required
+                  if r.target in frame.pointable}, tc, plan_length=len(shown)),
+        R.rationale(chain), frame.verified,
+        truth_source=GRAPH_BLOCKED_PIXELS if pixel else GRAPH_BLOCKED,
+    )
+
+
+def _actions_seq(pairs: Sequence[tuple[str, str]]) -> list[dict]:
+    """``(verb, target)`` pairs as JSON, **in order** (``_actions_json`` sorts)."""
+    return [{"verb": verb, "target": target} for verb, target in pairs]
+
+
 #: ``task id -> generator``. The order is the order records are written.
 GENERATORS: dict[str, Callable[[TaskCtx, int], Iterator[dict]]] = {
     "V1": gen_v1, "V2": gen_v2, "V3": gen_v3, "V4": gen_v4, "V5": gen_v5,
-    "V6": gen_v6, "V8": gen_v8, "V10": gen_v10, "V12": gen_v12, "V14": gen_v14,
-    "V15": gen_v15, "V16": gen_v16,
+    "V6": gen_v6, "V7": gen_v7, "V8": gen_v8, "V10": gen_v10, "V12": gen_v12,
+    "V14": gen_v14, "V15": gen_v15, "V16": gen_v16,
 }

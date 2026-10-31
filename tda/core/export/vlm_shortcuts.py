@@ -160,12 +160,16 @@ def option_verb_shortcut(records: Iterable[dict]) -> dict:
     score: Callable[[str], float] = lambda verb: (
         wins[verb] / seen[verb] if seen[verb] else 0.0)
 
-    correct = 0
+    # ties between options of the best verb are broken uniformly (the expected
+    # score), not by the instance key: a key tie-break is a second shortcut of
+    # its own -- after W3b took the siblings out of the distractors, "the
+    # largest key among the unscrews" alone moved this number by 10 points
+    correct = 0.0
     for record in listed:
         reference = tuple(record["label"]["answer_check"]["reference"])
-        best = max(record["label"]["options"],
-                   key=lambda o: (score(o["verb"]), o["verb"], o["target"]))
-        correct += (best["verb"], best["target"]) == reference
+        top = max(score(o["verb"]) for o in record["label"]["options"])
+        ties = [o for o in record["label"]["options"] if score(o["verb"]) == top]
+        correct += sum((o["verb"], o["target"]) == reference for o in ties) / len(ties)
     sizes = Counter(len(r["label"]["options"]) for r in listed)
     random_rate = sum(n / size for size, n in sizes.items()) / len(listed)
     return {

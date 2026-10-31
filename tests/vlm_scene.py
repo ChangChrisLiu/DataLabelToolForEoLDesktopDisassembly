@@ -278,12 +278,14 @@ def _wide_log() -> tuple[list[StepRec], list[ActionRec], int]:
     return steps, actions, len(order) + 1
 
 
-def build_wide(db: Db, desktops=WIDE_DESKTOPS) -> Taxonomy:
+def build_wide(db: Db, desktops=WIDE_DESKTOPS, confirm_step=None) -> Taxonomy:
     """Several desktops with enough parts for a shortcut to be measurable.
 
-    Planning only: no frame is confirmed, which is the state the real database
-    is in, so what comes out is V3/V4/V5/V6/V10/V16 -- exactly the tasks the
-    text-only shortcut is measured on.
+    Planning only: no frame is confirmed, so what comes out is V3/V4/V5/V6/V10/
+    V16 -- exactly the tasks the text-only shortcut is measured on.
+    ``confirm_step`` (W3b) draws the chassis and confirms that one frame per
+    desktop, which makes the view a *labelled* one -- the scanner's case; a view
+    with nothing confirmed is exported as an OAK / RealSense view is.
     """
     tax = load_taxonomy()
     steps, actions, n_steps = _wide_log()
@@ -321,6 +323,23 @@ def build_wide(db: Db, desktops=WIDE_DESKTOPS) -> Taxonomy:
                             flags={"review_status": "unlabeled"})
         db.set_pose_segment(desktop, VIEW, 1, 1, n_steps, 1, None, None)
         edges_to_db(db, desktop, propose_edges(db.instances(desktop), tax))
+        if confirm_step is not None:
+            keys = sorted(db.instances(desktop))
+            for i, key in enumerate(keys):
+                box = (0, 0, 64, 64) if key == CHASSIS else \
+                    (4 + (i % 6) * 10, 4 + (i // 6) * 10, 10 + (i % 6) * 10, 10 + (i // 6) * 10)
+                db.add_keyframe(ShapeKeyframe(
+                    id=None, instance=key, desktop=desktop, view=VIEW, pose_segment=1,
+                    anchor_step=n_steps, placement="in_chassis", geom_type="mask",
+                    parts=[ShapePart("main", rle=masks.encode_rle(rect(box)))],
+                    amodal_complete=True,
+                ))
+            db.set_zorder(ZOrderRec(desktop, VIEW, 1,
+                                    [(CHASSIS, "main")] + [(k, "main") for k in keys
+                                                           if k != CHASSIS]))
+            service = TruthService(db, tax)
+            service.refresh_range(desktop, VIEW, range(1, n_steps + 1))
+            service.verify_frame(FrameKey(desktop, confirm_step, VIEW), "tester")
     return tax
 
 

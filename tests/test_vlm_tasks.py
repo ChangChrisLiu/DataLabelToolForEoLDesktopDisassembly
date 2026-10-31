@@ -14,7 +14,7 @@ import pytest
 
 import vlm_scene as S
 from tda.core.db import Db
-from tda.core.export.vlm import TASKS, export_vlm, manifest_path
+from tda.core.export.vlm import ALL_TASKS, TASKS, export_vlm, manifest_path
 from tda.core.export.vlm_reasoning import OPS, TERMINALS
 from tda.core.export.vlm_tasks import PERCEPTION_TASKS, PLANNING_TASKS
 from tda.core.export.vlm_tasks import V16_PLAN_LEN as S_PLAN_LEN
@@ -33,6 +33,9 @@ def scene(tmp_db_path: str):
 
 
 def _export(db, tax, out: Path, view: str = S.VIEW, **kw) -> dict:
+    # every task the module has, V5 included: the default set (W3b) is asserted
+    # by the tests that pass `tasks=TASKS`
+    kw.setdefault("tasks", ALL_TASKS)
     return export_vlm(db, tax, [S.DESKTOP], view, str(out), **kw)
 
 
@@ -88,14 +91,20 @@ def _key(record: dict):
 # --------------------------------------------------------------------------- #
 def test_every_p0_task_is_emitted_and_re_derivable(scene, tmp_path: Path):
     db, tax = scene
-    records = _run(db, tax, tmp_path / "v.jsonl")
+    records = _run(db, tax, tmp_path / "v.jsonl", tasks=TASKS)
     tasks = {r["prompt"]["task"] for r in records}
-    assert tasks == set(TASKS), sorted(tasks)
+    # the scene has no CPU, so V7 (W3b: the CPU goal) has nothing to ask
+    assert tasks == set(TASKS) - {"V7"}, sorted(tasks)
 
     checker = Checker(db, tax, S.DESKTOP)
     assert checker.check_all(records) == len(records)
-    assert set(checker.by_type) == {"boxes", "exact", "feasibility", "bounded_set",
+    assert set(checker.by_type) == {"boxes", "exact", "feasibility",
                                     "next_action", "history", "plan"}
+
+    # V5 left the default set (W3b) and is still one `tasks=` away
+    v5 = _run(db, tax, tmp_path / "v5.jsonl", tasks=["V5"])
+    assert v5 and {r["prompt"]["task"] for r in v5} == {"V5"}
+    assert Checker(db, tax, S.DESKTOP).check_all(v5) == len(v5)
 
 
 def test_every_record_carries_the_contract_fields(scene, tmp_path: Path):
@@ -113,15 +122,28 @@ def test_every_record_carries_the_contract_fields(scene, tmp_path: Path):
         assert isinstance(label["verified"], bool)
 
 
-def test_nothing_in_a_record_depends_on_a_split(scene, tmp_path: Path):
-    """There is no split yet (spec 8.1: it is cut at freeze, platform-disjoint)."""
+def test_a_record_carries_its_desktops_split_and_nothing_else_of_it(
+        scene, tmp_path: Path):
+    """W3b: the split is public metadata, copied to the label side, never the prompt."""
     db, tax = scene
+    before = _run(db, tax, tmp_path / "none.jsonl")
+    assert before and all(r["label"]["split"] is None for r in before)
     db.upsert_desktop(S.DESKTOP, {"brand": "HP", "split": "train",
                                   "model_family": "EliteDesk 800 G2 TWR",
                                   "chassis_type": "twr"})
-    for record in _run(db, tax, tmp_path / "v.jsonl"):
-        assert "split" not in json.dumps(record)
+    summary = _export(db, tax, tmp_path / "v.jsonl")
+    after = _read(tmp_path / "v.jsonl")
+    assert summary["by_split"] == {"train": len(after)}
+    for record in after:
+        assert record["label"]["split"] == "train"
+        assert "split" not in json.dumps(record["prompt"])
         assert record["label"]["model_family"]
+    # the answers are the same whatever the split says
+    assert [r["label"]["answer"] for r in after] == [r["label"]["answer"] for r in before]
+    # the filter: a train desktop is not in a test export
+    summary = _export(db, tax, tmp_path / "t.jsonl", split="test")
+    assert summary["records"] == 0 and summary["skipped_by_split"] == [S.DESKTOP]
+    assert _export(db, tax, tmp_path / "tr.jsonl", split="train")["records"] == len(after)
 
 
 def test_every_rationale_stays_inside_the_closed_operation_set(scene, tmp_path: Path):
@@ -149,10 +171,14 @@ def test_the_two_sources_of_truth_are_kept_apart(scene, tmp_path: Path):
 
     other = Db(str(tmp_path / "bare.sqlite"))
     S.build(other, views=(S.VIEW,), verified_steps=())
-    records = _run(other, tax, tmp_path / "bare.jsonl")
+    records = _run(other, tax, tmp_path / "bare.jsonl", tasks=TASKS)
     tasks = {r["prompt"]["task"] for r in records}
-    assert tasks & PERCEPTION_TASKS == set()
-    assert tasks == PLANNING_TASKS - {"V15"}
+    # W3b: a view with no confirmed row still asks V12, from the state machine
+    # alone -- its dupli "no change" and its large-part "yes" -- and says so
+    assert tasks & PERCEPTION_TASKS == {"V12"}
+    assert all(r["label"]["view_confirmed"] is False for r in records)
+    # V5 is out of the default set and the scene has no CPU for V7 (W3b)
+    assert tasks == (PLANNING_TASKS - {"V15", "V5", "V7"}) | {"V12"}
     assert Checker(other, tax, S.DESKTOP).check_all(records) == len(records)
     other.close()
 
@@ -473,7 +499,7 @@ def test_v6_grades_on_the_demonstrated_action_and_the_blocked_rate(
         shown = checker.demonstrated(record["step"])
         assert (record["answer"]["verb"], record["answer"]["target"]) == (
             shown[1].verb, shown[1].target)
-        assert record["answer_check"]["metric"] == "match_rate+blocked_rate"
+        assert record["answer_check"]["metric"] == "group_match_rate+blocked_rate"
         assert {(a["verb"], a["target"])
                 for a in record["answer_check"]["blocked_actions"]} == \
             checker.blocked(record["step"])
@@ -603,7 +629,8 @@ def test_a_desktop_with_no_graph_answers_no_affordance_question(tmp_path: Path):
         db.conn.execute("DELETE FROM relation WHERE desktop=?", (S.DESKTOP,))
     summary = _export(db, tax, tmp_path / "v.jsonl")
     assert summary["excluded_desktops"] == {S.DESKTOP: "no_graph_version"}
-    assert set(summary["by_task"]) == {"V3", "V10"}
+    # V12 needs no graph: its dupli pair is asked even on an unconfirmed view (W3b)
+    assert set(summary["by_task"]) == {"V3", "V10", "V12"}
     db.close()
 
 
@@ -996,7 +1023,7 @@ def test_the_order_of_the_records_is_frame_then_task(scene, tmp_path: Path):
     steps = [r["step"] for r in records]
     assert steps == sorted(steps)
     for step in set(steps):
-        order = [TASKS.index(r["task"]) for r in records if r["step"] == step]
+        order = [ALL_TASKS.index(r["task"]) for r in records if r["step"] == step]
         assert order == sorted(order)
 
 
@@ -1075,7 +1102,10 @@ def test_the_question_text_alone_does_not_answer_v4(tmp_path: Path):
     nothing.
     """
     db = Db(str(tmp_path / "wide.sqlite"))
-    tax = S.build_wide(db)
+    # W3b: a view nothing of which is confirmed is an unlabelled view (OAK / RS
+    # today) and asks V4 with fewer negatives; the scanner -- the view this
+    # number is about -- has confirmed frames, so the corpus gets one
+    tax = S.build_wide(db, confirm_step=1)
     stats = export_vlm(db, tax, list(S.WIDE_DESKTOPS), S.VIEW,
                        str(tmp_path / "wide.jsonl"), only_verified=False)
     row = stats["shortcuts"]["V4"]
