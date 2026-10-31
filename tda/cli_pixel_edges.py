@@ -36,9 +36,10 @@ import json
 import os
 from collections import Counter
 from pathlib import Path
+from typing import Optional
 
 from tda.cli_common import EXIT_ERROR, EXIT_OK, desktops as _desktops, session as _session
-from tda.cli_guards import app_running, named_backup, writer_busy
+from tda.cli_guards import app_running, named_backup, open_read_only, writer_busy
 from tda.core import pixel_edges as PE
 from tda.core.export.graph_covers import RULING_TABLE
 from tda.core.graph import edges_from_db, find_deadlocks, constraint_edges
@@ -59,10 +60,10 @@ def _has_rulings(db) -> bool:
                            (RULING_TABLE,)).fetchone() is not None
 
 
-def _evidence(db, tax, desktop: int, args) -> tuple[list[dict], int]:
+def _evidence(db, tax, desktop: int, args) -> Optional[tuple[list[dict], int]]:
+    """``(covers, confirmed frames)``; ``None`` when ``--graph-dir`` has no file for the desktop."""
     if args.graph_dir:
-        found = PE.evidence_from_graph_dir(args.graph_dir, desktop)
-        return found if found is not None else ([], 0)
+        return PE.evidence_from_graph_dir(args.graph_dir, desktop)
     return PE.evidence_from_db(db, tax, desktop, args.view)
 
 
@@ -110,20 +111,33 @@ def cmd_pixel_edges(args: argparse.Namespace) -> int:
         print(f"{TAG} 标注程序正在运行，先关掉它；什么也没写 / the annotator app is running "
               f"(or psutil is missing, so it cannot be told): close it first; nothing written")
         return EXIT_ERROR
+    if not writing:
+        # a dry run reads through `mode=ro` (review round 1, M1): opening the
+        # writable Db would replay the DDL and migrate an older copy (v6 -> v7)
+        db = open_read_only(args, TAG)
+        if db is None:
+            return EXIT_ERROR
+        try:
+            return _run(None, db, tax, _chosen(db, args), whitelist, args)
+        finally:
+            db.close()
     with _session(args, lock=True) as (paths, db):
-        wanted = _desktops(args)
-        known = db.desktop_ids()
-        chosen = [d for d in known if wanted is None or d in wanted]
-        for d in sorted((wanted or set()) - set(known)):
-            print(f"{TAG} D{d:02d} 不在数据库里，跳过 / is not in the database; skipped")
-        if writing:
-            busy = writer_busy(db)
-            if busy:
-                print(f"{TAG} 数据库正被别人写 / the database is busy ({busy}); nothing written")
-                return EXIT_ERROR
+        chosen = _chosen(db, args)
+        busy = writer_busy(db)
+        if busy:
+            print(f"{TAG} 数据库正被别人写 / the database is busy ({busy}); nothing written")
+            return EXIT_ERROR
         if args.undo:
             return _undo(paths, db, chosen, args.undo)
         return _run(paths, db, tax, chosen, whitelist, args)
+
+
+def _chosen(db, args) -> list[int]:
+    wanted = _desktops(args)
+    known = db.desktop_ids()
+    for d in sorted((wanted or set()) - set(known)):
+        print(f"{TAG} D{d:02d} 不在数据库里，跳过 / is not in the database; skipped")
+    return [d for d in known if wanted is None or d in wanted]
 
 
 def _undo(paths, db, chosen: list[int], which: str) -> int:
@@ -150,11 +164,19 @@ def _run(paths, db, tax, chosen: list[int], whitelist, args) -> int:
         print(f"{TAG} 数据库里还没有 {RULING_TABLE} 表（复查裁定）/ no {RULING_TABLE} table yet: "
               f"no ruling to freeze")
     plans: list[PE.DesktopPlan] = []
+    no_file: list[int] = []
     for d in chosen:
-        covers, confirmed = _evidence(db, tax, d, args)
+        found = _evidence(db, tax, d, args)
+        if found is None:      # review round 1, M2: say so, never "no pixel evidence"
+            no_file.append(d)
+            print(f"{TAG} D{d:02d}: skipped: no graph file (D{d:02d}.json in {args.graph_dir}) "
+                  f"/ 证据目录里没有这台")
+            continue
+        covers, confirmed = found
         rulings = PE.rulings_of(db, d) if has_table else {}
         plan = PE.plan_desktop(d, covers, confirmed, db.instances(d), edges_from_db(db, d),
-                               db.actions(d), db.events(d), tax, rulings, whitelist, args.view)
+                               db.actions(d), db.events(d), tax, rulings, whitelist, args.view,
+                               rulings_table=has_table)
         PE.split_suggestions(plan, args.allow_unruled)
         plans.append(plan)
     refused: dict[int, list[str]] = {}
@@ -169,27 +191,38 @@ def _run(paths, db, tax, chosen: list[int], whitelist, args) -> int:
     doc = PE.evidence_json(plans, whitelist, args.allow_unruled, source, args.view,
                            has_table, bool(args.apply))
     doc["refused_desktops"] = {f"D{d:02d}": loops for d, loops in sorted(refused.items())}
+    doc["no_graph_file"] = [f"D{d:02d}" for d in no_file]
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(json.dumps(doc, ensure_ascii=False, indent=1, sort_keys=True) + "\n")
     print(f"{TAG} 证据文件 / evidence -> {out}")
 
-    todo = {p.desktop: p.to_write(args.allow_unruled) for p in plans
-            if p.to_write(args.allow_unruled) and p.desktop not in refused}
+    stale = sum(len(p.stale) for p in plans)
+    todo = {p.desktop: p for p in plans
+            if p.has_work(args.allow_unruled) and p.desktop not in refused}
+    if no_file:
+        print(f"{TAG} {len(no_file)} 台没有证据文件，什么也没写 / {len(no_file)} desktops have no "
+              f"graph file in --graph-dir: nothing written (re-export, or drop --graph-dir)")
+        return EXIT_ERROR
     if not args.apply:
         print(f"{TAG} 演练，什么也没写 / dry run: nothing written "
-              f"({sum(len(v) for v in todo.values())} rows would be; pass --apply)")
-        return EXIT_ERROR if refused else EXIT_OK
+              f"({sum(len(p.to_write(args.allow_unruled)) for p in todo.values())} rows would "
+              f"be written, {stale} stale rows deleted; pass --apply)")
+        return EXIT_ERROR if refused or stale else EXIT_OK
     if not todo:
         print(f"{TAG} 没有要写的边 / nothing to write")
         return EXIT_ERROR if refused else EXIT_OK
     if named_backup(paths, db, "pixel-edges", "pixel_edges") is None:
         return EXIT_ERROR
-    for d, items in sorted(todo.items()):
+    for d, plan in sorted(todo.items()):
         with db.transaction():
-            done = PE.write_edges(db, d, items)
-        print(f"{TAG} D{d:02d}: 写了 {done['written']} 条 / wrote {done['written']} rows; "
+            done = PE.write_edges(db, d, plan.to_write(args.allow_unruled), plan.stale)
+        print(f"{TAG} D{d:02d}: 写了 {done['written']} 条、删了 {done['deleted']} 条过期的 / "
+              f"wrote {done['written']} rows, deleted {done['deleted']} stale rows; "
               f"graph_version {done['graph_version']}")
+    if stale:
+        print(f"{TAG} 删了 {stale} 条裁定已不支持的边 / deleted {stale} rows the rulings no "
+              f"longer back")
     return EXIT_ERROR if refused else EXIT_OK
 
 
@@ -198,13 +231,18 @@ def _print(plans: list[PE.DesktopPlan], args, refused: dict[int, list[str]]) -> 
     why: Counter = Counter()
     for plan in plans:
         rows = plan.to_write(args.allow_unruled)
-        if rows or plan.suggested or plan.rejected_by_user or plan.skipped:
+        if rows or plan.suggested or plan.rejected_by_user or plan.skipped or plan.stale:
             print(f"{TAG} D{plan.desktop:02d}: {len(plan.review)} 条复查裁定 / ruled, "
                   f"{len(plan.whitelist)} whitelist, {len(plan.suggested)} 建议 / suggested, "
                   f"{len(plan.rejected_by_user)} 用户判不挡 / rejected, "
+                  f"{len(plan.stale)} 过期 / stale, "
                   f"{len(plan.skipped)} skipped; {plan.confirmed_frames} confirmed frames")
         for item in rows:
             print(f"{TAG}   {'WRITE' if args.apply else 'would write'} {_row_line(item)}")
+        for item in plan.stale:
+            print(f"{TAG}   STALE ({item['why']}) covered_by({item['below']}, {item['above']}) "
+                  f"[{item['row']['source']}]: "
+                  + ("deleted" if args.apply else "would be deleted by --apply"))
         for item in plan.skipped:
             if item["why"] in ("would_violate", "reverse_edge", "ruled_no_pixel_evidence",
                                "deadlock"):

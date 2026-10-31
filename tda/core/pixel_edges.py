@@ -14,7 +14,15 @@ This module turns those rulings into rows of the ``relation`` table:
 * a pair ruled ``blocks`` with **no** pixel overlap is listed ("ruled but no
   pixel evidence"), never written;
 * a pair ruled ``not_blocks`` is never written and is listed under
-  ``rejected_by_user``.
+  ``rejected_by_user``;
+* a ``review:*`` row written earlier whose pair is now ruled ``not_blocks``
+  or no longer ruled (a ``pixels:*`` row: now ruled ``not_blocks``) is
+  **stale**: listed on every run, deleted by ``--apply`` in the same op
+  (review round 1, S1).
+
+Rulings are matched by ``(desktop, above, below)``: a ruling is a judgement
+about the physical parts, whatever view it was made in; the pixels come from
+the export view's confirmed frames (M4).
 
 The class-pair whitelist (``configs/covers_whitelist.yaml``) is only a
 suggestion layer: an **unruled** covering that matches one of its pairs and
@@ -272,10 +280,18 @@ class DesktopPlan:
     suggested: list[dict] = field(default_factory=list)    # unruled, whitelist only, not written
     rejected_by_user: list[dict] = field(default_factory=list)
     skipped: list[dict] = field(default_factory=list)
+    #: Rows this command wrote earlier that the user's current rulings no longer
+    #: back (review round 1, S1): a ``review:*`` row whose pair is now ruled
+    #: ``not_blocks`` or not ruled at all, a ``pixels:*`` row whose pair is now
+    #: ruled ``not_blocks``. Listed on every run; ``--apply`` deletes them.
+    stale: list[dict] = field(default_factory=list)
     rulings: int = 0
 
     def to_write(self, allow_unruled: bool) -> list[dict]:
         return self.review + (self.whitelist if allow_unruled else [])
+
+    def has_work(self, allow_unruled: bool) -> bool:
+        return bool(self.to_write(allow_unruled) or self.stale)
 
 
 def _frac(px: int, amodal: Optional[int]) -> Optional[float]:
@@ -307,8 +323,15 @@ def _item(desktop: int, cover: dict, instances: dict) -> dict:
 def plan_desktop(desktop: int, covers: list[dict], confirmed_frames: int,
                  instances: dict, stored: list[Edge], actions: list, events: Iterable,
                  tax: Taxonomy, rulings: dict, whitelist: Optional[Whitelist],
-                 view: str = "scan") -> DesktopPlan:
-    """Judge every covering of one desktop against its rulings and the whitelist. Pure."""
+                 view: str = "scan", rulings_table: bool = True) -> DesktopPlan:
+    """Judge every covering of one desktop against its rulings and the whitelist. Pure.
+
+    Rulings are matched by ``(above, below)`` alone: a ruling is a physical
+    judgement and holds whichever view it was made in; the pixels come from
+    ``view``'s confirmed frames (review round 1, M4). ``rulings_table=False``
+    (a copy without ``cover_ruling``) means "nobody could have ruled", so a
+    ``review:*`` row is not judged stale there.
+    """
     plan = DesktopPlan(desktop=int(desktop), confirmed_frames=confirmed_frames,
                        rulings=len(rulings))
     settled = settled_instances(instances)
@@ -383,6 +406,22 @@ def plan_desktop(desktop: int, covers: list[dict], confirmed_frames: int,
         else:
             skip(item, "ruled_no_pixel_evidence")
 
+    for edge in stored:
+        if edge.type != COVERED_BY or not owned(edge):
+            continue
+        ruling = rulings.get((edge.blocker, edge.target))
+        said = (ruling or {}).get("ruling")
+        if str(edge.source).startswith(PIXELS_PREFIX):
+            why = "ruled_not_blocks" if said == NOT_BLOCKS else None
+        else:
+            why = None if said == BLOCKS or not rulings_table else (
+                "ruled_not_blocks" if said == NOT_BLOCKS else "ruling_cleared")
+        if why:
+            plan.stale.append({"desktop": int(desktop), "above": edge.blocker,
+                               "below": edge.target, "why": why, "ruling": ruling,
+                               "row": _edge_json(edge)})
+    plan.stale.sort(key=lambda s: (s["above"], s["below"]))
+
     _check_against_log(plan, settled, active, actions, events, tax)
     return plan
 
@@ -431,18 +470,28 @@ def split_suggestions(plan: DesktopPlan, allow_unruled: bool) -> None:
 # --------------------------------------------------------------------------- #
 # writing
 # --------------------------------------------------------------------------- #
-def write_edges(db, desktop: int, items: list[dict]) -> dict:
-    """Write the rows, stamp ``graph_version``, log one op. **Inside a transaction.**"""
+def write_edges(db, desktop: int, items: list[dict],
+                stale: Optional[list[dict]] = None) -> dict:
+    """Write the rows, delete the stale ones, stamp ``graph_version``, log one op.
+
+    **Inside a transaction.** The op's inverse deletes what was written and
+    restores what was deleted (``restore`` holds the rows whole).
+    """
     from tda import pipeline as P
 
     edges = [edge_of(item) for item in items]
+    gone = [s["row"] for s in stale or []]
+    for row in gone:
+        db.delete_relation(desktop, row["type"], row["target"], row["blocker"])
     edges_to_db(db, desktop, edges)
     version = graph_version(db, desktop)
     P.merge_desktop_meta(db, desktop, {"graph_version": version})
     rows = [_edge_json(e) for e in edges]
-    db.log_op(desktop, OP_VIEW, OP_KIND, {"rows": rows, "graph_version": version},
-              {"delete": [[e.type, e.target, e.blocker] for e in edges]}, ANNOTATOR)
-    return {"written": len(edges), "graph_version": version}
+    db.log_op(desktop, OP_VIEW, OP_KIND,
+              {"rows": rows, "deleted_stale": gone, "graph_version": version},
+              {"delete": [[e.type, e.target, e.blocker] for e in edges], "restore": gone},
+              ANNOTATOR)
+    return {"written": len(edges), "deleted": len(gone), "graph_version": version}
 
 
 #: ``--undo`` selector -> the source prefixes it deletes.
@@ -522,16 +571,20 @@ def evidence_json(plans: list[DesktopPlan], whitelist: Optional[Whitelist],
         "whitelist_edges": every("whitelist"),
         "suggested": every("suggested"),
         "rejected_by_user": every("rejected_by_user"),
+        # rows written earlier that the current rulings no longer back; --apply deletes them
+        "stale_review_edges": every("stale"),
         "skipped": skipped,
         "desktops": [{"desktop": p.desktop, "confirmed_frames": p.confirmed_frames,
                       "rulings": p.rulings, "edges": len(p.review),
                       "whitelist_edges": len(p.whitelist), "suggested": len(p.suggested),
                       "rejected_by_user": len(p.rejected_by_user),
+                      "stale_review_edges": len(p.stale),
                       "skipped": len(p.skipped)} for p in plans],
         "by_pair": dict(sorted(per_pair.items())),
         "counts": {"edges": len(every("review")), "whitelist_edges": len(every("whitelist")),
                    "suggested": len(every("suggested")),
                    "rejected_by_user": len(every("rejected_by_user")),
+                   "stale_review_edges": len(every("stale")),
                    "skipped": len(skipped)},
     }
 
