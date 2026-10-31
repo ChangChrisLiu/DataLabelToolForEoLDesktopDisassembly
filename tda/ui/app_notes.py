@@ -45,7 +45,7 @@ from tda.ui import app_actions as A
 from tda.ui import app_compat as compat
 from tda.ui import app_support as S
 from tda.ui.commands import Op
-from tda.ui.occlusion_order import floor_parts, labeller, occlusion_order
+from tda.ui.occlusion_order import floor_parts, labeller, occlusion_order, overlap_pairs
 from tda.ui.panels.notes_dock import DOCK_TITLE, NotesDock, NotesPanel
 
 __all__ = ["NOTES_REVIEW_ONLY", "NOTES_SETTING", "NOTE_CLEARED", "NOTE_HOLD_MS", "NOTE_LEFT",
@@ -234,13 +234,18 @@ class NotesWindowMixin:
         order = self.notes_panel.order
         started = time.perf_counter()
         compiled = self._compiled_on_screen()
+        rulings = getattr(self, "set_rulings_frame", None)    # 谁压着谁 (task W3c)
         if compiled is None:
             order.set_lines([])
             self._notes_order_for = None
+            if callable(rulings):
+                rulings(None, None)
             return
         key = compiled.key
         stamp = (key, id(compiled), compiled.input_hash)
         if not force and stamp == self._notes_order_for:
+            if callable(rulings):
+                self.refresh_rulings()     # edges or rulings may have moved meanwhile
             return
         try:
             drawn = {name for name, fo in (self.session.db.frame_overrides(key) or {}).items()
@@ -251,11 +256,17 @@ class NotesWindowMixin:
             records = self.session.db.instances(key.desktop)
         except Exception:  # noqa: BLE001 - names are a convenience; the keys still say it
             records = {}
-        lines = occlusion_order(compiled, drawn, floor_parts(records, compiled.instances))
+        # one count for the list and the 「谁压着谁」 section (W3c), which keeps
+        # the motherboard as the part pressed on
+        pairs = overlap_pairs(compiled)
+        lines = occlusion_order(compiled, drawn, floor_parts(records, compiled.instances),
+                                pairs=pairs)
         order.set_lines(lines, labeller(records))
         self.notes_order_ms = (time.perf_counter() - started) * 1000.0
         self.notes_order_builds += 1
         self._notes_order_for = stamp
+        if callable(rulings):
+            rulings(compiled, pairs, records)
 
     def leave_note_box(self) -> None:
         """The keyboard out of the note box: to the canvas, or -- on a frame with no
@@ -397,7 +408,15 @@ class NotesWindowMixin:
         return line.format(frame=_frame(saved.key))
 
     def note_op_text(self, undo: bool) -> str:
-        """「撤销：第 12 帧的说明」 when the op ``Ctrl+Z`` / ``Ctrl+Y`` is about to replay is a note's."""
+        """「撤销：第 12 帧的说明」 when the op ``Ctrl+Z`` / ``Ctrl+Y`` is about to replay is a note's.
+
+        A 「谁压着谁」 ruling's op (task W3c) is named too
+        (:meth:`~tda.ui.app_rulings.RulingsWindowMixin.ruling_op_text`).
+        """
+        ruling = getattr(self, "ruling_op_text", None)
+        said = ruling(undo) if callable(ruling) else ""
+        if said:
+            return said
         stack = getattr(self.session, "undo_stack", None)
         if stack is None:
             return ""
