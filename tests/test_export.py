@@ -202,8 +202,9 @@ def test_images_carry_ids_paths_and_extra(db, tax, tmp_path: Path):
     assert first["id"] == image_id(DESKTOP, 1, VIEW) == 100010
     assert first["file_name"] == cache_rel_path(DESKTOP, 1, VIEW) == "scan/D01/s001.png"
     assert (first["width"], first["height"]) == (64, 64)
+    # `split`: the fixture's Desktop.split, carried since task W3a (spec 8.1)
     assert first["extra"] == {"desktop": 1, "step": 1, "view": "scan",
-                              "review_status": "confirmed"}
+                              "review_status": "confirmed", "split": "train"}
 
 
 def test_annotation_geometry_and_attributes(db, tax, tmp_path: Path):

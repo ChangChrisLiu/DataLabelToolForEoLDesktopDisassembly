@@ -66,9 +66,11 @@ __all__ = [
     "cable_nodes",
     "cable_owner",
     "connector_owner",
+    "cooler_on_cpu",
     "infer_relational_fields",
     "is_provisional",
     "propose_edges",
+    "unresolved_coolers",
     "unresolved_fan_owners",
     "unresolved_kind",
     "unresolved_relations",
@@ -442,8 +444,61 @@ COVER_TARGETS: dict[str, tuple[str, tuple[str, ...]]] = {
     "drive": ("cls", ("storage_drive", "optical_drive")),
 }
 
-#: Fixed template edges of spec 7.3: the cooler always sits on the CPU.
-FIXED_COVERED_BY = (("cpu", "cpu_cooler"),)
+#: The two ``cpu_cooler.kind`` values a two-part cooler is made of, bottom first:
+#: the heatsink sits on the CPU, the fan on the heatsink (task W3a).
+COOLER_STACK = ("heatsink", "fan")
+#: The class whose levers the cooler on the CPU sits on.
+SOCKET_LEVER_CLASS = "cpu_socket_lever"
+
+
+def cooler_on_cpu(instances: dict[str, InstanceRec]
+                  ) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """``(the cooler on the CPU, the fan on top of it, why there is no answer)``.
+
+    The fixed template edge of spec 7.3 says the cooler sits on the CPU. It used
+    to resolve "the cooler" with ``unique_of_class``, so the nine desktops whose
+    sheet lists a ``cpu_cooler.fan`` *and* a ``cpu_cooler.heatsink`` got no
+    ``covered_by(cpu <- cooler)`` at all and every CPU plan opened the socket
+    lever with the heatsink still on it (task W3a). Now:
+
+    * exactly one settled ``cpu_cooler`` (any ``kind``) -- it, no fan;
+    * two, one ``kind = heatsink`` and one ``kind = fan`` -- the heatsink, and
+      the fan sits on the heatsink;
+    * any other set (two fans, three parts, a part without a kind next to
+      another) -- no answer and one line saying why, never a guess
+      (:func:`unresolved_coolers`).
+
+    No cooler at all is ``(None, None, None)``: nothing to say. The pixel
+    evidence agrees: on every one of the 63 desktops with confirmed scanner
+    frames the cooler this picks covers the socket lever (10-13 k px), and on
+    the eight two-part desktops it is always the heatsink, never the fan.
+    """
+    coolers = _real_instances(instances, COOLER_CLASS)
+    if not coolers:
+        return None, None, None
+    if len(coolers) == 1:
+        return coolers[0], None, None
+    kinds = {key: str(instances[key].attrs.get("kind") or "") for key in coolers}
+    if len(coolers) == len(COOLER_STACK) and sorted(kinds.values()) == sorted(COOLER_STACK):
+        bottom, top = (next(k for k in coolers if kinds[k] == kind) for kind in COOLER_STACK)
+        return bottom, top, None
+    said = ", ".join(f"{key} (kind={kinds[key]!r})" for key in coolers)
+    return None, None, (
+        f"unresolved cooler: 散热器组合无法判断哪件压在 CPU 上 / cannot tell which "
+        f"cpu_cooler sits on the CPU: {said}. No covered_by edge from a cooler to the "
+        f"CPU or the socket lever was proposed; in S1 make it one part, or one "
+        f"kind=heatsink plus one kind=fan."
+    )
+
+
+def unresolved_coolers(instances: dict[str, InstanceRec]) -> list[str]:
+    """The :func:`cooler_on_cpu` line for stage S1, or nothing (task W3a).
+
+    The same channel as :func:`unresolved_fan_owners`: ``constraints`` prints
+    it under the desktop and its report lists it with the unresolved references.
+    """
+    _, _, problem = cooler_on_cpu(instances)
+    return [problem] if problem else []
 
 
 def propose_edges(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[Edge]:
@@ -451,8 +506,10 @@ def propose_edges(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[Edge
 
     Rules, in order: ``screw.fastens`` -> ``fastened_by``; the connector rule of
     spec 7.2 -> ``connected_to``; ``latch.of`` plus the fixed CPU-lever and
-    PSU-latch edges -> ``locked_by``; ``cover.of`` plus the fixed cooler-over-CPU
-    edge -> ``covered_by``. ``cable_clip.holds`` yields no edge on its own -- a
+    PSU-latch edges -> ``locked_by``; ``cover.of`` plus the fixed edges of the
+    cooler on the CPU (over the CPU, over every socket lever, and a two-part
+    cooler's fan over its heatsink; :func:`cooler_on_cpu`) -> ``covered_by``.
+    ``cable_clip.holds`` yields no edge on its own -- a
     clipped cable only blocks a target once a human says which one, so those
     ``blocked_by`` edges stay manual (spec 7.3 item 3).
 
@@ -546,18 +603,32 @@ def _locked_by(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[Edge]:
 
 
 def _covered_by(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[Edge]:
-    """``cover.of`` -> ``covered_by``, plus the fixed cooler-over-CPU edge."""
+    """``cover.of`` -> ``covered_by``, plus the fixed edges of the cooler on the CPU.
+
+    The cooler on the CPU (:func:`cooler_on_cpu`) covers the CPU, and every
+    socket lever too (by class: a lever cannot be opened under a heatsink, and
+    no edge said so, so every plan opened the lever first); of a two-part
+    cooler the fan covers the heatsink. A part added in S1 takes no part in
+    these class readings (see :func:`propose_edges`).
+    """
     out: list[Edge] = []
     for key, rec in sorted(instances.items()):
         if rec.cls != "cover":
             continue
         for target in _cover_targets(instances, rec):
             out.append(_edge("covered_by", target, key, f"{key} covers {target}"))
-    for under_cls, over_cls in FIXED_COVERED_BY:
-        under = _unique_of_class(instances, under_cls)
-        over = _unique_of_class(instances, over_cls)
-        if under and over and not (is_extra(instances[under]) or is_extra(instances[over])):
-            out.append(_edge("covered_by", under, over, f"{over} sits on {under}"))
+    on_cpu, fan, _ = cooler_on_cpu(instances)
+    if on_cpu is None or is_extra(instances[on_cpu]):
+        return out
+    cpu = _unique_of_class(instances, "cpu")
+    if cpu and not is_extra(instances[cpu]):
+        out.append(_edge("covered_by", cpu, on_cpu, f"{on_cpu} sits on {cpu}"))
+    for lever in _real_instances(instances, SOCKET_LEVER_CLASS):
+        if not is_extra(instances[lever]):
+            out.append(_edge("covered_by", lever, on_cpu,
+                             f"{on_cpu} sits on the socket lever {lever}"))
+    if fan and not is_extra(instances[fan]):
+        out.append(_edge("covered_by", on_cpu, fan, f"{fan} sits on {on_cpu}"))
     return out
 
 

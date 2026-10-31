@@ -67,10 +67,12 @@ from tda.cli_common import (
 )
 from tda.cli_graph import _add_constraints, _add_export_graph
 from tda.cli_notes import _add_notes
+from tda.cli_pixel_edges import _add_pixel_edges
 from tda.cli_pose import _add_pose_breaks
 from tda.cli_refreeze import _add_refreeze
 from tda.cli_relations import _add_adopt_relations, _add_infer_relations
 from tda.cli_scan_align import _add_scan_align
+from tda.cli_split import _add_set_split
 from tda.core import rawroot
 from tda.core.db import Db
 from tda.core.extra import extra_keys
@@ -796,6 +798,8 @@ SUBCOMMANDS: tuple[Callable[[argparse._SubParsersAction], None], ...] = (
     _add_adopt_relations,
     _add_constraints,
     _add_export_graph,   # the graph as one JSON per desktop, read-only (U46)
+    _add_pixel_edges,    # Review's "blocks" rulings -> covered_by edges (W3a)
+    _add_set_split,      # desktop.split: test / train (W3a)
     _add_pose_breaks,
     _add_scan_align,
     _add_backup,
