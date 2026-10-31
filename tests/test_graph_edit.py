@@ -206,10 +206,21 @@ def test_a_longer_cycle_is_refused_too(rules, instances):
         assert key in text
 
 
+def without_lever(rules) -> list[Edge]:
+    """Reject the cooler-over-lever rule edge (task W3a).
+
+    ``cpu locked_by lever`` + ``lever covered_by cooler`` + a hand-written
+    ``cooler blocked_by cpu`` is a second, genuine loop; the tests below are
+    about the first one, so they take the lever edge out of the way first.
+    """
+    return set_rule_decision(rules, "cpu_socket_lever.01", "covered_by", "cpu_cooler.fan.01",
+                             "rejected", instances=BENCH, tax=TAX)
+
+
 def test_a_cycle_through_a_rejected_edge_is_not_a_cycle(rules, instances):
     """A rejected edge gates nothing, so it cannot close a loop either."""
-    without = set_rule_decision(rules, "cpu.01", "covered_by", "cpu_cooler.fan.01",
-                                "rejected", instances=BENCH, tax=TAX)
+    without = set_rule_decision(without_lever(rules), "cpu.01", "covered_by",
+                                "cpu_cooler.fan.01", "rejected", instances=BENCH, tax=TAX)
     out = add(without, instances, "cpu_cooler.fan.01", "blocked_by", "cpu.01", **BLOCK)
     assert find_deadlocks(out, instances, TAX) == []
 
@@ -308,7 +319,8 @@ def reversed_pair(rules, instances) -> list[Edge]:
     Both steps are legal on their own: the rejected edge gates nothing, so the
     reverse closes no loop while it stands.
     """
-    out = set_rule_decision(rules, *COVER_EDGE, "rejected", instances=BENCH, tax=TAX)
+    out = set_rule_decision(without_lever(rules), *COVER_EDGE, "rejected", instances=BENCH,
+                            tax=TAX)
     return add(out, instances, COOLER, "blocked_by", CPU, **BLOCK)
 
 
@@ -340,7 +352,7 @@ def test_the_panel_path_cannot_store_a_cycle(rules, instances):
 
 def test_rejecting_an_edge_that_breaks_a_cycle_is_allowed(rules, instances):
     """A database can already hold a loop; rejecting is how you get out of it."""
-    looped = [*rules, Edge(type="blocked_by", target=COOLER, blocker=CPU,
+    looped = [*without_lever(rules), Edge(type="blocked_by", target=COOLER, blocker=CPU,
                            mode="physical_path", source=MANUAL, status="accepted")]
     assert find_deadlocks(looped, instances, TAX)
     out = set_rule_decision(looped, *COVER_EDGE, "rejected", instances=BENCH, tax=TAX)
@@ -371,7 +383,7 @@ def test_an_orphan_can_be_kept_as_a_manual_edge(rules, instances):
 
 def test_keeping_an_orphan_runs_the_add_time_checks(rules, instances):
     """It becomes a new manual edge, so it has to pass what a new edge passes."""
-    staged = add(orphaned(rules), instances, COOLER, "blocked_by", CPU, **BLOCK)
+    staged = add(orphaned(without_lever(rules)), instances, COOLER, "blocked_by", CPU, **BLOCK)
     with pytest.raises(GraphEditError) as excinfo:
         adopt_orphan(staged, *COVER_EDGE, note="mine", instances=instances, tax=TAX)
     assert "->" in str(excinfo.value)
