@@ -22,6 +22,9 @@ when all of these hold:
 * neither part is a Label Studio draft (``ls:``), a 框外零件, a gallery-only
   part (U45), an implied part, the chassis (it never moves: graph_covers'
   ``below_fixed``) or a key the instance table does not know;
+* the sheet's 「本版不做」 classes: ``above`` is no screw, connector, cable
+  clip, cable or latch / lever (:data:`SMALL_ABOVE`), ``below`` no screw,
+  connector, cable clip or cable (:data:`SMALL_BELOW`);
 * no active edge of any type joins the two, in either direction;
 * no structural reason: one's ``parent`` (any depth of ``attached``
   parents), ``mounted_on``, ``fastens``, ``socket_host`` or ``cable`` is the
@@ -50,7 +53,8 @@ from tda.core.model import (
 )
 
 __all__ = ["BLOCKS", "Candidate", "FIXED_CLASSES", "MIN_PX", "NOT_BLOCKS", "RECOMMENDED",
-           "RULINGS", "RULING_MARK", "RULING_TEXT", "SUPPORT", "TAGS", "TAG_OTHER",
+           "RULINGS", "RULING_MARK", "RULING_TEXT", "SMALL_ABOVE", "SMALL_BELOW", "SUPPORT",
+           "TAGS", "TAG_OTHER",
            "TAG_RECOMMENDED", "TAG_UNCERTAIN", "UNCERTAIN", "candidate_text", "chassis_pairs",
            "class_key", "class_pairs", "excluded_part", "joined_by_edge", "pair_tag",
            "pending_pairs", "ruled_text", "status_text", "structural_reasons"]
@@ -87,6 +91,15 @@ SUPPORT: tuple[tuple[str, str], ...] = (
 )
 #: Classes that never move (graph_covers' ``below_fixed``): no pair with them is asked.
 FIXED_CLASSES = frozenset({"chassis"})
+#: The sheet's 「本版不做」 rule (06-covering-adjudication.md; W3c round 2): small
+#: or latch-type parts are never asked about as the part on top ...
+SMALL_ABOVE = frozenset({"screw", "connector", "cable_clip", "cable", "ram_latch",
+                         "drive_latch", "card_latch", "psu_latch", "cooler_latch",
+                         "cpu_socket_lever"})
+#: ... and screws, connectors and cables never as the part underneath (a lever
+#: or a RAM latch underneath stays: cover -> lever, drive_cage -> ram_latch are
+#: real questions).
+SMALL_BELOW = frozenset({"screw", "connector", "cable_clip", "cable"})
 
 _RIGID = "刚性大件压着；日志每台都先拆上面那件"
 _HANGING = "上方悬着的大件下面内存可能拔得出（Dell MT 硬盘架 / 光驱位在内存插槽上方）"
@@ -97,10 +110,11 @@ def _first(share: int) -> str:
     return f"日志里上面那件先拆的只有 {share}%"
 
 
-#: 「建议收」 class pairs of the sheet's table A (rows 1-19): ``(above, below, reason)``,
-#: each side a ``class`` or a ``class.kind``.
+#: 「建议收」 class pairs of the sheet's table A (rows 2-19): ``(above, below, reason)``,
+#: each side a ``class`` or a ``class.kind``.  Row 1 (``expansion_card.gpu ->
+#: motherboard``) is left out: a card is mounted on the board, so :data:`SUPPORT`
+#: makes the pair structural and it is never asked (controller ruling, W3c round 2).
 RECOMMENDED: tuple[tuple[str, str, str], ...] = (
-    ("expansion_card.gpu", "motherboard", _RIGID),
     ("optical_drive", "motherboard", _RIGID),
     ("optical_drive", "drive_cage", _RIGID),
     ("cover", "cpu_socket_lever", _RIGID),
@@ -326,6 +340,8 @@ def pending_pairs(frame_pairs: PairsLike, instances: Mapping, edges: Iterable,
             continue
         up, low = instances.get(above), instances.get(below)
         if excluded_part(above, up) or excluded_part(below, low):
+            continue
+        if str(up.cls) in SMALL_ABOVE or str(low.cls) in SMALL_BELOW:
             continue
         if joined_by_edge(edges, above, below) or structural_reasons(instances, above, below):
             continue
