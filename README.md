@@ -25,6 +25,17 @@ one camera view; without arguments it reopens where the annotator last stopped. 
 command-line entry point behind it is `python -m tda.cli` (`app`, `status`, `check`,
 `import-logs`, `export-coco`, `export-vlm`, `constraints`, …).
 
+`export-vlm` writes the VLM question set of spec §8.2. V5 ("list every action
+possible now") is no longer in the default task set: its legal set is the
+constraint graph's upper bound, a median of 37 actions per step, so it can only
+be graded on one demonstrated element and a blocked count; `--tasks V5` still
+writes it. The evaluation scripts read an export and its sidecars, never the
+database: `scripts/vlm_references.py` (blind / protocol-prior / state-oracle
+text references), `scripts/vlm_to_chat.py` (OpenAI, Qwen-VL and InternVL chat
+JSONL), `scripts/vlm_score.py` (strict and lenient parsing, cluster-bootstrap
+intervals over desktops) and `scripts/vlm_sample.py` (the stratified 300-item
+audit and closed-model repeat subsets).
+
 Tests:
 
 The standalone dual-camera video refiner opens with `start_video_refiner.bat`.
