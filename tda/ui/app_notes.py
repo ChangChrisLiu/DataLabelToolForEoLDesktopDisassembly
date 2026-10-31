@@ -22,9 +22,18 @@ opening another view or machine (and the other moves that re-open the
 session) clears the stack after the note was saved, and the line says that
 instead (review round 2, N1).  The task card's 「说明：…」 line and the
 timeline's ✎ follow the session's ``sigNoteChanged`` themselves.
+
+Task U44 gives the box a dock of its own, 「说明」
+(:mod:`tda.ui.panels.notes_dock`): under the Review dock, shown in Review only,
+whether the annotator wants it remembered (:data:`NOTES_SETTING`); 「写说明」
+on the Review panel (no key) puts it up and the keyboard in the box.  Above
+the box, 「这一帧的遮挡顺序」 (:mod:`tda.ui.occlusion_order`) is rebuilt from the
+compiled frame the canvas holds once the frame is repainted -- no compile of
+its own, nothing written.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -32,12 +41,21 @@ from PySide6.QtCore import Qt, QTimer
 
 from tda.core.frame_notes import OP_KIND
 from tda.core.model import FrameKey, is_component_view
+from tda.ui import app_actions as A
 from tda.ui import app_compat as compat
 from tda.ui import app_support as S
 from tda.ui.commands import Op
+from tda.ui.occlusion_order import floor_parts, labeller, occlusion_order
+from tda.ui.panels.notes_dock import DOCK_TITLE, NotesDock, NotesPanel
 
-__all__ = ["NOTE_CLEARED", "NOTE_HOLD_MS", "NOTE_LEFT", "NOTE_LEFT_NO_UNDO", "NOTE_SAVED",
-           "NOTE_SAVED_NO_UNDO", "NotesWindowMixin", "SavedNote"]
+__all__ = ["NOTES_REVIEW_ONLY", "NOTES_SETTING", "NOTE_CLEARED", "NOTE_HOLD_MS", "NOTE_LEFT",
+           "NOTE_LEFT_NO_UNDO", "NOTE_SAVED", "NOTE_SAVED_NO_UNDO", "NotesWindowMixin",
+           "SavedNote"]
+
+#: Does the annotator want the 「说明」 dock in Review (task U44)?  Remembered.
+NOTES_SETTING = "notes/open"
+#: Its menu entry ticked outside Review: it waits for Review.
+NOTES_REVIEW_ONLY = "「说明」窗只在复查模式（Review）显示：切到 Review 就会出来"
 
 NOTE_SAVED = "{frame}的说明已保存（Ctrl+Z 撤销）"
 NOTE_CLEARED = "{frame}的说明已清除（Ctrl+Z 撤销）"
@@ -50,6 +68,15 @@ NOTE_LEFT_NO_UNDO = ("{frame}的说明改过没保存：离开时已自动保存
 NOTE_SAVED_NO_UNDO = "{frame}的说明已保存（撤销记录已清空；要改回在复查里改）"
 #: How long that line holds against the arrival's own lines.
 NOTE_HOLD_MS = 3000
+
+
+def _as_bool(value, default: bool = True) -> bool:
+    """An INI value as a bool: ``QSettings`` hands booleans back as strings."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
 def _frame(key: FrameKey) -> str:
@@ -75,6 +102,160 @@ class NotesWindowMixin:
         self.review.sigNoteClear.connect(self.on_note_clear)
         self.review.sigNoteLeft.connect(self.on_note_left)
         self.review.sigNoteTabOut.connect(self.leave_note_box)
+        self._init_notes_dock()
+
+    # ------------------------------------------------------- the 「说明」 dock
+    def _init_notes_dock(self) -> None:
+        """The 「说明」 dock (task U44): built before the saved layout is restored.
+
+        Under the Review dock in the right column, floatable and resizable like
+        the others; its place and size travel in the window state, whether the
+        annotator wants it in ``notes/open``.  It holds the occlusion order of
+        the frame and the Review panel's note box, moved here unchanged.
+        """
+        self.notes_panel = NotesPanel()
+        self.notes_panel.set_note_box(self.review.detach_note_box())
+        dock = NotesDock(f"{DOCK_TITLE} / Notes", self)
+        dock.setObjectName("dock_notes")        # the key its place is saved under
+        dock.setWidget(self.notes_panel)
+        dock.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        self.splitDockWidget(self.review_dock, dock, Qt.Orientation.Vertical)
+        dock.hide()
+        self.notes_dock = dock
+        self.notes_wanted = _as_bool(self.settings.value(NOTES_SETTING), True)
+        #: The frame stamp the order list was built for; ``None``: build it.
+        self._notes_order_for: Optional[tuple] = None
+        #: Builds done and the last one's time (tests, the report).
+        self.notes_order_builds = 0
+        self.notes_order_ms = 0.0
+        self._notes_timer = QTimer(self)
+        self._notes_timer.setSingleShot(True)
+        self._notes_timer.setInterval(0)
+        self._notes_timer.timeout.connect(self.refresh_notes_order)
+        dock.sigClosedByUser.connect(self._on_notes_closed)
+        dock.toggleViewAction().triggered.connect(self._on_notes_menu)
+        dock.visibilityChanged.connect(self._on_notes_visible)
+        self.review.sigWriteNote.connect(self.act_write_note)
+        self.notes_panel.order.sigPicked.connect(self.on_order_picked)
+        # after the window's own repaint, which compiles (or finds) the frame
+        self.session.sigFrameChanged.connect(self._schedule_notes_order)
+
+    def notes_dock_applies(self) -> bool:
+        """Is the 「说明」 dock up -- Review mode, and the annotator wants it?"""
+        return self.mode == A.MODE_REVIEW and bool(self.notes_wanted) and not self.closed
+
+    def follow_notes_dock(self) -> None:
+        """Show the dock in Review (when wanted), hide it in the other modes."""
+        dock = getattr(self, "notes_dock", None)
+        if dock is None:
+            return
+        shown = self.notes_dock_applies()
+        if dock.isHidden() == shown:
+            dock.setVisible(shown)
+        if shown:
+            self._schedule_notes_order()
+
+    def _want_notes(self, wanted: bool) -> None:
+        if self.closed:          # a floating dock closed with the window is no wish
+            return
+        self.notes_wanted = bool(wanted)
+        self.settings.setValue(NOTES_SETTING, bool(wanted))
+        self.follow_notes_dock()
+
+    @S.guard
+    def _on_notes_closed(self) -> None:
+        """The dock's close button: the annotator does not want it."""
+        self._want_notes(False)
+
+    @S.guard
+    def _on_notes_menu(self, *_args) -> None:
+        """The window's dock menu ticked or unticked it (it shows in Review only).
+
+        The tick is read off the action: ``triggered(bool checked = false)``
+        has a default, and through :func:`~tda.ui.app_support.guard`'s
+        ``(*args, **kwargs)`` PySide picks the overload with no argument
+        (round 3, F1) -- a required ``checked`` raised on every tick.
+        """
+        checked = self.notes_dock.toggleViewAction().isChecked()
+        self._want_notes(bool(checked))
+        if checked and self.mode != A.MODE_REVIEW:
+            self.report(NOTES_REVIEW_ONLY)
+
+    @S.guard
+    def act_write_note(self) -> None:
+        """「写说明」 (no key): the dock up, the keyboard in the note box."""
+        if self.mode != A.MODE_REVIEW:
+            return
+        self._want_notes(True)
+        dock = self.notes_dock
+        dock.raise_()
+        if dock.isFloating():
+            dock.activateWindow()
+        edit = self.review.note_box.edit
+        if edit.isEnabled():
+            edit.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    @S.guard
+    def on_order_picked(self, instance: str) -> None:
+        """A line of the order list was clicked: select its part, nothing more."""
+        self.instances.select_instance(str(instance))
+
+    def _on_notes_visible(self, visible: bool) -> None:
+        if visible:
+            self._schedule_notes_order()
+
+    def _schedule_notes_order(self, *_args) -> None:
+        if getattr(self, "notes_dock", None) is not None and not self.closed:
+            self._notes_timer.start()
+
+    def _compiled_on_screen(self):
+        """The compiled frame the canvas paints (the session's cached one), or ``None``."""
+        if not compat.is_open(self.session):
+            return None
+        try:
+            return self.session.compiled()
+        except Exception:  # noqa: BLE001 - no frame row, no image: nothing to list
+            return None
+
+    @S.guard
+    def refresh_notes_order(self, force: bool = False) -> None:
+        """Rebuild 「这一帧的遮挡顺序」 from the compiled frame the canvas holds.
+
+        Only while the dock is up, and once per compilation: a commit
+        re-announces the frame with a new one, which rebuilds it.  The compiled
+        frame is the session's cached one -- the repaint of the frame has
+        already asked for it, and this runs after that from the event loop --
+        and nothing is written.
+        """
+        dock = getattr(self, "notes_dock", None)
+        if dock is None or self.closed or dock.isHidden():
+            return
+        order = self.notes_panel.order
+        started = time.perf_counter()
+        compiled = self._compiled_on_screen()
+        if compiled is None:
+            order.set_lines([])
+            self._notes_order_for = None
+            return
+        key = compiled.key
+        stamp = (key, id(compiled), compiled.input_hash)
+        if not force and stamp == self._notes_order_for:
+            return
+        try:
+            drawn = {name for name, fo in (self.session.db.frame_overrides(key) or {}).items()
+                     if fo.visible_rle is not None}
+        except Exception:  # noqa: BLE001 - a missing table is "none drawn"
+            drawn = set()
+        try:
+            records = self.session.db.instances(key.desktop)
+        except Exception:  # noqa: BLE001 - names are a convenience; the keys still say it
+            records = {}
+        lines = occlusion_order(compiled, drawn, floor_parts(records, compiled.instances))
+        order.set_lines(lines, labeller(records))
+        self.notes_order_ms = (time.perf_counter() - started) * 1000.0
+        self.notes_order_builds += 1
+        self._notes_order_for = stamp
 
     def leave_note_box(self) -> None:
         """The keyboard out of the note box: to the canvas, or -- on a frame with no

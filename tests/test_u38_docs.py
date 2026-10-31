@@ -40,7 +40,7 @@ def test_the_missing_frames_paragraph_says_no_image_no_confirmation_no_cache():
 def test_v1_37_is_on_top_of_14():
     changes = _spec().split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
-    [entry] = [e for e in entries[:6] if e.startswith("- **v1.37")]
+    [entry] = [e for e in entries[:7] if e.startswith("- **v1.37")]
     assert entry.startswith("- **v1.37（2026-10-27）**：**缺帧没有图像、不能确认**（U38，§4.2）")
     for needed in ("`scan.61.skipped_steps: [26]`", "23 行签名", "`s026.png`", "`RGB261`",
                    "`tda.core.cache.has_no_photo`", "`frame_hw` 不量 `missing` 行",

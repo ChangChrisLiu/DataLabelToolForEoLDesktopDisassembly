@@ -68,7 +68,7 @@ def test_v1_34_is_on_top_of_14():
     # U33's v1.32 and U34's v1.33 land at the same time; the controller orders them
     # U33 / U34 / U36 landed v1.32 / v1.33 / v1.35 the same day; the controller ordered them
     # (and U37's v1.36 has gone above them since)
-    [entry] = [e for e in entries[:9] if e.startswith("- **v1.34")]
+    [entry] = [e for e in entries[:10] if e.startswith("- **v1.34")]
     assert entry.startswith("- **v1.34（2026-10-26）**：**这一帧的说明**（U35，§3.1、§4.4）")
     for needed in ("在 review 的时候我可以加入对这一帧说明的 notes",
                    "`frame_note(desktop, view, step, text, author, updated_at)`",
@@ -104,7 +104,8 @@ def test_the_guide_has_one_sentence_in_6_and_its_prose_stays_within_its_limit():
     body = GUIDE.read_text(encoding="utf-8")
     section = body.split("## 6. 复查队列", 1)[1].split("\n---", 1)[0]
     last = [line for line in section.splitlines() if line.strip()][-1]
-    assert last == "队列下「这一帧的说明」：翻帧自动存，`cli notes` 读。"         # round 3
+    # round 3; the box is in the 「说明」 dock since U44, under the occlusion order
+    assert last == "「说明」窗：遮挡顺序与说明，翻帧自动存，`cli notes` 读。"
     prose = [line for line in body.splitlines() if not line.startswith("| `")]
     assert sum(len(line) for line in prose) <= 7700
     # a promise the user cares about: it stays (round 3, R2-N2)
