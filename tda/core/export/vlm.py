@@ -261,8 +261,10 @@ def _read_view(db: Db, ctx: DesktopCtx, desktop: int, view: str,
         key = FrameKey(desktop, step, view)
         # no 框外零件 (task U18): nothing outside the machine is asked about;
         # and nothing at all of a view nobody confirmed anything of (W3b)
+        # nor a fan screw hole (task W3e): its rows are a detector's, not a VLM's
         compiled = ({inst: row for inst, row in db.compiled(key).items()
-                     if not is_context_key(inst)} if labelled else {})
+                     if not is_context_key(inst) and inst not in ctx.holes}
+                    if labelled else {})
         # a frame somebody is still arguing about answers nothing confirmed
         verified = step not in disputed and frame_is_verified(db, key, compiled)
         slim = {inst: slim_row(r) for inst, r in compiled.items()}
@@ -468,7 +470,8 @@ def export_vlm(
         if split != "all" and (db.get_desktop(desktop) or {}).get("split") != split:
             skipped_by_split.append(int(desktop))
             continue
-        ctx = load_ctx(db, tax, desktop, view)
+        # no fan screw hole (task W3e): a detection category, never a question
+        ctx = load_ctx(db, tax, desktop, view, holes=False)
         # the compiled rows of an unverified frame are a cache the annotator's
         # commits leave stale (spec 3.4): fill it before reading the view out,
         # or a frame nobody visited is exported as it was several edits ago

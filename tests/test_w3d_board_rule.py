@@ -339,8 +339,9 @@ def test_the_docs_say_it():
     assert "mounted" in semantics and "blocked_by(mode=mounted)" in semantics
     entries = [line for line in spec.split("## 14. 修订记录", 1)[1].splitlines()
                if line.startswith("- ")]
-    assert entries[0].startswith("- **v1.49（2026-10-31）**")
-    assert "mode=mounted" in entries[0]
+    # on top when it landed; W3e's v1.50 has gone above it since
+    [entry] = [e for e in entries[:2] if e.startswith("- **v1.49（2026-10-31）**")]
+    assert "mode=mounted" in entry
     handoff = (root / "docs" / "HANDOFF_2026-10-28.md").read_text(encoding="utf-8")
     section = handoff.split("## 5. 导出与 HuggingFace 准备", 1)[1].split("\n## ", 1)[0]
     assert sum("MOUNTED_ON_MOTHERBOARD" in line for line in section.splitlines()) == 1

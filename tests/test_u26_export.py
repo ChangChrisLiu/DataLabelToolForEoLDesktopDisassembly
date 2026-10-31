@@ -198,10 +198,16 @@ def test_no_amodal_no_hidden_writes_the_pre_u26_file(tmp_path):
         "amodal": False, "amodal_union_rows": 0, "hidden": False}
     info = {k: v for k, v in doc["info"].items() if k not in U26_INFO}
     info["version"] = "1"
+    # the category list gained the fan screw holes since (task W3e, id 26, last);
+    # the scene has none, so with that one entry put back too the file is main's
+    assert doc["categories"][-1] == {"id": 26, "name": "screw_hole",
+                                     "supercategory": "structure"}
+    cats = doc["categories"][:-1]
     # written the way the exporter writes (text mode: CRLF here, as main's was)
     assert out.read_text(encoding="utf-8") == json.dumps(doc, ensure_ascii=True, indent=1)
     redone = tmp_path / "pre.json"
-    redone.write_text(json.dumps(dict(doc, info=info), ensure_ascii=True, indent=1),
+    redone.write_text(json.dumps(dict(doc, info=info, categories=cats), ensure_ascii=True,
+                                 indent=1),
                       encoding="utf-8")
     pre = redone.read_bytes()
     assert len(pre) == PRE_U26_BYTES
