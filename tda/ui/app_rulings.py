@@ -19,33 +19,63 @@ relation rows and its rulings, all three cheap.
 
 The section shows in Review only (the dock does) and not on the components
 gallery's views; whether it is unfolded is ``QSettings notes/rulings_open``.
-No key was added: buttons only.  Hovering a row does not light the two parts
-up on the canvas -- the dock has no such hook (U44 had none).
+No key was added: buttons only.
+
+**Task W3f.**  Resting the pointer on a row (open, folded or ruled) outlines
+both parts on the canvas through the hook the task card's hover already uses,
+:meth:`~tda.ui.canvas.view.ImageCanvas.set_hint_boxes` -- the part on top in
+the difference-box orange (:data:`ABOVE_RGB`), the part underneath in the
+draft blue (:data:`BELOW_RGB`), each box round the part's whole shape on the
+frame on screen, with a chip naming it -- and the status line says which is
+which (:data:`HOVER_TEXT`).  Leaving the row, a frame change and leaving
+Review take the boxes away; selection, the editing layer and the database
+are not touched.  The rows carry both parts' states at the frame
+(:func:`tda.core.truth_inputs.state_of`) and the log's 日志 line, and the
+pairs the graph orders indirectly or the log already decides are folded away
+(:func:`tda.ui.cover_rulings.triage_pairs`; the log replay,
+:func:`~tda.ui.cover_rulings.cover_log`, is kept per desktop until its actions
+or hand-written events change).
 """
 from __future__ import annotations
 
 import time
 from typing import Optional
 
+import numpy as np
+
 from tda.core.db_rulings import OP_KIND as RULING_OP
 from tda.core.graph import edges_from_db
 from tda.core.model import is_component_view
+from tda.core.states import initial_overrides
+from tda.core.truth_inputs import state_of
 from tda.ui import app_actions as A
 from tda.ui import app_compat as compat
 from tda.ui import app_support as S
+from tda.ui.canvas import overlay_style as OS
+from tda.ui.class_names import state_zh
 from tda.ui.cover_rulings import (
     RULING_TEXT,
     chassis_pairs,
-    pending_pairs,
+    cover_log,
     status_text,
+    triage_pairs,
 )
 
-__all__ = ["RULINGS_SETTING", "RULING_CLEARED", "RULING_UNCHANGED", "RulingsWindowMixin"]
+__all__ = ["ABOVE_CHIP", "ABOVE_RGB", "BELOW_CHIP", "BELOW_RGB", "HOVER_TEXT", "NO_SHAPE",
+           "RULINGS_SETTING", "RULING_CLEARED", "RULING_UNCHANGED", "RulingsWindowMixin"]
 
 #: Is the section unfolded?  Remembered (task W3c).
 RULINGS_SETTING = "notes/rulings_open"
 RULING_CLEARED = "D{desktop:02d}：去掉了「{above} 压着 {below}」的裁定（原为「{word}」，这一对会重新列出）"
 RULING_UNCHANGED = "这几对已经是这样裁定的：什么都没写"
+#: The hover's two colours (task W3f): reserved overlay colours, so neither is
+#: an instance colour; in Review neither the SAM box nor a draft hint is up.
+ABOVE_RGB = OS.PROMPT_RGB
+BELOW_RGB = OS.DRAFT_RGB
+ABOVE_CHIP = "上：{key}"
+BELOW_CHIP = "下：{key}"
+HOVER_TEXT = "橙框 = 压在上面的 {above}{above_state}，蓝框 = 被压的 {below}{below_state}（只是显示，不改任何东西）"
+NO_SHAPE = "（这一帧这个视角上没有它的形状）"
 
 
 def _as_bool(value, default: bool = True) -> bool:
@@ -66,11 +96,22 @@ class RulingsWindowMixin:
         section.sigToggled.connect(self._on_rulings_toggled)
         section.sigRule.connect(self.on_rule_pairs)
         section.sigClear.connect(self.on_clear_ruling)
+        section.sigHover.connect(self.on_rulings_hover)
         changed = getattr(self.session, "sigRulingsChanged", None)
         if changed is not None:
             changed.connect(self._on_rulings_changed)
+        frame_changed = getattr(self.session, "sigFrameChanged", None)
+        if frame_changed is not None:
+            frame_changed.connect(self._clear_rulings_hover)
         #: ``(frame key, [(above, below, px)])`` of the frame the section is about.
         self._rulings_frame: Optional[tuple] = None
+        #: ``(stamp, CoverLog)`` of the desktop on screen (task W3f).
+        self._rulings_log: Optional[tuple] = None
+        #: The pair outlined on the canvas, or ``None`` (task W3f).
+        self.rulings_hover: Optional[tuple[str, str]] = None
+        self._rulings_hover_text = ""
+        #: ``{key: state}`` at the frame the section was last built for.
+        self._rulings_states: dict = {}
         #: Rebuilds done and the last one's time (tests, the report).
         self.rulings_builds = 0
         self.rulings_ms = 0.0
@@ -98,19 +139,104 @@ class RulingsWindowMixin:
         shown = self.rulings_apply()
         section.setVisible(shown)
         if not shown:
+            self._clear_rulings_hover()
             return
         started = time.perf_counter()
         desktop = int(self.session.desktop)
         frame = self._rulings_frame
-        triples = frame[1] if frame is not None and int(frame[0].desktop) == desktop else []
+        here = frame is not None and int(frame[0].desktop) == desktop
+        triples = frame[1] if here else []
         db = self.session.db
         if records is None:
             records = db.instances(desktop)
         rulings = db.cover_rulings(desktop)
-        candidates = pending_pairs(triples, records, edges_from_db(db, desktop), rulings)
-        section.set_rulings(candidates, rulings)
+        step = int(frame[0].step) if here else int(self.session.current().step)
+        try:
+            states = {k: v.state for k, v in
+                      state_of(db, self.session.tax, desktop, step).items()}
+        except Exception:  # noqa: BLE001 - a state word is never worth the section
+            states = {}
+        self._rulings_states = states
+        tri = triage_pairs(triples, records, edges_from_db(db, desktop), rulings,
+                           log=self._desktop_cover_log(desktop, records), states=states)
+        section.set_rulings(tri.asked, rulings, proven=tri.proven, indirect=tri.indirect)
         self.rulings_ms = (time.perf_counter() - started) * 1000.0
         self.rulings_builds += 1
+
+    def _desktop_cover_log(self, desktop: int, records):
+        """The desktop's log replay (:func:`cover_log`), rebuilt only when its inputs change."""
+        db = self.session.db
+        try:
+            actions = db.actions(desktop)
+            manual = [e for e in db.events(desktop) if not e.auto]
+        except Exception:  # noqa: BLE001 - without the log nothing is proven; still asked
+            return None
+        stamp = (desktop, tuple((a.step, a.idx, a.target, a.verb, a.result) for a in actions),
+                 tuple((e.step, e.target, e.attr, e.new) for e in manual),
+                 tuple(sorted(records)))
+        cached = self._rulings_log
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        log = cover_log(records, actions, self.session.tax, initial=initial_overrides(manual))
+        self._rulings_log = (stamp, log)
+        return log
+
+    # ----------------------------------------------------------- the hover
+    def _part_box(self, compiled, key: str) -> Optional[tuple]:
+        """The box round ``key``'s whole shape on the frame on screen (its visible box without one)."""
+        inst = (getattr(compiled, "instances", None) or {}).get(key)
+        if inst is None:
+            return None
+        amodal = getattr(inst, "amodal", None)
+        if amodal is not None:
+            window = getattr(inst, "amodal_window", None)
+            x0, y0 = 0, 0
+            part = amodal
+            if window is not None:
+                x0, y0, x1, y1 = (int(v) for v in window)
+                part = amodal[y0:y1, x0:x1]
+            rows, cols = np.flatnonzero(part.any(axis=1)), np.flatnonzero(part.any(axis=0))
+            if rows.size and cols.size:
+                return (float(x0 + cols[0]), float(y0 + rows[0]),
+                        float(x0 + cols[-1] + 1), float(y0 + rows[-1] + 1))
+        box = getattr(inst, "box", None)
+        return None if box is None else tuple(float(v) for v in box)
+
+    @S.guard
+    def on_rulings_hover(self, above: str, below: str) -> None:
+        """The pointer rests on a pair's row: outline both parts; ``("", "")`` takes them away.
+
+        Display only (task W3f): the canvas's hover outlines and the status
+        line -- no selection, no layer, no op.
+        """
+        if not above or not below or not self.rulings_apply():
+            self._clear_rulings_hover()
+            return
+        compiled = self._compiled_on_screen()
+        hints, words = [], {}
+        for key, rgb, chip, side in ((above, ABOVE_RGB, ABOVE_CHIP, "above"),
+                                     (below, BELOW_RGB, BELOW_CHIP, "below")):
+            box = None if compiled is None else self._part_box(compiled, key)
+            if box is not None:
+                hints.append((box, chip.format(key=key), rgb))
+            state = self._rulings_states.get(key)
+            words[side] = (f"（{state_zh(state)}）" if state else "") + ("" if box else NO_SHAPE)
+        self.canvas.set_hint_boxes(hints)
+        self.rulings_hover = (str(above), str(below))
+        self._rulings_hover_text = HOVER_TEXT.format(above=above, below=below,
+                                                     above_state=words["above"],
+                                                     below_state=words["below"])
+        self.report(self._rulings_hover_text)
+
+    def _clear_rulings_hover(self, *_args) -> None:
+        """Take the hover's outlines away (row left, frame changed, section hidden)."""
+        if getattr(self, "rulings_hover", None) is None:
+            return
+        self.rulings_hover = None
+        self.canvas.set_hint_boxes([])
+        if self._rulings_hover_text and self.status_message() == self._rulings_hover_text:
+            self.report("")
+        self._rulings_hover_text = ""
 
     def _on_rulings_changed(self, *_args) -> None:
         self.refresh_rulings()

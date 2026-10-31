@@ -113,8 +113,9 @@ def test_the_rows_render_above_the_occlusion_list(window):
     assert [(c.above, c.below, c.tag) for c in section.candidates] == PENDING
     assert section.toggle.text() == "谁压着谁 · 这台还没裁定的（5）"
     texts = section.texts()
-    assert texts[0] == "cover.01 → psu.01 · 像素 1 200 · 建议收"
-    assert texts[2] == "psu.01 → motherboard.01 · 像素 1 440 · 存疑"
+    # task W3f: both parts' states at the frame
+    assert texts[0] == "cover.01（打开）→ psu.01（装着） · 像素 1 200 · 建议收"
+    assert texts[2] == "psu.01（装着）→ motherboard.01（装着） · 像素 1 440 · 存疑"
     assert texts[5:] == ["同类对本帧全部：cover → psu（2 对）",
                          "同类对本帧全部：cover → motherboard（2 对）"]
     cand, blocks, free = section.row_buttons[2]
