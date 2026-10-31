@@ -58,7 +58,7 @@ def test_the_spec_has_the_paragraph_in_4_5_and_v1_23_on_top():
                                   "- **v1.36",
                                   "- **v1.37", "- **v1.38", "- **v1.39", "- **v1.40",
                                   "- **v1.41", "- **v1.42", "- **v1.43", "- **v1.44",
-                                  "- **v1.45"))
-    [first] = [e for e in entries[:23] if e.startswith("- **v1.23")]
+                                  "- **v1.45", "- **v1.46"))
+    [first] = [e for e in entries[:24] if e.startswith("- **v1.23")]
     assert first.startswith("- **v1.23（2026-10-23）**：**主视角**（U23，§4.5）")
     assert changes.index("- **v1.23") < changes.index("- **v1.21")
