@@ -101,7 +101,8 @@ def test_the_protocol_prior_answers_from_the_previous_action_only(export, tmp_pa
         assert r["prompt"]["images"] == []
         assert set(r["prompt"]) <= {"task", "images", "question", "previous_action", "options"}
     assert {p["id"] for p in preds} == {r["id"] for r in variant}
-    assert set(report["by_task"]) == tasks
+    # V6's two forms are reported apart: the open headline, the choice beside it
+    assert set(report["by_task"]) == tasks | {"V6-mc"}
     for row in report["by_task"].values():
         assert 0.0 <= row["accuracy"] <= 1.0
     # fitted on the very log it is asked about, the next action is mostly right
@@ -228,8 +229,11 @@ def test_the_scorer_with_fake_outputs(export, tmp_path):
     rows = rows[:-1]  # one record never answered
     preds = tmp_path / "fake.jsonl"
     IO.write_jsonl(preds, rows)
+    prior = tmp_path / "prior.json"
+    prior.write_text(json.dumps({"by_task": {"V6-mc": {"accuracy": 0.799}}}),
+                     encoding="utf-8")
     assert vlm_score.main(["--truth", str(export), "--pred", str(preds), "--out",
-                           str(tmp_path), "--resamples", "200"]) == 0
+                           str(tmp_path), "--resamples", "200", "--prior", str(prior)]) == 0
     result = json.loads((tmp_path / "fake.score.json").read_text(encoding="utf-8"))
     strict, lenient = result["strict"], result["lenient"]
     assert result["predicted"] == len(records) - 1
@@ -244,6 +248,9 @@ def test_the_scorer_with_fake_outputs(export, tmp_path):
     assert "decidable" in strict["extra"]["V7"]
     md = (tmp_path / "fake.score.md").read_text(encoding="utf-8")
     assert "| V7 |" in md and "text-only upper bound" in md
+    mc_row = next(line for line in md.splitlines() if line.startswith("| V6-mc |"))
+    assert mc_row.rstrip().endswith("| 79.9% |")
+    assert result["headline"]["v6_open"] == strict["by_task"]["V6"]
     # seeded: the same inputs give the same intervals
     again = vlm_score.score(export, preds, resamples=200)
     assert again["strict"]["by_task"] == strict["by_task"]

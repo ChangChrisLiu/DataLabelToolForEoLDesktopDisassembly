@@ -16,8 +16,12 @@ with replacement, ``--resamples`` times, seeded). Beside the primary score:
 
 * V2's headline is the accuracy on ``prior_is_correct = false`` -- the
   questions the class alone does not answer;
-* V6's ``blocked_rate`` is over the frames with ``blocked_rate_defined`` only,
-  and its exact-instance match rides along as the secondary number;
+* V6's headline (``headline.v6_open``, table row ``V6``) is the **open**
+  question graded group-equivalently; the multiple choice is the secondary row
+  ``V6-mc`` (``headline.v6_mc``), outside the layer and template rows, with
+  ``--prior``'s protocol-prior accuracy beside it (79.9 % on the day-1 copy);
+  ``blocked_rate`` is over the frames with ``blocked_rate_defined`` only, and
+  the exact-instance match rides along;
 * V7 adds violation-free rate, required-action recall and goal-reached rate;
 * records whose truth rests on a captive screw's tightness
   (``image_undecidable``) are also scored without;
@@ -42,6 +46,23 @@ import vlm_io as IO  # noqa: E402
 from tda.core.export.vlm_check import CAPABILITY_LAYERS, grade  # noqa: E402
 
 LAYER_ORDER = ("L1", "L2", "L3", "change", "cross")
+#: V6's secondary record type, the multiple choice (W3b ruling): ``V6`` in the
+#: tables is the open form, the headline.
+V6_MC = "V6-mc"
+
+
+def task_key(record: dict) -> str:
+    """The table row of a record: its task, with V6's two forms apart."""
+    task = record["prompt"]["task"]
+    if task == "V6" and (record["label"].get("v6_form") == "mc"
+                         or record["prompt"].get("options")):
+        return V6_MC
+    return task
+
+
+def _task_order(task: str) -> tuple:
+    digits = "".join(ch for ch in task[1:] if ch.isdigit())
+    return (int(digits or 0), task)
 
 
 def cluster_bootstrap(rows: list[tuple[int, float]], resamples: int, seed: int
@@ -88,7 +109,7 @@ def _r(x):
 
 
 def score(truth_path, pred_path, chat_path=None, *, resamples: int = 1000,
-          seed: int = 0) -> dict:
+          seed: int = 0, prior_path=None) -> dict:
     from tda.core.taxonomy import load_taxonomy
 
     tax = load_taxonomy()
@@ -113,8 +134,8 @@ def score(truth_path, pred_path, chat_path=None, *, resamples: int = 1000,
         failures: dict[str, int] = defaultdict(int)
         extras: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
         for record in records:
-            task = record["prompt"]["task"]
             label = record["label"]
+            task = task_key(record)
             desk = int(label["desktop"])
             world = worlds.get(desk)
             trans = transforms.get(record["id"])
@@ -124,14 +145,17 @@ def score(truth_path, pred_path, chat_path=None, *, resamples: int = 1000,
                 failures[task] += 1
             row = (desk, g.score)
             per_task[task].append(row)
-            per_layer[CAPABILITY_LAYERS.get(task, "other")].append(row)
-            per_template[label.get("template_id", "?")].append(row)
+            if task != V6_MC:
+                # the multiple choice is a secondary record type: it is in no
+                # layer and no template row, so the open form is counted once
+                per_layer[CAPABILITY_LAYERS.get(task, "other")].append(row)
+                per_template[label.get("template_id", "?")].append(row)
             m = g.metrics
             if not label.get("image_undecidable"):
                 extras[task]["decidable"].append(row)
             if task == "V2" and label.get("prior_is_correct") is False:
                 extras[task]["prior_wrong"].append(row)
-            if task == "V6":
+            if task in ("V6", V6_MC):
                 extras[task]["exact"].append((desk, float(bool(m.get("exact_match")))))
                 if m.get("blocked_rate_defined") and g.parsed:
                     extras[task]["blocked_rate"].append((desk, float(bool(m.get("blocked")))))
@@ -158,6 +182,13 @@ def score(truth_path, pred_path, chat_path=None, *, resamples: int = 1000,
                       for t, d in sorted(extras.items())},
         }
     out["shortcut_upper_bound"] = _shortcuts(summary)
+    # V6's headline is the open form; the multiple choice rides beside it
+    out["headline"] = {"v6_open": out["strict"]["by_task"].get("V6"),
+                       "v6_mc": out["strict"]["by_task"].get(V6_MC)}
+    if prior_path:
+        report = json.loads(Path(prior_path).read_text(encoding="utf-8"))
+        out["protocol_prior"] = {t: row.get("accuracy")
+                                 for t, row in (report.get("by_task") or {}).items()}
     return out
 
 
@@ -169,8 +200,9 @@ def _shortcuts(summary: dict) -> dict:
         table[task] = {"majority": row.get("majority"), "best_text_only": _r(best)}
     option = summary.get("v6_option_shortcut") or {}
     if option.get("records"):
-        table.setdefault("V6", {})["option_verb"] = option.get("shortcut")
-        table["V6"]["random"] = option.get("random")
+        # the option-verb shortcut is the multiple choice's, not the open form's
+        table.setdefault(V6_MC, {})["option_verb"] = option.get("shortcut")
+        table[V6_MC]["random"] = option.get("random")
     return table
 
 
@@ -183,24 +215,29 @@ def markdown(result: dict, name: str) -> str:
 
     s, l = result["strict"], result["lenient"]
     short = result.get("shortcut_upper_bound") or {}
+    prior = result.get("protocol_prior") or {}
+
+    def pct(x):
+        return "–" if x is None else f"{x:.1%}"
+
     lines = [f"# {name}", "",
              f"{result['predicted']} of {result['records']} records answered. "
              f"Parse failures: strict {s['parse_failure_rate_all']:.1%}, "
              f"lenient {l['parse_failure_rate_all']:.1%}. "
-             "Intervals: 95 %, cluster bootstrap over desktops.", "",
+             "Intervals: 95 %, cluster bootstrap over desktops. "
+             "V6 is the open question, graded group-equivalently (the headline); "
+             f"{V6_MC} is the multiple choice (secondary).", "",
              "| task | n | strict | lenient | parse fail (strict / lenient) | "
-             "text-only upper bound |",
-             "|---|---|---|---|---|---|"]
-    for task in sorted(s["by_task"], key=lambda t: int(t[1:])):
+             "text-only upper bound | protocol prior |",
+             "|---|---|---|---|---|---|---|"]
+    for task in sorted(s["by_task"], key=_task_order):
         sc = short.get(task) or {}
-        bound = sc.get("best_text_only")
-        if task == "V6" and sc.get("option_verb") is not None:
-            bound = sc["option_verb"]
+        bound = sc.get("option_verb", sc.get("best_text_only"))
         lines.append(f"| {task} | {s['by_task'][task]['n']} | {fmt(s['by_task'][task])} | "
                      f"{fmt(l['by_task'][task])} | "
                      f"{s['parse_failure_rate'][task]:.1%} / "
                      f"{l['parse_failure_rate'][task]:.1%} | "
-                     f"{'–' if bound is None else f'{bound:.1%}'} |")
+                     f"{pct(bound)} | {pct(prior.get(task))} |")
     lines += ["", "| layer | n | strict | lenient |", "|---|---|---|---|"]
     for layer, cell in s["by_layer"].items():
         lines.append(f"| {layer} | {cell['n']} | {fmt(cell)} | {fmt(l['by_layer'][layer])} |")
@@ -225,10 +262,14 @@ def main(argv=None) -> int:
     ap.add_argument("--name", default=None)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--resamples", type=int, default=1000)
+    ap.add_argument("--prior", default=None,
+                    help="protocol_prior.report.json of scripts/vlm_references.py: "
+                         "its accuracy is printed beside each task (the V6 "
+                         "multiple-choice ceiling)")
     args = ap.parse_args(argv)
     name = args.name or Path(args.pred).stem
     result = score(args.truth, args.pred, args.chat, resamples=args.resamples,
-                   seed=args.seed)
+                   seed=args.seed, prior_path=args.prior)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     (out / f"{name}.score.json").write_text(

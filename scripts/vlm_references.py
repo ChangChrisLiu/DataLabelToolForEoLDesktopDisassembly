@@ -270,8 +270,9 @@ def protocol_prior(records: list[dict], worlds: dict[int, World], tax,
             out["prompt"]["options"] = record["prompt"]["options"]
         out["label"]["reference"] = "protocol_prior"
         variant.append(out)
-        by_task[task].append(grade(record, raw, world, tax).score)
-        if task == "V6":
+        mc = task == "V6" and bool(record["prompt"].get("options"))
+        by_task["V6-mc" if mc else task].append(grade(record, raw, world, tax).score)
+        if task == "V6" and not mc:
             ref = record["label"]["answer_check"]["reference"]
             want = (ref[0], (world.match_class(ref[1]) or "?").split(".")[0])
             coarse_hits.append(float(coarse.best(_prev(record)) == want))
