@@ -19,11 +19,13 @@ _SUMMARY_ZH = """\
 `instances`（零件、关系字段、是否推断 / 手加、状态时间线，第 0 步是初始状态）；
 `steps`（步骤与动作，含失败的尝试）；`edges`（全部生效的硬约束边，及日志在第几步满足了它 `demonstrated_at`）；
 `covers`（已确认帧上「谁盖住了谁」的像素证据：上面的零件可见掩码占了下面零件完整形状的多少像素、哪些帧、
-被哪些边解释 `explained_by`；没有任何边（正反向都没有）、零件表里也没有关系（装在 / 插在 / 拧住 / 随父件拆下、下面是机箱）的就是**候选**，
+被哪些边解释 `explained_by`；没有任何边（正反向都没有）、零件表里也没有关系（装在 / 插在 / 拧住 / 随父件拆下且父件自己也盖住它、下面是机箱）的就是**候选**，
 供人工判断要不要补 `covered_by` / `blocked_by`）；
-`legal_by_step`（每一步之后严格 / 放宽的合法动作集、下一步实际做了什么、是否合法）；
-`plans`（从初始状态拆下主板 / CPU / 电源 / 日志拆下的全部零件的最短合法计划，和演示用的动作数对比；
-每步之后「全部」还剩几步，即 V10 的进度标签）；`violations`（日志与约束图矛盾的地方，同 `constraints --validate`）；
+`legal_by_step`（每一步之后严格 / 放宽的合法动作集、下一步实际做了什么、是否合法；`reorient` 和没写清是哪个零件的 `?` 不判）；
+`plans`（从初始状态拆下主板 / CPU / 电源的最短合法计划；「全部」= 日志拆下的全部零件按日志顺序逐个规划的合法计划，不保证整体最短；
+都和演示用的动作数对比；每步之后「全部」还剩几步，即 V10 的进度标签）；
+`violations`（日志与约束图矛盾的地方，同 `constraints --validate`：只从初始状态回放动作、不看后来手写的状态事件；
+`timeline_agrees` 说含手写事件的状态时间线在那一步是否也这样认为）；
 `deadlocks` / `dead_ends`（应为空）。`summary.json` 是逐台计数、按类别对分组的候选遮挡和全部矛盾。
 遮挡是边的**证据**，不是边本身：螺丝盖住主板几个像素是 `fastened_by`，线压在风扇上什么也不挡。
 只读导出：只读打开数据库，不写库、不重新编译帧（读已确认帧的存储行），两次运行逐字节相同。
@@ -40,25 +42,32 @@ def _fields() -> str:
 - `README.md` -- this file.
 
 Produced by `python -m tda.cli export-graph --desktops <range> --out <dir> [--view scan]` from
-the annotation database, opened read-only. No frame is recompiled; nothing is written to the
-database. Two runs on the same database give byte-identical files (sorted keys, sorted lists,
+the annotation database (best a backup copy, `--db <copy>`), opened read-only and read under
+one snapshot for the whole run. No frame is recompiled; nothing is written to the database. Two runs on the same database give byte-identical files (sorted keys, sorted lists,
 no clock, no machine path).
 
 ## `D<nn>.json`
 
 ### `meta`
 
-`desktop`, `brand`, `model`, `model_family`, `chassis_type`, `chassis_platform` (null where the
-sheet did not say), `graph_version` (content hash of the stored constraint graph -- the one the
-VLM export quotes), `export_graph_version` (this file format, `1`), `view` (the view whose
-confirmed frames the pixel evidence was read from), `pixel_views` (`[view]` when it had any
-confirmed frame, else `[]`), and `counts` (instances, steps, actions, edges and edges by type,
-confirmed frames, frames with a covering, covers, candidates, violations, deadlocks, dead ends).
+`desktop`, `brand`, `model` (the teardown sheet's text, as written), `model_family` (the
+family as the VLM export quotes it), `model_name` (the model's real name where the sheet
+misspells it, as in the scanner package) and `model_note` (a caveat about that name, or null),
+`chassis_type`, `chassis_platform` (null where the sheet did not say), `graph_version` (content
+hash of the stored constraint graph -- the one the VLM export quotes), `export_graph_version`
+(this file format, `1`), `view` (the view whose confirmed frames the pixel evidence was read
+from), `pixel_views` (`[view]` when it had any confirmed frame, else `[]`), and `counts`
+(`instances`, `steps`, `actions`, `edges`, `edges_by_type`, `confirmed_frames`,
+`frames_with_covers`, `covers`, `no_edge`, `candidates`, `violations`,
+`violations_timeline_disagrees`, `deadlocks`, `dead_ends`).
 
 ### `instances[]`
 
 The machine's own parts: no Label Studio draft, no object outside the machine, no part this
-machine does not have. `key`, `class`, `attrs` (as annotated: `kind`, `role`, `captive`, `of`, ...),
+machine does not have, no part only the components gallery shows. `key`, `class`, `attrs`
+(facts about the part as annotated: `kind`, `role`, `captive`, `head`, `of`, `cable_owner`,
+`sheet_no`, ...; our bookkeeping -- who added a part, when, notes, how a flag was guessed -- is
+left out, as in the scanner package),
 `parent` + `attached` (leaves the chassis together with the parent), `mounted_on`, `fastens`
 (screws), `socket_host` and `cable` (connectors), `implied` (created by a rule, not named by
 the sheet), `extra` (added by hand in the tool), and `timeline`: `[{step, state, placement}]`,
@@ -100,8 +109,10 @@ by any type, or a `covered_by` / `blocked_by` between the two either way round),
 ordered, the pixels are one outline lying against the other), `structural` (what the instance
 table says about the pair: `above.attached_to` / `below.attached_to` -- one leaves the chassis
 inside the other; `above.mounted_on`, `above.socket_host`, `above.fastens` and their `below.*`
-mirrors; `above.rides_with_parent` -- the upper part leaves with a third one, whose own
-covering is listed; `below_fixed` -- the lower part has no verb that changes it, the chassis),
+mirrors; `above.rides_with_parent` -- the upper part leaves with a third one (its parent, at
+any depth) **and** that parent's own covering of the same lower part is listed, so the pair
+that can order anything is that one; a child whose parent covers nothing there stays a
+candidate; `below_fixed` -- the lower part has no verb that changes it, the chassis),
 `no_edge` (`explained_by` and `reverse_edges` both empty), `candidate` (`no_edge` and
 `structural` empty: a covering nothing accounts for -- the triage list), `order_source` (what
 gave `above` those pixels on most of the frames: `zorder` -- the pose segment's layer order,
@@ -122,10 +133,16 @@ One entry per step `k` of the log plus `k = 0` (the initial state), each the sta
 step `k`: `legal` -- `legal_actions(..., strict=True)` as sorted `"verb target"` strings
 (recommended edges honoured), `n_legal`, `legal_relaxed` / `n_legal_relaxed` (required edges
 only), `next_step`, `next_demonstrated` (the next step's successful actions),
-`next_failed` (its failed attempts), `next_is_legal` / `next_is_legal_relaxed` (every one of
-the next step's successful actions was in the legal set -- a compound step's later actions
-judged in the state its earlier ones left; `null` when the next step has no successful
-action).
+`next_failed` (its failed attempts), `next_unjudged` (successful actions on a target the graph
+does not know -- `?`, `connector.?`: the sheet did not say which part), `next_illegal`
+(`[{action, reason}]` for each judged action not in the strict set: `unmet_edge` -- an edge is
+in the way; `verb_not_applicable` -- the verb cannot start from the target's state, e.g. a cover
+opened twice: a redundant log line, not a broken constraint), and `next_is_legal` /
+`next_is_legal_relaxed`: `false` when a judged action is not in the legal set, `true` when
+every judged action is, `null` when nothing could be judged or a target is unknown. A
+compound step's later actions are judged in the state its earlier ones left. Verbs no
+constraint gates (`reorient`) are not judged at all: they change no state, so they are never in
+a legal set, and the replay never finds them in breach.
 
 ### `plans`
 
@@ -136,7 +153,9 @@ removed, for `motherboard.01`, `cpu.01` and `psu.01` where the desktop has them:
 `demonstrated_length` (successful actions the log took up to then). `all`: every part the log
 removes (`goals`, in the log's order), planned one goal after the other from the state the
 previous plans left -- a legal plan, shortest per goal but not proven shortest overall --
-with `unplanned` (goals no plan reaches), and `remaining_steps_by_step`: the length of that
+with `unplanned` (goals no plan reaches), `removed_at` (the step the log removes the last of
+the goals), `demonstrated_length` (successful actions the log took up to then), and
+`remaining_steps_by_step`: the length of that
 plan from the state after each entry of `legal_by_step` (same order; `null` where a goal is
 unplannable) -- V10's progress label.
 
@@ -146,7 +165,15 @@ The spec 7.4 replay of the log against the graph, the same lines `python -m tda.
 constraints --validate` prints: `step`, `verb`, `target`, `edge`, `edge_type`, `blocker`,
 `blocker_state`, `kind` -- `success_violates` (a recorded action broke a required edge:
 almost always a step done and never written down) or `failed_without_unmet` (a failed attempt
-nothing in the graph explains: an edge is missing) -- and the original `line`.
+nothing in the graph explains: an edge is missing) -- the original `line`, and
+`timeline_agrees`. The replay starts from the initial state (hand-written initial states
+included) and folds **only the recorded actions**: a state event an annotator wrote by hand
+later in the log (a latch the sheet forgot to open) is not seen -- a later task may change
+that. `instances[].timeline` and `legal_by_step` do fold those events in, so
+`timeline_agrees` re-asks the line's question in the timeline's state just before the action:
+`true` -- the edge is unmet there too (or, for a failed attempt, nothing is unmet there
+either); `false` -- the timeline disagrees (the line comes from a hand-written event the
+replay does not see); `null` -- not a line of either shape.
 
 ### `deadlocks`, `dead_ends`
 
@@ -155,9 +182,14 @@ because nothing clears an edge in the way. Both should be empty.
 
 ## `summary.json`
 
-`totals`, `per_desktop[]` (edges and edges by type, confirmed frames, covers, `no_edge`, candidates,
-violations, deadlocks, dead ends, `next_is_legal` as legal / judged / ratio, plan lengths
-against demonstrated lengths), `candidates_by_class_pair[]` (`pair` = `above_class →
+`export_graph_version`, `view`, `desktops`, `totals` (`desktops`, `edges`, `edges_by_type`,
+`confirmed_frames`, `covers`, `no_edge`, `candidates`, `candidate_class_pairs` -- how many
+class pairs the candidates fall into, `violations`, `violations_by_kind` -- per `kind`,
+`violations_timeline_agrees` / `violations_timeline_disagrees`, `deadlocks`, `dead_ends`,
+`next_is_legal` -- legal / judged / ratio over every judged step), `per_desktop[]` (edges and
+edges by type, confirmed frames, covers, `no_edge`, candidates, violations,
+`violations_timeline_disagrees`, deadlocks, dead ends, `next_is_legal` as legal / judged /
+ratio, plan lengths against demonstrated lengths), `candidates_by_class_pair[]` (`pair` = `above_class →
 below_class`, `n_desktops`, `desktops`, `n_pairs`, `pairs`, `below_removed` = pairs whose
 lower part the log does remove, `above_removed_first` = of those, pairs whose upper part came
 out first), `violations[]` (with `desktop`), `failed` (desktops that could not be exported).
@@ -180,7 +212,9 @@ def _numbers(summary: dict) -> str:
         f"in {t['candidate_class_pairs']} class pairs",
         f"- violations: {t['violations']}"
         + (" (" + ", ".join(f"{k} {v}" for k, v in t["violations_by_kind"].items()) + ")"
-           if t["violations"] else ""),
+           if t["violations"] else "")
+        + (f"; the state timeline disagrees with {t['violations_timeline_disagrees']}"
+           if t.get("violations_timeline_disagrees") else ""),
         f"- deadlocks: {t['deadlocks']}; dead ends: {t['dead_ends']}",
         f"- next demonstrated step legal (strict): {legal['legal']} of {legal['judged']}"
         + (f" ({legal['ratio']:.4f})" if legal["ratio"] is not None else ""),

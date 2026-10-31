@@ -14,7 +14,8 @@ covering that **nothing** accounts for: no edge from ``below`` to ``above``
 (``explained_by``), none the other way round (``reverse_edges``: the two are
 already ordered, the pixels are one outline against the other) and no relation
 in the instance table (``structural``: one is attached to, mounted on, plugged
-into or screwing down the other, the upper one rides out with a parent, or the
+into or screwing down the other, the upper one rides out with a parent whose
+own covering of the same part is listed, or the
 lower part is the chassis, which never moves). ``no_edge`` keeps the brief's
 own definition beside it (no edge either way, whatever the instance table says).
 
@@ -148,15 +149,21 @@ def reverse_edges(edges: list[Edge], above: str, below: str) -> list[str]:
 _STRUCTURE_FIELDS = ("mounted_on", "socket_host", "fastens")
 
 
-def structural_reasons(instances: dict, tax, above: str, below: str) -> list[str]:
+def structural_reasons(instances: dict, tax, above: str, below: str,
+                       listed: Optional[set] = None) -> list[str]:
     """Why a covering of ``below`` by ``above`` needs no precedence edge, from the instance table.
 
     * ``above.attached_to`` / ``below.attached_to`` -- one rides out of the
       chassis inside the other (``parent`` + ``attached``, any depth): a RAM
       latch on its board, a captive screw on its fan;
     * ``above.rides_with_parent`` -- the upper part is attached to a third
-      one and leaves with it (a cooler's captive screw over the board): the
-      covering that can order anything is the parent's, which is its own pair;
+      one and leaves with it (a cooler's captive screw over the board), **and**
+      that parent (or one further up) covers the same lower part too: the pair
+      ``(parent, below)`` is in ``listed`` (the desktop's covering pairs), so
+      the covering that can order anything is listed on its own. Without it
+      (review round 1, S4: a socket lever over the PSU, a RAM latch over the
+      drive cage -- often a layering mistake) the pair keeps no such reason
+      and stays a candidate; with ``listed=None`` the reason is never given;
     * ``above.mounted_on`` / ``above.socket_host`` / ``above.fastens`` and the
       ``below.*`` mirror -- one sits on, plugs into or screws down the other;
     * ``below_fixed`` -- the lower part has no verb that changes its state
@@ -176,7 +183,8 @@ def structural_reasons(instances: dict, tax, above: str, below: str) -> list[str
                 break
             seen.add(cur.parent)
             cur = instances.get(cur.parent)
-        if name == "above" and seen and f"{name}.attached_to" not in out:
+        if (name == "above" and seen and f"{name}.attached_to" not in out
+                and listed is not None and any((p, below) in listed for p in seen)):
             # a captive screw over the board rides out with its cooler: the
             # covering that orders anything is the cooler's, listed on its own
             out.add("above.rides_with_parent")
@@ -317,11 +325,12 @@ def scan_covers(db: Db, ctx: DesktopCtx, view: str, edges: list[Edge],
             acc.segments.add(int(seg))
 
     covers = []
+    listed = set(found)
     for (above, below), acc in sorted(found.items()):
         steps = sorted(acc.px)
         explained = explaining_edges(edges, above, below)
         reverse = reverse_edges(edges, above, below)
-        structure = structural_reasons(ctx.instances, ctx.tax, above, below)
+        structure = structural_reasons(ctx.instances, ctx.tax, above, below, listed)
         top = max(ORDER_SOURCES, key=lambda s: (acc.sources.get(s, 0),
                                                 -ORDER_SOURCES.index(s)))
         covers.append({

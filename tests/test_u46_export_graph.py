@@ -1,16 +1,26 @@
 """``python -m tda.cli export-graph``: one precedence-graph JSON per desktop (task U46).
 
 The bench desktop of :mod:`graph_scenes` with its rule edges stored, a log
-with one breach (the board leaves with a SATA plug still in) and one failed
-attempt nothing in the graph explains, and four scanner frames: three
+with one breach (the board leaves with a SATA plug still in), one failed
+attempt nothing in the graph explains, a ``reorient`` step and an action on
+a part the sheet did not name (``?``), and four scanner frames: three
 confirmed, whose stored rows say the CPU fan takes pixels of the CPU (an edge
-explains it) and the PSU takes pixels of the drive (nothing does), and one
-not confirmed, which must not count.
+explains it; a pairwise layering exception ordered it), the PSU takes pixels
+of the drive (nothing does; on frame 2 the two visible masks overlap, so the
+PSU takes nothing there) and a captive cooler screw takes pixels of the drive
+(its fan does not cover the drive, so it stays a candidate), plus a RAM stick
+lying on the bench (never read); and one frame not confirmed, which must not
+count.
+
+Round 2 (review S1-S4, N1-N6): reorient / unknown targets are not judged,
+violations say whether the timeline agrees, bookkeeping attrs are dropped,
+``rides_with_parent`` needs the parent's own pair, one snapshot, exit code.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -47,8 +57,10 @@ from tda.core.model import (
     ActionRec,
     FrameKey,
     FrameOverride,
+    PairOverride,
     ShapeKeyframe,
     ShapePart,
+    StateEvent,
     StepRec,
 )
 from tda.core.taxonomy import load_taxonomy
@@ -58,6 +70,10 @@ HW = (20, 40)
 CONFIRMED = (1, 2, 3)
 UNCONFIRMED = 4
 PATCH_STEP = 3
+OVERLAP_STEP = 2
+LAST_STEP = 10
+SCREW = "screw.cpu_cooler.01"
+BENCH_PART = "ram_module.01"
 
 #: ``x0, y0, x1, y1`` of each part's whole shape, painted bottom first.
 SHAPES = {
@@ -66,6 +82,7 @@ SHAPES = {
     "storage_drive.hdd.01": (20, 2, 31, 11),
     "cpu_cooler.fan.01": (5, 1, 13, 10),
     "psu.01": (26, 6, 36, 16),
+    SCREW: (22, 3, 24, 5),
 }
 ORDER = list(SHAPES)
 
@@ -92,29 +109,43 @@ def log():
         act(6, 0, "screw.motherboard.02", "unscrew"),
         act(7, 0, "screw.motherboard.03", "unscrew"),
         act(8, 0, "motherboard.01", "remove"),
+        act(9, 0, "chassis", "reorient"),
+        act(10, 0, "?", "remove"),
     ]
     names = {2: "open the screw cover", 3: "24-pin", 4: "PSU latch", 5: "MB screw 1",
              6: "MB screw 2", 7: "MB screw 3", 8: "motherboard"}
     steps += [StepRec(DESKTOP, s, "normal", n) for s, n in names.items()]
+    steps += [StepRec(DESKTOP, 9, "reorient", "Turn the case"),
+              StepRec(DESKTOP, 10, "normal", "Remove the obstacle")]
     return steps, actions
 
 
-def build(path: Path) -> Path:
+def build(path: Path, hand_unplug: bool = False) -> Path:
+    """The scene; ``hand_unplug`` adds a hand-written event at step 7 that unplugs the
+    SATA plug the log never unplugs -- the replay does not see it, the timeline does."""
     tax = load_taxonomy()
     db = Db(str(path))
     try:
         db.upsert_desktop(DESKTOP, {"brand": "Bench", "model_family": "Bench 1"})
         instances = bench_instances()
+        cover = instances["cover.01"]
+        cover.attrs = {**cover.attrs, "note": "checked by tester",
+                       "added_at": "2026-10-30T12:00:00+00:00"}
         for rec in instances.values():
             db.upsert_instance(rec)
         steps, actions = log()
         db.replace_steps(DESKTOP, steps, actions)
+        if hand_unplug:
+            db.replace_events(DESKTOP, [StateEvent(
+                DESKTOP, 7, "connector.sata_data.02", "state", "plugged", "unplugged",
+                evidence_view=VIEW, auto=False)])
         edges_to_db(db, DESKTOP, propose_edges(instances, tax))
-        db.set_pose_segment(DESKTOP, VIEW, 1, 1, 8, 1, None, None)
+        db.set_pose_segment(DESKTOP, VIEW, 1, 1, LAST_STEP, 1, None, None)
+        db.set_pair_override(PairOverride(DESKTOP, VIEW, 1, "cpu_cooler.fan.01", "cpu.01"))
         for key, box in SHAPES.items():
             db.add_keyframe(ShapeKeyframe(
                 id=None, instance=key, desktop=DESKTOP, view=VIEW, pose_segment=1,
-                anchor_step=8, placement="in_chassis", geom_type="mask",
+                anchor_step=LAST_STEP, placement="in_chassis", geom_type="mask",
                 parts=[ShapePart("main", masks.encode_rle(rect(box)))]))
         for step in (*CONFIRMED, UNCONFIRMED):
             key = FrameKey(DESKTOP, step, VIEW)
@@ -123,12 +154,18 @@ def build(path: Path) -> Path:
             for i, inst in enumerate(ORDER):
                 visible = rect(SHAPES[inst])
                 for upper in ORDER[i + 1:]:
-                    visible &= ~rect(SHAPES[upper])
+                    if not (step == OVERLAP_STEP and inst == "storage_drive.hdd.01"
+                            and upper == "psu.01"):
+                        visible &= ~rect(SHAPES[upper])     # frame 2: both claim them
                 if step == UNCONFIRMED and inst == "cpu.01":
                     visible = rect(SHAPES[inst])      # would put the CPU over the fan
                 db.put_compiled(key, inst, masks.encode_rle(visible), 0.0, "visible",
                                 "in_chassis", status, "h",
                                 verified_by="tester" if status == "verified" else None)
+            # a RAM stick lying on the bench across the chassis: never covering evidence
+            db.put_compiled(key, BENCH_PART, masks.encode_rle(rect((14, 12, 20, 18))), 0.0,
+                            "visible", "on_bench", status, "h",
+                            verified_by="tester" if status == "verified" else None)
         db.set_frame_override(FrameOverride(
             FrameKey(DESKTOP, PATCH_STEP, VIEW), "psu.01",
             visible_rle=masks.encode_rle(rect(SHAPES["psu.01"]))))
@@ -162,6 +199,9 @@ def test_meta_says_which_graph_and_which_view(doc):
     meta = doc["meta"]
     assert meta["desktop"] == DESKTOP
     assert meta["brand"] == "Bench" and meta["model_family"] == "Bench 1"
+    # no sheet text: the scanner package's fallback, which is also the name
+    assert meta["model"] == "Bench Bench 1" and meta["model_name"] == "Bench Bench 1"
+    assert meta["model_note"] is None
     assert meta["export_graph_version"] == 1
     assert meta["graph_version"] and len(meta["graph_version"]) == 16
     assert meta["view"] == VIEW and meta["pixel_views"] == [VIEW]
@@ -174,6 +214,8 @@ def test_instances_carry_relations_and_a_timeline(doc):
     assert set(by_key) == set(bench_instances())
     cover = by_key["cover.01"]
     assert [(t["step"], t["state"]) for t in cover["timeline"]] == [(0, "closed"), (2, "open")]
+    # our bookkeeping (a note to ourselves, when it was added) is not published (S3)
+    assert cover["attrs"] == {"of": "motherboard_screws"}
     screw = by_key["screw.cpu_cooler.01"]
     assert screw["parent"] == "cpu_cooler.fan.01" and screw["attached"] is True
     assert screw["fastens"] == "cpu_cooler.fan.01"
@@ -221,22 +263,39 @@ def test_covers_from_the_stored_rows_explained_and_candidate(doc):
     assert (fan["first"], fan["last"]) == (1, 3)
     # the fan's visible pixels over the CPU's whole shape: x 5..8, y 2..8
     assert fan["max_px"] == 4 * 7
-    assert fan["order_source"] == "zorder" and fan["order_sources"] == {"zorder": 3}
+    # the segment's pairwise layering exception put the fan over the CPU
+    assert fan["order_source"] == "pair_override"
+    assert fan["order_sources"] == {"pair_override": 3}
 
     psu = covers[("psu.01", "storage_drive.hdd.01")]
     assert psu["explained_by"] == [] and psu["reverse_edges"] == []
     assert psu["structural"] == [] and psu["candidate"] is True
     assert psu["max_px"] == 5 * 5
-    # frame 3 carries a 「只改这一帧」 mask of the PSU
-    assert psu["order_sources"] == {"per_frame_mask": 1, "zorder": 2}
-    assert psu["order_source"] == "zorder"
+    # frame 2: the drive's confirmed mask still claims the pixels the PSU's does, so
+    # the PSU takes none of them there -- the `- visible(below)` term
+    assert psu["frames"] == [1, 3]
+    # frame 3 carries a 「只改这一帧」 mask of the PSU; one frame each, the specific wins
+    assert psu["order_sources"] == {"per_frame_mask": 1, "zorder": 1}
+    assert psu["order_source"] == "per_frame_mask"
     assert psu["below_removed_at"] is None and psu["above_removed_at"] is None
+    assert ("storage_drive.hdd.01", "psu.01") not in covers
+
+    # a captive screw rides out with its fan, but the fan does not cover the drive:
+    # nothing accounts for the screw over the drive (S4) ...
+    loose = covers[(SCREW, "storage_drive.hdd.01")]
+    assert loose["structural"] == [] and loose["candidate"] is True
+    # ... while over the chassis the fan's own pair is listed
+    assert covers[("cpu_cooler.fan.01", "chassis")]
+    assert covers[(SCREW, "chassis")]["structural"] == ["above.rides_with_parent",
+                                                         "below_fixed"]
 
     # everything covers the chassis, which never moves: no candidate
     chassis = covers[("cpu.01", "chassis")]
     assert chassis["structural"] == ["below_fixed"] and chassis["candidate"] is False
     # the frame nobody confirmed puts the CPU over the fan: not read
     assert ("cpu.01", "cpu_cooler.fan.01") not in covers
+    # the RAM stick on the bench lies across the chassis: not read either
+    assert not [c for c in doc["covers"] if BENCH_PART in (c["above"], c["below"])]
     assert doc["meta"]["counts"]["candidates"] == sum(c["candidate"] for c in doc["covers"])
 
 
@@ -256,15 +315,23 @@ def test_legal_by_step_agrees_with_legal_actions(scene, doc):
     finally:
         db.close()
     by_step = {e["step"]: e for e in doc["legal_by_step"]}
-    assert [e["step"] for e in doc["legal_by_step"]] == list(range(0, 9))
+    assert [e["step"] for e in doc["legal_by_step"]] == list(range(0, LAST_STEP + 1))
     assert by_step[1]["next_demonstrated"] == ["open cover.01"]
-    assert by_step[1]["next_is_legal"] is True
+    assert by_step[1]["next_is_legal"] is True and by_step[1]["next_illegal"] == []
     assert by_step[3]["next_failed"] == ["open psu_latch.01"]
     assert by_step[3]["next_is_legal"] is None          # nothing succeeded at step 4
     # the board leaves with the SATA plug still in: not legal
     assert by_step[7]["next_demonstrated"] == ["remove motherboard.01"]
     assert by_step[7]["next_is_legal"] is False
-    assert by_step[8]["next_step"] is None
+    assert by_step[7]["next_illegal"] == [{"action": "remove motherboard.01",
+                                           "reason": "unmet_edge"}]
+    # reorient is gated by nothing and never in a legal set: not judged (S1)
+    assert by_step[8]["next_demonstrated"] == ["reorient chassis"]
+    assert by_step[8]["next_is_legal"] is None and by_step[8]["next_illegal"] == []
+    # a part the sheet did not name: not judged either
+    assert by_step[9]["next_unjudged"] == ["remove ?"]
+    assert by_step[9]["next_is_legal"] is None and by_step[9]["next_is_legal_relaxed"] is None
+    assert by_step[LAST_STEP]["next_step"] is None
 
 
 def test_plans_from_the_initial_state_and_the_progress_label(doc):
@@ -306,10 +373,30 @@ def test_violations_are_the_validate_lines_split(scene, doc):
         "step": 8, "verb": "remove", "target": "motherboard.01",
         "edge": "connected_to(motherboard.01, connector.sata_data.02)",
         "edge_type": "connected_to", "blocker": "connector.sata_data.02",
-        "blocker_state": "plugged", "kind": SUCCESS_VIOLATES, "line": breach["line"]}
+        "blocker_state": "plugged", "kind": SUCCESS_VIOLATES, "line": breach["line"],
+        "timeline_agrees": True}
     [hint] = [v for v in doc["violations"] if v["kind"] == FAILED_WITHOUT_UNMET]
     assert (hint["step"], hint["verb"], hint["target"]) == (4, "open", "psu_latch.01")
+    assert hint["timeline_agrees"] is True
+    assert doc["meta"]["counts"]["violations_timeline_disagrees"] == 0
     assert doc["deadlocks"] == [] and doc["dead_ends"] == []
+
+
+def test_a_hand_written_event_the_replay_ignores_is_flagged(tmp_path):
+    """S2: validate_sequence replays actions only; the timeline folds the event in."""
+    path = build(tmp_path / "hand.sqlite", hand_unplug=True)
+    db = ReadOnlyDb(str(path))
+    try:
+        doc = build_desktop(db, load_taxonomy(), DESKTOP, VIEW)
+    finally:
+        db.close()
+    [breach] = [v for v in doc["violations"] if v["kind"] == SUCCESS_VIOLATES]
+    assert breach["step"] == 8 and breach["timeline_agrees"] is False
+    by_step = {e["step"]: e for e in doc["legal_by_step"]}
+    assert by_step[7]["next_is_legal"] is True          # the timeline has it unplugged
+    summary = summarize([doc], VIEW)
+    assert summary["totals"]["violations_timeline_disagrees"] == 1
+    assert summary["totals"]["violations_timeline_agrees"] == 1      # the failed attempt
 
 
 def test_parse_violation_keeps_a_line_it_does_not_know():
@@ -323,8 +410,13 @@ def test_structural_reasons_and_explaining_edges():
     instances = bench_instances()
     assert structural_reasons(instances, tax, "ram_latch.01", "motherboard.01") == [
         "above.attached_to"]
-    assert structural_reasons(instances, tax, "screw.cpu_cooler.01", "motherboard.01") == [
+    # rides with its fan -- only a reason when the fan's own pair is listed (S4)
+    assert structural_reasons(instances, tax, "screw.cpu_cooler.01", "motherboard.01",
+                              {("cpu_cooler.fan.01", "motherboard.01")}) == [
         "above.rides_with_parent"]
+    assert structural_reasons(instances, tax, "screw.cpu_cooler.01", "motherboard.01",
+                              {("psu.01", "motherboard.01")}) == []
+    assert structural_reasons(instances, tax, "screw.cpu_cooler.01", "motherboard.01") == []
     assert structural_reasons(instances, tax, "connector.atx_24pin.01", "motherboard.01") == [
         "above.socket_host"]
     assert structural_reasons(instances, tax, "psu.01", "storage_drive.hdd.01") == []
@@ -380,6 +472,31 @@ def test_cli_arguments(scene, tmp_path, capsys):
     assert summary["desktops"] == [DESKTOP]
     assert main(["export-graph", "--db", str(tmp_path / "missing.sqlite"),
                  "--out", str(tmp_path / "o2")]) != EXIT_OK
+    # none of the requested desktops is in the database: an error, nothing written (N1)
+    assert main(["export-graph", "--db", str(scene), "--desktops", "901",
+                 "--out", str(tmp_path / "o3")]) != EXIT_OK
+    assert not (tmp_path / "o3" / SUMMARY_NAME).exists()
+
+
+def test_the_whole_export_reads_one_snapshot(scene, tmp_path):
+    """N6: a write to the file while the export runs is not seen by it."""
+    copy = tmp_path / "live.sqlite"
+    shutil.copyfile(scene, copy)
+    reader = ReadOnlyDb(str(copy))
+    try:
+        writer = Db(str(copy))
+        try:
+            writer.upsert_desktop(DESKTOP, {"brand": "changed"})
+        finally:
+            writer.close()
+        assert reader.get_desktop(DESKTOP)["brand"] == "Bench"
+    finally:
+        reader.close()
+    fresh = ReadOnlyDb(str(copy))
+    try:
+        assert fresh.get_desktop(DESKTOP)["brand"] == "changed"
+    finally:
+        fresh.close()
 
 
 def test_export_refuses_a_gallery_view(scene, tmp_path):
@@ -402,7 +519,8 @@ def test_the_docs_say_it():
                 if line.startswith("- **每机优先级图 JSON（v1.45，U46）**")]
     for needed in ("`python -m tda.cli export-graph", "**只读**", "`covers`", "`legal_by_step`",
                    "`plans`", "`violations`", "`remaining_steps_by_step`", "`summary.json`",
-                   "`README.md`", "逐字节相同", "`occluder_mask`"):
+                   "`README.md`", "逐字节相同", "`occluder_mask`", "`timeline_agrees`",
+                   "`reorient`", "记账字段"):
         assert needed in bullet, needed
     changes = spec.split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]

@@ -29,7 +29,9 @@ and beside them ``summary.json`` and ``README.md`` (:mod:`.graph_readme`).
   ``all`` (every part the log removes); plus the length of the ``all`` plan
   after every step, which is V10's progress label;
 * ``violations`` -- :func:`tda.core.graph.validate_sequence`'s lines, the same
-  replay ``constraints --validate`` prints, each split into its fields;
+  replay ``constraints --validate`` prints, each split into its fields, and
+  ``timeline_agrees``: whether the state timeline (hand-written events
+  included, which the replay ignores) finds the same at that step;
 * ``deadlocks`` / ``dead_ends`` -- :func:`~tda.core.graph.find_deadlocks` and
   :func:`~tda.core.graph.find_dead_ends`, as ``constraints`` reports them.
 
@@ -58,27 +60,31 @@ from urllib.parse import quote
 from tda.core.db import SCHEMA_VERSION, Db
 from tda.core.export.coco import DesktopCtx, load_ctx
 from tda.core.export.graph_covers import CoverScan, class_key, scan_covers
+from tda.core.export.release import model_names, public_attrs
 from tda.core.graph import (
+    GATED_VERBS,
     HARD_TYPES,
     REQUIRED_STATES,
     Edge,
+    applicable_preconditions,
     constraint_edges,
     edges_from_db,
     find_dead_ends,
     find_deadlocks,
     graph_version,
     legal_actions,
+    unmet,
     validate_sequence,
 )
 from tda.core.graph_plan import plan_removal
-from tda.core.graph_rules import active_edges, blocker_state, verb_effect
+from tda.core.graph_rules import active_edges, blocker_state, verb_applies, verb_effect
 from tda.core.implied import is_implied
 from tda.core.model import (
     VIEWS,
     InstanceRec,
     is_extra,
     is_provisional,
-    machine_only,
+    teardown_only,
 )
 from tda.core.states import (
     CABLE_CLASS,
@@ -124,9 +130,11 @@ README_NAME = "README.md"
 SUCCESS_VIOLATES = "success_violates"
 #: ``violations[].kind``: a failed attempt nothing in the graph explains.
 FAILED_WITHOUT_UNMET = "failed_without_unmet"
-#: ``instances[].attrs`` flag of a part only the components gallery shows (U45).
-GALLERY_ONLY_ATTR = "gallery_only"
 SUCCESS = "success"
+#: ``legal_by_step[].next_illegal[].reason``: a precondition of spec 7.2 is unmet.
+UNMET_EDGE = "unmet_edge"
+#: ... the verb does not apply to the target in its state (a cover opened twice).
+VERB_NOT_APPLICABLE = "verb_not_applicable"
 
 _BREACH = re.compile(r"^step (-?\d+): (\S+) (\S+) violates ((\w+)\((\S+), (\S+)\)) "
                      r"\((\S+) is (.+)\)$")
@@ -155,6 +163,13 @@ class ReadOnlyDb(Db):
     database), which is the guarantee. Opening a WAL database this way may
     leave empty ``-wal`` / ``-shm`` files next to it; the database file itself
     is not changed.
+
+    **One snapshot** (review round 1, N6): the connection opens a read
+    transaction before its first ``SELECT`` and keeps it until
+    :meth:`close`, so a whole export -- every table of every desktop -- reads
+    the database as it was at that moment, even when the annotator's app is
+    writing to the live file meanwhile (WAL readers see the snapshot they
+    started with). A backup copy (``--db``) is still the recommended input.
     """
 
     def __init__(self, path: str):  # noqa: D107 - see the class docstring
@@ -167,6 +182,7 @@ class ReadOnlyDb(Db):
         self._lock_annotator = None
         self._tx_depth = 0
         try:
+            self.conn.execute("BEGIN")           # the snapshot starts at the next read
             found = self._stored_version()
         except sqlite3.Error as exc:
             self.conn.close()
@@ -228,20 +244,14 @@ def _apply(tax: Taxonomy, instances: dict[str, InstanceRec], sim: FrameState,
 
 
 def _settled(db: Db, desktop: int) -> dict[str, InstanceRec]:
-    """The instance table ``constraints --validate`` replays against (no drafts, no context)."""
-    return {k: rec for k, rec in machine_only(db.instances(desktop)).items()
-            if not is_provisional(k) and not (rec.attrs or {}).get(GALLERY_ONLY_ATTR)}
+    """The instance table ``constraints --validate`` replays against.
 
-
-def _machine_ctx(db: Db, tax: Taxonomy, desktop: int, view: str) -> DesktopCtx:
-    """:func:`~tda.core.export.coco.load_ctx`, without gallery-only parts (U45) if any."""
-    ctx = load_ctx(db, tax, desktop, view)
-    gallery = {k for k, rec in ctx.instances.items()
-               if (rec.attrs or {}).get(GALLERY_ONLY_ATTR)}
-    if gallery:
-        ctx.instances = {k: v for k, v in ctx.instances.items() if k not in gallery}
-        ctx.actions = [a for a in ctx.actions if a.target not in gallery]
-    return ctx
+    :func:`tda.core.model.teardown_only` (no context object, no gallery-only
+    part, U45) without the Label Studio drafts -- the same call
+    ``cli_graph._settled`` makes.
+    """
+    return {k: rec for k, rec in teardown_only(db.instances(desktop)).items()
+            if not is_provisional(k)}
 
 
 # --------------------------------------------------------------------------- #
@@ -267,7 +277,7 @@ def _instances(ctx: DesktopCtx, timeline: list[int]) -> tuple[list[dict], dict]:
                 gone = step
         removed_at[key] = gone
         out.append({
-            "key": key, "class": rec.cls, "attrs": dict(rec.attrs or {}),
+            "key": key, "class": rec.cls, "attrs": public_attrs(rec.attrs),
             "parent": rec.parent, "attached": bool(rec.attached),
             "mounted_on": rec.mounted_on, "fastens": rec.fastens,
             "socket_host": rec.socket_host, "cable": rec.cable,
@@ -325,12 +335,51 @@ def _legal_sets(ctx: DesktopCtx, edges: list[Edge], state: FrameState
     return strict, relaxed
 
 
+def _known_target(ctx: DesktopCtx, target: str) -> bool:
+    """Is ``target`` something the graph can judge: an instance, or a ``cable:*`` node?"""
+    return target in ctx.instances or target.startswith(CABLE_PREFIX)
+
+
+def _why_illegal(ctx: DesktopCtx, sim: FrameState, verb: str, target: str) -> str:
+    """:data:`VERB_NOT_APPLICABLE` when the verb cannot start from the target's state, else
+    :data:`UNMET_EDGE` -- a preference (strict) or a necessity of spec 7.2 is in the way."""
+    rec = ctx.instances.get(target)
+    cls, attrs = (rec.cls, rec.attrs) if rec is not None else (CABLE_CLASS, {})
+    current = blocker_state(sim, target) or ""
+    return UNMET_EDGE if verb_applies(ctx.tax, cls, attrs, verb, current) \
+        else VERB_NOT_APPLICABLE
+
+
+def _judge(verdicts: list[bool], unknown: bool) -> Optional[bool]:
+    """False if any judged action broke the set; ``None`` if nothing (or not all) could be judged."""
+    if any(v is False for v in verdicts):
+        return False
+    if unknown or not verdicts:
+        return None
+    return True
+
+
 def _legal_by_step(ctx: DesktopCtx, edges: list[Edge], timeline: list[int]) -> list[dict]:
     """After every step: what is legal, what was done next, and whether it was legal.
 
     A compound step's second action is judged in the state its first one left
     (the same replay :func:`~tda.core.graph.validate_sequence` does), so two
     actions of one step can depend on each other.
+
+    Two kinds of next action are **not judged** (review round 1, S1), because
+    the legal set cannot contain them whatever the graph says:
+
+    * a verb no hard constraint gates (``reorient``, :data:`GATED_VERBS`):
+      it has no state effect, so it is never in ``legal_actions``, and
+      :func:`~tda.core.graph.validate_sequence` never finds it in breach -- it
+      is skipped, and a step of nothing else is ``null``;
+    * a target the graph does not know (``?``, ``connector.?``: a sheet that
+      did not say which part): listed in ``next_unjudged`` and the step's
+      verdict is ``null`` unless another of its actions is illegal.
+
+    ``next_illegal`` says why each judged action is not in the strict set:
+    :data:`UNMET_EDGE` or :data:`VERB_NOT_APPLICABLE` (a cover opened twice --
+    a redundant log line, not a constraint broken).
     """
     out = []
     for i, step in enumerate(timeline):
@@ -339,20 +388,28 @@ def _legal_by_step(ctx: DesktopCtx, edges: list[Edge], timeline: list[int]) -> l
         nxt = timeline[i + 1] if i + 1 < len(timeline) else None
         actions = ctx.actions_at(nxt, successful_only=False) if nxt is not None else []
         done = [a for a in actions if a.result == SUCCESS]
-        ok_strict: Optional[bool] = None
-        ok_relaxed: Optional[bool] = None
-        if done:
-            ok_strict = ok_relaxed = True
-            sim = _copy(state)
-            here_strict, here_relaxed = set(strict), set(relaxed)
-            for j, action in enumerate(done):
+        verdict_strict: list[bool] = []
+        verdict_relaxed: list[bool] = []
+        unjudged: list[str] = []
+        illegal: list[dict] = []
+        sim = _copy(state)
+        here_strict, here_relaxed = set(strict), set(relaxed)
+        for j, action in enumerate(done):
+            pair = _pair(action.verb, action.target)
+            if action.verb not in GATED_VERBS:
+                pass                                   # reorient: nothing gates it
+            elif not _known_target(ctx, action.target):
+                unjudged.append(pair)
+            else:
                 if j:
                     s, r = _legal_sets(ctx, edges, sim)
                     here_strict, here_relaxed = set(s), set(r)
-                pair = _pair(action.verb, action.target)
-                ok_strict = ok_strict and pair in here_strict
-                ok_relaxed = ok_relaxed and pair in here_relaxed
-                _apply(ctx.tax, ctx.instances, sim, action.verb, action.target)
+                verdict_strict.append(pair in here_strict)
+                verdict_relaxed.append(pair in here_relaxed)
+                if pair not in here_strict:
+                    illegal.append({"action": pair, "reason": _why_illegal(
+                        ctx, sim, action.verb, action.target)})
+            _apply(ctx.tax, ctx.instances, sim, action.verb, action.target)
         out.append({
             "step": step,
             "legal": strict, "n_legal": len(strict),
@@ -361,8 +418,10 @@ def _legal_by_step(ctx: DesktopCtx, edges: list[Edge], timeline: list[int]) -> l
             "next_demonstrated": [_pair(a.verb, a.target) for a in done],
             "next_failed": [_pair(a.verb, a.target) for a in actions
                             if a.result != SUCCESS],
-            "next_is_legal": ok_strict,
-            "next_is_legal_relaxed": ok_relaxed,
+            "next_unjudged": unjudged,
+            "next_illegal": illegal,
+            "next_is_legal": _judge(verdict_strict, bool(unjudged)),
+            "next_is_legal_relaxed": _judge(verdict_relaxed, bool(unjudged)),
         })
     return out
 
@@ -472,9 +531,44 @@ def parse_violation(line: str) -> dict:
             "blocker": None, "blocker_state": None, "kind": "other", "line": line}
 
 
+def _timeline_agrees(ctx: DesktopCtx, edges: list[Edge], violation: dict) -> Optional[bool]:
+    """Does the state timeline -- hand-written events included -- say the same at that step?
+
+    :func:`~tda.core.graph.validate_sequence` replays the actions from the
+    initial state and ignores every hand-written event after it (review round
+    1, S2; a later task may change that), while ``instances[].timeline`` and
+    ``legal_by_step`` fold them in. This re-asks the violation's question in
+    the timeline's state the moment before the action (the state after the
+    previous step, then the same step's earlier actions): for a
+    ``success_violates`` line, is the edge still unmet; for a
+    ``failed_without_unmet`` line, is there still no unmet precondition.
+    ``None`` for a line of another shape or an action the timeline lacks.
+    """
+    kind = violation["kind"]
+    if kind not in (SUCCESS_VIOLATES, FAILED_WITHOUT_UNMET):
+        return None
+    step, verb, target = violation["step"], violation["verb"], violation["target"]
+    wanted = SUCCESS if kind == SUCCESS_VIOLATES else None
+    sim = _copy(ctx.state_at(step - 1))
+    found = False
+    for action in ctx.actions_at(step, successful_only=False):
+        if action.verb == verb and action.target == target and (
+                (action.result == SUCCESS) == (wanted == SUCCESS)):
+            found = True
+            break
+        if action.result == SUCCESS:
+            _apply(ctx.tax, ctx.instances, sim, action.verb, action.target)
+    if not found:
+        return None
+    if kind == SUCCESS_VIOLATES:
+        edge = next((e for e in edges if e.label() == violation["edge"]), None)
+        return None if edge is None else bool(unmet([edge], sim, "required"))
+    return not unmet(applicable_preconditions(edges, (verb, target)), sim, "required")
+
+
 def build_desktop(db: Db, tax: Taxonomy, desktop: int, view: str = DEFAULT_VIEW) -> dict:
     """The whole ``D<nn>.json`` of one desktop, as a dict (nothing written)."""
-    ctx = _machine_ctx(db, tax, desktop, view)
+    ctx = load_ctx(db, tax, desktop, view)   # no drafts, context or gallery-only parts
     edges = sorted(active_edges(constraint_edges(edges_from_db(db, desktop))),
                    key=_edge_order)
     timeline = sorted({INITIAL_STEP} | set(ctx.steps) | {a.step for a in ctx.actions})
@@ -485,6 +579,8 @@ def build_desktop(db: Db, tax: Taxonomy, desktop: int, view: str = DEFAULT_VIEW)
     initial = initial_overrides(e for e in db.events(desktop) if not e.auto)
     lines = validate_sequence(settled, edges, db.actions(desktop), tax, initial=initial)
     violations = [parse_violation(line) for line in lines]
+    for violation in violations:
+        violation["timeline_agrees"] = _timeline_agrees(ctx, edges, violation)
     deadlocks = [d.label() for d in find_deadlocks(edges, settled, tax, initial=initial)]
     dead_ends = [d.label() for d in find_dead_ends(edges, settled, tax, initial=initial)]
 
@@ -493,11 +589,16 @@ def build_desktop(db: Db, tax: Taxonomy, desktop: int, view: str = DEFAULT_VIEW)
     by_type = Counter(e.type for e in edges)
     candidates = sum(1 for c in scan.covers if c["candidate"])
     no_edge = sum(1 for c in scan.covers if c["no_edge"])
+    name, sheet, name_note = model_names(meta_row)
     meta = {
         "desktop": int(desktop),
         "brand": meta_row.get("brand"),
-        "model": meta_row.get("brand_model_raw"),
+        # the sheet's text as written, the family as the VLM export quotes it,
+        # and the real name the scanner package uses (tda.core.export.release)
+        "model": sheet,
         "model_family": meta_row.get("model_family"),
+        "model_name": name,
+        "model_note": name_note,
         "chassis_type": meta_row.get("chassis_type"),
         "chassis_platform": meta_row.get("chassis_platform"),
         "graph_version": graph_version(db, desktop),
@@ -511,8 +612,10 @@ def build_desktop(db: Db, tax: Taxonomy, desktop: int, view: str = DEFAULT_VIEW)
             "confirmed_frames": scan.confirmed_frames,
             "frames_with_covers": scan.frames_with_covers,
             "covers": len(scan.covers), "no_edge": no_edge, "candidates": candidates,
-            "violations": len(violations), "deadlocks": len(deadlocks),
-            "dead_ends": len(dead_ends),
+            "violations": len(violations),
+            "violations_timeline_disagrees": sum(
+                1 for v in violations if v["timeline_agrees"] is False),
+            "deadlocks": len(deadlocks), "dead_ends": len(dead_ends),
         },
     }
     return {
@@ -547,8 +650,9 @@ def _desktop_row(doc: dict) -> dict:
         "confirmed_frames": counts["confirmed_frames"],
         "covers": counts["covers"], "no_edge": counts["no_edge"],
         "candidates": counts["candidates"],
-        "violations": counts["violations"], "deadlocks": counts["deadlocks"],
-        "dead_ends": counts["dead_ends"],
+        "violations": counts["violations"],
+        "violations_timeline_disagrees": counts.get("violations_timeline_disagrees", 0),
+        "deadlocks": counts["deadlocks"], "dead_ends": counts["dead_ends"],
         "next_is_legal": {"legal": legal, "judged": len(judged),
                           "ratio": _ratio(legal, len(judged))},
         "plans": {goal: {"length": p["length"], "demonstrated_length": p["demonstrated_length"]}
@@ -602,6 +706,10 @@ def summarize(docs: Iterable[dict], view: str, failed: Optional[dict] = None) ->
         "candidate_class_pairs": len(ranked),
         "violations": len(violations),
         "violations_by_kind": dict(sorted(kinds.items())),
+        "violations_timeline_agrees": sum(1 for v in violations
+                                          if v.get("timeline_agrees") is True),
+        "violations_timeline_disagrees": sum(1 for v in violations
+                                             if v.get("timeline_agrees") is False),
         "deadlocks": sum(r["deadlocks"] for r in rows),
         "dead_ends": sum(r["dead_ends"] for r in rows),
         "next_is_legal": {"legal": legal, "judged": judged, "ratio": _ratio(legal, judged)},

@@ -576,6 +576,11 @@ def cmd_export_graph(args: argparse.Namespace) -> int:
             print(f"[export-graph] D{desktop:02d} 不在数据库里，跳过 / is not in the database; "
                   f"skipped")
         chosen = [d for d in known if wanted is None or d in wanted]
+        if not chosen:
+            # nothing to export: no empty summary / README either (review N1)
+            print("[export-graph] 没有一台要导出的机器在数据库里 / none of the requested "
+                  "desktops is in the database; nothing written")
+            return EXIT_ERROR
         summary = export_graph(db, load_taxonomy(), chosen, args.out, args.view, log=print)
     finally:
         db.close()
@@ -592,7 +597,9 @@ def _add_export_graph(sub) -> None:
         "export-graph",
         help="write each desktop's precedence graph as one JSON (read-only, task U46)",
     )
-    p.add_argument("--desktops", default=None, help="e.g. 13 or 1-66 (default: all)")
+    p.add_argument("--desktops", default=None,
+                   help="e.g. 13 or 1-66 (default: all). Pass --db <backup copy> for a "
+                        "release; the whole run reads one snapshot either way")
     p.add_argument("--out", required=True,
                    help="output directory: D<nn>.json per desktop, summary.json, README.md")
     p.add_argument("--view", default="scan", choices=list(VIEWS),
