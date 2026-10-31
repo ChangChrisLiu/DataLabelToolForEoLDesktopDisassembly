@@ -216,8 +216,16 @@ def _from_prose(text: str, record: dict) -> Optional[dict]:
     """The last resort of the lenient parser: one field read off the prose."""
     key = format_key(record)
     if key == "V6.options":
-        hit = re.search(r"\b([A-J])\b", text)
-        return {"choice": hit.group(1)} if hit else None
+        n = len(record["label"].get("options") or [])
+        letters = LETTERS[:n] or LETTERS
+        # "option B", "(B)", "B." or a bare "B" -- never the pronoun in "I think"
+        for pattern in (rf"(?:option|answer|choice)\s*(?:is\s*)?[:\-]?\s*\(?([{letters}])\b",
+                        rf"\(([{letters}])\)", rf"^\s*([{letters}])\s*[\).:]?\s*$",
+                        rf"^\s*([{letters}])[\).:]\s"):
+            hit = re.search(pattern, text, re.I | re.M)
+            if hit:
+                return {"choice": hit.group(1).upper()}
+        return None
     if key in ("V12", "V15.moment", "V4", "V16", "V14"):
         value = _yes_no(text)
         if value is None:
@@ -325,11 +333,23 @@ class Grounder:
         if norm in self.by_label:
             key = self.by_label[norm]
             return key, self.world.match_class(key)
+        # a class phrase: the label wording that shares the most words with the
+        # answer, one of the two containing the other ("CPU cooler" is the
+        # "heatsink fan CPU cooler", not the "CPU"); then the same head noun
+        # (not the "CPU cooler screw"); then the fewest extra words
+        ordered = re.sub(r"\b\d+\b", " ", norm).split()
+        words = set(ordered)
+        head = ordered[-1] if ordered else ""
+        best, best_key = None, None
         for phrase, mclass in self.phrases:
-            if re.search(rf"\b{re.escape(phrase)}\b", norm):
-                # a phrase plus an ordinal nobody has is no instance at all
-                return None, mclass
-        return None, None
+            have = set(phrase.split())
+            common = words & have
+            if not common or not (words <= have or have <= words):
+                continue
+            rank = (len(common), phrase.split()[-1] == head, -len(have ^ words))
+            if best_key is None or rank > best_key:
+                best, best_key = mclass, rank
+        return None, best
 
     def ground_in(self, text: Any, eligible: Sequence[str]) -> tuple[Optional[str], Optional[str]]:
         """:meth:`ground`, resolving a class phrase to the first eligible member."""

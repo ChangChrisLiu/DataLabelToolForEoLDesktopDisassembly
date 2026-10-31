@@ -823,6 +823,8 @@ def cmd_export_vlm(args: argparse.Namespace) -> int:
                 allow_conflicts=bool(args.allow_conflicts), tasks=tasks,
                 only_verified=bool(args.only_verified), truth=truth,
                 **({} if getattr(args, "v2_balance", True) else {"balance": False}),
+                **({} if getattr(args, "split", "all") == "all"
+                   else {"split": args.split}),
             )
             _report_vlm(stats, view)
             if not _count(stats, "records"):
@@ -889,6 +891,10 @@ def _report_vlm(stats: dict, view: str) -> None:
             print(f"[export-vlm] {len(cooler)} desktop(s) ask no V7: no covered_by(cpu <- "
                   f"cpu_cooler) edge (cooler set unresolved): "
                   + ", ".join(f"D{d}" for d in cooler))
+    splits = stats.get("by_split") or {}
+    if splits:
+        print(f"[export-vlm] {view}: records per split "
+              + " ".join(f"{k}={n}" for k, n in sorted(splits.items())))
     balance = stats.get("v2_balance") or {}
     if balance:
         before = sum(int(r.get("before", 0)) for r in balance.values())
@@ -935,6 +941,9 @@ def _add_export_vlm(sub) -> None:
                         f"{','.join(t for t in ALL_TASKS if t not in TASKS)} "
                         f"(V5 is out of the default: its legal set has a median "
                         f"of 37 actions, so it cannot be scored)")
+    p.add_argument("--split", default="all", choices=("all", "test", "train"),
+                   help="export only the desktops of this split (desktop.split, "
+                        "written by `cli set-split`); the default is every desktop")
     p.add_argument("--no-v2-balance", dest="v2_balance", action="store_false",
                    default=True,
                    help="keep every V2 question instead of thinning each class's "

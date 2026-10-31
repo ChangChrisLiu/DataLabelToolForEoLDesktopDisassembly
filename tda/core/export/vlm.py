@@ -65,9 +65,10 @@ checksum of the record id, hard negatives are drawn in a permutation seeded by
 desktop and step, and the file is written in a fixed frame/task order. Two
 exports of one database are byte-identical, whatever ``PYTHONHASHSEED`` says.
 
-Nothing in a record may depend on a train/val/test split -- there is none yet --
-so each record carries the desktop's ``model_family`` instead, which is what a
-platform-disjoint split will be cut along (spec 8.1).
+Each record carries the desktop's ``model_family`` (what the platform-disjoint
+split is cut along, spec 8.1) and, on the label side, its ``split`` exactly as
+``desktop.split`` says (W3b; ``null`` before ``cli set-split``). ``split="test"``
+/ ``"train"`` exports only those desktops; the summary counts records per split.
 
 The export **writes**: like the COCO one it calls
 :meth:`~tda.core.truth.TruthService.ensure_fresh` per desktop, so the compiled
@@ -401,6 +402,7 @@ def export_vlm(
     truth: Optional[TruthService] = None,
     allow_conflicts: bool = False,
     balance: bool = True,
+    split: str = "all",
 ) -> dict:
     """Write the P0 question set of ``desktops`` in ``view`` as JSONL.
 
@@ -446,8 +448,14 @@ def export_vlm(
     tables: dict[str, dict] = {}
     unlabelled_desktops: list[int] = []
     needs_others = "V15" in wanted
+    if split not in ("all", "test", "train"):
+        raise ValueError(f"split {split!r} is not one of all, test, train")
+    skipped_by_split: list[int] = []
 
     for desktop in desktops:
+        if split != "all" and (db.get_desktop(desktop) or {}).get("split") != split:
+            skipped_by_split.append(int(desktop))
+            continue
         ctx = load_ctx(db, tax, desktop, view)
         # the compiled rows of an unverified frame are a cache the annotator's
         # commits leave stale (spec 3.4): fill it before reading the view out,
@@ -551,6 +559,7 @@ def export_vlm(
     unlabelled_records: dict[str, int] = {}
     v12_kinds: dict[str, int] = {}
     undecidable: dict[str, int] = {}
+    by_split: dict[str, int] = {}
     truth_sources: dict[str, int] = {}
     corruptions: dict[str, int] = {}
     option_kinds: dict[str, int] = {}
@@ -578,6 +587,8 @@ def export_vlm(
             v12_kinds[kind] = v12_kinds.get(kind, 0) + 1
         if label.get("image_undecidable"):
             undecidable[task] = undecidable.get(task, 0) + 1
+        bucket = str(label.get("split") or "none")
+        by_split[bucket] = by_split.get(bucket, 0) + 1
     by_source = {
         "perception": sum(n for t, n in by_task.items() if t in PERCEPTION_TASKS),
         "planning": sum(n for t, n in by_task.items() if t in PLANNING_TASKS),
@@ -596,6 +607,7 @@ def export_vlm(
         "unlabelled_view_desktops": unlabelled_desktops,
         "records_without_confirmed_view": unlabelled_records,
         "v12_by_kind": v12_kinds, "image_undecidable_by_task": undecidable,
+        "split": split, "by_split": by_split, "skipped_by_split": skipped_by_split,
         "v2_balance": v2_stats, "tasks": wanted, "oracle": str(oracle),
         # how much of this file can be answered without looking at an image
         "shortcuts": shortcut_report(records),

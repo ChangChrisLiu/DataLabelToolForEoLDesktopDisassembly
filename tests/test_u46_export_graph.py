@@ -526,7 +526,7 @@ def test_the_docs_say_it():
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
     # on top when it landed; U44 / U45 (v1.43 / v1.44) are ordered at their merges
     assert any(e.startswith("- **v1.45（2026-10-30）**：**每机优先级图 JSON**（U46，§8.1）")
-               for e in entries[:3])
+               for e in entries[:4])
     handoff = (REPO / "docs" / "HANDOFF_2026-10-28.md").read_text(encoding="utf-8")
     section = handoff.split("## 5. 导出与 HuggingFace 准备", 1)[1].split("\n## ", 1)[0]
     assert sum("export-graph" in line for line in section.splitlines()) == 1

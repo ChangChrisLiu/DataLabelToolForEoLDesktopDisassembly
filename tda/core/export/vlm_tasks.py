@@ -1,8 +1,12 @@
 """One generator per VLM task of spec 8.2, P0 set (task B6).
 
-``V1 V2 V3 V4 V5 V6 V8 V10 V12 V14 V15 V16`` -- twelve questions, each with a
-structured answer and an ``answer_check`` block saying how a checker re-derives
-it. **A question whose answer cannot be checked by program is not emitted.**
+``V1 V2 V3 V4 V5 V6 V7 V8 V10 V12 V14 V15 V16`` -- thirteen questions, each
+with a structured answer and an ``answer_check`` block saying how a checker
+re-derives it. **A question whose answer cannot be checked by program is not
+emitted.** W3b (spec v1.46) added V7-cpu, took V5 out of the default
+:data:`TASKS`, made V6 group-equivalent, asked V15-moment without the
+``verified`` gate, and taught V2 / V3 / V12 / V14 that a 2D image shows a
+screw's presence, never its tightness (:data:`SCREW_PRESENCE`, ``captive``).
 
 What the graph knows, and what it does not
 ------------------------------------------
@@ -1111,8 +1115,9 @@ def record(tc: TaskCtx, task: str, rec_id: str, step: int,
     raises here rather than shipping a question nobody can grade.
 
     ``model_family`` travels with every record so a platform-disjoint split can
-    be made later (spec 8.1). Nothing else in a record may depend on a split:
-    there is none yet, and inventing one now would bake it into the corpus.
+    be made (spec 8.1), and ``split`` (W3b) is the desktop's own
+    ``desktop.split`` as written by ``cli set-split`` -- copied, never invented,
+    ``null`` while no split is cut. Nothing else in a record depends on it.
     """
     if check.get("type") not in CHECK_TYPES:
         raise ValueError(f"{rec_id}: answer_check type {check.get('type')!r} "
@@ -1144,6 +1149,10 @@ def record(tc: TaskCtx, task: str, rec_id: str, step: int,
         "graph_version": tc.graph_version,
         "model_family": tc.meta.get("model_family"),
         "chassis_type": tc.meta.get("chassis_type"),
+        # the desktop's split (W3b; W3a's `cli set-split` writes it): public
+        # metadata, label side only, so the eval set filters to test desktops
+        # without another lookup. Null until a split is cut.
+        "split": tc.meta.get("split") or None,
     }
     if views:
         label["views"] = list(views)
@@ -1389,7 +1398,7 @@ def counted_roles(tc: TaskCtx, frame: FrameData) -> list[str]:
 
 
 def _v2_counts(tc: TaskCtx, frame: FrameData) -> Iterator[dict]:
-    """"How many <role> screws are still fastened?" -- counted on the state machine.
+    """"How many <role> screws are still in place?" -- counted on the state machine.
 
     The count covers every screw of that role on the machine, not only the ones
     this view can see, because that is what the question asks; the evidence
