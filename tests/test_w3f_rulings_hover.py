@@ -209,3 +209,37 @@ def test_no_fold_without_pairs_and_no_new_key(window):
         assert not any(word in (action.slot or "") for word in ("rul", "hover"))
         assert not any(word in (action.label_zh or "")
                        for word in ("挡着", "不挡", "裁定", "高亮", "间接", "日志已证明"))
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_the_docs_say_it():
+    spec = (ROOT / "docs" / "superpowers" / "specs"
+            / "2026-09-17-teardown-annotator-design.md").read_text(encoding="utf-8")
+    review_section = spec.split("### 4.4 审阅模式", 1)[1].split("### 4.5", 1)[0]
+    [para] = [line for line in review_section.splitlines()
+              if line.startswith("  **v1.51（W3f）")]
+    lines = review_section.splitlines()
+    bullet = lines.index(next(b for b in lines if b.startswith("- **谁压着谁的裁定**")))
+    assert lines.index(para) == bullet + 2                   # appended to the W3c bullet
+    for needed in ("`ImageCanvas.set_hint_boxes`", "**橙框**", "**蓝框**", "「上：key」",
+                   "「above（状态）→ below（状态） · 像素 n · <标签>」", "**日志：**",
+                   "**规则已间接覆盖（k）**", "**日志已证明不挡（k）**", "`would_violate`",
+                   "**443**", "**74**", "**21**", "86 对", "没有快捷键"):
+        assert needed in para, needed
+    entries = [line for line in spec.split("## 14. 修订记录", 1)[1].splitlines()
+               if line.startswith("- ")]
+    # on top when it landed; whatever lands later goes above it
+    [entry] = [e for e in entries[:1] if e.startswith("- **v1.51（2026-10-31）**")]
+    for needed in ("（W3f，§4.4）", "`RulingsSection.sigHover", "`cover_rulings.triage_pairs`",
+                   "`indirect_chain`", "`cover_log`", "`log_proof`", "`COVER_CLEAR`",
+                   "间接 74、日志 21、要问 348", "间接 26、日志 10、要问 50"):
+        assert needed in entry, needed
+    assert spec.index("- **v1.51") < spec.index("- **v1.50")
+    quick = (ROOT / "docs" / "trial_quickstart.md").read_text(encoding="utf-8")
+    review_part = quick.split("## 4. 走完之后：Review", 1)[1].split("### 冲突从哪来", 1)[0]
+    item = review_part.split("\n6. ", 1)[1]
+    assert item.count("\n   ") == 1                         # two lines
+    for needed in ("橙框", "蓝框", "「日志已证明不挡（k）」", "「规则已间接覆盖（k）」"):
+        assert needed in item, needed

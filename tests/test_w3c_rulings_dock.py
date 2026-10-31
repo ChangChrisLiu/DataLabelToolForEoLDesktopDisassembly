@@ -295,10 +295,10 @@ def test_the_docs_say_it():
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
     # on top when it landed; W3a / W3b (v1.46 / v1.47) are ordered at their merges
     assert any(e.startswith("- **v1.46（2026-10-31）**：**复查里的「谁压着谁」裁定**（W3c，§4.4）")
-               for e in entries[:6])
+               for e in entries[:7])
     quick = (ROOT / "docs" / "trial_quickstart.md").read_text(encoding="utf-8")
     review_part = quick.split("## 4. 走完之后：Review", 1)[1].split("### 冲突从哪来", 1)[0]
-    item = review_part.split("\n5. ", 1)[1]
+    item = review_part.split("\n5. ", 1)[1].split("\n6. ", 1)[0]   # W3f's item 6 follows
     assert item.count("\n   ") == 2                        # three lines
     for needed in ("「谁压着谁 · 这台还没裁定的（n）」", "「挡着」", "「不挡」", "「同类对本帧全部」",
                    "`Ctrl+Z`", "「撤销」", "没有快捷键"):
