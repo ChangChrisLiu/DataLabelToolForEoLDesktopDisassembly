@@ -1107,7 +1107,9 @@ def export_coco(
                 "verified": (key.step not in disputed
                              and frame_is_verified(db, key, db.compiled(key))),
                 "extra": {"desktop": desktop, "step": key.step, "view": view,
-                          "review_status": frame.get("review_status")},
+                          "review_status": frame.get("review_status"),
+                          # Desktop.split (train / test, `set-split`, W3a), once set
+                          **({"split": cut} if (cut := (db.get_desktop(desktop) or {}).get("split")) else {})},
             }
             if gallery:
                 image["extra"].update(_shot_source(frame, key, burst_choices))
