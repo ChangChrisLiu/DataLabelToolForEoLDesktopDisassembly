@@ -71,11 +71,14 @@ BLOCKED_GATES = {
     "tool_access": set(GATED_VERBS),
     # a part mounted on the board (task W3d): as physical_path
     "mounted": {"remove", "displace"},
+    # a load the part carries (task W3g): a drive in the cage; the cage may move
+    "contained": {"remove"},
 }
 
 #: ``blocked_by`` modes whose blocker must reach a narrower set of states
-#: (task W3d): a part mounted on the board has to be removed, not swung aside.
-BLOCKED_REQUIRED = {"mounted": {"removed"}}
+#: (task W3d): a part mounted on the board has to be removed, not swung aside;
+#: a drive in the cage likewise (``contained``, task W3g).
+BLOCKED_REQUIRED = {"mounted": {"removed"}, "contained": {"removed"}}
 
 #: A rejected edge, and a decision about a rule that is no longer derived, gate
 #: nothing. Everything else -- proposed, accepted -- does.
