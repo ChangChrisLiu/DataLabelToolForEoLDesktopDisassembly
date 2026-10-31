@@ -10,7 +10,9 @@ parts it takes pixels from on this frame and how many.
 Read off the compiled rows and nothing else -- no compile, no database: a part
 ``X`` takes ``n`` pixels from ``Y`` when ``n`` of ``X``'s visible pixels lie on
 ``Y``'s shape (its amodal mask; its visible mask when it has none, as a shape
-drawn for this frame only may not).  Only parts of one placement group compete
+drawn for this frame only may not) where ``Y`` does not show itself (a
+per-frame mask is not subtracted from the parts over it: shared pixels were
+taken by neither; round 3).  A part with only a per-frame mask is on top.  Only parts of one placement group compete
 (spec §3.3 step 5: bench and chassis are composited apart), and only pairs that
 overlap here (``n > 0``) are listed, largest first.  A pair the compiler took
 from a ``PairOverride`` (:attr:`~tda.core.compiler.CompiledFrame.pairs`) is
@@ -143,25 +145,70 @@ def _listed(compiled: CompiledFrame, instance: str) -> bool:
             and str(inst.visibility) != OUT_OF_VIEW)
 
 
+def _layout(compiled: CompiledFrame) -> tuple[list[list[_Part]], list[_Part], set[str]]:
+    """``(groups, bottom_up, unpainted)``: what is paired, what is listed, and in what order.
+
+    ``groups`` are the listed parts of each placement group, bottom-up, the
+    groups in painting order; ``bottom_up`` is every listed part in that order.
+    A part with only a per-frame mask and no keyframe (round 3, F3) is in no
+    painted group -- the compiler gives it the frame's pixels and nothing else
+    -- but it is on the frame: it goes on top, where the instance table puts
+    the unpainted (:func:`tda.ui.session_rows.paint_order`), and is paired
+    within its own placement group; ``unpainted`` names them.
+    """
+    by_group: dict[str, list[_Part]] = {}
+    bottom_up: list[_Part] = []
+    painted = set()
+    for group in GROUPS:
+        names = list(compiled.painted.get(group, []))
+        painted.update(names)
+        parts = [_Part(name, compiled.instances[name]) for name in names
+                 if _listed(compiled, name)]
+        by_group[group] = parts
+        bottom_up.extend(parts)
+    unpainted = set()
+    for name in sorted(compiled.instances):
+        if name in painted or not _listed(compiled, name):
+            continue
+        part = _Part(name, compiled.instances[name])
+        if part.vis_window is None:          # no pixels: nothing on the frame to list
+            continue
+        by_group.setdefault(str(compiled.instances[name].placement), []).append(part)
+        bottom_up.append(part)
+        unpainted.add(name)
+    return list(by_group.values()), bottom_up, unpainted
+
+
 def _groups(compiled: CompiledFrame) -> list[list[_Part]]:
-    """The listed parts of each placement group, bottom-up, groups in painting order."""
-    return [[_Part(name, compiled.instances[name])
-             for name in compiled.painted.get(group, []) if _listed(compiled, name)]
-            for group in GROUPS]
+    """The listed parts of each placement group (see :func:`_layout`)."""
+    return _layout(compiled)[0]
 
 
 def overlap_pairs(compiled: CompiledFrame,
                   groups: Optional[list[list[_Part]]] = None) -> dict[tuple[str, str], int]:
     """``{(above, below): pixels}`` of every pair that overlaps on this frame.
 
-    ``above`` paints ``pixels`` of ``below``'s shape; parts of different
-    placement groups are never paired, and ``out_of_view`` parts not at all.
+    ``above`` paints ``pixels`` of ``below``'s shape that ``below`` does not
+    show itself, and where no part painted later shows either; parts of
+    different placement groups are never paired, and ``out_of_view`` parts
+    not at all.  The two conditions matter for a per-frame mask (round 3,
+    F2): the compiler *replaces* that part's visible mask and subtracts it
+    from nobody, so it and the parts painted over it can show the same
+    pixels.  Such a pixel is credited to the part on top in painting order
+    -- the one the canvas shows there -- and to nobody else; between
+    composited layers the visible masks never meet, so nothing else changes.
     """
     found: dict[tuple[str, str], int] = {}
     for parts in (_groups(compiled) if groups is None else groups):
-        for above in parts:
-            if above.vis_window is None:
-                continue
+        shown = [part for part in parts if part.vis_window is not None]
+        if not shown or len(parts) < 2:      # nobody shows, or nobody to take from
+            continue
+        # the part on top at every pixel: painted bottom-up, the later one wins
+        owner = np.full(shown[0].visible.shape[:2], -1, dtype=np.int16)
+        for index, part in enumerate(shown):
+            x0, y0, x1, y1 = part.vis_window
+            owner[y0:y1, x0:x1][part.visible[y0:y1, x0:x1]] = index
+        for index, above in enumerate(shown):
             for below in parts:
                 if below is above:
                     continue
@@ -169,8 +216,9 @@ def overlap_pairs(compiled: CompiledFrame,
                 if w is None:
                     continue
                 x0, y0, x1, y1 = w
-                n = int(np.count_nonzero(above.visible[y0:y1, x0:x1]
-                                         & below.shape[y0:y1, x0:x1]))
+                n = int(np.count_nonzero((owner[y0:y1, x0:x1] == index)
+                                         & below.shape[y0:y1, x0:x1]
+                                         & ~below.visible[y0:y1, x0:x1]))
                 if n > 0:
                     found[(above.instance, below.instance)] = n
     return found
@@ -193,7 +241,7 @@ def occlusion_order(compiled: Optional[CompiledFrame],
         return []
     drawn, floor = set(drawn), set(floor)
     manual = {tuple(pair) for pairs in (compiled.pairs or {}).values() for pair in pairs}
-    groups = _groups(compiled)
+    groups, bottom_up, unpainted = _layout(compiled)
     taken: dict[str, list[Taken]] = {}
     for (above, below), n in overlap_pairs(compiled, groups).items():
         hand = (above, below) in manual
@@ -201,11 +249,13 @@ def occlusion_order(compiled: Optional[CompiledFrame],
             continue
         taken.setdefault(above, []).append(Taken(below, n, hand))
     lines = []
-    for part in reversed([part for parts in groups for part in parts]):
+    for part in reversed(bottom_up):
         name = part.instance
         takes = sorted(taken.get(name, ()), key=lambda t: (-t.pixels, t.below))
-        # no visible pixel inside its window is no visible pixel at all
-        lines.append(OrderLine(name, tuple(takes), name in drawn, part.vis_window is None))
+        # no visible pixel inside its window is no visible pixel at all; an
+        # unpainted part with pixels can only have them from a per-frame mask
+        lines.append(OrderLine(name, tuple(takes), name in drawn or name in unpainted,
+                               part.vis_window is None))
     return lines
 
 

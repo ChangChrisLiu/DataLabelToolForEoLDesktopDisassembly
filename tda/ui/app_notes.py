@@ -169,8 +169,15 @@ class NotesWindowMixin:
         self._want_notes(False)
 
     @S.guard
-    def _on_notes_menu(self, checked: bool) -> None:
-        """The window's dock menu ticked or unticked it (it shows in Review only)."""
+    def _on_notes_menu(self, *_args) -> None:
+        """The window's dock menu ticked or unticked it (it shows in Review only).
+
+        The tick is read off the action: ``triggered(bool checked = false)``
+        has a default, and through :func:`~tda.ui.app_support.guard`'s
+        ``(*args, **kwargs)`` PySide picks the overload with no argument
+        (round 3, F1) -- a required ``checked`` raised on every tick.
+        """
+        checked = self.notes_dock.toggleViewAction().isChecked()
         self._want_notes(bool(checked))
         if checked and self.mode != A.MODE_REVIEW:
             self.report(NOTES_REVIEW_ONLY)

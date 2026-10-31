@@ -30,7 +30,7 @@ from tda.core.compiler import CompiledFrame, CompiledInstance
 from tda.core.model import FrameKey, ShapeKeyframe, ShapePart, ZOrderRec
 from tda.ui import app_actions as A
 from tda.ui.app import MainWindow
-from tda.ui.app_notes import NOTES_SETTING
+from tda.ui.app_notes import NOTES_REVIEW_ONLY, NOTES_SETTING
 from tda.ui.occlusion_order import (
     COVERED,
     EMPTY,
@@ -161,6 +161,68 @@ def test_the_floor_layers_are_not_listed_as_pressed_on_unless_by_hand():
     assert "chassis" in by and by["chassis"].takes == ()             # keeps its own line
     assert line_text(by["ram.01"], plain) == f"ram.01　压着 chassis (9 px){MANUAL}"
     assert header_text(lines) == "这一帧 6 个零件，3 对重叠"        # the listed pairs only
+
+
+# --------------------------------------------------------------------------- #
+# round 3: the real compiler -- an inverting override, per-frame masks
+# --------------------------------------------------------------------------- #
+def _taken_from(lines, below: str) -> int:
+    return sum(t.pixels for line in lines for t in line.takes if t.below == below)
+
+
+def test_an_override_against_the_global_order_is_what_the_compiler_painted():
+    from compiler_scenes import po, run, three_squares
+
+    compiled = run(**three_squares(), overrides=[po("A", "C")])      # A over C, against A < B < C
+    lines = occlusion_order(compiled)
+    assert [line.instance for line in lines] == ["C", "B", "A"]      # the painting order stays
+    by = {line.instance: line for line in lines}
+    assert ("C", True) in {(t.below, t.manual) for t in by["A"].takes}
+    assert "A" not in {t.below for t in by["C"].takes}               # C no longer takes from A
+    assert all(not t.manual for t in by["C"].takes + by["B"].takes)
+    # every pixel of a shape is either shown by it or listed as taken from it
+    for name, inst in compiled.instances.items():
+        assert _taken_from(lines, name) + int(inst.visible.sum()) == int(inst.amodal.sum()), name
+    unordered = {frozenset(pair) for pair in overlap_pairs(compiled)}
+    assert header_text(lines) == f"这一帧 3 个零件，{len(unordered)} 对重叠"
+
+
+def test_a_per_frame_mask_shares_pixels_with_the_parts_over_it_and_neither_took_them():
+    from compiler_scenes import KEY, rect, run, three_squares
+    from tda.core.model import FrameOverride
+
+    patch = rect(8, 8, 56, 56)                       # A drawn on this frame, reaching under B and C
+    fo = {"A": FrameOverride(KEY, "A", visible_rle=masks.encode_rle(patch))}
+    compiled = run(**three_squares(), frame_overrides=fo)
+    shared = compiled.instances["A"].visible & compiled.instances["C"].visible
+    assert shared.any()                              # the compiler leaves both showing them
+    lines = occlusion_order(compiled, drawn={"A"})
+    by = {line.instance: line for line in lines}
+    pairs = {(line.instance, t.below) for line in lines for t in line.takes}
+    assert not any((b, a) in pairs for a, b in pairs)                # never both ways
+    assert ("A", "C") not in pairs and ("A", "B") not in pairs       # A is at the bottom
+    assert by["A"].own_frame and line_text(by["A"], plain).startswith(f"A{OWN_FRAME}")
+    # what C takes from A is only A's shape that A does not show any more
+    a = compiled.instances["A"]
+    for t in by["C"].takes:
+        if t.below == "A":
+            assert t.pixels == int((compiled.instances["C"].visible & a.amodal & ~a.visible).sum())
+
+
+def test_a_part_with_only_a_per_frame_mask_is_listed_on_top():
+    from compiler_scenes import KEY, rect, run, three_squares
+    from tda.core.model import FrameOverride
+
+    scene = three_squares()
+    patch = rect(30, 30, 60, 60)
+    compiled = run(**scene, needs={"A": "mask", "B": "mask", "C": "mask", "D": "mask"},
+                   frame_overrides={"D": FrameOverride(KEY, "D",
+                                                       visible_rle=masks.encode_rle(patch))})
+    assert compiled.instances["D"].visible is not None
+    assert "D" not in [n for names in compiled.painted.values() for n in names]
+    lines = occlusion_order(compiled)
+    assert lines[0].instance == "D" and lines[0].own_frame and not lines[0].covered
+    assert header_text(lines).startswith("这一帧 4 个零件")
 
 
 def test_names_are_the_annotators_name_and_the_key():
@@ -327,6 +389,50 @@ def test_the_list_is_the_compiled_frame_on_screen_no_compile_no_write(window, mo
     order.list.itemClicked.emit(order.list.item(1))
     assert window.instances.selected_instance() == lower
     assert (window.mode, window.session.current().step) == (mode, step)
+
+
+def test_the_list_is_rebuilt_after_a_commit_on_the_frame(window):
+    lower, upper = window.seeded
+    review(window)
+    order = window.notes_panel.order
+    assert order.list.item(0).data(INSTANCE_ROLE) == upper
+    builds = window.notes_order_builds
+    window.session.set_zorder_move(lower, upper)          # lower now over upper
+    QApplication.processEvents()
+    QApplication.processEvents()
+    assert window.notes_order_builds > builds
+    assert order.list.item(0).data(INSTANCE_ROLE) == lower
+    assert f"{upper} (100 px)" in order.texts()[0]
+
+
+def test_the_dock_menu_ticks_and_unticks_it(window):
+    """Round 3, F1: ``triggered`` reached the guarded slot with no argument and raised."""
+    dock, action = window.notes_dock, window.notes_dock.toggleViewAction()
+    review(window)
+    assert not dock.isHidden() and action.isChecked()
+    action.trigger()                                      # untick in Review
+    QApplication.processEvents()
+    assert dock.isHidden() and not window.notes_wanted
+    assert str(window.settings.value(NOTES_SETTING)).lower() == "false"
+    assert "TypeError" not in window.status_message()
+    action.trigger()                                      # tick again
+    QApplication.processEvents()
+    assert not dock.isHidden() and window.notes_wanted
+    assert str(window.settings.value(NOTES_SETTING)).lower() == "true"
+
+    # ticked outside Review: wanted, said, and not shown in Annotate
+    dock.close()
+    QApplication.processEvents()
+    window.set_mode(A.MODE_ANNOTATE)
+    QApplication.processEvents()
+    assert dock.isHidden() and not window.notes_wanted
+    action.trigger()
+    QApplication.processEvents()
+    assert dock.isHidden() and window.notes_wanted
+    assert window.status_message() == NOTES_REVIEW_ONLY
+    assert str(window.settings.value(NOTES_SETTING)).lower() == "true"
+    review(window)
+    assert not dock.isHidden()
 
 
 def test_the_list_follows_the_frame(window):
