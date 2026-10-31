@@ -9,6 +9,7 @@
     python -m tda.cli infer-relations [--dry-run]     # fill empty relational fields
     python -m tda.cli adopt-relations --desktop N     # keep hand-set ones through --force
     python -m tda.cli constraints [--validate]        # spec-7 edges -> relation rows
+    python -m tda.cli export-graph --out DIR          # one graph JSON per desktop (U46)
     python -m tda.cli pose-breaks list|import|...     # per-view pose breaks (2.5)
     python -m tda.cli scan-align  --desktop N         # scanner folders vs OAK steps (2.2)
     python -m tda.cli backup                          # SQLite backup API -> backup_dir
@@ -64,7 +65,7 @@ from tda.cli_common import (
     safety_backup as _safety_backup,
     session as _session,
 )
-from tda.cli_graph import _add_constraints
+from tda.cli_graph import _add_constraints, _add_export_graph
 from tda.cli_notes import _add_notes
 from tda.cli_pose import _add_pose_breaks
 from tda.cli_refreeze import _add_refreeze
@@ -781,6 +782,7 @@ SUBCOMMANDS: tuple[Callable[[argparse._SubParsersAction], None], ...] = (
     _add_infer_relations,
     _add_adopt_relations,
     _add_constraints,
+    _add_export_graph,   # the graph as one JSON per desktop, read-only (U46)
     _add_pose_breaks,
     _add_scan_align,
     _add_backup,

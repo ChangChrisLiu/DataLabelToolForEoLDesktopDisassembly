@@ -30,10 +30,21 @@ Safety is the same as the other writing commands: the single-user lock, a
 backup before anything is written, one desktop per transaction so a desktop that
 raises is reported and skipped rather than half-stored. ``--dry-run`` writes no
 database row and no report, unless ``--report`` names one explicitly.
+
+``export-graph`` (task U46) is the read-only half::
+
+    python -m tda.cli export-graph --desktops 1-66 --out DIR [--view scan] [--db COPY]
+
+one precedence-graph JSON per desktop -- the stored edges, the log, the pixel
+evidence of who covers whom, the legal actions after every step, the remaining
+plan, the violations -- plus ``summary.json`` and ``README.md``
+(:mod:`tda.core.export.graph_export`). It opens the database ``mode=ro`` and
+takes no lock.
 """
 from __future__ import annotations
 
 import argparse
+import sqlite3
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Optional
@@ -43,6 +54,7 @@ from tda.cli_common import (
     EXIT_ERROR,
     EXIT_OK,
     desktops as _desktops,
+    load_paths,
     safety_backup as _safety_backup,
     session as _session,
 )
@@ -60,13 +72,13 @@ from tda.core.graph import (
     validate_sequence,
 )
 from tda.core.graph_derive import Derivation, derive_edges, write_derivation
-from tda.core.model import machine_only
+from tda.core.model import VIEWS, machine_only
 from tda.core.states import initial_overrides
 from tda.core.taxonomy import Taxonomy, load_taxonomy
 
 __all__ = [
     "ANNOTATOR", "CONSTRAINTS_REPORT_NAME", "DesktopGraph", "GraphRun", "OP_KIND",
-    "OP_VIEW", "RULE", "constraints_into_db", "constraints_report",
+    "OP_VIEW", "RULE", "cmd_export_graph", "constraints_into_db", "constraints_report",
 ]
 
 #: The provenance this command owns. Everything else is somebody's decision.
@@ -530,3 +542,59 @@ def _add_constraints(sub) -> None:
                    help="report Markdown (default <cache_dir>/"
                         + CONSTRAINTS_REPORT_NAME + ")")
     p.set_defaults(func=cmd_constraints)
+
+
+# --------------------------------------------------------------------------- #
+# export-graph (task U46)
+# --------------------------------------------------------------------------- #
+def cmd_export_graph(args: argparse.Namespace) -> int:
+    """Write one precedence-graph JSON per desktop, ``summary.json`` and ``README.md``.
+
+    Task U46. Read-only on the database: it is opened through a ``mode=ro`` URI
+    (:class:`tda.core.export.graph_export.ReadOnlyDb`), with no lock and no
+    backup, so it can run beside the annotator's app. ``--db`` names the file
+    (a backup copy, typically); without it ``paths.yaml``'s ``db_path``.
+    """
+    import time
+
+    from tda.core.export.graph_export import ReadOnlyDb, export_graph
+
+    db_path = getattr(args, "db", None)
+    if not db_path:
+        db_path = P.require(load_paths(args.paths), "db_path")
+    try:
+        db = ReadOnlyDb(db_path)
+    except (OSError, RuntimeError, sqlite3.Error) as exc:
+        print(f"[export-graph] 无法只读打开数据库 / cannot open the database read-only: {exc}")
+        return EXIT_ERROR
+    started = time.perf_counter()
+    try:
+        wanted = _desktops(args)
+        known = db.desktop_ids()
+        for desktop in sorted((wanted or set()) - set(known)):
+            print(f"[export-graph] D{desktop:02d} 不在数据库里，跳过 / is not in the database; "
+                  f"skipped")
+        chosen = [d for d in known if wanted is None or d in wanted]
+        summary = export_graph(db, load_taxonomy(), chosen, args.out, args.view, log=print)
+    finally:
+        db.close()
+    t = summary["totals"]
+    print(f"[export-graph] {t['desktops']} 台 / desktops, {t['edges']} edges, "
+          f"{t['covers']} covers ({t['candidates']} candidates), {t['violations']} violations, "
+          f"{t['deadlocks']} deadlocks -> {args.out} "
+          f"({time.perf_counter() - started:.1f} s)")
+    return EXIT_ERROR if summary["failed"] else EXIT_OK
+
+
+def _add_export_graph(sub) -> None:
+    p = sub.add_parser(
+        "export-graph",
+        help="write each desktop's precedence graph as one JSON (read-only, task U46)",
+    )
+    p.add_argument("--desktops", default=None, help="e.g. 13 or 1-66 (default: all)")
+    p.add_argument("--out", required=True,
+                   help="output directory: D<nn>.json per desktop, summary.json, README.md")
+    p.add_argument("--view", default="scan", choices=list(VIEWS),
+                   help="the view whose confirmed frames give the covering pixels "
+                        "(default scan)")
+    p.set_defaults(func=cmd_export_graph)
