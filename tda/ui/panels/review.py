@@ -45,6 +45,11 @@ annotator's note on the frame on screen.  Its 「保存」 / 「清除」 report
 frame changes under a box that was typed in and not saved, the panel reports
 the text with the frame it was about (:attr:`ReviewPanel.sigNoteLeft`) before
 it shows the new frame's note -- the window saves it and says so.
+Task U44 moves the box itself into the window's 「说明」 dock
+(:meth:`ReviewPanel.detach_note_box`, :mod:`tda.ui.panels.notes_dock`); the
+panel still owns and follows it, and where it was says 「说明在右侧「说明」窗」
+next to 「写说明」 -- a button with no key that only reports
+(:attr:`ReviewPanel.sigWriteNote`).
 """
 from __future__ import annotations
 
@@ -106,6 +111,11 @@ REFREEZE_FRAME, REFREEZE_ALL = "frame", "all"
 REFREEZE_FRAME_TEXT, REFREEZE_ALL_TEXT = "重签这一帧", "重签全部"
 REFREEZE_TIP = ("把已确认帧里和今天的编译只差容差以内的行（不算冲突、一直存着旧像素）改成今天的编译；"
                 "帧仍是已确认，超出容差的行不动（它们是冲突）。先列出要改几帧再问。没有快捷键。")
+#: Where 「这一帧的说明」 went (task U44), and the button that gets there.
+NOTE_HINT = "说明在右侧「说明」窗"
+WRITE_NOTE_TEXT = "写说明"
+WRITE_NOTE_TIP = ("打开右侧的「说明」窗（关了也会重新打开），光标放进「这一帧的说明」框里；"
+                  "窗里上面是这一帧的遮挡顺序。没有快捷键。")
 
 
 def _entry_text(queue: str, entry: dict) -> str:
@@ -154,6 +164,8 @@ class ReviewPanel(QWidget):
     sigNoteLeft = Signal(object, str)
     #: ... ``Tab`` in the box: the keyboard goes back to the canvas.
     sigNoteTabOut = Signal()
+    #: 「写说明」 was clicked (task U44): show the 「说明」 dock, keyboard in the box.
+    sigWriteNote = Signal()
 
     def __init__(self, session: Optional[api.SessionLike] = None,
                  parent: Optional[QWidget] = None) -> None:
@@ -233,6 +245,21 @@ class ReviewPanel(QWidget):
         self.note_box.sigSave.connect(self.sigNoteSave)
         self.note_box.sigClear.connect(self.sigNoteClear)
         self.note_box.sigTabOut.connect(self.sigNoteTabOut)
+        # ... and where it went (task U44): a line and 「写说明」, shown once the
+        # window has moved the box into its 「说明」 dock
+        self.note_hint = QLabel(NOTE_HINT)
+        self.note_hint.setStyleSheet("color: gray")
+        self.write_note_button = QToolButton()
+        self.write_note_button.setText(WRITE_NOTE_TEXT)
+        self.write_note_button.setToolTip(WRITE_NOTE_TIP)
+        self.write_note_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.write_note_button.clicked.connect(lambda _checked=False: self.sigWriteNote.emit())
+        self.note_row = QWidget()
+        hint = QHBoxLayout(self.note_row)
+        hint.setContentsMargins(0, 0, 0, 0)
+        hint.addWidget(self.note_hint, 1)
+        hint.addWidget(self.write_note_button)
+        self.note_row.setVisible(False)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -240,6 +267,7 @@ class ReviewPanel(QWidget):
         layout.addWidget(self._tabs, 1)
         layout.addLayout(resign)
         layout.addWidget(self.note_box)
+        layout.addWidget(self.note_row)
         layout.addWidget(self._problems_label)
         layout.addWidget(self._problems_list)
 
@@ -711,6 +739,17 @@ class ReviewPanel(QWidget):
         if old is not None and box.is_dirty():
             self.sigNoteLeft.emit(old, box.text())
         box.show_frame(key, self._note_of(key))
+
+    def detach_note_box(self) -> FrameNoteBox:
+        """Hand the note box over to the window's 「说明」 dock (task U44).
+
+        The panel keeps following the frame for it -- the box, its signals and
+        what is saved on the way out of a frame are U35's -- and shows, where
+        it was, the line saying where it went and 「写说明」.
+        """
+        self.layout().removeWidget(self.note_box)
+        self.note_row.setVisible(True)
+        return self.note_box
 
     def _on_note_changed(self, key: object) -> None:
         """The session wrote (or an undo put back) the note of ``key``."""
