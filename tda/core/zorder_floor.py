@@ -13,9 +13,11 @@ of D2, D4 and D5.  So:
 * :func:`floor_index` -- where a newly drawn instance enters the order: a
   ``chassis`` at the very bottom, a ``motherboard`` directly above the lowest
   chassis (its whole block, when the chassis has several parts) or at the
-  bottom when there is none, anything else on top.  The class is the instance
+  bottom when there is none, a fan ``screw_hole`` (task W3e) directly below
+  its screw, anything else on top.  The class is the instance
   record's (``InstanceRec.cls``), never the key's prefix.  Only
-  :func:`tda.ui.session_edit._append_to_zorder` asks: a move the annotator
+  :func:`tda.ui.session_edit._append_to_zorder` asks (and the W3e migration,
+  through :func:`entered`): a move the annotator
   makes (``Ctrl+Up/Down``, ``L``) is theirs, and the compiler paints whatever
   order is stored.
 * :func:`floor_problems` -- ``cli check``'s ``zorder_floor:<instance>``.
@@ -36,17 +38,19 @@ from typing import Iterable, Mapping, Optional, Sequence
 import numpy as np
 
 from tda.core.db import Db
-from tda.core.model import FrameKey, machine_only
+from tda.core.model import SCREW_HOLE_CLASS, FrameKey, machine_only
 from tda.core.taxonomy import Taxonomy
 from tda.core.truth_inputs import InputCache, pose_segment_of
 
-__all__ = ["CHASSIS", "FLOOR_CLASSES", "MOTHERBOARD", "ZORDER_FLOOR", "floor_index",
-           "floor_inversions", "floor_problems"]
+__all__ = ["CHASSIS", "FLOOR_CLASSES", "MOTHERBOARD", "SCREW_HOLE", "ZORDER_FLOOR",
+           "entered", "floor_index", "floor_inversions", "floor_problems"]
 
 #: The two floor classes (``configs/taxonomy.yaml``).
 CHASSIS = "chassis"
 MOTHERBOARD = "motherboard"
 FLOOR_CLASSES = frozenset({CHASSIS, MOTHERBOARD})
+#: The fan screw hole (task W3e), which enters the order under its screw.
+SCREW_HOLE = SCREW_HOLE_CLASS
 #: The problem ``cli check`` reports for a floor layer stored too high.
 ZORDER_FLOOR = "zorder_floor"
 #: How many names one problem line spells out before "+N more".
@@ -55,8 +59,16 @@ _NAMED = 5
 Entry = tuple[str, str]
 
 
+def _block_end(order: Sequence[Entry], start: int) -> int:
+    """One past the run of entries of ``order[start]``'s instance starting there."""
+    end = start
+    while end < len(order) and order[end][0] == order[start][0]:
+        end += 1
+    return end
+
+
 def floor_index(order: Sequence[Entry], cls: Optional[str],
-                cls_of: Mapping[str, str]) -> int:
+                cls_of: Mapping[str, str], under: Optional[str] = None) -> int:
     """Where a newly drawn instance of class ``cls`` enters ``order`` (bottom first).
 
     ``cls_of`` maps instance keys to their taxonomy class.  A ``chassis`` goes
@@ -64,19 +76,53 @@ def floor_index(order: Sequence[Entry], cls: Optional[str],
     entry (the run of that chassis instance's parts starting there), or at 0
     without one; every other class -- and an instance with no record -- at
     ``len(order)``, on top, as before.
+
+    A ``screw_hole`` (task W3e) goes **directly below its screw** -- ``under``,
+    the hole's ``attrs["of"]``, at the screw's lowest entry -- so the screw head
+    covers it while the screw is in and, once the screw is out, the hole takes
+    exactly the pixels the screw had: whatever lay above the screw lies above
+    the hole. Without its screw in the order it goes below every other part,
+    just above the floor layers (the chassis block, then the motherboard's).
     """
     if cls == CHASSIS:
         return 0
+    if cls == SCREW_HOLE:
+        mine = next((i for i, entry in enumerate(order) if under and entry[0] == under),
+                    None)
+        if mine is not None:
+            return mine
+        at = 0
+        while at < len(order) and cls_of.get(order[at][0]) in FLOOR_CLASSES:
+            at = _block_end(order, at)
+        return at
     if cls != MOTHERBOARD:
         return len(order)
     lowest = next((i for i, entry in enumerate(order) if cls_of.get(entry[0]) == CHASSIS),
                   None)
     if lowest is None:
         return 0
-    end = lowest
-    while end < len(order) and order[end][0] == order[lowest][0]:
-        end += 1
-    return end
+    return _block_end(order, lowest)
+
+
+def entered(order: Sequence[Entry], instance: str, part: str,
+            instances: Mapping[str, object]) -> list[Entry]:
+    """``order`` with ``(instance, part)`` entered where :func:`floor_index` puts it.
+
+    ``instances`` maps keys to their records (``.cls``, ``.attrs``); the new
+    instance's record must be among them for its class to count. A
+    ``screw_hole``'s screw is its ``attrs["of"]``. An order that already
+    lists the instance comes back unchanged (as a list).
+    """
+    order = [tuple(entry) for entry in order]
+    if any(entry[0] == instance for entry in order):
+        return order
+    cls_of = {k: getattr(r, "cls", None) for k, r in instances.items()}
+    rec = instances.get(instance)
+    under = None
+    if rec is not None and getattr(rec, "cls", None) == SCREW_HOLE:
+        under = str((getattr(rec, "attrs", None) or {}).get("of") or "") or None
+    at = floor_index(order, cls_of.get(instance), cls_of, under)
+    return order[:at] + [(instance, part)] + order[at:]
 
 
 def floor_inversions(order: Sequence[Entry],

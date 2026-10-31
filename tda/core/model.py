@@ -42,6 +42,18 @@ GALLERY_EXCLUDED_CLASSES = frozenset({"connector", "cable", "screw"})
 #: nodes, a name the class keeps clear of), so the sequence's COCO files do
 #: not list the category either.
 GALLERY_ONLY_CLASSES = frozenset({"loose_cable"})
+#: The taxonomy class ``screw_hole`` (task W3e, 螺丝孔): where a removed fan
+#: screw was, on the seven heatsink + fan desktops only. A detection category
+#: and nothing else -- no verb, no constraint edge, no VLM question -- whose
+#: ``attrs["of"]`` names the screw it is the hole of.
+SCREW_HOLE_CLASS = "screw_hole"
+#: The ``screw_hole`` attribute naming its screw's instance key.
+HOLE_OF_ATTR = "of"
+#: Classes appended to ``configs/taxonomy.yaml`` after the 框外零件's ``other``
+#: category took its id (task U18): COCO numbers them after it, in config
+#: order (``loose_cable`` 25, ``screw_hole`` 26), so no id a file has carried
+#: moves (:func:`tda.core.export.coco.category_ids`).
+LATE_CLASSES = GALLERY_ONLY_CLASSES | {SCREW_HOLE_CLASS}
 
 
 def is_component_view(view: Optional[str]) -> bool:

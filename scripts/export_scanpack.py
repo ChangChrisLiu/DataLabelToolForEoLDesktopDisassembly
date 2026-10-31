@@ -197,6 +197,9 @@ CLASS_EN: dict[str, str] = {
     "connector": "A cable plug in its socket (tracked only while plugged in).",
     "loose_cable": "A cable laid out loose with the removed parts (attrs.kind: sata, power, fan, "
                    "front_panel, other); drawn in the components gallery only.",
+    "screw_hole": "Where a removed CPU-fan screw was (attrs.of: the screw); only the fan screws "
+                  "of the heatsink + fan machines D07 D08 D11 D14 D16 D18 D19, a detection "
+                  "category only.",
     "other": "An object outside the machine (context), named by its label.",
 }
 
