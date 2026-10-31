@@ -1,4 +1,4 @@
--- TDA SQLite schema (schema_version = 6; see tda/core/db.py: SCHEMA_VERSION).
+-- TDA SQLite schema (schema_version = 7; see tda/core/db.py: SCHEMA_VERSION).
 -- One table per entity of design spec section 3.1. Every JSON column is TEXT
 -- holding json.dumps(..., ensure_ascii=False); RLE dicts are stored as JSON.
 -- All statements are IF NOT EXISTS so that Db.__init__ stays idempotent -- which
@@ -337,3 +337,16 @@ CREATE TABLE IF NOT EXISTS op_log (
     ts           TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_op_log_scope ON op_log(desktop, view, id);
+
+-- schema_version 7 (task W3c, 「谁压着谁」): the user's ruling, made in Review
+-- with the picture in front of them, on whether the part `above` -- which
+-- paints over `below` on a frame -- blocks it on this desktop ('blocks') or
+-- not ('not_blocks'). One row per ordered pair; no row = not ruled yet.
+-- W3a's `cli pixel-edges` reads this DDL by its column names: do not rename.
+-- Not an input of the compiler; tda/core/db_rulings.py writes it (one
+-- `cover_ruling` op per change).
+CREATE TABLE IF NOT EXISTS cover_ruling (
+  desktop INTEGER NOT NULL, above TEXT NOT NULL, below TEXT NOT NULL,
+  ruling TEXT NOT NULL CHECK (ruling IN ('blocks','not_blocks')),
+  by TEXT, ts TEXT, view TEXT, step INTEGER, note TEXT,
+  PRIMARY KEY (desktop, above, below));
