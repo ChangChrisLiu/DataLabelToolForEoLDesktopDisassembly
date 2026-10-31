@@ -48,6 +48,7 @@ from tda.ui.app_guide import GuideMixin
 from tda.ui.app_keys import FLASH_UNNAMED, KeysMixin
 from tda.ui.app_locator import LocatorMixin
 from tda.ui.app_notes import NOTE_HOLD_MS, NotesWindowMixin
+from tda.ui.app_rulings import RulingsWindowMixin
 from tda.ui.app_pose import PoseMixin
 from tda.ui.app_rawdata import NO_IMAGE_TEXT, RawDataMixin
 from tda.ui.app_refreeze import RefreezeWindowMixin
@@ -86,7 +87,8 @@ STEPS_UNSAVED = ("Steps 里有没 Apply 的修改（例如刚加的零件）：�
 class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateMixin,
                  VerbMixin, AssistMixin, GuideMixin, KeysMixin, RawDataMixin, GalleryMixin,
                  CableMixin, ContextMixin, LocatorMixin, VisReviewMixin, RefreezeWindowMixin,
-                 NotesWindowMixin, ToolsMixin, StatusMixin, ShellMixin, QMainWindow):
+                 NotesWindowMixin, RulingsWindowMixin, ToolsMixin, StatusMixin, ShellMixin,
+                 QMainWindow):
     """One annotator, one desktop/view, three modes."""
 
     def __init__(self, session, paths: dict, annotator: str, *,
@@ -135,6 +137,7 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateM
         self._init_visreview()  # 可见性审查 (task U24): Review's fifth tab
         self._init_refreeze()   # 重签 (task U32): Review's two buttons
         self._init_notes()      # 这一帧的说明 (task U35) and its 「说明」 dock (U44)
+        self._init_rulings()    # 谁压着谁 (task W3c): a section of that dock
         self._init_guide()      # last: it reads the bars and the raw-drive state
         self._connect_session()
 

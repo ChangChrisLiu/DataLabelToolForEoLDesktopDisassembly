@@ -78,11 +78,11 @@ def test_a_v5_file_gains_the_note_table_and_a_v5_build_refuses_a_v6_file(tmp_pat
         conn.execute("INSERT INTO desktop(id) VALUES(?)", (DESKTOP,))
     conn.close()
 
-    assert SCHEMA_VERSION == 6
+    assert SCHEMA_VERSION >= 6           # 7 since W3c (cover_ruling) -- same story
     db = Db(path)
     try:
         assert db.conn.execute("SELECT value FROM meta WHERE key='schema_version'"
-                               ).fetchone()[0] == "6"
+                               ).fetchone()[0] == str(SCHEMA_VERSION)
         assert db.frame_notes(DESKTOP) == []
         db.put_frame_note(key(3), "a note", "alice", "2026-10-26T06:03:00+00:00")
         assert db.frame_note(key(3))["text"] == "a note"
@@ -95,10 +95,10 @@ def test_a_v5_file_gains_the_note_table_and_a_v5_build_refuses_a_v6_file(tmp_pat
     older.conn = sqlite3.connect(path)
     older.conn.row_factory = sqlite3.Row
     try:
-        with pytest.raises(RuntimeError, match="schema version 6"):
+        with pytest.raises(RuntimeError, match=f"schema version {SCHEMA_VERSION}"):
             older.init_schema(SCHEMA, 5)
         assert older.conn.execute("SELECT value FROM meta WHERE key='schema_version'"
-                                  ).fetchone()[0] == "6"
+                                  ).fetchone()[0] == str(SCHEMA_VERSION)
     finally:
         older.conn.close()
 

@@ -3,7 +3,7 @@
 ``V1 V2 V3 V4 V5 V6 V7 V8 V10 V12 V14 V15 V16`` -- thirteen questions, each
 with a structured answer and an ``answer_check`` block saying how a checker
 re-derives it. **A question whose answer cannot be checked by program is not
-emitted.** W3b (spec v1.46) added V7-cpu, took V5 out of the default
+emitted.** W3b (spec v1.48) added V7-cpu, took V5 out of the default
 :data:`TASKS`, made V6 group-equivalent, asked V15-moment without the
 ``verified`` gate, and taught V2 / V3 / V12 / V14 that a 2D image shows a
 screw's presence, never its tightness (:data:`SCREW_PRESENCE`, ``captive``).
@@ -133,7 +133,7 @@ __all__ = [
 ALL_TASKS = ("V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V10", "V12", "V14",
              "V15", "V16")
 
-#: The default task set (W3b, spec 8.2 v1.46): V5 is out of it. Its legal set is
+#: The default task set (W3b, spec 8.2 v1.48): V5 is out of it. Its legal set is
 #: the graph's upper bound, a median of 37 actions per step (p90 57, max 76), so
 #: "list what can be done now" is graded on one demonstrated element and on a
 #: count of blocked ones -- a number too format-sensitive to mean anything. V4
