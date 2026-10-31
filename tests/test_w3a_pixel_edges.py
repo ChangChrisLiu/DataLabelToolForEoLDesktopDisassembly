@@ -287,8 +287,9 @@ def test_structure_refuses_a_whitelist_pair_and_a_ruling_beats_it():
     gpu["expansion_card.gpu.01"] = gpu["ram_module.01"].__class__(
         key="expansion_card.gpu.01", desktop=DESKTOP, cls="expansion_card",
         attrs={"kind": "gpu", EXTRA_ATTR: "tester"})
-    assert ("covered_by", "motherboard.01", "expansion_card.gpu.01") not in {
-        (e.type, e.target, e.blocker) for e in propose_edges(gpu, TAX)}
+    # no edge of any type between the S1-added card and the board, either way
+    assert not [e for e in propose_edges(gpu, TAX)
+                if {e.target, e.blocker} == {"motherboard.01", "expansion_card.gpu.01"}]
     assert structural_reasons(gpu, TAX, "expansion_card.gpu.01", "motherboard.01") == [
         SUPPORTED_BY_REASON]
     plan = PE.plan_desktop(DESKTOP, [card], 3, gpu,

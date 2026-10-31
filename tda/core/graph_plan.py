@@ -158,10 +158,11 @@ def _must_remove(by_target: dict[str, list[Edge]], target: str) -> set[str]:
 
     The blockers of the edges on ``target`` that accept nothing but
     ``removed`` (a ``blocked_by`` of mode ``mounted``: the CPU, RAM, cooler and
-    cards on the board) and gate its removal, then theirs, and so on. The
-    planner takes such a part out the first time anything needs it out of the
-    way: the cooler that covers the CPU is lifted off once, not swung aside for
-    the CPU and lifted off again for the board.
+    cards on the board) and gate its removal, then theirs, and so on. Where an
+    edge on such a part accepts a removing verb among its alternatives, the
+    planner tries that one first (it only reorders, never adds a verb): the
+    cooler that covers the CPU is lifted off once, not swung aside for the CPU
+    and lifted off again for the board.
     """
     out: set[str] = set()
     todo = [target]
@@ -379,10 +380,12 @@ def _plan_once(
         if key in must_remove:
             # this part has to come out for the goal anyway (task W3d): take it
             # out the first time it is in the way rather than swing it aside now
-            # and come back for it, falling back to the lighter verbs if that
-            # cannot be planned here
-            first = _choose_verbs(tax, rec, current, frozenset({REMOVED}))
-            verbs = [*first, *(v for v in verbs if v not in first)]
+            # and come back for it. Only a reorder of the alternatives this edge
+            # already allows (the ones `clearing_actions` lists too, so the
+            # planner and `find_dead_ends` agree): the removing verbs first, the
+            # rest in their old order as the fallback -- never a verb added
+            verbs = sorted(verbs, key=lambda v: verb_effect(tax, rec.cls, rec.attrs, v)
+                           != REMOVED)
         for verb in verbs:
             mark, snapshot = len(plan), dict(sim)
             if perform(key, verb):
