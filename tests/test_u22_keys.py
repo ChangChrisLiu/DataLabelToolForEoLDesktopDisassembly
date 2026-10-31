@@ -417,8 +417,9 @@ def test_the_spec_has_v1_22_on_top_with_the_whole_table():
                                   "- **v1.32", "- **v1.33", "- **v1.34", "- **v1.35",
                                   "- **v1.36",
                                   "- **v1.37", "- **v1.38", "- **v1.39", "- **v1.40",
-                                  "- **v1.41", "- **v1.42", "- **v1.43", "- **v1.44"))
-    [first] = [e for e in entries[:23] if e.startswith("- **v1.22")]
+                                  "- **v1.41", "- **v1.42", "- **v1.43", "- **v1.44",
+                                  "- **v1.45"))
+    [first] = [e for e in entries[:24] if e.startswith("- **v1.22")]
     assert first.startswith("- **v1.22（2026-10-23）**：**左手键**（U22，§4.6）")
     for name, keys in MAP.items():
         if name in ("confirm", "tool_eraser", "flash_compare", "review_rework",

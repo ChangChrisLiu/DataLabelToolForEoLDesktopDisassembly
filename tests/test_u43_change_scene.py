@@ -556,8 +556,8 @@ def test_the_docs_say_it():
         assert needed in para, needed
     changes = spec.split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
-    # on top when it landed; U44's v1.43 went above it the same day
-    [entry] = [e for e in entries[:3] if e.startswith("- **v1.42")]
+    # on top when it landed; U44's v1.43 went above it the same day (and U45 / U46 since)
+    [entry] = [e for e in entries[:4] if e.startswith("- **v1.42")]
     assert entry.startswith("- **v1.42（2026-10-30）**：**这一步的变化**（U43，§4.5）")
     quick = (root / "docs" / "trial_quickstart.md").read_text(encoding="utf-8")
     dock = quick.split("### 换到 OAK / RealSense 以后：「主视角」小窗", 1)[1].split("\n#", 1)[0]

@@ -109,9 +109,14 @@ from tda.core.export.coco import (  # noqa: E402
     load_ctx,
     roi_of,
 )
+from tda.core.export.release import (  # noqa: E402,F401 - re-exported
+    DROP_ATTRS,
+    MODEL_NAMES,
+    NAMEPLATE,
+    model_names,
+)
 from tda.core.implied import is_implied  # noqa: E402
 from tda.core.model import (  # noqa: E402
-    IMPLIED_RULE_ATTR,
     FrameKey,
     is_context,
     is_extra,
@@ -146,34 +151,12 @@ ANN_FIELDS = ("instance_id", "visibility", "occlusion_ratio", "occluders",
 UNLABELLED_SHARE = 0.5
 #: A class whose share of clean annotations is below this is "rarely clean".
 RARELY_CLEAN = 0.15
-#: Instance attrs that are our bookkeeping (who added a part, when, how a flag
-#: was guessed, a note to ourselves) rather than facts about the part.
-DROP_ATTRS = ("added_by", "added_at", "captive_source", "reason", "note",
-              "implied", IMPLIED_RULE_ATTR)
 #: Reason given to an ``--exclude`` that names none.
 DEFAULT_EXCLUDE_REASON = "left out of this package on request"
 
-#: ``(brand, model as the teardown sheet spells it) -> (the model's real name,
-#: a caveat or None)``. The sheet's text is kept beside it (``model_sheet``), as
-#: written; the caveat goes to ``model_note``, never into the name.
-NAMEPLATE = "to be verified on the nameplate: the teardown sheet says '{sheet}'"
-MODEL_NAMES: dict[tuple[str, str], tuple[str, Optional[str]]] = {
-    ("Dell", "Optiplex 7020"): ("Dell OptiPlex 7020", None),
-    ("Dell", "Optiplex 7010"): ("Dell OptiPlex 7010", None),
-    ("Dell", "Optiplex 3020"): ("Dell OptiPlex 3020", None),
-    ("Dell", "Optiplex 990"): ("Dell OptiPlex 990", None),
-    ("HP", "Compoq 8100 Elite Small Form Fador"): ("HP Compaq 8100 Elite SFF", None),
-    ("HP", "Compoq 8300 Elite Small Form Fador"): ("HP Compaq 8300 Elite SFF", None),
-    ("HP", "Compoq 8200 Elite Small Form Fador"): ("HP Compaq 8200 Elite SFF", None),
-    # HP made no "Compaq 4300 Elite": the nearest is the Compaq Pro 4300 SFF
-    ("HP", "Compoq 4300 Elite Small Form Fador"): (
-        "HP Compaq Pro 4300 SFF", NAMEPLATE.format(sheet="Compoq 4300 Elite Small Form Fador")),
-    ("HP", "EliteDesk 800 GI SFF"): ("HP EliteDesk 800 G1 SFF", None),
-    ("HP", "ProDesk 400 GI SFF"): ("HP ProDesk 400 G1 SFF", None),
-    ("HP", "ProDesk 4300 GI SFF"): ("HP Compaq Pro 4300 SFF",
-                                    NAMEPLATE.format(sheet="ProDesk 4300 GI SFF")),
-    ("HP", "ProDesk 4300"): ("HP Compaq Pro 4300 SFF", NAMEPLATE.format(sheet="ProDesk 4300")),
-}
+# DROP_ATTRS (our bookkeeping, not facts about a part) and MODEL_NAMES /
+# model_names (the model's real name, the sheet's text beside it) live in
+# tda.core.export.release since U46, shared with export-graph; imported above.
 #: What the README promises about every frame; the build checks each one and
 #: stops when a frame breaks it (round 3, R2-N3).
 EXPECTED_HW = (1600, 1600)
@@ -255,16 +238,6 @@ def frame_name(step: int) -> str:
 
 def desktop_dir(desktop: int) -> str:
     return f"D{int(desktop):02d}"
-
-
-def model_names(meta: dict) -> tuple[str, str, Optional[str]]:
-    """``(model, model_sheet, model_note)``: the real name, the teardown sheet's
-    text as is, and a caveat about the name (or ``None``)."""
-    brand = str(meta.get("brand") or "").strip()
-    family = str(meta.get("model_family") or "").strip()
-    sheet = str(meta.get("brand_model_raw") or f"{brand} {family}").strip()
-    name, note = MODEL_NAMES.get((brand, family), (f"{brand} {family}".strip(), None))
-    return name, sheet, note
 
 
 def parse_exclusions(specs: Sequence[str]) -> dict[tuple[int, int], str]:
