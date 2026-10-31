@@ -90,10 +90,11 @@ EXPECTED = {
     ("covered_by", "cpu.01", "cpu_cooler.fan.01"),
     # the cooler on the CPU sits on the socket lever too (task W3a)
     ("covered_by", "cpu_socket_lever.01", "cpu_cooler.fan.01"),
-    # everything mounted on the board comes off before it (task W3d)
-    ("covered_by", "motherboard.01", "cpu.01"),
-    ("covered_by", "motherboard.01", "ram_module.01"),
-    ("covered_by", "motherboard.01", "cpu_cooler.fan.01"),
+    # everything mounted on the board comes off before it (task W3d):
+    # blocked_by with mode "mounted", whose blocker must be removed
+    ("blocked_by", "motherboard.01", "cpu.01"),
+    ("blocked_by", "motherboard.01", "ram_module.01"),
+    ("blocked_by", "motherboard.01", "cpu_cooler.fan.01"),
 }
 
 #: Bench classes that nothing can remove: the board-moulded latch and lever and

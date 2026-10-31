@@ -50,7 +50,8 @@ def test_proposed_edges_carry_provenance(bench, tax):
         assert edge.status == "proposed"
         assert edge.type in graph.HARD_TYPES
         assert edge.reason  # every rule edge explains itself
-        assert edge.mode is None  # mode is for blocked_by, which no rule derives
+        # mode is for blocked_by; the one rule that derives it is the mount rule (W3d)
+        assert edge.mode == ("mounted" if edge.type == "blocked_by" else None)
 
 
 def test_sata_drive_needs_only_its_own_end(bench, tax):
@@ -168,9 +169,9 @@ def test_applicable_preconditions_by_verb(bench, tax):
         ("connected_to", "motherboard.01", "connector.atx_24pin.01"),
         ("connected_to", "motherboard.01", "connector.sata_data.02"),
         # everything mounted on the board comes off first (task W3d)
-        ("covered_by", "motherboard.01", "cpu.01"),
-        ("covered_by", "motherboard.01", "ram_module.01"),
-        ("covered_by", "motherboard.01", "cpu_cooler.fan.01"),
+        ("blocked_by", "motherboard.01", "cpu.01"),
+        ("blocked_by", "motherboard.01", "ram_module.01"),
+        ("blocked_by", "motherboard.01", "cpu_cooler.fan.01"),
     }
     # displace is gated by the structural edges only: a board whose cables are
     # still plugged can be lifted clear of its standoffs, just not taken away
@@ -214,16 +215,16 @@ def test_unmet_shrinks_as_blockers_change_state(bench, tax):
     state = _state(bench, actions, tax)
     assert _triples(unmet(gating, state)) == {
         ("fastened_by", "motherboard.01", "screw.motherboard.03"),
-        ("covered_by", "motherboard.01", "cpu.01"),
-        ("covered_by", "motherboard.01", "ram_module.01"),
-        ("covered_by", "motherboard.01", "cpu_cooler.fan.01"),
+        ("blocked_by", "motherboard.01", "cpu.01"),
+        ("blocked_by", "motherboard.01", "ram_module.01"),
+        ("blocked_by", "motherboard.01", "cpu_cooler.fan.01"),
     }
     actions.append(_act(6, "screw.motherboard.03", "unscrew"))
     # the screws are out; what is mounted on the board still holds it (task W3d)
     assert _triples(unmet(gating, _state(bench, actions, tax))) == {
-        ("covered_by", "motherboard.01", "cpu.01"),
-        ("covered_by", "motherboard.01", "ram_module.01"),
-        ("covered_by", "motherboard.01", "cpu_cooler.fan.01"),
+        ("blocked_by", "motherboard.01", "cpu.01"),
+        ("blocked_by", "motherboard.01", "ram_module.01"),
+        ("blocked_by", "motherboard.01", "cpu_cooler.fan.01"),
     }
     actions.extend(clear_board(7))
     assert unmet(gating, _state(bench, actions, tax)) == []

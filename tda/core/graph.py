@@ -35,11 +35,14 @@ from tda.core.graph_plan import (
     remaining_plan,
 )
 from tda.core.graph_rules import (
+    BLOCKED_GATES,
     BLOCKED_MODES,
+    BLOCKED_REQUIRED,
     Edge,
     GATED_VERBS,
     GATES,
     HARD_TYPES,
+    MOUNTED_MODE,
     REMOVED,
     REQUIRED_STATES,
     VerbTarget,
@@ -52,6 +55,7 @@ from tda.core.graph_rules import (
     infer_relational_fields,
     is_provisional,
     propose_edges,
+    required_states,
     unresolved_boards,
     unresolved_coolers,
     unresolved_fan_owners,
@@ -65,13 +69,16 @@ from tda.core.states import FrameState, events_from_actions, state_at
 from tda.core.taxonomy import Taxonomy
 
 __all__ = [
+    "BLOCKED_GATES",
     "BLOCKED_MODES",
+    "BLOCKED_REQUIRED",
     "DeadEnd",
     "Deadlock",
     "Edge",
     "GATED_VERBS",
     "GATES",
     "HARD_TYPES",
+    "MOUNTED_MODE",
     "REQUIRED_STATES",
     "apply_template",
     "applicable_preconditions",
@@ -90,6 +97,7 @@ __all__ = [
     "legal_actions",
     "propose_edges",
     "remaining_plan",
+    "required_states",
     "save_template",
     "unmet",
     "unresolved_boards",
@@ -163,7 +171,8 @@ def unmet(
     """Which of ``edges`` are not satisfied in ``state`` (spec 7.2).
 
     An edge is satisfied when its blocker's state is one of
-    :data:`~tda.core.graph_rules.REQUIRED_STATES` for the edge's type; a blocker
+    :func:`~tda.core.graph_rules.required_states` for the edge's type and
+    ``blocked_by`` mode (a ``mounted`` part must be ``removed``); a blocker
     that is ``removed`` satisfies any edge, and one that is not a node of this
     desktop at all is treated as satisfied rather than invented as a violation.
     A ``cable:*`` blocker missing from the snapshot counts as ``routed``, its
@@ -180,7 +189,7 @@ def unmet(
         current = blocker_state(state, edge.blocker)
         if current is None or current == REMOVED:
             continue
-        if current not in REQUIRED_STATES.get(edge.type, frozenset()):
+        if current not in required_states(edge.type, edge.mode):
             out.append(edge)
     return out
 

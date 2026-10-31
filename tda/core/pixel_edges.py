@@ -37,8 +37,8 @@ recorded log break a constraint it kept before (listed -- those go back to the
 user) or close a loop of actions. A whitelist pair is also refused when the
 instance table already explains the covering structurally, the export-time
 support table (``rule.supported_by``) included. A part on the motherboard over
-the board is a **rule edge** since task W3d (``covered_by(motherboard <- part)``,
-spec 7.3 「主板上的东西先拆」), and structural by the support table where it
+the board is a **rule edge** since task W3d (``blocked_by(motherboard <- part,
+mode=mounted)``, spec 7.3 「主板上的东西先拆」), and structural by the support table where it
 gets none (an S1 extra): those pairs are never candidates and Review never
 shows them, so the controller's suggestion layer must not write them either --
 the loader refuses such a pair outright. Only an explicit user ruling wins over
@@ -199,7 +199,8 @@ def _refusal(above: str, below: str) -> Optional[str]:
         # candidate, never shown in Review, not the suggestion layer's to write
         cls = above.split(".", 1)[0]
         return (f"a rule edge already orders it: {cls} sits on {below_cls}, "
-                f"covered_by({below_cls} <- {cls}) (§7.3 主板上的东西先拆; an extra part "
+                f"blocked_by({below_cls} <- {cls}, mode=mounted) (§7.3 主板上的东西先拆; "
+                f"an extra part "
                 f"without the edge is structural by the support table, rule.supported_by)")
     return None
 

@@ -18,7 +18,8 @@ into or screwing down the other, the upper one rides out with a parent whose
 own covering of the same part is listed, or the
 lower part is the chassis, which never moves; task W3a adds the class-level
 support table -- a CPU, RAM, cooler or card over the motherboard sits on it,
-which task W3d also made a ``covered_by(motherboard <- part)`` rule edge --
+which task W3d also made a ``blocked_by(motherboard <- part, mode=mounted)``
+rule edge --
 and the user's own ``not_blocks`` ruling from Review). ``no_edge`` keeps the brief's
 own definition beside it (no edge either way, whatever the instance table says).
 
@@ -168,8 +169,8 @@ _STRUCTURE_FIELDS = ("mounted_on", "socket_host", "fastens")
 
 #: Class-level support (task W3a): a part of one of these classes sits on the
 #: desktop's one motherboard. Since task W3d the pair is a **rule edge** --
-#: :func:`tda.core.graph_rules.propose_edges` derives ``covered_by(motherboard <-
-#: part)`` for every real instance (spec 7.3 「主板上的东西先拆」) -- and this
+#: :func:`tda.core.graph_rules.propose_edges` derives ``blocked_by(motherboard <-
+#: part, mode=mounted)`` for every real instance (spec 7.3 「主板上的东西先拆」) -- and this
 #: table no longer owns the list: it is built from
 #: :data:`tda.core.graph_rules.MOUNTED_ON_MOTHERBOARD`, so the two cannot drift.
 #: With the edge present such a covering is ``explained_by`` it anyway; the
@@ -277,7 +278,8 @@ def structural_reasons(instances: dict, tax, above: str, below: str,
     * ``rule.supported_by`` -- the upper part sits on the lower one by the
       class-level support table (:data:`SUPPORTED_BY`: a CPU, RAM stick,
       cooler or expansion card over the motherboard; task W3a). Since task W3d
-      the pair is a rule edge as well (``covered_by(motherboard <- part)``), so
+      the pair is a rule edge as well (``blocked_by(motherboard <- part,
+      mode=mounted)``), so
       a real part's covering is ``explained_by`` it; the reason still accounts
       for the parts and boards that take no edge (S1 extras, drafts).
     Sorted; empty when the instance table says nothing about the pair.

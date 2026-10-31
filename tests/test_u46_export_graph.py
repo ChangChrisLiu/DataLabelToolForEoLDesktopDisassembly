@@ -363,11 +363,10 @@ def test_plans_from_the_initial_state_and_the_progress_label(doc):
     assert everything["goals"] == ["screw.motherboard.01", "ram_module.01",
                                    "screw.motherboard.02", "cpu_cooler.fan.01",
                                    "screw.motherboard.03", "cpu.01", "motherboard.01"]
-    # the same actions as the board's own plan, except that the parts the board
-    # plan only swings aside (`displace` satisfies `covered_by`) are goals here
-    assert sorted(a.split(" ", 1)[1] for a in everything["plan"]) == \
-        sorted(a.split(" ", 1)[1] for a in board["plan"])
-    assert {a for a in everything["plan"] if a.startswith("displace")} == set()
+    # the same actions as the board's own plan: the board plan removes what is
+    # mounted on it (a `mounted` block wants it removed, not swung aside)
+    assert sorted(everything["plan"]) == sorted(board["plan"])
+    assert not [a for a in board["plan"] if a.startswith("displace")]
     assert everything["unplanned"] == [] and everything["length"] == board["length"]
     assert everything["removed_at"] == 8 and everything["demonstrated_length"] == 14
     remaining = everything["remaining_steps_by_step"]
