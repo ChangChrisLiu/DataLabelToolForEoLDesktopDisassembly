@@ -46,6 +46,8 @@ __all__ = [
     "CABLE_PREFIX",
     "INACTIVE_STATUSES",
     "LS_PREFIX",
+    "MOTHERBOARD_CLASS",
+    "MOUNTED_ON_MOTHERBOARD",
     "NO_CANDIDATE",
     "ORPHAN_OF",
     "PROPOSED",
@@ -63,6 +65,7 @@ __all__ = [
     "active_edges",
     "is_orphan",
     "blocker_state",
+    "board_of",
     "cable_nodes",
     "cable_owner",
     "connector_owner",
@@ -70,6 +73,7 @@ __all__ = [
     "infer_relational_fields",
     "is_provisional",
     "propose_edges",
+    "unresolved_boards",
     "unresolved_coolers",
     "unresolved_fan_owners",
     "unresolved_kind",
@@ -450,6 +454,13 @@ COOLER_STACK = ("heatsink", "fan")
 #: The class whose levers the cooler on the CPU sits on.
 SOCKET_LEVER_CLASS = "cpu_socket_lever"
 
+#: The board everything in :data:`MOUNTED_ON_MOTHERBOARD` sits on (task W3d).
+MOTHERBOARD_CLASS = "motherboard"
+#: Classes mounted on the motherboard: each real instance comes off before the
+#: board (user rule 2026-10-31, task W3d). The export side's class-level support
+#: table (:data:`tda.core.export.graph_covers.SUPPORT`) is built from this tuple.
+MOUNTED_ON_MOTHERBOARD = ("cpu", "ram_module", "cpu_cooler", "expansion_card")
+
 
 def cooler_on_cpu(instances: dict[str, InstanceRec]
                   ) -> tuple[Optional[str], Optional[str], Optional[str]]:
@@ -501,6 +512,38 @@ def unresolved_coolers(instances: dict[str, InstanceRec]) -> list[str]:
     return [problem] if problem else []
 
 
+def board_of(instances: dict[str, InstanceRec]) -> tuple[Optional[str], Optional[str]]:
+    """``(the motherboard the mounted parts sit on, why there is no answer)`` (task W3d).
+
+    The one settled ``motherboard`` of the desktop (drafts, 框外零件 and
+    gallery-only parts excluded, as :func:`tda.core.graph_infer.real_instances`
+    does). No board is ``(None, None)``: nothing to say. Two or more real boards
+    (never seen on the 66 desktops: every "second board" is an ``ls:`` draft)
+    are no answer and one line for S1, never a guess.
+    """
+    boards = _real_instances(instances, MOTHERBOARD_CLASS)
+    if not boards:
+        return None, None
+    if len(boards) == 1:
+        return boards[0], None
+    return None, (
+        f"unresolved board: 这台机器有不止一块主板，无法判断零件装在哪块上 / more than one "
+        f"motherboard on this desktop: {', '.join(boards)}. No covered_by edge from a "
+        f"mounted part ({', '.join(MOUNTED_ON_MOTHERBOARD)}) to a board was proposed; "
+        f"in S1 keep one board."
+    )
+
+
+def unresolved_boards(instances: dict[str, InstanceRec]) -> list[str]:
+    """The :func:`board_of` line for stage S1, or nothing (task W3d).
+
+    The sibling of :func:`unresolved_coolers`, through the same channel:
+    ``constraints`` prints it under the desktop and its report lists it.
+    """
+    _, problem = board_of(instances)
+    return [problem] if problem else []
+
+
 def propose_edges(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[Edge]:
     """Derive every hard edge the recorded attributes imply (spec 7.3 item 1).
 
@@ -508,8 +551,9 @@ def propose_edges(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[Edge
     spec 7.2 -> ``connected_to``; ``latch.of`` plus the fixed CPU-lever and
     PSU-latch edges -> ``locked_by``; ``cover.of`` plus the fixed edges of the
     cooler on the CPU (over the CPU, over every socket lever, and a two-part
-    cooler's fan over its heatsink; :func:`cooler_on_cpu`) -> ``covered_by``.
-    ``cable_clip.holds`` yields no edge on its own -- a
+    cooler's fan over its heatsink; :func:`cooler_on_cpu`) -> ``covered_by``;
+    every part mounted on the motherboard over the board -> ``covered_by``
+    (:func:`_mounted_on_board`, below). ``cable_clip.holds`` yields no edge on its own -- a
     clipped cable only blocks a target once a human says which one, so those
     ``blocked_by`` edges stay manual (spec 7.3 item 3).
 
@@ -526,9 +570,28 @@ def propose_edges(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[Edge
     motherboard screw"). The log never operated it, so such an edge is either
     one the recorded teardown "violates" or a question about it nobody asked;
     a human who wants one adds it in the Relations tab.
+
+    **Everything on the motherboard comes off before the motherboard** (the
+    user's rule of 2026-10-31, task W3d): every real instance of
+    :data:`MOUNTED_ON_MOTHERBOARD` -- ``cpu``, ``ram_module``, ``cpu_cooler``
+    (both parts of a two-part cooler) and ``expansion_card`` -- gives
+    ``covered_by(motherboard <- part)``, reason ``"<part> sits on <board>"``.
+    It is an assembly / protocol rule of this dataset (physical for a GPU seated
+    in its slot and screwed to the chassis, protocol for a RAM stick), and
+    ``covered_by`` is the type the fixed template edges of the same kind already
+    use (the cooler on the CPU); it gates ``remove`` and ``displace`` of the
+    board, which has no ``open``. All 60 board-removing logs already obey it.
+    What it does **not** say is "the board is the last thing out": that holds
+    on 56 of the 60 logs, but D01 D02 D35 D36 take the PSU (D01 also the optical
+    drive, D02 the cover and its PSU latch) out after the board, so only these
+    four classes block it. An extra on either end -- a RAM stick or a board
+    added in S1 -- takes no part (the class-keyed convention above); drafts are
+    not real instances at all. Two real boards on one desktop give no edge and
+    one S1 line (:func:`unresolved_boards`, the channel of
+    :func:`unresolved_coolers`).
     """
     out: list[Edge] = []
-    for rule in (_fastened_by, _connected_to, _locked_by, _covered_by):
+    for rule in (_fastened_by, _connected_to, _locked_by, _covered_by, _mounted_on_board):
         out.extend(rule(instances, tax))
     return _dedupe(out)
 
@@ -629,6 +692,24 @@ def _covered_by(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[Edge]:
                              f"{on_cpu} sits on the socket lever {lever}"))
     if fan and not is_extra(instances[fan]):
         out.append(_edge("covered_by", on_cpu, fan, f"{fan} sits on {on_cpu}"))
+    return out
+
+
+def _mounted_on_board(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[Edge]:
+    """Every real part of :data:`MOUNTED_ON_MOTHERBOARD` covers the board (task W3d).
+
+    ``covered_by(board <- part)``, one per settled, non-extra instance of the
+    four classes. No edge at all when the desktop has no single real board
+    (:func:`board_of`) or the board is an S1 extra (see :func:`propose_edges`).
+    """
+    board, _ = board_of(instances)
+    if board is None or is_extra(instances[board]):
+        return []
+    out: list[Edge] = []
+    for cls in MOUNTED_ON_MOTHERBOARD:
+        for key in _real_instances(instances, cls):
+            if not is_extra(instances[key]):
+                out.append(_edge("covered_by", board, key, f"{key} sits on {board}"))
     return out
 
 

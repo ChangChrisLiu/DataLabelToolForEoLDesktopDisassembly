@@ -54,10 +54,10 @@ def test_validate_sequence_accepts_a_correct_teardown(bench, tax):
 def test_validate_sequence_flags_a_violation(bench, tax):
     edges = propose_edges(bench, tax)
     actions = _good_sequence()
-    actions.remove(_act(6, "screw.motherboard.03", "unscrew"))
+    actions.remove(_act(14, "screw.motherboard.03", "unscrew"))
     problems = validate_sequence(bench, edges, actions, tax)
     assert len(problems) == 1
-    assert problems[0].startswith("step 7: remove motherboard.01 violates ")
+    assert problems[0].startswith("step 15: remove motherboard.01 violates ")
     assert "fastened_by(motherboard.01, screw.motherboard.03)" in problems[0]
     assert "fastened" in problems[0]
 
@@ -65,7 +65,8 @@ def test_validate_sequence_flags_a_violation(bench, tax):
 def test_validate_sequence_reports_every_unmet_edge_of_one_action(bench, tax):
     edges = propose_edges(bench, tax)
     problems = validate_sequence(bench, edges, [_act(1, "motherboard.01", "remove")], tax)
-    assert len(problems) == 5
+    # three screws, two plugs, and the CPU, cooler and RAM on it (task W3d)
+    assert len(problems) == 8
     assert all(p.startswith("step 1: remove motherboard.01 violates ") for p in problems)
 
 
@@ -146,8 +147,23 @@ def test_remaining_plan_from_the_initial_state(bench, tax):
         ("unscrew", "screw.motherboard.03"),
     ):
         assert pair in plan
-    # nothing irrelevant: the RAM, the CPU and the drive stay where they are
-    assert not [p for p in plan if p[1].startswith(("ram_", "cpu", "storage_"))]
+    # everything on the board comes off before it (task W3d): the RAM (its
+    # latches first), the cooler (its captive screws first), then the CPU. Off
+    # is `remove` or `displace` -- `covered_by` accepts either, and the planner
+    # takes the least invasive verb (`graph_plan.VERB_PREFERENCE`)
+    for pair in (
+        ("open", "ram_latch.01"),
+        ("open", "ram_latch.02"),
+        ("unscrew", "screw.cpu_cooler.01"),
+        ("unscrew", "screw.cpu_cooler.02"),
+        ("open", "cpu_socket_lever.01"),
+    ):
+        assert pair in plan
+    off = {t: i for i, (v, t) in enumerate(plan) if v in ("remove", "displace")}
+    assert {"ram_module.01", "cpu_cooler.fan.01", "cpu.01"} <= set(off)
+    assert off["cpu_cooler.fan.01"] < plan.index(("open", "cpu_socket_lever.01"))
+    # nothing irrelevant: the drive stays where it is
+    assert not [p for p in plan if p[1].startswith("storage_")]
 
 
 def test_remaining_plan_replays_cleanly(bench, tax):

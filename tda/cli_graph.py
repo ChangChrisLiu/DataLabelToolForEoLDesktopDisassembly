@@ -68,6 +68,7 @@ from tda.core.graph import (
     find_deadlocks,
     graph_version,
     is_provisional,
+    unresolved_boards,
     unresolved_coolers,
     unresolved_fan_owners,
     validate_sequence,
@@ -273,8 +274,10 @@ def _apply_one(db: Db, tax: Taxonomy, desktop: int, dry_run: bool,
     derivation = derive_edges(instances, stored, tax)
     initial = initial_overrides(e for e in db.events(desktop) if not e.auto)
     out = _summary(desktop, derivation, instances, tax, validate, initial)
-    # a fan lead without a fan, a cooler set nobody can stack (task W3a): S1 work
-    out.unresolved = unresolved_fan_owners(instances) + unresolved_coolers(instances)
+    # a fan lead without a fan, a cooler set nobody can stack (task W3a), two
+    # real boards (task W3d): S1 work
+    out.unresolved = (unresolved_fan_owners(instances) + unresolved_coolers(instances)
+                      + unresolved_boards(instances))
     if validate:
         out.violations = validate_sequence(
             instances, derivation.edges, db.actions(desktop), tax, initial=initial)

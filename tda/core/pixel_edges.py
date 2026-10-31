@@ -36,10 +36,13 @@ edge ties them the other way (a conflict: listed), when it would make the
 recorded log break a constraint it kept before (listed -- those go back to the
 user) or close a loop of actions. A whitelist pair is also refused when the
 instance table already explains the covering structurally, the export-time
-support table (``rule.supported_by``) included: those pairs are never
-candidates and Review never shows them, so the controller's suggestion layer
-must not write them either -- the loader refuses such a pair outright. Only an
-explicit user ruling wins over a structural reason.
+support table (``rule.supported_by``) included. A part on the motherboard over
+the board is a **rule edge** since task W3d (``covered_by(motherboard <- part)``,
+spec 7.3 「主板上的东西先拆」), and structural by the support table where it
+gets none (an S1 extra): those pairs are never candidates and Review never
+shows them, so the controller's suggestion layer must not write them either --
+the loader refuses such a pair outright. Only an explicit user ruling wins over
+a structural reason.
 
 The rows are **imported** to :func:`tda.core.graph_derive.derive_edges`: kept
 byte for byte by every later ``constraints`` run, never re-derived, so
@@ -192,9 +195,12 @@ def _refusal(above: str, below: str) -> Optional[str]:
     if below_cls in REFUSED_BELOW or "cable" in below_cls:
         return "a screw / connector / cable below is decided by its own rules"
     if SUPPORTED_BY.get(above.split(".", 1)[0]) == below_cls:
-        # never a candidate, never shown in Review: not the suggestion layer's to write
-        return (f"the support table makes it structural ({above.split('.', 1)[0]} sits on "
-                f"{below_cls}: rule.supported_by)")
+        # a rule edge since W3d (structural where it gets none): never a
+        # candidate, never shown in Review, not the suggestion layer's to write
+        cls = above.split(".", 1)[0]
+        return (f"a rule edge already orders it: {cls} sits on {below_cls}, "
+                f"covered_by({below_cls} <- {cls}) (§7.3 主板上的东西先拆; an extra part "
+                f"without the edge is structural by the support table, rule.supported_by)")
     return None
 
 

@@ -90,6 +90,10 @@ EXPECTED = {
     ("covered_by", "cpu.01", "cpu_cooler.fan.01"),
     # the cooler on the CPU sits on the socket lever too (task W3a)
     ("covered_by", "cpu_socket_lever.01", "cpu_cooler.fan.01"),
+    # everything mounted on the board comes off before it (task W3d)
+    ("covered_by", "motherboard.01", "cpu.01"),
+    ("covered_by", "motherboard.01", "ram_module.01"),
+    ("covered_by", "motherboard.01", "cpu_cooler.fan.01"),
 }
 
 #: Bench classes that nothing can remove: the board-moulded latch and lever and
@@ -118,14 +122,41 @@ def state_after(instances, actions, tax, step: int = 10**6):
     return state_at(instances, events_from_actions(instances, actions, tax), step, tax)
 
 
+#: ``(target, verb)`` that take everything mounted on the bench board off it, in
+#: order (task W3d): the RAM (both latches, then the stick), the cooler (both
+#: captive screws, then the cooler, which uncovers the socket lever), the CPU
+#: (the lever, then the chip).
+CLEAR_BOARD = (
+    ("ram_latch.01", "open"),
+    ("ram_latch.02", "open"),
+    ("ram_module.01", "remove"),
+    ("screw.cpu_cooler.01", "unscrew"),
+    ("screw.cpu_cooler.02", "unscrew"),
+    ("cpu_cooler.fan.01", "remove"),
+    ("cpu_socket_lever.01", "open"),
+    ("cpu.01", "remove"),
+)
+
+
+def clear_board(first_step: int = 1) -> list[ActionRec]:
+    """:data:`CLEAR_BOARD` as one action per step, from ``first_step`` on."""
+    return [act(first_step + i, target, verb) for i, (target, verb) in enumerate(CLEAR_BOARD)]
+
+
 def good_sequence() -> list[ActionRec]:
-    """A correct teardown of the bench motherboard, in order."""
+    """A correct teardown of the bench motherboard, in order.
+
+    Everything mounted on the board comes off first (:data:`CLEAR_BOARD`, task
+    W3d); then the screw cover, the two plugs, the three screws and **the board
+    last**.
+    """
     return [
-        act(1, "cover.01", "open"),
-        act(2, "connector.atx_24pin.01", "disconnect"),
-        act(3, "connector.sata_data.02", "disconnect"),
-        act(4, "screw.motherboard.01", "unscrew"),
-        act(5, "screw.motherboard.02", "unscrew"),
-        act(6, "screw.motherboard.03", "unscrew"),
-        act(7, "motherboard.01", "remove"),
+        *clear_board(1),
+        act(9, "cover.01", "open"),
+        act(10, "connector.atx_24pin.01", "disconnect"),
+        act(11, "connector.sata_data.02", "disconnect"),
+        act(12, "screw.motherboard.01", "unscrew"),
+        act(13, "screw.motherboard.02", "unscrew"),
+        act(14, "screw.motherboard.03", "unscrew"),
+        act(15, "motherboard.01", "remove"),
     ]
