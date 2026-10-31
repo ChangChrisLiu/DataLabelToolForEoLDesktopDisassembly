@@ -14,7 +14,8 @@ write each of them:
    ``paths.yaml``'s ``backup_dir``, which follows the raw drive to today's
    letter).
 
-A dry run takes none of them except the lock: it writes nothing.
+A dry run takes none of them: it opens the file ``mode=ro``
+(:func:`open_read_only`) and writes nothing, not even a schema migration.
 """
 from __future__ import annotations
 
@@ -26,7 +27,25 @@ from typing import Optional
 
 from tda import pipeline as P
 
-__all__ = ["app_running", "named_backup", "writer_busy"]
+__all__ = ["app_running", "named_backup", "open_read_only", "writer_busy"]
+
+
+def open_read_only(args, tag: str):
+    """``--db`` (or ``paths.yaml``'s ``db_path``) through ``ReadOnlyDb``; ``None`` (printed) on failure.
+
+    What a dry run reads through (review round 1, M1): the writable ``Db``
+    replays the DDL and stamps the schema version, so it would migrate an
+    older copy (v6 -> v7) during a run that says it writes nothing.
+    """
+    from tda.cli_common import load_paths
+    from tda.core.export.graph_export import ReadOnlyDb
+
+    path = getattr(args, "db", None) or P.require(load_paths(args.paths), "db_path")
+    try:
+        return ReadOnlyDb(path)
+    except (OSError, RuntimeError, sqlite3.Error) as exc:
+        print(f"{tag} 无法只读打开数据库 / cannot open the database read-only: {exc}")
+        return None
 
 
 def app_running() -> bool:

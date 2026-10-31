@@ -42,7 +42,7 @@ RULING_DDL = ("CREATE TABLE cover_ruling(desktop INTEGER, above TEXT, below TEXT
               "view TEXT, step INTEGER, note TEXT, PRIMARY KEY (desktop, above, below))")
 
 
-def add_rulings(path: Path, *rows: tuple[str, str, str]) -> None:
+def add_rulings(path: Path, *rows: tuple[str, str, str], view: str = VIEW) -> None:
     conn = sqlite3.connect(str(path))
     try:
         if conn.execute("SELECT 1 FROM sqlite_master WHERE name='cover_ruling'").fetchone() is None:
@@ -50,7 +50,7 @@ def add_rulings(path: Path, *rows: tuple[str, str, str]) -> None:
         for above, below, ruling in rows:
             conn.execute("INSERT OR REPLACE INTO cover_ruling VALUES (?,?,?,?,?,?,?,?,?)",
                          (DESKTOP, above, below, ruling, "user", "2026-11-01T10:00:00+00:00",
-                          VIEW, 3, None))
+                          view, 3, None))
         conn.commit()
     finally:
         conn.close()
@@ -569,3 +569,131 @@ def test_the_support_table_and_mounted_on_rule(env):
     assert by_key["cpu.01"]["mounted_on_rule"] == "motherboard.01"
     assert by_key["psu.01"]["mounted_on_rule"] is None
     assert by_key["cpu.01"]["mounted_on"] == "motherboard.01"        # as annotated, unchanged
+
+
+# --------------------------------------------------------------------------- #
+# review round 1: S1 stale rows, M1 read-only dry runs, M2 missing graph files,
+# M3 one support table, M4 view-independent rulings
+# --------------------------------------------------------------------------- #
+def set_ruling(path: Path, above: str, below: str, ruling) -> None:
+    conn = sqlite3.connect(str(path))
+    try:
+        if ruling is None:
+            conn.execute("DELETE FROM cover_ruling WHERE desktop=? AND above=? AND below=?",
+                         (DESKTOP, above, below))
+        else:
+            conn.execute("UPDATE cover_ruling SET ruling=? WHERE desktop=? AND above=? "
+                         "AND below=?", (ruling, DESKTOP, above, below))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("now, why", [("not_blocks", "ruled_not_blocks"),
+                                      (None, "ruling_cleared")])
+def test_a_review_edge_the_user_took_back_is_listed_then_deleted(env, capsys, now, why):
+    add_rulings(env["db"], (PSU, HDD, "blocks"))
+    assert run(env, "--apply") == EXIT_OK
+    [row] = owned_rows(env["db"])
+    set_ruling(env["db"], PSU, HDD, now)
+    capsys.readouterr()
+    # the dry run lists it and fails, so nobody ships a graph that contradicts the user
+    assert run(env) == EXIT_ERROR
+    assert "STALE" in capsys.readouterr().out
+    [stale] = evidence(env)["stale_review_edges"]
+    assert (stale["above"], stale["below"], stale["why"]) == (PSU, HDD, why)
+    assert stale["row"]["source"] == "review:covers"
+    assert owned_rows(env["db"]) == [row]
+    # --apply deletes it, with one op whose inverse restores the row
+    assert run(env, "--apply") == EXIT_OK
+    assert "deleted 1 rows the rulings no longer back" in capsys.readouterr().out
+    assert owned_rows(env["db"]) == []
+    [(payload, inverse)] = table(env["db"], "SELECT payload_json, inverse_json FROM op_log "
+                                            "WHERE kind='pixel_edges' ORDER BY id")[1:]
+    assert json.loads(payload)["deleted_stale"][0]["blocker"] == PSU
+    assert json.loads(inverse)["restore"][0]["source"] == "review:covers"
+    assert run(env) == EXIT_OK                                   # nothing stale any more
+
+
+def test_a_whitelist_row_the_user_rules_not_blocks_is_stale_too(env):
+    db = Db(str(env["db"]))
+    try:
+        db.add_relation(DESKTOP, "covered_by", HDD, PSU, source="pixels:W1", status="accepted")
+    finally:
+        db.close()
+    assert run(env) == EXIT_OK                       # unruled: a whitelist row is not stale
+    add_rulings(env["db"], (PSU, HDD, "not_blocks"))
+    assert run(env) == EXIT_ERROR
+    assert evidence(env)["stale_review_edges"][0]["row"]["source"] == "pixels:W1"
+    assert run(env, "--apply") == EXIT_OK and owned_rows(env["db"]) == []
+
+
+def sha(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def as_v6(path: Path) -> None:
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute("DROP TABLE IF EXISTS cover_ruling")
+        conn.execute("UPDATE meta SET value='6' WHERE key='schema_version'")
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        conn.close()
+
+
+def test_dry_runs_leave_a_v6_copy_byte_for_byte(env):
+    """M1: the writable Db would migrate the copy to v7 during a run that writes nothing."""
+    as_v6(env["db"])
+    before = sha(env["db"])
+    assert run(env) == EXIT_OK
+    assert main(["--paths", env["paths"], "set-split", "--test", str(DESKTOP)]) == EXIT_OK
+    assert sha(env["db"]) == before
+    assert table(env["db"], "SELECT value FROM meta WHERE key='schema_version'") == [("6",)]
+    assert evidence(env)["rulings_table"] is False
+
+
+def test_a_missing_graph_file_is_said_and_fails(env, capsys):
+    """M2: not "ruled but no pixel evidence" -- the evidence was never read."""
+    add_rulings(env["db"], (PSU, HDD, "blocks"))
+    (env["tmp"] / "empty").mkdir()
+    assert run(env, "--graph-dir", str(env["tmp"] / "empty")) == EXIT_ERROR
+    assert "skipped: no graph file" in capsys.readouterr().out
+    doc = evidence(env)
+    assert doc["no_graph_file"] == [f"D{DESKTOP:02d}"]
+    assert not [s for s in doc["skipped"] if s["why"] == "ruled_no_pixel_evidence"]
+    assert run(env, "--graph-dir", str(env["tmp"] / "empty"), "--apply") == EXIT_ERROR
+    assert owned_rows(env["db"]) == []
+
+
+def test_review_and_the_export_share_one_support_table():
+    """M3: the tuple lives in graph_covers; Review's question list imports it."""
+    from tda.core.export import graph_covers
+    from tda.ui import cover_rulings as ui
+
+    assert ui.SUPPORT is graph_covers.SUPPORT
+    bench = bench_instances()
+    bench["motherboard.02"] = bench["motherboard.01"].__class__(
+        key="motherboard.02", desktop=DESKTOP, cls="motherboard")      # two boards
+    for above, below in [("cpu.01", "motherboard.01"), ("cpu.01", "motherboard.02"),
+                         ("ram_module.01", "motherboard.01"), ("psu.01", "motherboard.01"),
+                         ("motherboard.01", "cpu.01")]:
+        mine = SUPPORTED_BY_REASON in structural_reasons(bench, TAX, above, below)
+        theirs = "supported_by" in ui.structural_reasons(bench, above, below)
+        assert mine == theirs, (above, below)
+
+
+def test_a_ruling_made_in_another_view_still_counts(env):
+    """M4: a ruling is a physical judgement; the pixels come from the export view."""
+    add_rulings(env["db"], (PSU, HDD, "blocks"), view="oak1")
+    assert run(env, "--apply") == EXIT_OK
+    [row] = owned_rows_dicts(env["db"])
+    assert (row["target"], row["blocker"], row["source"]) == (HDD, PSU, "review:covers")
+    assert "on 2 confirmed scan frames" in row["reason"] and "oak1 step 3" in row["reason"]
+
+
+def owned_rows_dicts(path: Path) -> list[dict]:
+    return [r for r in rows_of(path) if str(r["source"]).startswith(("pixels:", "review:"))]

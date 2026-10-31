@@ -87,6 +87,7 @@ __all__ = [
     "PAIR_OVERRIDE",
     "PER_FRAME_MASK",
     "RULING_TABLE",
+    "SUPPORT",
     "SUPPORTED_BY",
     "SUPPORTED_BY_REASON",
     "ZORDER",
@@ -165,12 +166,18 @@ _STRUCTURE_FIELDS = ("mounted_on", "socket_host", "fastens")
 #: coverings topped the candidate list; this table explains them without writing
 #: a field. The socket levers and RAM latches are already ``attached`` to the
 #: board, so they need no row here.
-SUPPORTED_BY = {
-    "cpu": "motherboard",
-    "ram_module": "motherboard",
-    "cpu_cooler": "motherboard",
-    "expansion_card": "motherboard",
-}
+#:
+#: **The one support table** (review round 1, M3): Review's question list
+#: (:mod:`tda.ui.cover_rulings`, task W3c) imports this very tuple, so Review
+#: never asks about a pair the export calls structural, and the other way round.
+SUPPORT: tuple[tuple[str, str], ...] = (
+    ("cpu", "motherboard"),
+    ("ram_module", "motherboard"),
+    ("cpu_cooler", "motherboard"),
+    ("expansion_card", "motherboard"),
+)
+#: ``class -> the class it sits on``, the same table as a mapping.
+SUPPORTED_BY = dict(SUPPORT)
 #: ``structural`` reason of a pair the support table explains.
 SUPPORTED_BY_REASON = "rule.supported_by"
 #: ``structural`` reason of a pair the user ruled ``not_blocks`` in Review.
@@ -292,7 +299,9 @@ def structural_reasons(instances: dict, tax, above: str, below: str,
             verb_effect(tax, low.cls, low.attrs or {}, verb) is not None
             for verb in sorted(GATED_VERBS)):
         out.add("below_fixed")
-    if supported_by_rule(instances, above) == below:
+    up, low = instances.get(above), instances.get(below)
+    if up is not None and low is not None and (str(up.cls), str(low.cls)) in SUPPORT:
+        # by class pair, as Review decides it (M3): no "unique motherboard" demand here
         out.add(SUPPORTED_BY_REASON)
     return sorted(out)
 

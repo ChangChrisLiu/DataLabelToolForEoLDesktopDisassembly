@@ -20,7 +20,7 @@ from typing import Optional
 
 from tda import pipeline as P
 from tda.cli_common import EXIT_ERROR, EXIT_OK, session as _session
-from tda.cli_guards import app_running, named_backup, writer_busy
+from tda.cli_guards import app_running, named_backup, open_read_only, writer_busy
 
 __all__ = ["OP_KIND", "split_plan", "cmd_set_split"]
 
@@ -68,39 +68,52 @@ def cmd_set_split(args: argparse.Namespace) -> int:
         print(f"{TAG} 标注程序正在运行，先关掉它；什么也没写 / the annotator app is running "
               f"(or psutil is missing, so it cannot be told): close it first; nothing written")
         return EXIT_ERROR
-    with _session(args, lock=True) as (paths, db):
+    if not args.apply:
+        # through `mode=ro` (review round 1, M1): a dry run must not migrate an older copy
+        db = open_read_only(args, TAG)
+        if db is None:
+            return EXIT_ERROR
         try:
-            plan = split_plan(db, set(test), train)
-        except ValueError as exc:
-            print(f"{TAG} {exc}; nothing written")
-            return EXIT_ERROR
-        changes = {d: v for d, v in plan.items() if v[0] != v[1]}
-        counts = {s: sum(1 for _, new in plan.values() if new == s) for s in (TEST, TRAIN)}
-        untouched = sorted(set(db.desktop_ids()) - set(plan))
-        print(f"{TAG} test {counts[TEST]}, train {counts[TRAIN]}, untouched "
-              f"{len(untouched)}" + (f" ({', '.join(f'D{d:02d}' for d in untouched)})"
-                                     if untouched else "")
-              + f"; {len(changes)} change")
-        for d, (old, new) in sorted(changes.items()):
-            print(f"{TAG}   D{d:02d}: {old or '-'} -> {new}")
-        if not args.apply:
-            print(f"{TAG} 演练，什么也没写 / dry run: nothing written (pass --apply)")
-            return EXIT_OK
-        if not changes:
-            print(f"{TAG} 都已是这样 / already so; nothing written")
-            return EXIT_OK
-        busy = writer_busy(db)
-        if busy:
-            print(f"{TAG} 数据库正被别人写 / the database is busy ({busy}); nothing written")
-            return EXIT_ERROR
-        if named_backup(paths, db, "set-split", "set_split") is None:
-            return EXIT_ERROR
-        with db.transaction():
-            for d, (old, new) in sorted(changes.items()):
-                P.merge_desktop_meta(db, d, {"split": new})
-                db.log_op(d, OP_VIEW, OP_KIND, {"split": new}, {"split": old}, ANNOTATOR)
-        print(f"{TAG} 写了 {len(changes)} 台 / wrote {len(changes)} desktops")
+            return _set_split(None, db, set(test), train, apply=False)
+        finally:
+            db.close()
+    with _session(args, lock=True) as (paths, db):
+        return _set_split(paths, db, set(test), train, apply=True)
+
+
+def _set_split(paths, db, test: set[int], train: Optional[set[int]], apply: bool) -> int:
+    try:
+        plan = split_plan(db, set(test), train)
+    except ValueError as exc:
+        print(f"{TAG} {exc}; nothing written")
+        return EXIT_ERROR
+    changes = {d: v for d, v in plan.items() if v[0] != v[1]}
+    counts = {s: sum(1 for _, new in plan.values() if new == s) for s in (TEST, TRAIN)}
+    untouched = sorted(set(db.desktop_ids()) - set(plan))
+    print(f"{TAG} test {counts[TEST]}, train {counts[TRAIN]}, untouched "
+          f"{len(untouched)}" + (f" ({', '.join(f'D{d:02d}' for d in untouched)})"
+                                 if untouched else "")
+          + f"; {len(changes)} change")
+    for d, (old, new) in sorted(changes.items()):
+        print(f"{TAG}   D{d:02d}: {old or '-'} -> {new}")
+    if not apply:
+        print(f"{TAG} 演练，什么也没写 / dry run: nothing written (pass --apply)")
         return EXIT_OK
+    if not changes:
+        print(f"{TAG} 都已是这样 / already so; nothing written")
+        return EXIT_OK
+    busy = writer_busy(db)
+    if busy:
+        print(f"{TAG} 数据库正被别人写 / the database is busy ({busy}); nothing written")
+        return EXIT_ERROR
+    if named_backup(paths, db, "set-split", "set_split") is None:
+        return EXIT_ERROR
+    with db.transaction():
+        for d, (old, new) in sorted(changes.items()):
+            P.merge_desktop_meta(db, d, {"split": new})
+            db.log_op(d, OP_VIEW, OP_KIND, {"split": new}, {"split": old}, ANNOTATOR)
+    print(f"{TAG} 写了 {len(changes)} 台 / wrote {len(changes)} desktops")
+    return EXIT_OK
 
 
 def _add_set_split(sub) -> None:
