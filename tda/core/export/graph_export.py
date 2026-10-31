@@ -59,7 +59,14 @@ from urllib.parse import quote
 
 from tda.core.db import SCHEMA_VERSION, Db
 from tda.core.export.coco import DesktopCtx, load_ctx
-from tda.core.export.graph_covers import CoverScan, class_key, scan_covers
+from tda.core.export.graph_covers import (
+    BLOCKS,
+    NOT_BLOCKS,
+    CoverScan,
+    class_key,
+    scan_covers,
+    supported_by_rule,
+)
 from tda.core.export.release import model_names, public_attrs
 from tda.core.graph import (
     GATED_VERBS,
@@ -105,6 +112,7 @@ __all__ = [
     "FAILED_WITHOUT_UNMET",
     "PLAN_GOALS",
     "README_NAME",
+    "READ_ONLY_MIN_SCHEMA",
     "ReadOnlyDb",
     "SUCCESS_VIOLATES",
     "SUMMARY_NAME",
@@ -118,6 +126,10 @@ __all__ = [
 
 #: Bumped when a field of the per-desktop file changes meaning or goes away.
 EXPORT_GRAPH_VERSION = 1
+#: The oldest schema :class:`ReadOnlyDb` reads (v6: ``frame_note``; every column
+#: the readers select exists from it on). A newer file up to ``SCHEMA_VERSION``
+#: is read as it is; a missing ``cover_ruling`` table means "no rulings" (W3a).
+READ_ONLY_MIN_SCHEMA = 6
 #: The view whose confirmed frames the pixel evidence is read off by default.
 DEFAULT_VIEW = "scan"
 #: The single-part goals planned from the initial state, where the desktop has them.
@@ -156,9 +168,12 @@ class ReadOnlyDb(Db):
 
     The constructor of :class:`~tda.core.db.Db` replays the DDL and stamps the
     schema version -- a write, on the live file. This one opens the file
-    read-only and only *checks* the version: an older file lacks columns the
-    readers select, a newer one has columns this build does not understand,
-    and both are refused with one line. Every reader of ``Db`` works; every
+    read-only and only *checks* the version: anything from
+    :data:`READ_ONLY_MIN_SCHEMA` (the oldest file whose columns every reader
+    here selects) up to this build's ``SCHEMA_VERSION`` is read as it is -- a
+    read-only tool must not demand a migration, so a v6 copy taken before the
+    ``cover_ruling`` table (v7, task W3c) is still exported, with no rulings --
+    and anything older or newer is refused with one line. Every reader of ``Db`` works; every
     writer raises ``sqlite3.OperationalError`` (attempt to write a readonly
     database), which is the guarantee. Opening a WAL database this way may
     leave empty ``-wal`` / ``-shm`` files next to it; the database file itself
@@ -187,10 +202,12 @@ class ReadOnlyDb(Db):
         except sqlite3.Error as exc:
             self.conn.close()
             raise RuntimeError(f"{self.path} is not a TDA database: {exc}") from None
-        if found != SCHEMA_VERSION:
+        if found is None or not READ_ONLY_MIN_SCHEMA <= found <= SCHEMA_VERSION:
             self.conn.close()
             raise RuntimeError(f"{self.path} has schema version {found}; this build reads "
-                               f"version {SCHEMA_VERSION} (open it once with the app)")
+                               f"versions {READ_ONLY_MIN_SCHEMA}-{SCHEMA_VERSION} "
+                               f"(open it once with the app)")
+        self.schema_version = found
 
 
 # --------------------------------------------------------------------------- #
@@ -279,7 +296,10 @@ def _instances(ctx: DesktopCtx, timeline: list[int]) -> tuple[list[dict], dict]:
         out.append({
             "key": key, "class": rec.cls, "attrs": public_attrs(rec.attrs),
             "parent": rec.parent, "attached": bool(rec.attached),
-            "mounted_on": rec.mounted_on, "fastens": rec.fastens,
+            "mounted_on": rec.mounted_on,
+            # the class-level support table's answer, never written to the database (W3a)
+            "mounted_on_rule": supported_by_rule(ctx.instances, key),
+            "fastens": rec.fastens,
             "socket_host": rec.socket_host, "cable": rec.cable,
             "implied": is_implied(rec), "extra": is_extra(rec),
             "timeline": seen,
@@ -589,6 +609,10 @@ def build_desktop(db: Db, tax: Taxonomy, desktop: int, view: str = DEFAULT_VIEW)
     by_type = Counter(e.type for e in edges)
     candidates = sum(1 for c in scan.covers if c["candidate"])
     no_edge = sum(1 for c in scan.covers if c["no_edge"])
+    # the user's Review rulings (task W3a): a not_blocks pair is no candidate any
+    # more; a blocks pair stays one until `pixel-edges` makes it an edge
+    ruled = Counter(c["ruling"] for c in scan.covers if c.get("ruling"))
+    ruled_candidates = sum(1 for c in scan.covers if c["candidate"] and c.get("ruling"))
     name, sheet, name_note = model_names(meta_row)
     meta = {
         "desktop": int(desktop),
@@ -612,6 +636,9 @@ def build_desktop(db: Db, tax: Taxonomy, desktop: int, view: str = DEFAULT_VIEW)
             "confirmed_frames": scan.confirmed_frames,
             "frames_with_covers": scan.frames_with_covers,
             "covers": len(scan.covers), "no_edge": no_edge, "candidates": candidates,
+            "candidates_ruled": ruled_candidates,
+            "candidates_unruled": candidates - ruled_candidates,
+            "rulings": {BLOCKS: ruled.get(BLOCKS, 0), NOT_BLOCKS: ruled.get(NOT_BLOCKS, 0)},
             "violations": len(violations),
             "violations_timeline_disagrees": sum(
                 1 for v in violations if v["timeline_agrees"] is False),
@@ -650,6 +677,9 @@ def _desktop_row(doc: dict) -> dict:
         "confirmed_frames": counts["confirmed_frames"],
         "covers": counts["covers"], "no_edge": counts["no_edge"],
         "candidates": counts["candidates"],
+        "candidates_ruled": counts.get("candidates_ruled", 0),
+        "candidates_unruled": counts.get("candidates_unruled", counts["candidates"]),
+        "rulings": counts.get("rulings", {BLOCKS: 0, NOT_BLOCKS: 0}),
         "violations": counts["violations"],
         "violations_timeline_disagrees": counts.get("violations_timeline_disagrees", 0),
         "deadlocks": counts["deadlocks"], "dead_ends": counts["dead_ends"],
@@ -703,6 +733,9 @@ def summarize(docs: Iterable[dict], view: str, failed: Optional[dict] = None) ->
         "covers": sum(r["covers"] for r in rows),
         "no_edge": sum(r["no_edge"] for r in rows),
         "candidates": sum(r["candidates"] for r in rows),
+        "candidates_ruled": sum(r["candidates_ruled"] for r in rows),
+        "candidates_unruled": sum(r["candidates_unruled"] for r in rows),
+        "rulings": {k: sum(r["rulings"][k] for r in rows) for k in (BLOCKS, NOT_BLOCKS)},
         "candidate_class_pairs": len(ranked),
         "violations": len(violations),
         "violations_by_kind": dict(sorted(kinds.items())),

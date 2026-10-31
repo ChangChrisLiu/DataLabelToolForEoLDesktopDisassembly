@@ -264,7 +264,7 @@ def test_legal_actions_in_the_initial_state(bench, tax):
         ("disconnect", "connector.sata_data.01"),
         ("disconnect", "connector.sata_data.02"),
         ("open", "cover.01"),
-        ("open", "cpu_socket_lever.01"),
+        # not `open cpu_socket_lever.01`: the cooler on the CPU sits on it (task W3a)
         ("open", "psu_latch.01"),
         ("open", "ram_latch.01"),
         ("open", "ram_latch.02"),

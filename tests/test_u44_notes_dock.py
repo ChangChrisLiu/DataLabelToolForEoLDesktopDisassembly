@@ -466,7 +466,7 @@ def test_the_docs_say_it():
         assert needed in bullet, needed
     changes = spec.split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
-    [entry] = [e for e in entries[:5] if e.startswith("- **v1.43")]
+    [entry] = [e for e in entries[:6] if e.startswith("- **v1.43")]
     assert entry.startswith("- **v1.43（2026-10-30）**：**复查的「说明」停靠窗与这一帧的遮挡顺序**（U44")
     quick = (ROOT / "docs" / "trial_quickstart.md").read_text(encoding="utf-8")
     review_part = quick.split("## 4. 走完之后：Review", 1)[1].split("### 冲突从哪来", 1)[0]
