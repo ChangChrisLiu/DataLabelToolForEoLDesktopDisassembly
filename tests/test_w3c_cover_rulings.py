@@ -170,12 +170,48 @@ def test_drafts_context_gallery_only_implied_chassis_and_unknown_parts_are_left_
         assert pending_pairs(pairs, inst, [], {}) == [], odd
 
 
+def test_small_and_latch_parts_on_top_and_screws_connectors_cables_underneath_are_not_asked():
+    """Round 2: the sheet's 「本版不做」 rule, both sides."""
+    assert CR.SMALL_ABOVE == {"screw", "connector", "cable_clip", "cable", "ram_latch",
+                              "drive_latch", "card_latch", "psu_latch", "cooler_latch",
+                              "cpu_socket_lever"}
+    assert CR.SMALL_BELOW == {"screw", "connector", "cable_clip", "cable"}
+    inst = dict(BASE)
+    for cls in sorted(CR.SMALL_ABOVE | CR.SMALL_BELOW):
+        inst[f"{cls}.01"] = rec(f"{cls}.01", cls)
+    for cls in sorted(CR.SMALL_ABOVE):                       # on top: never asked
+        assert pending_pairs([(f"{cls}.01", "motherboard.01", 50_000),
+                              (f"{cls}.01", "drive_cage.01", 50_000)], inst, [], {}) == [], cls
+    for cls in sorted(CR.SMALL_BELOW):                       # underneath: never asked
+        assert pending_pairs([("drive_cage.01", f"{cls}.01", 50_000),
+                              ("optical_drive.01", f"{cls}.01", 50_000)], inst, [], {}) == [], cls
+    # a lever or a RAM latch underneath stays a real question
+    kept = pending_pairs([("cover.01", "cpu_socket_lever.01", 6000),
+                          ("drive_cage.01", "ram_latch.01", 3000),
+                          ("drive_cage.01", "connector.01", 3000),
+                          ("ram_latch.01", "drive_cage.01", 3000)], inst, [], {})
+    assert [(c.above, c.below, c.tag) for c in kept] == [
+        ("cover.01", "cpu_socket_lever.01", TAG_RECOMMENDED),
+        ("drive_cage.01", "ram_latch.01", TAG_UNCERTAIN)]
+    # by class, whatever the kind or role
+    inst["screw.motherboard.01"] = rec("screw.motherboard.01", "screw",
+                                       attrs={"role": "motherboard"})
+    inst["connector.fan.01"] = rec("connector.fan.01", "connector", attrs={"kind": "fan"})
+    assert pending_pairs([("drive_cage.01", "screw.motherboard.01", 9000),
+                          ("drive_cage.01", "connector.fan.01", 9000)], inst, [], {}) == []
+
+
 # --------------------------------------------------------------------------- #
 # tags, order, counts, texts
 # --------------------------------------------------------------------------- #
 def test_the_sheets_class_pairs_are_encoded_with_their_reasons():
-    assert len(RECOMMENDED) == 19 and len(UNCERTAIN) == 21
+    assert len(RECOMMENDED) == 18 and len(UNCERTAIN) == 21
     assert ("optical_drive", "motherboard") in {(a, b) for a, b, _ in RECOMMENDED}
+    # round 2: the support table wins -- a card on the board is structural, so the
+    # tag tables never recommend a pair the rule can never ask
+    for above, below, _reason in RECOMMENDED + UNCERTAIN:
+        assert (above.split(".")[0], below.split(".")[0]) not in SUPPORT, (above, below)
+    assert pair_tag("expansion_card.gpu", "motherboard")[0] == TAG_OTHER
     assert ("drive_cage", "motherboard") in {(a, b) for a, b, _ in UNCERTAIN}
     assert all(reason for *_pair, reason in RECOMMENDED + UNCERTAIN)
     assert not ({(a, b) for a, b, _ in RECOMMENDED} & {(a, b) for a, b, _ in UNCERTAIN})
