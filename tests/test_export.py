@@ -470,12 +470,14 @@ def test_vlm_v2_asks_states_and_counts(db, tax, tmp_path: Path):
 
     screw = next(r for r in states if r["evidence"]["instances"] == [SCREW])
     assert screw["step"] == 1
-    assert screw["answer"] == {"state": "fastened"}
+    # W3b: tightness was never annotated -- a screw is asked present / removed
+    assert screw["answer"] == {"state": "present"}
+    assert screw["answer_check"]["state_space"] == "presence"
     assert "Motherboard screw 3" in screw["question"]
     assert len(counts) == 1 and counts[0]["step"] == 1
     assert counts[0]["answer"] == {"count": 1}
     assert "motherboard screws" in counts[0]["question"]
-    assert "fastened" in counts[0]["question"]
+    assert "in place" in counts[0]["question"]
 
 
 def test_vlm_v3_reads_the_action_between_two_frames(db, tax, tmp_path: Path):

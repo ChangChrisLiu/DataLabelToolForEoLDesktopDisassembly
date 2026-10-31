@@ -464,22 +464,40 @@ class Checker:
             if answer.get(field) != expected:
                 _fail(record, f"{field}: {answer.get(field)!r} != {expected!r}")
 
+    @staticmethod
+    def _shown(state, presence: bool):
+        """A screw's state as presence when the check asks in that space (W3b)."""
+        if not presence or state is None:
+            return state
+        return {"fastened": "present", "loosened": "present"}.get(state, state)
+
     def _expected(self, record: dict, spec: dict) -> dict:
         kind = spec.get("derive")
         label = record["label"]
         step, view = int(label["step"]), label["view"]
+        presence = spec.get("state_space") == "presence"
         if kind == "instance_state":
-            return {"state": self.state_at(step)[spec["instance"]]["state"]}
+            key = spec["instance"]
+            if presence and self.instances[key].attrs.get("captive"):
+                _fail(record, "a captive screw has no state a picture shows (W3b)")
+            return {"state": self._shown(self.state_at(step)[key]["state"], presence)}
         if kind == "screw_count":
             role, state = spec["role"], spec["state"]
             frame = self.state_at(step)
             n = sum(1 for key, rec in self.instances.items()
                     if rec.cls == "screw"
                     and str(rec.attrs.get("role") or "other") == role
-                    and frame[key]["state"] == state)
+                    and not (presence and rec.attrs.get("captive"))
+                    and self._shown(frame[key]["state"], presence) == state)
             return {"count": n}
         if kind == "action_slots":
             actions = self.named(step)
+            if spec.get("visible_only"):
+                # W3b: unscrewing a captive screw is not a visible action
+                actions = [a for a in actions if not (
+                    a.verb == "unscrew"
+                    and self.instances.get(a.target) is not None
+                    and self.instances[a.target].attrs.get("captive"))]
             if not actions:
                 _fail(record, "a change question on a step with no action")
             first = actions[0]
@@ -500,6 +518,14 @@ class Checker:
                 if events:
                     _fail(record, "a dupli step whose state actually moved")
                 return {"changed": False, "events": []}
+            if spec.get("reason") == "captive_screw_loosened":
+                # W3b: only captive screws moved, and a picture cannot show it
+                if not events or any(
+                        not (self.instances.get(e["target"]) is not None
+                             and self.instances[e["target"]].attrs.get("captive"))
+                        for e in events):
+                    _fail(record, "a captive no-change pair where something else moved")
+                return {"changed": False, "events": []}
             return {"changed": bool(events), "events": events}
         if kind == "answerable":
             row = self.rows(view, step).get(spec["instance"])
@@ -507,7 +533,8 @@ class Checker:
                 _fail(record, f"{spec['instance']} has no compiled row here")
             ok = row.get("visibility") in ANSWERABLE
             return {"answerable": ok,
-                    "state": self.state_at(step)[spec["instance"]]["state"] if ok else None}
+                    "state": (self._shown(self.state_at(step)[spec["instance"]]["state"],
+                                          presence) if ok else None)}
         if kind == "cross_view":
             row = self.rows(spec["answer_view"], step).get(spec["instance"])
             if row is None or row.get("visibility") not in ANSWERABLE:
@@ -515,7 +542,8 @@ class Checker:
             blind = self.rows(spec["blind_view"], step).get(spec["instance"])
             if blind is not None and blind.get("visibility") in ANSWERABLE:
                 _fail(record, "the blind view could answer after all")
-            return {"state": self.state_at(step)[spec["instance"]]["state"],
+            return {"state": self._shown(self.state_at(step)[spec["instance"]]["state"],
+                                         presence),
                     "best_view": spec["answer_view"]}
         if kind == "same_moment":
             # derived, not copied: two folded states, compared
@@ -557,7 +585,7 @@ class Checker:
                 _fail(record, "a demonstrated action must be feasible")
             if bad:
                 _fail(record, "the graph forbids what the log demonstrates")
-        elif source in ("graph_blocked", "failed_attempt"):
+        elif source in ("graph_blocked", "graph_blocked_pixels", "failed_attempt"):
             if not bad:
                 _fail(record, "a negative whose blocker set is empty")
             if answer["feasible"] is not False:
@@ -682,7 +710,7 @@ class Checker:
             kinds[kind] = kinds.get(kind, 0) + 1
             if kind == "demonstrated" and pair != (action.verb, action.target):
                 _fail(record, f"option {pair} is not the demonstrated one")
-            if kind == "graph_blocked" and pair not in blocked:
+            if kind in ("graph_blocked", "graph_blocked_pixels") and pair not in blocked:
                 _fail(record, f"option {pair} is not blocked")
             if kind == "state_inapplicable" and self.applies(pair[1], pair[0], frame):
                 _fail(record, f"option {pair} applies after all")
@@ -691,7 +719,8 @@ class Checker:
                 _fail(record, f"option {pair} is not a permitted distractor")
         if kinds.get("demonstrated") != 1:
             _fail(record, "an options list needs exactly one demonstrated action")
-        wrong = kinds.get("graph_blocked", 0) + kinds.get("state_inapplicable", 0)
+        wrong = (kinds.get("graph_blocked", 0) + kinds.get("graph_blocked_pixels", 0)
+                 + kinds.get("state_inapplicable", 0))
         if wrong < 2:
             _fail(record, "an options list needs at least two certainly-wrong actions")
         shown_options = record["prompt"].get("options") or []
@@ -777,6 +806,42 @@ class Checker:
             # a rearrangement that violates nothing is a different plan of
             # unknown validity; only a substitute may fail on the state alone
             _fail(record, "a rearrangement called wrong without a violated edge")
+
+    # V7 (W3b)
+    def _check_goal_plan(self, record: dict, spec: dict) -> None:
+        label = record["label"]
+        step = int(label["step"])
+        goal = spec["goal"]
+        frame = {k: dict(v) for k, v in self.state_at(step).items()}
+        if frame[goal]["state"] == REMOVED:
+            _fail(record, "a plan for a goal that is already out")
+        if {k: v["state"] for k, v in frame.items()} != {
+                k: v for k, v in spec["start_state"].items() if k in frame}:
+            _fail(record, "the start state is not the folded state of this step")
+        # the reference plan replays without an unmet edge and takes the goal out
+        sim = {k: dict(v) for k, v in frame.items()}
+        for item in spec["reference_plan"]:
+            verb, target = item["verb"], item["target"]
+            if self.unmet(verb, target, sim) or not self.applies(target, verb, sim):
+                _fail(record, f"the reference plan breaks at {verb} {target}")
+            self._apply(sim, target, verb)
+        if sim[goal]["state"] != REMOVED:
+            _fail(record, "the reference plan does not reach the goal")
+        # ... and every required state change is in it
+        for req in spec["required_actions"]:
+            got = sim.get(req["target"], {}).get("state")
+            if got not in set(req["states"]) and got != REMOVED:
+                _fail(record, f"the reference plan misses required {req['target']}")
+        # the demonstrated remainder is the log after this step, up to the goal
+        logged = [(a.verb, a.target) for s in self.log_steps()
+                  if step < s <= int(spec["goal_removed_at"])
+                  for a in self.planning_actions(s)]
+        if [(i["verb"], i["target"]) for i in spec["demonstrated_remainder"]] != logged:
+            _fail(record, "the demonstrated remainder is not the logged suffix")
+        if spec.get("redundancy_penalty") is not False:
+            _fail(record, "V7 must not penalise redundant steps")
+        if int(spec["plan_length"]) != len(spec["reference_plan"]):
+            _fail(record, "plan_length disagrees with the reference plan")
 
     def _apply(self, frame: dict[str, dict], target: str, verb: str) -> None:
         effect = self._effect(target, verb)
