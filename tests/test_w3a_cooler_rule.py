@@ -29,6 +29,7 @@ from tda.core.taxonomy import load_taxonomy
 TAX = load_taxonomy()
 FAN, HEATSINK = "cpu_cooler.fan.01", "cpu_cooler.heatsink.01"
 LEVER = "cpu_socket_lever.01"
+BOARD = "motherboard.01"
 
 
 def two_part_desktop() -> dict[str, InstanceRec]:
@@ -40,9 +41,11 @@ def two_part_desktop() -> dict[str, InstanceRec]:
 
 
 def cooler_edges(instances) -> set[tuple[str, str, str]]:
+    """The cooler's ``covered_by`` edges of this rule; the cooler over the board
+    (every mounted part sits on it, task W3d) is ``test_w3d_board_rule``'s."""
     coolers = {k for k, r in instances.items() if r.cls == "cpu_cooler"}
     return {t for t in _triples(propose_edges(instances, TAX))
-            if t[0] == "covered_by" and t[2] in coolers}
+            if t[0] == "covered_by" and t[2] in coolers and t[1] != BOARD}
 
 
 def test_one_cooler_covers_the_cpu_and_the_lever():
@@ -51,7 +54,7 @@ def test_one_cooler_covers_the_cpu_and_the_lever():
     assert cooler_edges(bench) == {("covered_by", "cpu.01", FAN),
                                    ("covered_by", LEVER, FAN)}
     reasons = {e.target: e.reason for e in propose_edges(bench, TAX) if e.blocker == FAN
-               and e.type == "covered_by"}
+               and e.type == "covered_by" and e.target != BOARD}
     assert reasons == {"cpu.01": f"{FAN} sits on cpu.01",
                        LEVER: f"{FAN} sits on the socket lever {LEVER}"}
     assert unresolved_coolers(bench) == []
@@ -178,7 +181,7 @@ def test_the_docs_say_it():
     entries = [line for line in spec.split("## 14. 修订记录", 1)[1].splitlines()
                if line.startswith("- ")]
     assert any(e.startswith("- **v1.47（2026-10-31）**：**压在 CPU 上的散热器、复查裁定的遮挡边")
-               for e in entries[:4])
+               for e in entries[:5])
     handoff = (root / "docs" / "HANDOFF_2026-10-28.md").read_text(encoding="utf-8")
     section = handoff.split("## 5. 导出与 HuggingFace 准备", 1)[1].split("\n## ", 1)[0]
     assert sum("cli pixel-edges" in line for line in section.splitlines()) == 1

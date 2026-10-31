@@ -69,7 +69,13 @@ BLOCKED_GATES = {
     "cable_tension": {"remove"},
     "physical_path": {"remove", "displace"},
     "tool_access": set(GATED_VERBS),
+    # a part mounted on the board (task W3d): as physical_path
+    "mounted": {"remove", "displace"},
 }
+
+#: ``blocked_by`` modes whose blocker must reach a narrower set of states
+#: (task W3d): a part mounted on the board has to be removed, not swung aside.
+BLOCKED_REQUIRED = {"mounted": {"removed"}}
 
 #: A rejected edge, and a decision about a rule that is no longer derived, gate
 #: nothing. Everything else -- proposed, accepted -- does.
@@ -83,6 +89,13 @@ def gates(edge_type: str, mode=None) -> set:
     if edge_type == "blocked_by":
         return BLOCKED_GATES.get(mode or "", set(GATED_VERBS))
     return GATES.get(edge_type, set(GATED_VERBS))
+
+
+def required(edge_type: str, mode=None) -> set:
+    """The states one edge's blocker must be in, by type and (for ``blocked_by``) mode."""
+    if edge_type == "blocked_by" and mode in BLOCKED_REQUIRED:
+        return BLOCKED_REQUIRED[mode]
+    return REQUIRED_STATES.get(edge_type, set())
 
 #: Which states a verb may be applied *from* (spec 6.2/6.3).
 VERB_FROM_STATES = {
@@ -285,7 +298,7 @@ class Checker:
             current = self._blocker_state(frame, edge["blocker"])
             if current is None or current == REMOVED:
                 continue
-            if current not in REQUIRED_STATES.get(edge["type"], set()):
+            if current not in required(edge["type"], edge["mode"]):
                 out.append(dict(edge))
         return out
 

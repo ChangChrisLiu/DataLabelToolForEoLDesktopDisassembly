@@ -444,22 +444,28 @@ def test_rejecting_a_rule_edge_puts_an_action_back_into_the_legal_set(instances,
 # --------------------------------------------------------------------------- #
 # the violations list -- the same replay `constraints --validate` prints
 # --------------------------------------------------------------------------- #
+#: The step of the failed drive removal: two steps after :func:`good_sequence`
+#: ends (it grew to a full board-clearing teardown in task W3d).
+ATTEMPT = good_sequence()[-1].step + 2
+
+
 def failed_attempt() -> list[ActionRec]:
     """A teardown in which taking the drive out is tried and does not work.
 
-    Its SATA lead is pulled first, so by step 9 the graph knows of nothing in
-    the drive's way -- which is exactly the "missing edge?" case of spec 7.4.
+    Its SATA lead is pulled first, so by step :data:`ATTEMPT` the graph knows of
+    nothing in the drive's way -- which is exactly the "missing edge?" case of
+    spec 7.4.
     """
     return [*good_sequence(),
-            ActionRec(desktop=DESKTOP, step=8, idx=0, target="connector.sata_data.01",
-                      verb="disconnect", result="success"),
-            ActionRec(desktop=DESKTOP, step=9, idx=0, target="storage_drive.hdd.01",
+            ActionRec(desktop=DESKTOP, step=ATTEMPT - 1, idx=0,
+                      target="connector.sata_data.01", verb="disconnect", result="success"),
+            ActionRec(desktop=DESKTOP, step=ATTEMPT, idx=0, target="storage_drive.hdd.01",
                       verb="remove", result="failed", failure_reason="blocked")]
 
 
 def test_a_failed_attempt_nothing_explains_is_a_hint(instances, rules, tax):
     found = violations_of(instances, rules, failed_attempt(), tax)
-    assert [(v.step, v.kind) for v in found] == [(9, "hint")]
+    assert [(v.step, v.kind) for v in found] == [(ATTEMPT, "hint")]
     assert "missing edge?" in found[0].text
 
 
@@ -582,7 +588,7 @@ def test_a_reason_is_prose_and_does_not_change_the_version(db, tax, instances):
 def test_violations_reads_the_database_the_way_the_cli_does(db, tax):
     rerun(db, tax)
     found = violations(db, DESKTOP, tax)
-    assert [(v.step, v.kind) for v in found] == [(9, "hint")]
+    assert [(v.step, v.kind) for v in found] == [(ATTEMPT, "hint")]
 
 
 def test_the_export_quotes_a_graph_that_holds_the_manual_edge(db, tax, instances):

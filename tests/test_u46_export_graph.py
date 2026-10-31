@@ -100,14 +100,26 @@ def act(step, idx, target, verb, result="success", why=None):
 
 
 def log():
+    """The bench log. Steps 5-7 also clear the board -- RAM, cooler, CPU -- as
+    further actions (``idx`` 1..) of the screw steps, so the step numbers the
+    frames hang on stay put and the only breach at step 8 is the SATA plug
+    (everything on the board comes off before it, task W3d)."""
     steps = [StepRec(DESKTOP, 1, "initial", "Initial conditions")]
     actions = [
         act(2, 0, "cover.01", "open"),
         act(3, 0, "connector.atx_24pin.01", "disconnect"),
         act(4, 0, "psu_latch.01", "open", "failed", "stuck"),
         act(5, 0, "screw.motherboard.01", "unscrew"),
+        act(5, 1, "ram_latch.01", "open"),
+        act(5, 2, "ram_latch.02", "open"),
+        act(5, 3, "ram_module.01", "remove"),
         act(6, 0, "screw.motherboard.02", "unscrew"),
+        act(6, 1, "screw.cpu_cooler.01", "unscrew"),
+        act(6, 2, "screw.cpu_cooler.02", "unscrew"),
+        act(6, 3, "cpu_cooler.fan.01", "remove"),
         act(7, 0, "screw.motherboard.03", "unscrew"),
+        act(7, 1, "cpu_socket_lever.01", "open"),
+        act(7, 2, "cpu.01", "remove"),
         act(8, 0, "motherboard.01", "remove"),
         act(9, 0, "chassis", "reorient"),
         act(10, 0, "?", "remove"),
@@ -341,16 +353,22 @@ def test_plans_from_the_initial_state_and_the_progress_label(doc):
     assert board["plan"][-1] == "remove motherboard.01"
     assert board["length"] == len(board["plan"])
     assert "disconnect connector.sata_data.02" in board["plan"]
-    assert board["removed_at"] == 8 and board["demonstrated_length"] == 6
+    # the six board actions plus the eight that clear it (task W3d)
+    assert board["removed_at"] == 8 and board["demonstrated_length"] == 14
     assert plans["psu.01"]["removed_at"] is None
     assert plans["psu.01"]["demonstrated_length"] is None
     everything = plans["all"]
-    # an unscrewed screw is out of the machine too, so the log removes four parts
-    assert everything["goals"] == ["screw.motherboard.01", "screw.motherboard.02",
-                                   "screw.motherboard.03", "motherboard.01"]
+    # an unscrewed screw is out of the machine too, so the log removes seven parts:
+    # the three screws, the RAM, the cooler and the CPU, then the board (task W3d)
+    assert everything["goals"] == ["screw.motherboard.01", "ram_module.01",
+                                   "screw.motherboard.02", "cpu_cooler.fan.01",
+                                   "screw.motherboard.03", "cpu.01", "motherboard.01"]
+    # the same actions as the board's own plan: the board plan removes what is
+    # mounted on it (a `mounted` block wants it removed, not swung aside)
     assert sorted(everything["plan"]) == sorted(board["plan"])
+    assert not [a for a in board["plan"] if a.startswith("displace")]
     assert everything["unplanned"] == [] and everything["length"] == board["length"]
-    assert everything["removed_at"] == 8 and everything["demonstrated_length"] == 6
+    assert everything["removed_at"] == 8 and everything["demonstrated_length"] == 14
     remaining = everything["remaining_steps_by_step"]
     assert len(remaining) == len(doc["legal_by_step"])
     assert remaining[0] == board["length"] and remaining[-1] == 0
@@ -526,7 +544,7 @@ def test_the_docs_say_it():
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
     # on top when it landed; U44 / U45 (v1.43 / v1.44) are ordered at their merges
     assert any(e.startswith("- **v1.45（2026-10-30）**：**每机优先级图 JSON**（U46，§8.1）")
-               for e in entries[:6])
+               for e in entries[:7])
     handoff = (REPO / "docs" / "HANDOFF_2026-10-28.md").read_text(encoding="utf-8")
     section = handoff.split("## 5. 导出与 HuggingFace 准备", 1)[1].split("\n## ", 1)[0]
     assert sum("export-graph" in line for line in section.splitlines()) == 1
