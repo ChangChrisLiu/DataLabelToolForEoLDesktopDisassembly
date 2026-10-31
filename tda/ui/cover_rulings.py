@@ -80,10 +80,12 @@ TAG_OTHER = "其他"
 #: The order candidates are listed in.
 TAGS = (TAG_RECOMMENDED, TAG_UNCERTAIN, TAG_OTHER)
 
-#: Class-level support: the part sits on the motherboard, so covering it is a
-#: matter of build, not of order.  The one table, owned by the export side
-#: (``tda.core.export.graph_covers.SUPPORT``, task W3a §2.3; unified at the
-#: W3a merge, review M3), so Review and ``export-graph`` cannot disagree; it is
+#: Class-level support: the part sits on the motherboard.  Since task W3d the
+#: pair is a **rule edge** (``covered_by(motherboard <- part)``, spec 7.3
+#: 「主板上的东西先拆」), so its order is already decided and Review never asks
+#: it.  The one table (``tda.core.export.graph_covers.SUPPORT``, built from
+#: ``tda.core.graph_rules.MOUNTED_ON_MOTHERBOARD``; unified at the W3a merge,
+#: review M3), so Review, the rules and ``export-graph`` cannot disagree; it is
 #: imported at the top of this module and re-exported as ``SUPPORT``.
 #: Classes that never move (graph_covers' ``below_fixed``): no pair with them is asked.
 FIXED_CLASSES = frozenset({"chassis"})
@@ -108,8 +110,9 @@ def _first(share: int) -> str:
 
 #: 「建议收」 class pairs of the sheet's table A (rows 2-19): ``(above, below, reason)``,
 #: each side a ``class`` or a ``class.kind``.  Row 1 (``expansion_card.gpu ->
-#: motherboard``) is left out: a card is mounted on the board, so :data:`SUPPORT`
-#: makes the pair structural and it is never asked (controller ruling, W3c round 2).
+#: motherboard``) is left out: a card is mounted on the board, so the pair is a
+#: rule edge (task W3d, the user's 「主板上的东西先拆」; :data:`SUPPORT`) and it is
+#: never asked (controller ruling, W3c round 2).
 RECOMMENDED: tuple[tuple[str, str, str], ...] = (
     ("optical_drive", "motherboard", _RIGID),
     ("optical_drive", "drive_cage", _RIGID),

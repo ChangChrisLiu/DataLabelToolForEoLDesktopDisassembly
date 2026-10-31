@@ -22,7 +22,8 @@ _SUMMARY_ZH = """\
 被哪些边解释 `explained_by`；没有任何边（正反向都没有）、零件表里也没有关系（装在 / 插在 / 拧住 / 随父件拆下且父件自己也盖住它、下面是机箱、
 类级支承表：CPU / 内存 / 散热器 / 扩展卡在主板上）、用户在复查里也没判「不挡」的就是**候选**，
 供人工判断要不要补 `covered_by` / `blocked_by`；`ruling` 是用户在复查里对这一对的裁定）；
-`instances[].mounted_on_rule` 是支承表推出的「装在谁上」（导出时推导，不写库）；
+`instances[].mounted_on_rule` 是支承表推出的「装在谁上」（导出时推导，不写库；这四类零件的每个真实实例
+同时有规则边 `covered_by(主板 ← 零件)`：主板上的东西先拆）；
 `legal_by_step`（每一步之后严格 / 放宽的合法动作集、下一步实际做了什么、是否合法；`reorient` 和没写清是哪个零件的 `?` 不判）；
 `plans`（从初始状态拆下主板 / CPU / 电源的最短合法计划；「全部」= 日志拆下的全部零件按日志顺序逐个规划的合法计划，不保证整体最短；
 都和演示用的动作数对比；每步之后「全部」还剩几步，即 V10 的进度标签）；
@@ -75,7 +76,9 @@ left out, as in the scanner package),
 `parent` + `attached` (leaves the chassis together with the parent), `mounted_on` (as
 annotated; empty so far), `mounted_on_rule` (what the class-level support table says the part
 sits on: the desktop's one `motherboard` for a `cpu`, `ram_module`, `cpu_cooler` or
-`expansion_card`, else `null`; derived at export time, never stored), `fastens`
+`expansion_card`, else `null`; derived at export time, never stored -- the same four classes
+whose every real instance also carries the rule edge `covered_by(motherboard <- part)`,
+"everything on the board comes off before the board"), `fastens`
 (screws), `socket_host` and `cable` (connectors), `implied` (created by a rule, not named by
 the sheet), `extra` (added by hand in the tool), and `timeline`: `[{step, state, placement}]`,
 the initial state at step 0 first, then one entry each time the state or placement changes.
@@ -124,7 +127,10 @@ any depth) **and** that parent's own covering of the same lower part is listed, 
 that can order anything is that one; a child whose parent covers nothing there stays a
 candidate; `below_fixed` -- the lower part has no verb that changes it, the chassis;
 `rule.supported_by` -- the upper part sits on the lower one by the class-level support table,
-a CPU, RAM stick, cooler or expansion card over the motherboard; `user.not_blocks` -- the user
+a CPU, RAM stick, cooler or expansion card over the motherboard (for a real part this pair is
+also a rule edge, `covered_by(motherboard <- part)`, so it is in `explained_by` too; the
+reason still accounts for a part or board added by hand, which takes no rule edge);
+`user.not_blocks` -- the user
 looked at the pair in Review and ruled that it holds nothing up),
 `no_edge` (`explained_by` and `reverse_edges` both empty), `candidate` (`no_edge` and
 `structural` empty: a covering nothing accounts for -- the triage list), `order_source` (what

@@ -17,7 +17,8 @@ in the instance table (``structural``: one is attached to, mounted on, plugged
 into or screwing down the other, the upper one rides out with a parent whose
 own covering of the same part is listed, or the
 lower part is the chassis, which never moves; task W3a adds the class-level
-support table -- a CPU, RAM, cooler or card over the motherboard sits on it --
+support table -- a CPU, RAM, cooler or card over the motherboard sits on it,
+which task W3d also made a ``covered_by(motherboard <- part)`` rule edge --
 and the user's own ``not_blocks`` ruling from Review). ``no_edge`` keeps the brief's
 own definition beside it (no edge either way, whatever the instance table says).
 
@@ -73,7 +74,12 @@ from tda.core.db import Db
 from tda.core.export.coco import DesktopCtx, frame_is_verified
 from tda.core.graph import GATED_VERBS, Edge
 from tda.core.graph_infer import unique_of_class
-from tda.core.graph_rules import active_edges, verb_effect
+from tda.core.graph_rules import (
+    MOTHERBOARD_CLASS,
+    MOUNTED_ON_MOTHERBOARD,
+    active_edges,
+    verb_effect,
+)
 from tda.core.model import FrameKey, is_context_key
 from tda.core.states import IN_CHASSIS
 from tda.core.truth_inputs import pose_segment_of
@@ -160,22 +166,23 @@ def reverse_edges(edges: list[Edge], above: str, below: str) -> list[str]:
 #: The relational fields that make a covering a matter of build, not of order.
 _STRUCTURE_FIELDS = ("mounted_on", "socket_host", "fastens")
 
-#: Class-level physical support, read **at export time only** (task W3a): a part
-#: of one of these classes sits on the desktop's one motherboard. ``mounted_on``
-#: is empty on every instance of the real database, so the X-over-motherboard
-#: coverings topped the candidate list; this table explains them without writing
-#: a field. The socket levers and RAM latches are already ``attached`` to the
-#: board, so they need no row here.
+#: Class-level support (task W3a): a part of one of these classes sits on the
+#: desktop's one motherboard. Since task W3d the pair is a **rule edge** --
+#: :func:`tda.core.graph_rules.propose_edges` derives ``covered_by(motherboard <-
+#: part)`` for every real instance (spec 7.3 「主板上的东西先拆」) -- and this
+#: table no longer owns the list: it is built from
+#: :data:`tda.core.graph_rules.MOUNTED_ON_MOTHERBOARD`, so the two cannot drift.
+#: With the edge present such a covering is ``explained_by`` it anyway; the
+#: ``rule.supported_by`` reason still covers the pairs that get no edge (a part
+#: or a board added in S1, a draft), so they never become candidates either.
+#: The socket levers and RAM latches are already ``attached`` to the board, so
+#: they need no row here.
 #:
 #: **The one support table** (review round 1, M3): Review's question list
 #: (:mod:`tda.ui.cover_rulings`, task W3c) imports this very tuple, so Review
-#: never asks about a pair the export calls structural, and the other way round.
-SUPPORT: tuple[tuple[str, str], ...] = (
-    ("cpu", "motherboard"),
-    ("ram_module", "motherboard"),
-    ("cpu_cooler", "motherboard"),
-    ("expansion_card", "motherboard"),
-)
+#: never asks about such a pair, and the export never lists one as a candidate.
+SUPPORT: tuple[tuple[str, str], ...] = tuple(
+    (cls, MOTHERBOARD_CLASS) for cls in MOUNTED_ON_MOTHERBOARD)
 #: ``class -> the class it sits on``, the same table as a mapping.
 SUPPORTED_BY = dict(SUPPORT)
 #: ``structural`` reason of a pair the support table explains.
@@ -269,8 +276,10 @@ def structural_reasons(instances: dict, tax, above: str, below: str,
       (the chassis): covering it can hold nothing up;
     * ``rule.supported_by`` -- the upper part sits on the lower one by the
       class-level support table (:data:`SUPPORTED_BY`: a CPU, RAM stick,
-      cooler or expansion card over the motherboard), the export-time stand-in
-      for the ``mounted_on`` nobody filled in (task W3a).
+      cooler or expansion card over the motherboard; task W3a). Since task W3d
+      the pair is a rule edge as well (``covered_by(motherboard <- part)``), so
+      a real part's covering is ``explained_by`` it; the reason still accounts
+      for the parts and boards that take no edge (S1 extras, drafts).
     Sorted; empty when the instance table says nothing about the pair.
     """
     out: set[str] = set()

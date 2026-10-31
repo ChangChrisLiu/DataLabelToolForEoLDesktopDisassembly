@@ -728,13 +728,17 @@ def test_a_blocked_by_edge_gates_by_its_mode(tmp_path: Path, mode, open_blocked,
 
     Two edges, one target each, so each verb is decided by the mode alone: the
     latch has nothing else gating ``open``, and the board's only other edge
-    (`connected_to`) gates ``remove`` and nothing more.
+    (`connected_to`) gates ``remove`` and nothing more. The rule edge
+    ``covered_by(board <- RAM)`` (task W3d: what is on the board comes off
+    first) would gate ``displace`` whatever the mode, so this scene drops it:
+    the test is about the mode table, not the board rule.
     """
     db = Db(str(tmp_path / f"mode_{mode}.sqlite"))
     tax = S.build(db, views=(S.VIEW,), verified_steps=(), edges=[
         {"type": "blocked_by", "target": S.LATCH, "blocker": S.PSU, "mode": mode},
         {"type": "blocked_by", "target": S.BOARD, "blocker": S.RAM, "mode": mode},
     ])
+    db.delete_relation(S.DESKTOP, "covered_by", S.BOARD, S.RAM)
     records = _run(db, tax, tmp_path / "v.jsonl")
     must_not, permitted = _bounded(records, 1)
 
