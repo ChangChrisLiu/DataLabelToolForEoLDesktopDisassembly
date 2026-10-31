@@ -66,7 +66,7 @@ RECTS = {
     SCREWS[1]: (29, 12, 32, 15),
     SCREWS[2]: (12, 29, 15, 32),
     SCREWS[3]: (29, 29, 32, 32),
-    BOARD_SCREW: (4, 44, 8, 48),
+    BOARD_SCREW: (4, 38, 14, 48),
 }
 
 #: step -> (verb, target)

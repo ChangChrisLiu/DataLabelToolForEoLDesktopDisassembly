@@ -122,15 +122,28 @@ def test_every_record_carries_the_contract_fields(scene, tmp_path: Path):
         assert isinstance(label["verified"], bool)
 
 
-def test_nothing_in_a_record_depends_on_a_split(scene, tmp_path: Path):
-    """There is no split yet (spec 8.1: it is cut at freeze, platform-disjoint)."""
+def test_a_record_carries_its_desktops_split_and_nothing_else_of_it(
+        scene, tmp_path: Path):
+    """W3b: the split is public metadata, copied to the label side, never the prompt."""
     db, tax = scene
+    before = _run(db, tax, tmp_path / "none.jsonl")
+    assert before and all(r["label"]["split"] is None for r in before)
     db.upsert_desktop(S.DESKTOP, {"brand": "HP", "split": "train",
                                   "model_family": "EliteDesk 800 G2 TWR",
                                   "chassis_type": "twr"})
-    for record in _run(db, tax, tmp_path / "v.jsonl"):
-        assert "split" not in json.dumps(record)
+    summary = _export(db, tax, tmp_path / "v.jsonl")
+    after = _read(tmp_path / "v.jsonl")
+    assert summary["by_split"] == {"train": len(after)}
+    for record in after:
+        assert record["label"]["split"] == "train"
+        assert "split" not in json.dumps(record["prompt"])
         assert record["label"]["model_family"]
+    # the answers are the same whatever the split says
+    assert [r["label"]["answer"] for r in after] == [r["label"]["answer"] for r in before]
+    # the filter: a train desktop is not in a test export
+    summary = _export(db, tax, tmp_path / "t.jsonl", split="test")
+    assert summary["records"] == 0 and summary["skipped_by_split"] == [S.DESKTOP]
+    assert _export(db, tax, tmp_path / "tr.jsonl", split="train")["records"] == len(after)
 
 
 def test_every_rationale_stays_inside_the_closed_operation_set(scene, tmp_path: Path):
