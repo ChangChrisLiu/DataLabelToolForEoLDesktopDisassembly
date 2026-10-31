@@ -54,7 +54,7 @@ def test_the_paragraph_is_in_4_2_after_the_missing_frames():
 def test_v1_36_is_on_top_of_14():
     changes = _spec().split("## 14. 修订记录", 1)[1]
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
-    [entry] = [e for e in entries[:11] if e.startswith("- **v1.36")]
+    [entry] = [e for e in entries[:12] if e.startswith("- **v1.36")]
     assert entry.startswith("- **v1.36（2026-10-27）**：**位姿段的起始帧按起点处理**（U37，§4.2）")
     for needed in ("「35步让我什么都不画，直接跳过了……这个是错误的」",
                    "`tda.core.truth_inputs.same_segment`",

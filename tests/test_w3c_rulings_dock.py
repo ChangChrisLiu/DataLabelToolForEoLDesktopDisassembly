@@ -294,7 +294,7 @@ def test_the_docs_say_it():
     entries = [line for line in changes.splitlines() if line.startswith("- ")]
     # on top when it landed; W3a / W3b (v1.46 / v1.47) are ordered at their merges
     assert any(e.startswith("- **v1.46（2026-10-31）**：**复查里的「谁压着谁」裁定**（W3c，§4.4）")
-               for e in entries[:3])
+               for e in entries[:4])
     quick = (ROOT / "docs" / "trial_quickstart.md").read_text(encoding="utf-8")
     review_part = quick.split("## 4. 走完之后：Review", 1)[1].split("### 冲突从哪来", 1)[0]
     item = review_part.split("\n5. ", 1)[1]

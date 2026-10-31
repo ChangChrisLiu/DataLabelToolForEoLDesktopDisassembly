@@ -44,6 +44,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Optional, Union
 
+from tda.core.export.graph_covers import SUPPORT
 from tda.core.graph import active_edges
 from tda.core.model import (
     is_context,
@@ -80,15 +81,10 @@ TAG_OTHER = "其他"
 TAGS = (TAG_RECOMMENDED, TAG_UNCERTAIN, TAG_OTHER)
 
 #: Class-level support: the part sits on the motherboard, so covering it is a
-#: matter of build, not of order.  Mirrored from W3a's
-#: ``tda.core.export.graph_covers.structural_reasons`` ``supported_by`` table
-#: (task W3a §2.3); the controller unifies the two at merge.
-SUPPORT: tuple[tuple[str, str], ...] = (
-    ("cpu", "motherboard"),
-    ("ram_module", "motherboard"),
-    ("cpu_cooler", "motherboard"),
-    ("expansion_card", "motherboard"),
-)
+#: matter of build, not of order.  The one table, owned by the export side
+#: (``tda.core.export.graph_covers.SUPPORT``, task W3a §2.3; unified at the
+#: W3a merge, review M3), so Review and ``export-graph`` cannot disagree; it is
+#: imported at the top of this module and re-exported as ``SUPPORT``.
 #: Classes that never move (graph_covers' ``below_fixed``): no pair with them is asked.
 FIXED_CLASSES = frozenset({"chassis"})
 #: The sheet's 「本版不做」 rule (06-covering-adjudication.md; W3c round 2): small
