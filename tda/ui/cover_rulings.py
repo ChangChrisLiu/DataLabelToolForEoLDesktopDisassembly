@@ -24,7 +24,9 @@ when all of these hold:
   ``below_fixed``) or a key the instance table does not know;
 * the sheet's 「本版不做」 classes: ``above`` is no screw, connector, cable
   clip, cable or latch / lever (:data:`SMALL_ABOVE`), ``below`` no screw,
-  connector, cable clip or cable (:data:`SMALL_BELOW`);
+  connector, cable clip or cable (:data:`SMALL_BELOW`) -- except, since task
+  W3h, a small part **on top** of one the log moved first: such a pair is
+  never asked but is listed in 日志里下面那件先动了 for the layer check;
 * no active edge of any type joins the two, in either direction;
 * no structural reason: one's ``parent`` (any depth of ``attached``
   parents), ``mounted_on``, ``fastens``, ``socket_host`` or ``cable`` is the
@@ -36,10 +38,10 @@ when all of these hold:
 Each candidate is tagged with the user's class-level ruling (task W3g; it
 replaced the covering adjudication sheet's 「建议收」 / 「存疑」 tables):
 「用户已定：挡」 (:data:`TAG_USER_BLOCKS`) when its class pair is one of the
-``pairs:`` of ``configs/covers_whitelist.yaml`` (W2, the user's answers to
-``08-class-pair-questions.md``), with the user's words as the reason, else
-「其他」.  The row keeps both buttons: an instance-level exception is still
-the user's to make.  No Qt here.
+``pairs:`` of ``configs/covers_whitelist.yaml`` (W2 / W3, the user's answers to
+``08-class-pair-questions.md`` and to the pair cards), with the user's words as
+the reason, else 「其他」.  The row keeps both buttons: an instance-level
+exception is still the user's to make.  No Qt here.
 
 **Task W3f: two kinds of pair are no longer asked** (:func:`triage_pairs`; the
 dock folds them away).  The user could not tell what a row was about, and on
@@ -70,6 +72,33 @@ whole class: 「只是我们 disassembly 的时候有这个顺序」).  Judged a
 graph's chain and before the log; folded, no buttons.  The class rulings are
 read once from the shipped whitelist (:func:`class_rulings`, through the same
 loader ``cli pixel-edges`` uses), or passed in (``classes=``).
+
+**Task W3h: the log's word is a question, not a proof** -- the W3f fold becomes
+「日志里下面那件先动了（k）」 (subtitle 「不挡，或者层序画反了 —— 请看图定」).  It hid
+exactly the errors the pair cards showed: ``hdd.01 → psu.01`` on D22 was
+「日志已证明不挡」 because the log displaces the PSU while the HDD is still
+installed -- which is a proof only if the layer order is right.  The user's
+principle is the opposite (「你的遮挡关系算错了 … 要用我们的拆解的顺序作为主要参考」):
+the disassembly order is the primary reference, so a covering whose lower part
+the log moved first is either 不挡 or a layer order painted the wrong way round,
+and the user decides with the picture (「我需要去检查一轮」).  The bucket is
+exactly :func:`log_proof`'s set (every gated verb, no second replay), whatever
+the class pair; a pair whose class pair the user ruled 挡 (the whitelist's
+``pairs:``, **either** orientation -- ``(below, above)`` ruled 挡 means the
+picture is the other way round, :func:`class_blocking`) carries the tag
+「用户已定：挡 → 层序可能画反」 (:data:`TAG_LAYER`).  Two buttons per row: 「不挡」
+(an ordinary ``not_blocks`` ruling, what the old fold's one button did) and
+「上下翻转」 (the pair override ``below`` above ``above`` for the view's pose
+segment through the session's ``flip_pair_layers``, which re-checks the frozen
+frames and accepts the two parts' new values).  A segment that already holds
+that override shows 「已翻过」 in the button's place (``overrides=``;
+:attr:`Candidate.flipped`).  The 「本版不做」 classes on top (a connector, a
+clip, a latch) take part in this bucket alone (a screw / connector / cable
+underneath never does): on the live copy (2026-10-31) the bucket is mostly
+``connector → drive_cage`` (the Dell cage swung aside with its drives still
+plugged in), the fans over their latches, the GPUs over their card latches,
+connectors over a cover / drive / heatsink, and the two ``psu → cover`` the
+user ruled the other way round (E4).
 """
 from __future__ import annotations
 
@@ -92,14 +121,15 @@ from tda.core.states import REMOVED, events_from_actions, state_at
 from tda.ui.class_names import state_zh
 
 __all__ = ["BLOCKS", "COVER_CLEAR", "COVER_GATED", "Candidate", "ClassRulings", "CoverLog",
-           "FIXED_CLASSES", "LogMove", "MIN_PX", "MOVE_ZH", "NOT_BLOCKS",
+           "FIXED_CLASSES", "FLIPPED_TEXT", "FLIP_LEFT_OPEN", "FLIP_NOTE", "FLIP_TEXT",
+           "LogMove", "MIN_PX", "MOVE_ZH", "NOT_BLOCKS",
            "RULINGS", "RULING_MARK", "RULING_TEXT", "SMALL_ABOVE", "SMALL_BELOW", "SUPPORT",
-           "TAGS", "TAG_OTHER", "TAG_USER_BLOCKS", "TAG_USER_NOT_BLOCKS", "Triage",
-           "candidate_text", "chain_text", "chain_tip", "chassis_pairs", "class_key",
-           "class_not_blocks_text", "class_pairs", "class_rulings", "cover_log",
-           "excluded_part", "indirect_chain", "indirect_text", "joined_by_edge", "log_line",
-           "log_proof", "pair_tag", "pending_pairs", "proven_text", "ruled_text", "status_text",
-           "structural_reasons", "triage_pairs"]
+           "TAGS", "TAG_LAYER", "TAG_OTHER", "TAG_USER_BLOCKS", "TAG_USER_NOT_BLOCKS", "Triage",
+           "candidate_text", "chain_text", "chain_tip", "chassis_pairs", "class_blocking",
+           "class_key", "class_not_blocks_text", "class_pairs", "class_rulings", "cover_log",
+           "excluded_part", "flip_text", "indirect_chain", "indirect_text", "joined_by_edge",
+           "log_line", "log_proof", "pair_tag", "pending_pairs", "proven_text", "proven_tip",
+           "ruled_text", "status_text", "structural_reasons", "triage_pairs"]
 
 #: The smallest covering asked about, in pixels of the lower part's shape.
 #: Below it are screws, latches and connectors -- pixel noise for this
@@ -115,10 +145,19 @@ RULINGS = (BLOCKS, NOT_BLOCKS)
 RULING_TEXT = {BLOCKS: "挡着", NOT_BLOCKS: "不挡"}
 RULING_MARK = {BLOCKS: "✓", NOT_BLOCKS: "✗"}
 
-#: The class pair is one the user ruled 挡 (W2 ``pairs:``, task W3g).
+#: The class pair is one the user ruled 挡 (W2 / W3 ``pairs:``, task W3g).
 TAG_USER_BLOCKS = "用户已定：挡"
 #: The class pair is one the user ruled 不挡 (W2 ``not_blocks:``): folded, not asked.
 TAG_USER_NOT_BLOCKS = "用户已定：不挡"
+#: A 日志里下面那件先动了 row whose class pair the user ruled 挡 (either way round, W3h).
+TAG_LAYER = "用户已定：挡 → 层序可能画反"
+#: The 日志里下面那件先动了 row's second button, and what replaces it once the segment is flipped (W3h).
+FLIP_TEXT = "上下翻转"
+FLIPPED_TEXT = "已翻过"
+#: The op-log note of a flip: the pair, and the frames the override reaches.
+FLIP_NOTE = "日志里下面那件先动了（W3h）：按拆解顺序把 {below} 翻到 {above} 之上，这一段第 {frames} 帧"
+#: The status line's tail when a conflict of another part stayed open.
+FLIP_LEFT_OPEN = "；另有 {n} 条别的零件的冲突留在复查队列（{who}）"
 TAG_OTHER = "其他"
 #: The order candidates are listed in.
 TAGS = (TAG_USER_BLOCKS, TAG_OTHER, TAG_USER_NOT_BLOCKS)
@@ -151,7 +190,7 @@ ClassEntry = tuple[str, str, str]
 
 @dataclass(frozen=True)
 class ClassRulings:
-    """The user's class-level rulings (task W3g): the W2 whitelist's two lists.
+    """The user's class-level rulings (task W3g): the W2 / W3 whitelist's two lists.
 
     ``blocks`` are its ``pairs:`` (挡), ``not_blocks`` its ``not_blocks:`` (不挡),
     each ``(above, below, note)`` with a side naming a ``class`` (every kind of
@@ -237,16 +276,38 @@ class Candidate:
     below_state: str = ""
     #: 「日志：…」, what the log did to each part (W3f; ``""`` without a log).
     log: str = ""
-    #: The log's action that proves 不挡 (:func:`log_proof`), or ``None``.
+    #: The log's first action on ``below`` taken while ``above`` was still in
+    #: the way (:func:`log_proof`), or ``None``: the row goes to
+    #: 日志里下面那件先动了 (W3f's 日志已证明不挡 until task W3h).
     proof: Optional["LogMove"] = None
     #: The active edges ordering the pair through other parts, from ``below``
     #: up to ``above`` (:func:`indirect_chain`); empty: none.
     chain: tuple = ()
+    #: Task W3h: the class pair as the user ruled it 挡, in the user's
+    #: orientation -- ``(above_class, below_class)`` or, when the picture is the
+    #: other way round, ``(below_class, above_class)``; ``()``: ruled 挡 in
+    #: neither (:func:`class_blocking`).
+    ruled: tuple = ()
+    #: The user's words of that entry (``""`` without one).
+    ruled_note: str = ""
+    #: The segment already holds the override ``below`` above ``above`` (W3h):
+    #: the row says 「已翻过」 in the place of 「上下翻转」.
+    flipped: bool = False
 
     @property
     def classes(self) -> tuple[str, str]:
         """``(above_class, below_class)``: what the batch line groups by."""
         return (self.above_class, self.below_class)
+
+    @property
+    def ruled_reversed(self) -> bool:
+        """Did the user rule the class pair 挡 the other way round from the picture?"""
+        return bool(self.ruled) and self.ruled != self.classes
+
+    @property
+    def layer_tag(self) -> str:
+        """「用户已定：挡 → 层序可能画反」 on a 日志里下面那件先动了 row of a ruled class pair, else ``""``."""
+        return TAG_LAYER if self.proof is not None and self.ruled else ""
 
 
 def class_key(rec) -> str:
@@ -287,6 +348,22 @@ def pair_tag(above_class: str, below_class: str,
     if no is not None:
         return TAG_USER_NOT_BLOCKS, no[2] or _USER_NOT_BLOCKS_REASON
     return TAG_OTHER, _OTHER_REASON
+
+
+def class_blocking(above_class: str, below_class: str,
+                   classes: Optional[ClassRulings] = None) -> tuple[Optional[ClassEntry], bool]:
+    """The 挡 entry naming the class pair in **either** orientation (task W3h).
+
+    ``(entry, reversed)``: the picture's own orientation first; ``reversed`` is
+    ``True`` when only ``(below_class, above_class)`` is ruled 挡 -- the user
+    says the lower part should be on top.  ``(None, False)`` when neither is.
+    """
+    classes = class_rulings() if classes is None else classes
+    yes = classes.blocking(above_class, below_class)
+    if yes is not None:
+        return yes, False
+    rev = classes.blocking(below_class, above_class)
+    return (rev, True) if rev is not None else (None, False)
 
 
 def excluded_part(key: str, rec) -> Optional[str]:
@@ -450,10 +527,12 @@ def log_proof(log: Optional[CoverLog], above: str, below: str) -> Optional[LogMo
     "In the way": ``above`` is a part of the replay and its state just before
     the action is none of :data:`COVER_CLEAR` -- a ``covered_by(below <- above)``
     edge would make that very action a breach, so the pair can never become
-    that edge (``pixel-edges`` would skip it as ``would_violate``) and the user
-    is not asked.  A part opened and closed again before the action is in the
+    that edge (``pixel-edges`` would skip it as ``would_violate``).  Since task
+    W3h this is a question, not a proof: either the pair is 不挡 or the layer
+    order is painted the wrong way round (the 日志里下面那件先动了 bucket, the
+    user decides).  A part opened and closed again before the action is in the
     way again, as the edge would see it.  ``below`` taken out only with its
-    parent (no action of its own), or never touched, proves nothing.
+    parent (no action of its own), or never touched, says nothing.
     """
     if log is None:
         return None
@@ -523,11 +602,13 @@ def indirect_chain(edges: Iterable, above: str, below: str) -> tuple:
 
 @dataclass
 class Triage:
-    """The frame's pairs, sorted four ways (:func:`triage_pairs`, W3f, W3g)."""
+    """The frame's pairs, sorted four ways (:func:`triage_pairs`, W3f, W3g, W3h)."""
 
     #: Open questions: the rows with 「挡着」 / 「不挡」.
     asked: list[Candidate] = field(default_factory=list)
-    #: 日志已证明不挡: each with its :attr:`Candidate.proof`.
+    #: 日志里下面那件先动了 (W3f's 日志已证明不挡 until task W3h): each with its
+    #: :attr:`Candidate.proof`; 「不挡」 and 「上下翻转」 (or 「已翻过」) per row,
+    #: :attr:`Candidate.layer_tag` on the class pairs the user ruled 挡.
     proven: list[Candidate] = field(default_factory=list)
     #: 规则已间接覆盖: each with its :attr:`Candidate.chain`.
     indirect: list[Candidate] = field(default_factory=list)
@@ -543,7 +624,8 @@ def _order(cand: Candidate) -> tuple:
 def triage_pairs(frame_pairs: PairsLike, instances: Mapping, edges: Iterable,
                  rulings: Mapping, min_px: int = MIN_PX, *, log: Optional[CoverLog] = None,
                  states: Optional[Mapping[str, str]] = None,
-                 classes: Optional[ClassRulings] = None) -> Triage:
+                 classes: Optional[ClassRulings] = None,
+                 overrides: Optional[Iterable[tuple[str, str]]] = None) -> Triage:
     """The candidates of one frame (see the module docstring), sorted into the four lists.
 
     ``frame_pairs``: ``(above, below, px)`` triples (or ``{(above, below): px}``)
@@ -554,17 +636,23 @@ def triage_pairs(frame_pairs: PairsLike, instances: Mapping, edges: Iterable,
     desktop (``None``: nothing is proven by the log, and no 日志 line);
     ``states``: each part's state at the frame (``{key: state}``), for the row
     text; ``classes``: the user's class rulings (``None``: the shipped
-    whitelist, :func:`class_rulings`; ``ClassRulings()``: none).  A pair the
+    whitelist, :func:`class_rulings`; ``ClassRulings()``: none);
+    ``overrides``: the ``(above, below)`` pair overrides in force for the
+    frame's pose segment (task W3h; ``None``: none known).  A pair the
     graph orders indirectly goes to ``indirect`` (whatever the rest says), else
     one whose class pair the user ruled 不挡 goes to ``class_not_blocks`` (task
-    W3g), else one the log proves goes to ``proven``, else it is asked.  Each
-    list is ordered by tag (「用户已定：挡」 first), then pixels (most first),
-    then keys; :attr:`Candidate.same_pair_pending` counts the asked list only
-    (the batch lines are made of it).  Pure.
+    W3g), else one whose lower part the log moved first (:func:`log_proof`)
+    goes to ``proven`` -- since task W3h the 日志里下面那件先动了 bucket, where a
+    class pair the user ruled 挡 either way round carries
+    :attr:`Candidate.ruled` and the tag 「用户已定：挡 → 层序可能画反」 -- else it
+    is asked.  Each list is ordered by tag (「用户已定：挡」 first), then pixels
+    (most first), then keys; :attr:`Candidate.same_pair_pending` counts the
+    asked list only (the batch lines are made of it).  Pure.
     """
     edges = list(edges)
     states = states or {}
     classes = class_rulings() if classes is None else classes
+    flipped = {(str(a), str(b)) for a, b in (overrides or ())}
     picked = []
     for above, below, px in _triples(frame_pairs):
         if above == below or px < int(min_px) or (above, below) in rulings:
@@ -572,18 +660,28 @@ def triage_pairs(frame_pairs: PairsLike, instances: Mapping, edges: Iterable,
         up, low = instances.get(above), instances.get(below)
         if excluded_part(above, up) or excluded_part(below, low):
             continue
-        if str(up.cls) in SMALL_ABOVE or str(low.cls) in SMALL_BELOW:
+        if str(low.cls) in SMALL_BELOW:
             continue
         if joined_by_edge(edges, above, below) or structural_reasons(instances, above, below):
             continue
+        small = str(up.cls) in SMALL_ABOVE
         keys = (class_key(up), class_key(low))
         tag, reason = pair_tag(*keys, classes=classes)
         chain = indirect_chain(edges, above, below)
         said_no = not chain and tag == TAG_USER_NOT_BLOCKS
+        entry, reversed_ = class_blocking(*keys, classes=classes)
+        ruled = () if entry is None else ((keys[1], keys[0]) if reversed_ else keys)
         proof = None if chain or said_no else log_proof(log, above, below)
+        if small and proof is None:
+            # the sheet's 「本版不做」 (W3c): a connector / clip / latch on top is never
+            # asked -- but one painted over a part the log moved first is a layer
+            # check the user wants (task W3h: 日志里下面那件先动了 holds it)
+            continue
         picked.append(Candidate(above, below, keys[0], keys[1], px, tag, reason, 0,
                                 str(states.get(above) or ""), str(states.get(below) or ""),
-                                log_line(log, above, below), proof, chain))
+                                log_line(log, above, below), proof, chain, ruled,
+                                "" if entry is None else str(entry[2] or ""),
+                                (below, above) in flipped))
     out = Triage()
     for cand in picked:
         (out.indirect if cand.chain
@@ -648,14 +746,38 @@ def candidate_text(cand: Candidate) -> str:
 
 
 def proven_text(cand: Candidate) -> str:
-    """A 日志已证明不挡 row: 「psu.01（装着）→ cover.01（关上） · 像素 1 535 · 第 22 步 cover.01 打开时 psu.01 还是装着」."""
+    """A 日志里下面那件先动了 row (W3h): 「psu.01（装着）→ cover.01（关上） · 像素 1 535 · 第 22 步先动了下面的 cover.01」.
+
+    With 「 · 用户已定：挡 → 层序可能画反」 at the end when the user ruled the
+    class pair 挡 either way round (:attr:`Candidate.layer_tag`).
+    """
     move = cand.proof
     if move is None:
         return candidate_text(cand)
+    text = f"{_pair_words(cand)} · 像素 {_px(cand.px)} · 第 {move.step} 步先动了下面的 {cand.below}"
+    return f"{text} · {cand.layer_tag}" if cand.layer_tag else text
+
+
+def proven_tip(cand: Candidate) -> str:
+    """The row's tooltip (W3h): what the log did and when, which way the user ruled the class pair, the 日志 line."""
+    move = cand.proof
+    if move is None:
+        return cand.log
     verb = MOVE_ZH.get(move.verb, move.verb)
     held = state_zh(move.before.get(cand.above, ""))
-    return (f"{_pair_words(cand)} · 像素 {_px(cand.px)} · 第 {move.step} 步 {cand.below} "
-            f"{verb}时 {cand.above} 还是{held}")
+    what = (f"第 {move.step} 步{verb} {cand.below} 时 {cand.above} 还是{held}：要么 {cand.above} 没挡着"
+            f"（点「{RULING_TEXT[NOT_BLOCKS]}」记一条裁定），要么层序画反了（点「{FLIP_TEXT}」把 "
+            f"{cand.below} 翻到 {cand.above} 之上，这一视角这一段；重查已确认帧、接受这两件的新值并重签）")
+    note = f"（{cand.ruled_note}）" if cand.ruled_note else ""
+    if not cand.ruled:
+        said = ""
+    elif cand.ruled_reversed:
+        said = (f"你按类别裁定 {cand.ruled[0]} → {cand.ruled[1]} 挡{note}：按拆解顺序 {cand.below} "
+                f"应画在 {cand.above} 之上，这一帧却画反了")
+    else:
+        said = (f"你按类别裁定 {cand.ruled[0]} → {cand.ruled[1]} 挡{note}，日志却先动了下面那件："
+                f"要么层序画反，要么这一对是例外")
+    return "\n".join(part for part in (what, said, cand.log) if part)
 
 
 def chain_text(cand: Candidate) -> str:
@@ -677,6 +799,26 @@ def class_not_blocks_text(cand: Candidate) -> str:
 def chain_tip(cand: Candidate) -> str:
     """The edges of the chain, one per line (the row's tooltip)."""
     return "\n".join(f"{edge.target} 等 {edge.blocker}（{edge.type}）" for edge in cand.chain)
+
+
+def flip_text(desktop: int, step: int, above: str, below: str, result: Mapping) -> str:
+    """The status line after 「上下翻转」 (W3h).
+
+    「D22 第 5 帧：psu.01 翻到 storage_drive.hdd.01 之上 · 这一段 12 帧（已确认 9 帧）· 接受新值 18 条 · 重签 0 帧」,
+    plus :data:`FLIP_LEFT_OPEN` when a conflict of another part stayed open.
+    """
+    frames = list(result.get("frames") or [])
+    frozen = list(result.get("frozen") or [])
+    text = (f"D{int(desktop):02d} 第 {int(step)} 帧：{below} 翻到 {above} 之上 · 这一段 {len(frames)} 帧"
+            f"（已确认 {len(frozen)} 帧）· 接受新值 {int(result.get('accepted') or 0)} 条 · "
+            f"重签 {int(result.get('resigned') or 0)} 帧")
+    left = list(result.get("left_open") or [])
+    if left:
+        who = "、".join(f"第 {s} 帧 {inst}" for s, inst in left[:4])
+        if len(left) > 4:
+            who += " …"
+        text += FLIP_LEFT_OPEN.format(n=len(left), who=who)
+    return text
 
 
 def ruled_text(above: str, below: str, row: Mapping) -> str:

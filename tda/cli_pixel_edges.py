@@ -13,7 +13,8 @@ Review (table ``cover_ruling``) that the confirmed frames show covering becomes
 accepted``. The whitelist is the controller's suggestion layer: its unruled
 pairs are listed, and written (``source = pixels:<version>``) only with
 ``--allow-unruled``. Without either flag the run reads the rulings alone.
-Since task W3g the whitelist (``W2``) is the user's class-level rulings: each
+Since task W3g the whitelist (``W2``; ``W3`` with the user's pair-card rulings
+since task W3h, the shipped rows being ``pixels:W3``) is the user's class-level rulings: each
 pair writes the row of its ``edge`` (``covered_by`` or ``blocked_by`` with mode
 ``contained`` / ``physical_path``), and its ``not_blocks:`` class pairs are
 never written (listed as ``class_not_blocks``; a Review ``blocks`` ruling on

@@ -232,8 +232,11 @@ def test_the_proven_row_text():
     log = cover_log(SCENE, D04_LOG, TAX)
     tri = triage_pairs([("psu.01", "cover.01", 1535)], SCENE, [], {}, log=log,
                        states={"psu.01": "installed", "cover.01": "closed"})
+    # W3h: the row is a question (不挡, or the layer order?), and the shipped W3 rules
+    # cover → psu 挡 (E4), so the pair carries the layer tag
     assert proven_text(tri.proven[0]) == (
-        "psu.01（装着）→ cover.01（关上） · 像素 1 535 · 第 22 步 cover.01 打开时 psu.01 还是装着")
+        "psu.01（装着）→ cover.01（关上） · 像素 1 535 · 第 22 步先动了下面的 cover.01 · "
+        "用户已定：挡 → 层序可能画反")
 
 
 def test_the_module_stays_qt_free():
