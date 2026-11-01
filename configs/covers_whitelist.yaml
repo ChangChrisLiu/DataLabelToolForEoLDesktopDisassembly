@@ -39,9 +39,13 @@
 # blocked_by(motherboard <- part, mode=mounted) for every real part), never a candidate,
 # never shown in Review. A class pair in both lists is refused too.
 #
-# Still asked in Review, not here (the user looks at the pictures next): B7 ssd ->
-# optical_drive, B8 hdd -> psu, B9 ssd -> psu, B10 psu -> ssd, E1-E5.
-version: W2
+# W3 (2026-10-31, late night): the user looked at the pair cards and decided the rest --
+# B6-B10, A6-A8, C11 / D3, E1-E5 (「用我们的拆解的顺序作为主要参考」). The reversed pairs the
+# cards showed (hdd / ssd painted OVER the Dell PSU module that folds down on them, the GPU over
+# the blue cover.02 that opens first, cover.02 over the fan shroud cover.01) were layer-order
+# errors and were corrected in the data (pair overrides / a layer move), not ruled here: a
+# `hdd -> psu` pair is therefore neither 挡 nor 不挡 -- it should not exist.
+version: W3
 defaults:
   min_px: 1000
   min_frac: 0.03
@@ -75,6 +79,18 @@ pairs:
      note: "C11 挡：掉出来的机箱风扇先拿走"}
   - {above: case_fan, below: expansion_card.gpu, note: "C11 挡：掉出来的机箱风扇先拿走"}
   - {above: case_fan, below: cpu_cooler.fan, note: "C11 挡：掉出来的机箱风扇先拿走"}
+  - {above: case_fan, below: storage_drive.ssd, note: "C11 挡：掉出来的机箱风扇先拿走（用户 2026-10-31 看图确认）"}
+  # ---- W3: the pairs the user decided on the cards (2026-10-31 late night)
+  - {above: misc_part, below: motherboard, note: "A8 挡：机箱接口面板挡着主板（看图确认）"}
+  - {above: storage_drive.ssd, below: optical_drive, note: "B7 挡：SSD 挡着光驱（看图确认）"}
+  - {above: storage_drive.ssd, below: psu, note: "B9 挡：需要移走 SSD 才能动电源（看图确认；电源翻下来压住 SSD 的那种是层序画反了，数据里已改成电源在上）"}
+  - {above: psu, below: storage_drive.ssd, note: "B10 挡：电源模块要翻开才能拿出里面的 SSD（看图确认）"}
+  - {above: psu, below: storage_drive.hdd, note: "B8 挡：电源模块要翻开才能拿出里面的 HDD，电源在硬盘前面（看图确认）"}
+  - {above: cover, below: cover, note: "E1 挡：上面的盖板 / 导风罩先开（看图确认；D49、D62 的导风罩 cover.01 已改到其它盖板之上）"}
+  - {above: cover, below: expansion_card, note: "E2 挡：先打开盖板才能拆到扩展卡（看图确认）"}
+  - {above: storage_drive.ssd, below: cover, note: "E3 挡：SSD 在导风罩上面，先拿走 SSD（看图确认）"}
+  - {above: cover, below: psu, note: "E4 挡：先打开 / 拿走盖板再拆电源（看图确认）"}
+  - {above: optical_drive, below: optical_drive, note: "E5 挡：上面的光驱先拆（D36 看图确认）"}
 not_blocks:
   # ---- A4: independent parts; PSU first is only the habit
   - {above: psu, below: motherboard, note: "A4 不挡：电源和主板是独立的，先电源再主板只是习惯"}
