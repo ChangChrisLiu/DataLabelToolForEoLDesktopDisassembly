@@ -67,7 +67,7 @@ def keys(cands) -> list[tuple[str, str]]:
 
 def test_the_gated_verbs_and_the_freeing_states_are_covered_by_s():
     assert COVER_GATED == {"remove", "displace", "open", "unscrew", "disconnect", "release"}
-    assert COVER_CLEAR == {"open", "removed", "displaced"}
+    assert COVER_CLEAR == {"open", "removed", "displaced", "unplugged"}   # unplugged: W3j
 
 
 def test_below_opened_while_above_untouched_is_proven_and_not_asked():
