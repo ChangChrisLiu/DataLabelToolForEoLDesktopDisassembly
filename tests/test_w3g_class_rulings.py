@@ -495,7 +495,7 @@ def test_no_new_keys_and_the_docs_say_it():
     entries = [line for line in spec.split("## 14. 修订记录", 1)[1].splitlines()
                if line.startswith("- ")]
     # on top when it landed; whatever lands later goes above it
-    [entry] = [e for e in entries[:5] if e.startswith("- **v1.52（2026-10-31）**")]
+    [entry] = [e for e in entries[:6] if e.startswith("- **v1.52（2026-10-31）**")]
     for needed in ("（W3g，", "**216**", "`would_violate` **0**", "矛盾仍 **24**",
                    "2 070 → 1 854", "13 / 35 / 51 → 13 / 37 / 51", "348 对要问 → 249",
                    "50 → 44"):
