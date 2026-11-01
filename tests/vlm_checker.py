@@ -41,12 +41,16 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable, Optional
 
-#: spec 7.2: the blocker must be in one of these states.
+#: spec 7.2: the blocker must be in one of these states. ``covered_by`` takes
+#: ``unplugged`` too (spec v1.55, task W3j): an unplugged connector has no
+#: geometry (taxonomy ``needs_mask``, spec 6.2), so it covers nothing. Changed
+#: here by hand, on purpose, in step with ``tda.core.graph_rules`` -- the table
+#: is transcribed, not imported (see the module docstring).
 REQUIRED_STATES = {
     "fastened_by": {"loosened", "removed"},
     "connected_to": {"unplugged", "removed"},
     "locked_by": {"open"},
-    "covered_by": {"open", "removed", "displaced"},
+    "covered_by": {"open", "removed", "displaced", "unplugged"},
     "blocked_by": {"removed", "displaced", "released"},
 }
 

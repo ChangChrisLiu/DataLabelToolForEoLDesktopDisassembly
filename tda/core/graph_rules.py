@@ -92,11 +92,21 @@ HARD_TYPES = ("fastened_by", "connected_to", "locked_by", "covered_by", "blocked
 
 #: Spec 7.2: the blocker must be in one of these states before the target of an
 #: edge of this type may be acted on.
+#:
+#: ``covered_by`` is also satisfied by ``unplugged`` (task W3j, spec v1.55): only
+#: a connector has that state, and an unplugged connector has no geometry --
+#: ``configs/taxonomy.yaml`` ``connector.needs_mask: {unplugged: false}``, spec
+#: §6.2 「拔掉的接头不标」 -- so it is not in the picture and covers nothing.
+#: Without it the log replay called a connector unplugged at step 3 "still in
+#: the way" of a heatsink removed at step 19, and 18 Review questions were
+#: wrong (the user, 2026-11-01: 「第19步的时候这个connector一定已经不在了」,
+#: 「这个connector在第12步已经被移走了，为啥你说还没拿走呢？」).
+#: ``tests/vlm_checker.py`` transcribes this table by hand and must say the same.
 REQUIRED_STATES: dict[str, frozenset[str]] = {
     "fastened_by": frozenset({"loosened", "removed"}),
     "connected_to": frozenset({"unplugged", "removed"}),
     "locked_by": frozenset({"open"}),
-    "covered_by": frozenset({"open", "removed", "displaced"}),
+    "covered_by": frozenset({"open", "removed", "displaced", "unplugged"}),
     "blocked_by": frozenset({"removed", "displaced", "released"}),
 }
 
