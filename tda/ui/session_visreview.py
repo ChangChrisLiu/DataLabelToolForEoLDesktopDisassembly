@@ -25,6 +25,14 @@ round 4); the others keep their conflicts for Review.
 
 A stamp alone (``Space``) changes no input of any frame: no compilation, no
 re-check, and the frame in hand keeps its compiled frame.
+
+W3i (2026-10-31), the user's check round: the toggle 「也列 visible 的段（接头
+优先）」 (:meth:`VisReviewMixin.set_visibility_all`) lists the plain ``visible``
+runs too, and the button 「这一段起直到拔掉都被线挡住」
+(:meth:`VisReviewMixin.review_cable_until`) answers a line from its first frame
+to the part's next state change (:func:`~tda.ui.session_cable.until_span`,
+across pose segments) as one ``review_visibility`` op: 完全 on every frame, the
+stamp (verdict ``cable``) on the confirmed ones.
 """
 from __future__ import annotations
 
@@ -57,11 +65,14 @@ from tda.ui.session_cable import (
     CABLE_NEEDS_SHAPE,
     CABLE_ON_BENCH,
     CABLE_REMOVED,
+    CABLE_UNTIL_EMPTY,
+    RULE_UNTIL,
     _same,
     _settled,
     _signed,
     _steps_text,
     disputed_before,
+    until_span,
 )
 from tda.ui.session_edit import _mask_without_reason
 from tda.ui.session_ops import _write_override, override_state, settle
@@ -129,6 +140,120 @@ class VisReviewMixin:
         conflict count -- does not pay for it.
         """
         self.review.visibility_live = bool(live)
+
+    def set_visibility_all(self, on: bool) -> None:
+        """「也列 visible 的段（接头优先）」 (W3i): list the plain ``visible`` runs too.
+
+        Remembered for the session, across views; the progress counts them
+        only while it is on.
+        """
+        self.review.visibility_all = bool(on)
+
+    def visibility_all(self) -> bool:
+        """Is the check round's toggle on? (:meth:`set_visibility_all`)"""
+        return bool(self.review.visibility_all)
+
+    # -- 「这一段起直到拔掉都被线挡住」 (W3i) ---------------------------------------------
+    def review_cable_until(self, instance: str, from_step: Optional[int] = None) -> dict:
+        """完全 被线挡住 from ``from_step`` to the part's next state change, stamped: one op.
+
+        The span is :func:`~tda.ui.session_cable.until_span`'s (across pose
+        segments, to the frame before the part is unplugged / taken out /
+        moved / opened; to the view's last frame when nothing changes it
+        again). Every frame of it gets the label (the U15 override, ``hw``
+        read per frame); the **confirmed** ones get the stamp too (verdict
+        ``cable``, as `` ` `` leaves on a run), the others only the label --
+        a stamp answers a confirmed row. One ``review_visibility`` op, one
+        ``Ctrl+Z``; the U15 safeguards hold per frame
+        (:func:`~tda.ui.session_cable.accept_own_label`).
+
+        Refused, nothing written, on a gallery shot, from a frame this view
+        does not annotate, and where the part has no shape in its place on
+        some frame of the span (named). Returns what a verdict returns plus
+        ``frames`` (the span), ``stamped`` (the confirmed frames), ``until``,
+        ``change``, ``segments`` and ``rule``; ``changed`` is ``False`` (no
+        op) when every frame already said exactly that.
+        """
+        if not self.is_open:
+            raise SessionRefusal("no view is open")
+        if self.gallery:
+            raise SessionRefusal(T.NOT_IN_GALLERY)
+        instance = str(instance)
+        key = self.current()
+        start = FrameKey(key.desktop, key.step if from_step is None else int(from_step), key.view)
+        cache = InputCache()
+        span = until_span(self.db, self.tax, start, instance, cache)
+        if not span.steps:
+            raise SessionRefusal(CABLE_UNTIL_EMPTY)
+        shapes = self.db.keyframes(key.desktop, key.view, instance)
+        refused: dict[str, list[int]] = {}
+        frames, before, stamped = [], [], []
+        for step in span.steps:
+            here = FrameKey(key.desktop, step, key.view)
+            why = shape_applies(self.db, self.tax, here, instance, cache, shapes)
+            if why:
+                refused.setdefault(_REFUSALS[OCCLUDER_CABLE].get(why, why), []).append(step)
+                continue
+            previous = self.db.frame_overrides(here).get(instance)
+            hw = frame_hw(self.db, here, self.truth.cache_dir)
+            after = occluded_override(here, instance, previous, FULL, hw, OCCLUDER_CABLE)
+            flags = self.db.instance_flags(here, instance)
+            confirmed = (self.db.get_frame(here) or {}).get("review_status") == VERIFIED
+            state = {"step": step, "flags": flags}
+            back = {"step": step, "flags": flags}
+            if confirmed:
+                state["flags"] = with_stamp(flags, make_stamp(self.annotator, VERDICT_CABLE,
+                                                              FULL, OCCLUDER_CABLE))
+                stamped.append(step)
+            new, old = override_state(after), override_state(previous)
+            if not _same(new, old):
+                state["override"], back["override"] = new, old
+            if confirmed or "override" in state:
+                frames.append(state)
+                before.append(back)
+        if refused:
+            raise SessionRefusal("；".join(f"第 {_steps_text(found)} 帧：{why}"
+                                          for why, found in refused.items()))
+        extra = {"rule": RULE_UNTIL, "until": span.until, "segments": span.segments,
+                 "change": list(span.change) if span.change else None,
+                 "frames": list(span.steps), "stamped": stamped}
+        if not frames:
+            return {"op": None, "changed": False, "verdict": VERDICT_CABLE, "label": FULL,
+                    "steps": list(span.steps), "moved": [], "accepted": [], "withheld": [],
+                    "conflicts": 0} | extra
+        wanted = [f["step"] for f in frames]
+        common = {"desktop": key.desktop, "view": key.view, "step": key.step,
+                  "instance": instance, "steps": wanted, "verdict": VERDICT_CABLE,
+                  "rule": RULE_UNTIL, "until": span.until, "segments": span.segments,
+                  "change": extra["change"]}
+        moved = [f["step"] for f in frames if "override" in f]
+        if moved:
+            common[CABLE_BY] = self.annotator    # re-signed both ways (apply_cable)
+        payload = common | {"frames": frames}
+        inverse = common | {"frames": before}
+        op = Op(OP_KIND, payload, inverse)
+        disputed = (disputed_before(self.db, self.truth, key.desktop, key.view, instance,
+                                    moved) if moved else set())
+        with self.db.transaction():
+            for state in frames:
+                here = FrameKey(key.desktop, int(state["step"]), key.view)
+                if "override" in state:
+                    _write_override(self.db, here, instance, state["override"])
+                self.db.set_instance_flags(here, instance, state["flags"])
+            self.db.log_op(key.desktop, key.view, OP_KIND, payload, inverse, self.annotator)
+        if not moved:
+            self.undo_stack.push(op, apply=False)
+            self.review.invalidate()
+            self._refresh_dirty()
+            self._announce()
+            return {"op": op, "changed": True, "verdict": VERDICT_CABLE, "label": FULL,
+                    "steps": wanted, "moved": [], "accepted": [], "withheld": [],
+                    "conflicts": 0} | extra
+        out = _settled(self.db, self.truth, key, moved, op, FULL)
+        out = _signed(self.db, self.truth, key.desktop, key.view, instance, moved,
+                      self.annotator, disputed, out, key.step)
+        out.update(verdict=VERDICT_CABLE, steps=wanted, moved=moved, **extra)
+        return self._after_edit(out)
 
     # -- verdicts ------------------------------------------------------------
     def review_visibility(self, instance: str, verdict: str, label: Optional[str] = None,

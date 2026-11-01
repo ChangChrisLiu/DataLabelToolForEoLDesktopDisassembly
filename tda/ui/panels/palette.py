@@ -254,8 +254,9 @@ class PaletteButton(QAbstractButton):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        self.setText(f"{self.name} {self.key}")
-        self._base_tip = (f"{action.label_zh}（{' / '.join(action.keys)}）"
+        self.setText(f"{self.name} {self.key}".rstrip())
+        # a button with no key (W3i's 「被线挡住 → 直到拔掉」) says so instead of 「（）」
+        self._base_tip = (f"{action.label_zh}（{' / '.join(action.keys) or A.NO_KEY_TEXT}）"
                           f"\n{action.label}")
         self.setToolTip(self._base_tip)
 
@@ -298,7 +299,8 @@ class PaletteButton(QAbstractButton):
         nm, sm = QFontMetrics(name_font), QFontMetrics(small_font)
         left = self._text_left()
         room = max(20, width - left - self.PAD)
-        key_w = sm.horizontalAdvance(self.key) + 8
+        # no key, no keycap (W3i): the name has the whole line
+        key_w = sm.horizontalAdvance(self.key) + 8 if self.key else 0
         key_h = sm.height() + 2
         name_rect = nm.boundingRect(QRect(0, 0, room, 1000),
                                     int(Qt.TextFlag.TextWordWrap), self.name)
@@ -374,12 +376,13 @@ class PaletteButton(QAbstractButton):
                          int(Qt.TextFlag.TextWordWrap | Qt.AlignmentFlag.AlignLeft), self.name)
         # the key, in a keycap: right of the name when it fits, under it if not
         painter.setFont(small_font)
-        key_x = (left + room - lay["key_w"]) if lay["one_line"] else left
-        cap = QRectF(key_x, lay["key_top"], lay["key_w"], lay["key_h"])
-        painter.setPen(QPen(sub, 1.0))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRoundedRect(cap.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3)
-        painter.drawText(cap, int(Qt.AlignmentFlag.AlignCenter), self.key)
+        if self.key:
+            key_x = (left + room - lay["key_w"]) if lay["one_line"] else left
+            cap = QRectF(key_x, lay["key_top"], lay["key_w"], lay["key_h"])
+            painter.setPen(QPen(sub, 1.0))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(cap.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3)
+            painter.drawText(cap, int(Qt.AlignmentFlag.AlignCenter), self.key)
         if self.note:
             painter.setPen(sub)
             painter.drawText(lay["note"], int(Qt.TextFlag.TextWordWrap

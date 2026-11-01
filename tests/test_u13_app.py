@@ -199,19 +199,22 @@ def test_the_group_sits_under_its_own_heading_after_the_actions(window):
     assert isinstance(header, QLabel) and header.text() == "状态"
     at = widgets.index(header)
     buttons = window.palette.buttons()
-    assert widgets[at + 1:at + 6] == [buttons[n] for n in GROUP]
+    assert widgets[at + 1:at + 1 + len(GROUP)] == [buttons[n] for n in GROUP]
     # below the 操作 group: the commit keys stay where the hand knows them
     assert max(widgets.index(buttons[n]) for n in A.PALETTE_ACTIONS) < at
     # a heading like the others
     operations = next(w for w in widgets if isinstance(w, QLabel) and w.text() == "操作")
     assert header.styleSheet() == operations.styleSheet()
     assert header.font().bold()
-    # follow-up: the action buttons clicked least close the strip, under 「其他」
-    assert A.PALETTE_OTHER == ("flash_compare", "cycle_candidate", "clear_edit")
+    # follow-up: the action buttons clicked least close the strip, under 「其他」;
+    # W3i's keyless 「被线挡住 → 直到拔掉」 leads them, right under 「看不见」
+    assert A.PALETTE_OTHER == ("cable_until", "flash_compare", "cycle_candidate", "clear_edit")
     assert not set(A.PALETTE_OTHER) & set(A.PALETTE_ACTIONS)
     other = window.palette.other_header
     assert other.text() == "其他" and other.styleSheet() == operations.styleSheet()
-    assert widgets[at + 6:at + 10] == [other] + [buttons[n] for n in A.PALETTE_OTHER]
+    after = at + 1 + len(GROUP)
+    assert widgets[after:after + 1 + len(A.PALETTE_OTHER)] == (
+        [other] + [buttons[n] for n in A.PALETTE_OTHER])
 
 
 def test_annotate_shows_the_group_review_and_steps_hide_it(window):

@@ -346,6 +346,16 @@ ACTIONS: tuple[Action, ...] = (
            "选中零件从这一帧到第 N 步都标被线挡住（完全 / 部分 / 撤回 / 画框外；一次撤销）；"
            "框外零件 = 这一段都标不在 / 撤回",
            "edit", (), _ANN),
+    # W3i (2026-10-31): the span nobody has to type -- a connector drawn in its
+    # place is under a cable until it is unplugged. A palette button and a
+    # right-click entry, no key (the user's standing rule, as task U42).
+    Action("cable_until", (), "act_cable_until",
+           "Selected part under a cable (full) from this frame to the last frame it is "
+           "still in its place -- until its next state change (unplugged, taken out, "
+           "moved, opened) -- across pose segments, one op",
+           "被线挡住 → 直到拔掉：选中零件从这一帧起，到它下一次状态变化（拔掉 / 拆下 / 挪开 / 打开）"
+           "前的最后一帧都标被线挡住（完全），跨位姿段，一次撤销；状态不再变的到最后一帧",
+           "edit", (), _ANN, short="被线挡住 → 直到拔掉"),
     # -- 可见性审查 (task U24): Review mode only -------------------------------
     # While annotating nobody sets a visibility label any more (the compiler
     # derives it; ` still says 被线挡住 while drawing). At the end, Review's
@@ -465,6 +475,12 @@ MENU_ENTRIES: tuple[MenuEntry, ...] = (
               "Name and draw something outside the machine, apart from the annotation",
               "框外零件：机器外、画面里的东西（旁边的零件、无关物件），选类别或「其他」写名字，"
               "单独画；不进步骤表和任务卡、不挡 Space；某帧里没有它就选中按 ` 键（Ctrl+` 一段）"),
+    # W3i: the palette's 「被线挡住 → 直到拔掉」 on the row under the pointer
+    MenuEntry("cable_until_menu", "右键实例表 → 被线挡住 → 直到拔掉", "act_cable_until",
+              "The instance table's row under the pointer: under a cable until its next "
+              "state change (the palette button on that part)",
+              "实例表右键的那一行从这一帧起到拔掉 / 拆下前都标被线挡住（完全），"
+              "同工具条「其他」组首位的「被线挡住 → 直到拔掉」按钮"),
 )
 
 
@@ -558,8 +574,11 @@ PALETTE_STATE: tuple[str, ...] = (
 #: The 「其他」 group at the foot of the strip (U13 follow-up): the action
 #: buttons clicked least -- their keys are Tab (held), C and Esc -- so that the
 #: 「状态」 group above them fits a maximized 1920x1080 window (a client area of
-#: about 1920x1000) without scrolling.
-PALETTE_OTHER: tuple[str, ...] = ("flash_compare", "cycle_candidate", "clear_edit")
+#: about 1920x1000) without scrolling. W3i: 「被线挡住 → 直到拔掉」 (no key) leads
+#: it, right under 「看不见」 -- a sixth button *in* the 「状态」 group would push
+#: that group under the fold at 1920x1000.
+PALETTE_OTHER: tuple[str, ...] = ("cable_until", "flash_compare", "cycle_candidate",
+                                  "clear_edit")
 #: What the strip keeps in Review mode (U2b round 1): the canvas is read-only,
 #: so no tool and no brush -- only the difference map and the queue's keys.
 #: Task U24: the 可见性审查 queue's three most used answers too (the digits and
