@@ -341,7 +341,7 @@ def test_the_docs_say_it():
     entries = [line for line in spec.split("## 14. 修订记录", 1)[1].splitlines()
                if line.startswith("- ")]
     # on top when it landed; W3e's v1.50 has gone above it since
-    [entry] = [e for e in entries[:6] if e.startswith("- **v1.49（2026-10-31）**")]
+    [entry] = [e for e in entries[:7] if e.startswith("- **v1.49（2026-10-31）**")]
     assert "mode=mounted" in entry
     handoff = (root / "docs" / "HANDOFF_2026-10-28.md").read_text(encoding="utf-8")
     section = handoff.split("## 5. 导出与 HuggingFace 准备", 1)[1].split("\n## ", 1)[0]
