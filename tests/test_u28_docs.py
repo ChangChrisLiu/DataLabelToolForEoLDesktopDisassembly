@@ -89,8 +89,8 @@ def test_the_spec_has_the_paragraph_after_u23_and_v1_28_on_top():
                                   "- **v1.41", "- **v1.42", "- **v1.43", "- **v1.44",
                                   "- **v1.45", "- **v1.46", "- **v1.47", "- **v1.48",
                                   "- **v1.49", "- **v1.50", "- **v1.51", "- **v1.52",
-                                  "- **v1.53"))
-    [first] = [e for e in entries[:26] if e.startswith("- **v1.28")]
+                                  "- **v1.53", "- **v1.54"))
+    [first] = [e for e in entries[:27] if e.startswith("- **v1.28")]
     assert first.startswith("- **v1.28（2026-10-24）**：**拆前 / 拆后**（U28，§4.5）")
     for needed in ("第一次标", "`removed` / `displaced`", "级联", "1.6 倍", "1/6", "随 … 一起拆走",
                    "扫描仪视角", "「拆前/拆后」按钮", "无快捷键", "`locator/open` 不变",

@@ -85,6 +85,8 @@ GALLERY_REFUSALS: dict[str, str] = {
     "split_pose": "零件合照每张自成一段，不用断开位姿段",
     # Ctrl+` (U15, U22): 「被线挡住」 is the sequence's; here ` means 看不见
     "cable_range": f"零件合照里没有「被线挡住」：不在这张里的零件按 {ABSENT_KEY} 键（看不见）",
+    # W3i: the palette's 「被线挡住 → 直到拔掉」 is the sequence's too
+    "cable_until": f"零件合照里没有「被线挡住」：不在这张里的零件按 {ABSENT_KEY} 键（看不见）",
 }
 
 

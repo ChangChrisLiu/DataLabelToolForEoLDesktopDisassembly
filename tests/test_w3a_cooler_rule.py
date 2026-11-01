@@ -181,7 +181,7 @@ def test_the_docs_say_it():
     entries = [line for line in spec.split("## 14. 修订记录", 1)[1].splitlines()
                if line.startswith("- ")]
     assert any(e.startswith("- **v1.47（2026-10-31）**：**压在 CPU 上的散热器、复查裁定的遮挡边")
-               for e in entries[:9])
+               for e in entries[:10])
     handoff = (root / "docs" / "HANDOFF_2026-10-28.md").read_text(encoding="utf-8")
     section = handoff.split("## 5. 导出与 HuggingFace 准备", 1)[1].split("\n## ", 1)[0]
     assert sum("cli pixel-edges" in line for line in section.splitlines()) == 1

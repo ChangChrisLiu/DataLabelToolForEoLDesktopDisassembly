@@ -242,7 +242,10 @@ def test_the_button_is_live_and_its_tooltip_says_both_meanings(window):
 
 
 def test_ctrl_i_is_a_key_not_a_button(window):
-    """The palette must not grow (U13's height tests): Ctrl+I has no button."""
+    """The palette must not grow (U13's height tests): Ctrl+I has no button.
+
+    W3i's 「被线挡住 → 直到拔掉」 is a button with no key, the first of 「其他」
+    right under 「看不见」 -- not a sixth button of the 「状态」 group."""
     action = A.action_named("cable_range")
     assert action.keys == ("Ctrl+`",) and action.modes == (A.MODE_ANNOTATE,)
     assert not action.short
@@ -250,6 +253,7 @@ def test_ctrl_i_is_a_key_not_a_button(window):
                   A.PALETTE_REVIEW):
         assert "cable_range" not in group
     assert len(A.PALETTE_STATE) == 5
+    assert A.PALETTE_OTHER[0] == "cable_until" and not A.action_named("cable_until").keys
 
 
 def test_the_refusals_grey_the_button_and_the_key_says_them(window):

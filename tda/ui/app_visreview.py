@@ -60,6 +60,9 @@ class VisReviewMixin:
         self.review.sigVisibilityPicked.connect(self.on_visibility_picked)
         self.review.sigSplitRun.connect(self.act_split_run)
         self.review.sigSyncViews.connect(self.act_sync_views)
+        # W3i: the check round's toggle and 「这一段起直到拔掉都被线挡住」
+        self.review.sigListVisible.connect(self.on_list_visible)
+        self.review.sigCableUntil.connect(self.act_vis_cable_until)
         #: ``(desktop, view, part, steps)`` of the run last answered, while a
         #: sync of it to the other views is on offer (task U36).
         self._vis_sync: Optional[tuple] = None
@@ -249,6 +252,70 @@ class VisReviewMixin:
         self.review.refresh()
         self.update_status()
         self.report(VT.sync_note(name, result))
+        self.refresh_guidance()
+
+    # -- W3i: the check round and 「这一段起直到拔掉都被线挡住」 ------------------------------
+    @S.guard
+    def on_list_visible(self, on: bool) -> None:
+        """「也列 visible 的段（接头优先）」: the session lists the plain visible runs too."""
+        setter = getattr(self.session, "set_visibility_all", None)
+        if callable(setter):
+            setter(bool(on))
+        self.review.refresh()
+        self.update_status()
+        self.refresh_guidance()
+
+    @S.guard
+    def act_vis_cable_until(self) -> None:
+        """「这一段起直到拔掉都被线挡住」: the selected line's part, from its first frame.
+
+        完全 to the part's next state change, across pose segments, the
+        confirmed frames stamped (verdict ``cable``): one op of the session
+        (:meth:`~tda.ui.session_visreview.VisReviewMixin.review_cable_until`),
+        one ``Ctrl+Z``; then the next line, as after any answer.
+        """
+        if self.mode != A.MODE_REVIEW or not compat.is_open(self.session):
+            self.report(NOT_IN_REVIEW)
+            return
+        if self.review.current_queue() != api.QUEUE_VISIBILITY:
+            self.report(OTHER_TAB)
+            return
+        entry = self.review.selected_visibility()
+        if entry is None:
+            self.report(VT.PICK_A_ROW)
+            return
+        instance = str(entry["instance"])
+        steps = sorted(int(s) for s in entry.get("steps") or ())
+        first = steps[0] if steps else int(self.session.current().step)
+        if not self._go_to_row(first, instance):
+            return
+        row = self.review.visibility_row()
+        name = self._label_of(instance)[0] or instance_label(instance)
+        try:
+            result = self.session.review_cable_until(instance, first)
+        except SessionRefusal as refused:
+            self.report(f"可见性审查：{refused}")
+            return
+        if not result.get("changed", True) and not result.get("op"):
+            self.report(VT.UNTIL_NOTHING.format(label=name, first=first))
+            return
+        note = f"可见性审查：{VT.until_note(name, result)}"
+        withheld = result.get("withheld") or []
+        if withheld:
+            note += WITHHELD.format(steps=VT.steps_text(withheld))
+        elif result.get("conflicts"):
+            note += CONFLICT_LEFT
+        self.logger.info("visibility review until %s from %s: %s", instance, first,
+                         {k: result.get(k) for k in ("frames", "until", "segments", "moved",
+                                                     "stamped", "accepted", "withheld",
+                                                     "conflicts")})
+        self.review.refresh()
+        if not self._walk_on(row):
+            note += f"；{VT.DONE}"
+        self.refresh_overlay()
+        self.timeline.refresh_statuses()
+        self.update_status()
+        self.report(note)
         self.refresh_guidance()
 
     @S.guard

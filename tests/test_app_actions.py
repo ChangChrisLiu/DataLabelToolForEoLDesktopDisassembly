@@ -65,8 +65,9 @@ def test_every_action_has_a_name_keys_and_chinese_label():
         assert action.group in groups
 
 
-#: The actions with no key at all (task U42): reached by a button.
-KEYLESS = {"view_cmp_scan"}
+#: The actions with no key at all (task U42): reached by a button. W3i's
+#: 「被线挡住 → 直到拔掉」 is the second: a palette button and a right-click entry.
+KEYLESS = {"view_cmp_scan", "cable_until"}
 
 
 def test_the_keyless_actions_are_the_known_ones():

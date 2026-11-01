@@ -33,7 +33,15 @@ This module is the rule, without Qt and without the session:
   property of the run, not part of what makes one -- a 40-frame 看不见 under
   two covers in turn is one run that says so (:attr:`Run.changes`), and the
   annotator splits it where the reason changes (「从这帧起另算」, ``splits``);
-  :func:`order_runs` puts the part with the longest run first.
+  :func:`order_runs` puts the part with the longest run first;
+* the **check round** (W3i, 2026-10-31) -- the user: a connector drawn in its
+  place is under a cable for the rest of its life, the compiler labels every
+  frame ``visible``, and a queue that lists only what is not ``visible`` never
+  shows it. :func:`visible_rows` splits the plain ``visible`` rows by their
+  stamp the way :func:`review_rows` does, and :func:`order_visible_runs` lists
+  their runs connectors first, then the other classes, each class's parts by
+  their longest run (:func:`order_runs`); the panel's toggle 「也列 visible 的段
+  （接头优先）」 asks for them.
 """
 from __future__ import annotations
 
@@ -73,18 +81,26 @@ __all__ = [
     "LAYER_PREFIX",
     "Run",
     "amodal_box",
+    "class_of",
     "make_stamp",
     "mark_whole",
     "off_frame_row",
     "occluders_on_frame",
     "order_of",
     "order_runs",
+    "order_visible_runs",
+    "plain_visible",
     "progress",
     "review_rows",
     "runs_of",
     "stamp_covers",
+    "visible_rows",
     "with_stamp",
 ]
+
+#: The classes :func:`order_visible_runs` lists before every other (W3i): the
+#: user's connectors are the parts that live under a cable.
+VISIBLE_FIRST: tuple[str, ...] = ("connector",)
 
 #: ``Space`` (``Shift+Space``): the label is right as the frames have it.
 VERDICT_COMPUTED = "computed"
@@ -181,13 +197,8 @@ def off_frame_row(row: dict) -> bool:
     return off_frame(override)
 
 
-def review_rows(db, desktop: int, view: str) -> tuple[list[dict], list[dict]]:
-    """``(to review, reviewed)``: the view's candidate rows, split by their stamp.
-
-    Rows of a step the step table no longer asks to annotate (``ignore``) are
-    left out, as the exports leave them out.
-    """
-    rows = db.vis_review_rows(desktop, view)
+def _split_by_stamp(db, desktop: int, view: str,
+                    rows: list[dict]) -> tuple[list[dict], list[dict]]:
     if not rows:
         return [], []
     keep = set(annotatable_steps(db, desktop, view, {r["step"] for r in rows}))
@@ -198,6 +209,38 @@ def review_rows(db, desktop: int, view: str) -> tuple[list[dict], list[dict]]:
         covered = stamp_covers(row["flags"], row.get("visibility"), row.get("occluder"))
         (done if covered else pending).append(row)
     return pending, done
+
+
+def review_rows(db, desktop: int, view: str) -> tuple[list[dict], list[dict]]:
+    """``(to review, reviewed)``: the view's candidate rows, split by their stamp.
+
+    Rows of a step the step table no longer asks to annotate (``ignore``) are
+    left out, as the exports leave them out.
+    """
+    return _split_by_stamp(db, desktop, view, db.vis_review_rows(desktop, view))
+
+
+def plain_visible(row: dict) -> bool:
+    """Is the row a compiled ``visible`` nobody wrote anything about? (W3i's check round)
+
+    The complement of what :meth:`~tda.core.db_visreview.VisReviewRowsMixin.vis_review_rows`
+    lists: no hand label, no reason. A queue entry (:meth:`Run.entry`) is
+    read the same way (its ``manual`` is the row's hand label).
+    """
+    return (str(row.get("visibility") or "") == Visibility.VISIBLE.value
+            and row.get("hand_visibility") is None and not row.get("manual")
+            and row.get("occluder") is None)
+
+
+def visible_rows(db, desktop: int, view: str) -> tuple[list[dict], list[dict]]:
+    """``(to review, reviewed)``: the view's plain ``visible`` rows, split by their stamp (W3i).
+
+    Off :meth:`~tda.core.db_visreview.VisReviewRowsMixin.vis_view_rows` (one
+    query, no masks), filtered by :func:`plain_visible`; the same stamp rule
+    as :func:`review_rows` -- ``Space`` on such a line stamps it reviewed.
+    """
+    return _split_by_stamp(db, desktop, view,
+                           [r for r in db.vis_view_rows(desktop, view) if plain_visible(r)])
 
 
 def progress(db, desktop: int, view: str) -> tuple[int, int]:
@@ -438,6 +481,29 @@ def order_runs(runs: Iterable[Run]) -> list[Run]:
     parts = sorted(by_part, key=lambda p: (-max(len(r.steps) for r in by_part[p]), p))
     return [run for part in parts
             for run in sorted(by_part[part], key=lambda r: r.steps[0])]
+
+
+def class_of(instance: str) -> str:
+    """``connector.fan.01`` -> ``connector``: the class an instance key names."""
+    return str(instance).split(".", 1)[0]
+
+
+def order_visible_runs(runs: Iterable[Run], first: Iterable[str] = VISIBLE_FIRST) -> list[Run]:
+    """The check round's order (W3i): connectors first, then the other classes.
+
+    The classes of ``first`` in that order, then the rest by their longest run
+    (longest first, ties by name); within a class :func:`order_runs` -- the
+    part with the longest run first, each part's runs by step.
+    """
+    by_class: dict[str, list[Run]] = {}
+    for run in runs:
+        by_class.setdefault(class_of(run.instance), []).append(run)
+    ahead = {cls: i for i, cls in enumerate(first)}
+
+    def rank(cls: str) -> tuple:
+        return (ahead.get(cls, len(ahead)), -max(len(r.steps) for r in by_class[cls]), cls)
+
+    return [run for cls in sorted(by_class, key=rank) for run in order_runs(by_class[cls])]
 
 
 def order_of(db, desktop: int, view: str) -> list[int]:
