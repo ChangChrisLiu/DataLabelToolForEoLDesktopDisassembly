@@ -385,6 +385,10 @@ class GuideMixin:
                      or facts.bench is not None or facts.editing is not None)
         states["clear_edit"] = (bool(not closed and escapable), False,
                                 closed or "没有可以放弃的编辑")
+        # W3i: 「被线挡住 → 直到拔掉」 -- the cable gates of the part on the frame
+        # on screen, in the key's words (the span's other frames are the write's)
+        until_why = closed or self.cable_until_refusal(dirty=bool(facts.layer_dirty))
+        states["cable_until"] = (not until_why, False, until_why)
         # The Review queue's own keys (round 1, item 3); shown only in Review.
         review = self.mode == A.MODE_REVIEW and image
         not_review = "只在复查模式可用"

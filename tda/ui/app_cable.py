@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 from tda.core.occluder import CHOICES, FULL, OFF_FRAME, PARTIAL
 from tda.ui import app_compat as compat
 from tda.ui import app_support as S
+from tda.ui import visreview_text as VT
 from tda.ui.app_state import REMOVED_ROW
 from tda.ui.canvas.overlay import palette_color
 from tda.ui.session_cable import (
@@ -47,8 +48,9 @@ from tda.ui.session_cable import (
 )
 
 __all__ = ["CABLE_DONE", "CABLE_NO_TARGET", "HAND_NOT_BACK", "HAND_REPLACED",
-           "MEASURED_NOTE", "OFF_FRAME_OFF", "STALE_OFF", "WITHHELD_NOTE", "CableMixin",
-           "CableRangeDialog", "cable_note", "choice_text", "range_note"]
+           "MEASURED_NOTE", "OFF_FRAME_OFF", "STALE_OFF", "UNTIL_NO_TARGET", "UNTIL_SAME",
+           "WITHHELD_NOTE", "CableMixin", "CableRangeDialog", "cable_note", "choice_text",
+           "range_note"]
 
 #: `````` / ``Ctrl+``` on a sequence frame with nothing to act on (``I`` /
 #: ``Ctrl+I`` before task U22). It names the gallery's meaning too: on a gallery
@@ -78,6 +80,11 @@ MEASURED_NOTE = "（其中 {n} 帧第一次读图量尺寸，以后不用）"
 SLOW_RANGE_S = 0.5
 #: Between the two halves of a cached gate answer (:meth:`CableMixin.cable_refusal`).
 _SEP = "\x1f"
+#: 「被线挡住 → 直到拔掉」 (W3i) with nothing to act on.
+UNTIL_PICK_FIRST = "「被线挡住 → 直到拔掉」在拆解序列里对选中的零件用：先在实例表选中零件"
+UNTIL_NO_TARGET = f"{UNTIL_PICK_FIRST} / select a part first"
+#: ... when every frame of the span already said so.
+UNTIL_SAME = "{label}：从这一帧起到拔掉前的每一帧本来就标着被线挡住（完全），没有改"
 
 
 def cable_note(label: str, value: Optional[str], result: Optional[dict] = None) -> str:
@@ -305,6 +312,79 @@ class CableMixin:
             self.report(f"{label}：这一段本来就是这样，没有改")
             return
         note = range_note(label, value, frames, result.get("withdrawn") or ())
+        withheld = sorted(set(result.get("withheld") or []))
+        if withheld:
+            note += WITHHELD_NOTE.format(n=len(withheld),
+                                         steps="、".join(str(s) for s in withheld))
+        if time.perf_counter() - started > SLOW_RANGE_S and result.get("measured"):
+            note += MEASURED_NOTE.format(n=int(result["measured"]))
+        self._after_cable(note)
+
+    # ------------------------------------------------------------- 被线挡住 → 直到拔掉 (W3i)
+    def cable_until_refusal(self, instance: Optional[str] = None,
+                            dirty: Optional[bool] = None, cached: bool = True) -> str:
+        """Why 「被线挡住 → 直到拔掉」 would do nothing now, ``""`` if it may.
+
+        :meth:`cable_refusal`'s gates for a 完全 on the frame on screen -- the
+        span's other frames are judged by the write, which names the ones
+        without a shape. 撤回 is not this button's: a part that cannot carry
+        完全 here greys it.
+        """
+        if not compat.is_open(self.session):
+            return UNTIL_NO_TARGET
+        if getattr(self.session, "gallery", False):
+            return CABLE_GALLERY
+        if instance is None and self.instances.selected_is_removed():
+            return REMOVED_ROW
+        target, from_card = self._cable_pick(instance)
+        if target is None:
+            return UNTIL_NO_TARGET
+        label = self._label_of(target)[0] or target
+        carry = getattr(self.session, "cable_carry", None)
+        if not callable(carry):
+            return "这个会话不支持 / not supported by this session"
+        if cached:
+            why = self._why_once("cable_until", target, carry)
+        else:
+            try:
+                why = carry(target)
+            except Exception:  # noqa: BLE001 - the write itself will say what is wrong
+                why = ""
+        if not why and getattr(self.session, "editing_instance", None) == target and (
+                self.has_uncommitted_edit() if dirty is None else dirty):
+            return f"{label}：{CABLE_EDITING}"
+        if why and from_card:
+            return f"{UNTIL_PICK_FIRST}；任务卡上亮着的 {label}：{why}"
+        return f"{label}：{why}" if why else ""
+
+    @S.guard
+    def act_cable_until(self, instance: Optional[str] = None) -> None:
+        """「被线挡住 → 直到拔掉」: 完全 from this frame to the part's next state change.
+
+        The palette button and the instance table's right-click entry (W3i, no
+        key): one op of the session
+        (:meth:`~tda.ui.session_cable.CableMixin.set_cable_until`), across pose
+        segments, confirmed frames re-signed; the status line says the span,
+        the segments crossed, the step and the change it stopped at, and how
+        many confirmed frames were re-signed.
+        """
+        why = self.cable_until_refusal(instance, cached=False)
+        if why:
+            self.report(why)
+            return
+        target = self._cable_target(instance)
+        label = self._label_of(target)[0] or target
+        self._drop_clean_layer(target)
+        started = time.perf_counter()
+        try:
+            result = self.session.set_cable_until(target, FULL)
+        except ValueError as refused:            # SessionRefusal is one
+            self.report(f"{label}：{refused}")
+            return
+        if not result.get("frames"):
+            self.report(UNTIL_SAME.format(label=label))
+            return
+        note = VT.until_note(label, result)
         withheld = sorted(set(result.get("withheld") or []))
         if withheld:
             note += WITHHELD_NOTE.format(n=len(withheld),

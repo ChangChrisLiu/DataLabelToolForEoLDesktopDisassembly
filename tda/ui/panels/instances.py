@@ -51,6 +51,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMenu,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -72,6 +73,11 @@ from tda.ui.session_cable import TAG_ZH as CABLE_TAGS
 from tda.ui.session_rows import HIDING_VISIBILITY
 
 __all__ = ["InstanceListPanel"]
+
+#: The right-click entry (W3i): 「看不见」's dropdown 「直到拔掉 / 拆下」 on this row.
+CABLE_UNTIL_MENU = "被线挡住 → 直到拔掉"
+CABLE_UNTIL_MENU_TIP = ("这一行的零件从这一帧起、到它下一次状态变化（拔掉 / 拆下 / 挪开 / 打开）前的最后一帧"
+                        "都标被线挡住（完全），跨位姿段，一次撤销")
 
 KEY_ROLE = int(Qt.ItemDataRole.UserRole)
 
@@ -167,6 +173,8 @@ class InstanceListPanel(QWidget):
     sigAssertState = Signal(str, str)
     #: The verb button was pressed: ``(key, "remove" | "open")`` (task U9).
     sigCorrectVerb = Signal(str, str)
+    #: The right-click entry 「被线挡住 → 直到拔掉」 was chosen on a row: its key (W3i).
+    sigCableUntil = Signal(str)
 
     #: Four columns, not seven.  Class and placement are in every row's tooltip
     #: instead: the instance key already names the class (``screw.cpu_cooler.01``)
@@ -207,6 +215,10 @@ class InstanceListPanel(QWidget):
         self._apply_column_widths()
         self._table.itemChanged.connect(self._on_item_changed)
         self._table.itemDoubleClicked.connect(self._on_item_double_clicked)
+        # W3i: a right-click on a live row offers 「被线挡住 → 直到拔掉」; the
+        # panel reports, the window writes (and says why not, as the button does)
+        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._on_context_menu)
 
         # A teardown is annotated backwards, so most of the machine is already
         # out of the frame: without this the annotator cannot see what has been
@@ -481,6 +493,35 @@ class InstanceListPanel(QWidget):
         if not self.show_removed.isChecked() or self._removed_source is None:
             return []
         return list(self._removed_source() or [])
+
+    # -- the right-click menu (W3i) --------------------------------------------
+    def instance_at(self, row: int) -> Optional[str]:
+        """Key of live row ``row`` (not an "already removed" one), or ``None``."""
+        if row < 0 or row >= len(self._rows):
+            return None
+        return str(self._rows[row].get("key", "")) or None
+
+    def context_menu_for(self, instance: str) -> QMenu:
+        """The menu a right-click on ``instance``'s row shows: 「被线挡住 → 直到拔掉」.
+
+        Choosing the entry emits :attr:`sigCableUntil` with the key; the
+        window's slot judges and writes. Built apart from the click so a test
+        can trigger it without a modal loop.
+        """
+        menu = QMenu(self)
+        action = menu.addAction(CABLE_UNTIL_MENU)
+        action.setToolTip(CABLE_UNTIL_MENU_TIP)
+        action.triggered.connect(lambda _c=False, key=str(instance): self.sigCableUntil.emit(key))
+        return menu
+
+    def _on_context_menu(self, pos) -> None:
+        item = self._table.itemAt(pos)
+        instance = None if item is None else self.instance_at(item.row())
+        if not instance:
+            return
+        self._table.setCurrentCell(item.row(), 1)
+        menu = self.context_menu_for(instance)
+        menu.exec(self._table.viewport().mapToGlobal(pos))
 
     # -- selection ----------------------------------------------------------
     def selected_instance(self) -> Optional[str]:

@@ -336,6 +336,9 @@ class EditMixin:
         self.timeline.sigOpenStep.connect(self.timeline_goto)
         self.instances.sigReorder.connect(self.move_instance)
         self.instances.sigHiddenToggled.connect(self.on_hidden_toggled)
+        # W3i: the instance table's right-click 「被线挡住 → 直到拔掉」, the palette
+        # button's path on the row under the pointer
+        self.instances.sigCableUntil.connect(self.act_cable_until)
         # The task card's commit / confirm buttons and the Review dock's Keep
         # old / Take new are gone (U2b rounds 1 and 1b): the tool palette is
         # the one place for actions, and its buttons dispatch through ACTIONS

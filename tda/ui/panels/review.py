@@ -58,6 +58,7 @@ from typing import Optional
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -155,6 +156,11 @@ class ReviewPanel(QWidget):
     sigSplitRun = Signal()
     #: 「同步到其他视角」 was clicked (task U36): the sync the window offered.
     sigSyncViews = Signal()
+    #: 「这一段起直到拔掉都被线挡住」 was clicked (W3i): the selected line's part,
+    #: from the line's first frame.
+    sigCableUntil = Signal()
+    #: 「也列 visible 的段（接头优先）」 was toggled (W3i): list the plain visible runs.
+    sigListVisible = Signal(bool)
     #: 「这一帧的说明」 (task U35): ``(frame key, text)`` -- 「保存」 was clicked.
     sigNoteSave = Signal(object, str)
     #: ... the frame key -- 「清除」 was clicked on a frame that has a note.
@@ -342,6 +348,12 @@ class ReviewPanel(QWidget):
         self._vis_keys.setToolTip(VIS_KEYS)
         self._vis_keys.setWordWrap(True)
         self._vis_keys.setStyleSheet("color: gray; font-size: 8pt")
+        # W3i: the check round -- the plain visible runs too, connectors first;
+        # off by default, the session remembers it (the window relays)
+        self._vis_all = QCheckBox(VT.ALL_TOGGLE)
+        self._vis_all.setToolTip(VT.ALL_TIP)
+        self._vis_all.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._vis_all.toggled.connect(self.sigListVisible)
         # task U36: per part, how long it is 看不见 in every view, under a title
         # that says the order and folds the table away (round 2, N2)
         self.run_summary = RunSummary()
@@ -353,6 +365,7 @@ class ReviewPanel(QWidget):
         self.run_detail = RunDetail()
         self.run_detail.sigSplit.connect(self.sigSplitRun)
         self.run_detail.sigSync.connect(self.sigSyncViews)
+        self.run_detail.sigUntil.connect(self.sigCableUntil)
         lw.setMinimumHeight(LIST_MIN_ROWS * (lw.fontMetrics().height() + 2)
                             + 2 * lw.frameWidth() + 6)
         queue = QWidget()
@@ -373,10 +386,19 @@ class ReviewPanel(QWidget):
         self._vis_split.setStretchFactor(0, 1)
         self._vis_split.setStretchFactor(1, 1)
         box.addLayout(head)
+        box.addWidget(self._vis_all)
         box.addWidget(self._vis_keys)
         box.addWidget(self._vis_split, 1)
         lw.currentItemChanged.connect(self._on_visibility_current)
         return page
+
+    def list_visible(self) -> bool:
+        """Is 「也列 visible 的段（接头优先）」 on? (W3i)"""
+        return self._vis_all.isChecked()
+
+    def set_list_visible(self, on: bool) -> None:
+        """Set the check round's toggle (W3i); emits :attr:`sigListVisible` when it moves."""
+        self._vis_all.setChecked(bool(on))
 
     def per_frame(self) -> bool:
         """Is the 可见性审查 list one line per frame (按帧) rather than per run?"""
