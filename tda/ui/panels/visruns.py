@@ -186,6 +186,8 @@ class RunDetail(QWidget):
     sigSplit = Signal()
     #: 「同步到其他视角」 was clicked.
     sigSync = Signal()
+    #: 「这一段起直到拔掉都被线挡住」 was clicked (W3i).
+    sigUntil = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -222,15 +224,25 @@ class RunDetail(QWidget):
         self.sync_button.setText(VT.SYNC_BUTTON)
         self.sync_button.setToolTip(VT.SYNC_IDLE)
         self.sync_button.setEnabled(False)
-        for button in (self.split_button, self.sync_button):
+        # W3i: the selected line's part, 被线挡住 from the line's first frame
+        # until it is unplugged (its next state change), stamped
+        self.until_button = QToolButton()
+        self.until_button.setText(VT.UNTIL_BUTTON)
+        self.until_button.setToolTip(VT.UNTIL_TIP)
+        for button in (self.split_button, self.sync_button, self.until_button):
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.split_button.clicked.connect(lambda _c=False: self.sigSplit.emit())
         self.sync_button.clicked.connect(lambda _c=False: self.sigSync.emit())
+        self.until_button.clicked.connect(lambda _c=False: self.sigUntil.emit())
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
         buttons.addWidget(self.split_button)
         buttons.addWidget(self.sync_button)
         buttons.addStretch(1)
+        until = QHBoxLayout()
+        until.setContentsMargins(0, 0, 0, 0)
+        until.addWidget(self.until_button)
+        until.addStretch(1)
         # the most needed first: the default dock (320 px high, the list keeping
         # five lines) shows the two buttons; the suggestion (also the guide's
         # line), the views and the pictures are a scroll or a drag away
@@ -238,6 +250,7 @@ class RunDetail(QWidget):
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(2)
         box.addLayout(buttons)
+        box.addLayout(until)
         box.addWidget(self._suggestion)
         box.addWidget(self.views)
         box.addWidget(self._changes)

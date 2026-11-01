@@ -9,18 +9,19 @@ from __future__ import annotations
 from typing import Iterable, Optional
 
 from tda.core.model import OCCLUDER_CABLE, OCCLUDER_OTHER, OCCLUDER_VIEWPOINT
-from tda.core.vis_review import LAYER_PREFIX
+from tda.core.vis_review import LAYER_PREFIX, plain_visible
 from tda.core.vis_runs import OFF_FRAME_REASON
-from tda.ui.class_names import class_zh, visibility_zh
+from tda.ui.class_names import class_zh, state_zh, visibility_zh
 
 __all__ = [
-    "CHANGES", "DONE", "MERGED", "NOT_CONFIRMED", "NOT_IN_GALLERY", "NOTHING_TO_REVIEW",
-    "ORDER_CAPTION", "PICK_A_ROW", "REASON_ZH", "SPLIT_AT_START", "SPLIT_BUTTON",
-    "SPLIT_DONE", "SPLIT_NOT_IN_RUN", "SYNC_BUTTON", "SYNC_OFFER", "SYNC_REFUSED",
-    "VERDICT_ZH", "VIEWPOINT_BENCH", "VIEWPOINT_NEEDS_SHAPE", "VIEWPOINT_REMOVED",
-    "VIEW_COLUMNS", "WHOLE", "entry_text", "occluded_by_text", "skipped_text",
-    "steps_text", "suggestion_text", "summary_cell", "sync_note", "sync_nothing",
-    "verdict_note", "view_cells",
+    "ALL_TIP", "ALL_TOGGLE", "CHANGES", "DONE", "MERGED", "NOT_CONFIRMED", "NOT_IN_GALLERY",
+    "NOTHING_TO_REVIEW", "ORDER_CAPTION", "PICK_A_ROW", "PLACEMENT_ZH", "REASON_ZH",
+    "SPLIT_AT_START", "SPLIT_BUTTON", "SPLIT_DONE", "SPLIT_NOT_IN_RUN", "SYNC_BUTTON",
+    "SYNC_OFFER", "SYNC_REFUSED", "UNTIL_BUTTON", "UNTIL_NOTHING", "UNTIL_TIP", "VERDICT_ZH",
+    "VIEWPOINT_BENCH", "VIEWPOINT_NEEDS_SHAPE", "VIEWPOINT_REMOVED", "VIEW_COLUMNS", "WHOLE",
+    "entry_text", "occluded_by_text", "skipped_text", "steps_text", "suggestion_text",
+    "summary_cell", "sync_note", "sync_nothing", "until_note", "until_where", "verdict_note",
+    "view_cells",
 ]
 
 #: The reason a hand label gives, as the queue says it (原因: …). 画框外 (task
@@ -110,7 +111,12 @@ def entry_text(entry: dict) -> str:
     why.append("手动" if entry.get("manual") else "自动")
     count = f"（{len(steps)} 帧）" if len(steps) > 1 else ""
     whole = f" · {WHOLE}" if entry.get("whole") else ""
-    return (f"{entry.get('instance', '')} 第 {steps_text(steps)} 帧{count} · "
+    instance = str(entry.get("instance", ""))
+    if plain_visible(entry):
+        # W3i's check round: a plain visible run says its class first (接头 …)
+        return (f"{class_zh(None, None, instance)} {instance} 第 {steps_text(steps)} 帧{count}"
+                f" · {entry.get('visibility', '')}{whole}")
+    return (f"{instance} 第 {steps_text(steps)} 帧{count} · "
             f"{entry.get('visibility', '')}（{'，'.join(why)}）{whole}")
 
 
@@ -231,6 +237,64 @@ def suggestion_text(suggestion: Optional[dict], entry: dict) -> str:
         return f"建议：被线挡住（{key}）——原因: 线缆{too}"
     who = occluded_by_text(entry.get("occluded_by") or ()) or "被挡住"
     return f"建议：按计算确认（{key}）——{who}{too}"
+
+
+# --------------------------------------------------------------------------- #
+# W3i: the check round and 「直到拔掉」
+# --------------------------------------------------------------------------- #
+#: The toggle on the 可见性审查 panel: list the plain ``visible`` runs too.
+ALL_TOGGLE = "也列 visible 的段（接头优先）"
+ALL_TIP = ("把这个视角已确认帧里编译成 visible 的段也列进队列（默认不列，开关记到关程序）：接头在前，"
+           "然后其他类别，每类里零件按最长的一段排、每个零件的段按帧序。每条用同样的键答：Space = 真看得见，"
+           "记为审过；` = 这一段被线挡住（完全）；数字键手动设；Z 角度看不到；"
+           "或点「这一段起直到拔掉都被线挡住」。进度「可见性审查 n/m」只在开着时算上它们。")
+#: The button under the list: 完全 from the selected line's first frame to the
+#: part's next state change, stamped.
+UNTIL_BUTTON = "这一段起直到拔掉都被线挡住"
+UNTIL_TIP = ("从选中这一段的第一帧起，到这个零件下一次状态变化（拔掉 / 拆下 / 挪开 / 打开）前的最后一帧，"
+             "每一帧都标被线挡住（完全），跨位姿段；已确认的帧记为审过（判定：被线挡住），"
+             "一次 Ctrl+Z 撤销。状态不再变的到这个视角最后一帧。没有快捷键。")
+#: Every frame of the span already said exactly that.
+UNTIL_NOTHING = "{label}：从第 {first} 步起到拔掉前的每一帧本来就标着被线挡住（完全），没有改"
+#: A placement change that ends a span, as the status line says it.
+PLACEMENT_ZH: dict[str, str] = {"on_bench": "放到台面上", "elsewhere": "拿走", "in_chassis": "装回"}
+
+
+def until_where(result: dict) -> str:
+    """「直到第 32 步拔掉」 / 「直到这个视角最后一帧（第 40 步）」 for a 「直到拔掉」 result."""
+    frames = [int(s) for s in result.get("frames") or ()]
+    until = result.get("until")
+    change = result.get("change") or None
+    if until is None:
+        last = f"（第 {max(frames)} 步）" if frames else ""
+        return f"直到这个视角最后一帧{last}"
+    verb = ""
+    if change and len(change) == 3:
+        attr, _old, new = change
+        verb = state_zh(str(new)) if attr == "state" else PLACEMENT_ZH.get(str(new), str(new))
+    return f"直到第 {int(until)} 步{verb}"
+
+
+def until_note(label: str, result: dict) -> str:
+    """The status line after 「被线挡住 → 直到拔掉」 (both entry points).
+
+    「connector.03：第 12–31 步（跨 2 个位姿段）被线挡住（完全），直到第 32 步拔掉；
+    已确认的 7 帧已代签（Ctrl+Z 一次撤销）」.
+    """
+    frames = sorted(int(s) for s in result.get("frames") or ())
+    where = steps_text(frames)
+    segments = int(result.get("segments") or 1)
+    segs = f"（跨 {segments} 个位姿段）" if segments > 1 else ""
+    count = (f"（{len(frames)} 帧）" if len(frames) > 1 and frames
+             and frames[-1] - frames[0] + 1 != len(frames) else "")
+    text = f"{label}：第 {where} 步{count}{segs}被线挡住（完全），{until_where(result)}"
+    signed = sorted(set(result.get("accepted") or ()))
+    if signed:
+        text += f"；已确认的 {len(signed)} 帧已代签"
+    stamped = result.get("stamped")
+    if stamped:
+        text += f"；{len(stamped)} 帧记为审过"
+    return text + "（Ctrl+Z 一次撤销）"
 
 
 def verdict_note(label: str, verdict: str, visibility: Optional[str], steps) -> str:

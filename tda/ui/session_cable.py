@@ -25,9 +25,24 @@ press after it is 撤回); 撤回 over a span takes it back with the cable label
 On a confirmed frame the label is the annotator's own statement about that
 frame, so the row is re-signed with it rather than queued for Review
 (:func:`accept_own_label`); the undo does the same with the old row.
+
+**「被线挡住，直到拔掉」** (W3i, 2026-10-31) is the span nobody has to type: the
+user's connectors sit under a cable for the rest of their life, until they
+are unplugged, and ``Ctrl+``` stopped at the pose segment's end and asked for
+a step. :func:`until_span` runs from the frame on screen to the last
+annotatable frame on which the part is still in its place -- the frame before
+its next own state change in this view's step list (unplugged / removed /
+displaced / opened, whatever changes its state or placement; a part whose
+state never changes again runs to the view's last annotatable frame) --
+**across pose segments**: the overrides are per frame, only the shape has to
+exist on each (carried from a keyframe of its own segment as usual).
+:func:`cable_until_change` writes 完全 over it as the one op ``Ctrl+``` logs
+(``set_frame_overrides``, one inverse, one ``Ctrl+Z``), with the same
+refusals and the same re-signing of confirmed frames.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
@@ -62,6 +77,7 @@ from tda.core.truth_inputs import (
     annotatable_steps,
     frame_hw,
     pose_segment_of,
+    state_of,
     view_steps,
 )
 from tda.ui.commands import Op
@@ -71,14 +87,19 @@ from tda.ui.session_ops import _write_override, frozen_among, override_state, se
 
 __all__ = [
     "CABLE_BY", "CABLE_EDITING", "CABLE_GALLERY", "CABLE_NEEDS_SHAPE", "CABLE_NOW_PARTIAL",
-    "CABLE_ON_BENCH", "CABLE_OTHER_SEGMENT", "CABLE_REMOVED", "CableMixin", "LABEL_ZH",
-    "OFF_FRAME", "OFF_FRAME_CHOICE", "OFF_FRAME_ON_BENCH", "OFF_FRAME_TAG", "OFF_FRAME_ZH",
-    "OP_RANGE", "TAG_ZH", "accept_own_label", "apply_cable", "cable_one", "cable_range",
-    "cable_reason", "label_reason", "open_about", "range_bounds",
+    "CABLE_ON_BENCH", "CABLE_OTHER_SEGMENT", "CABLE_REMOVED", "CABLE_UNTIL_EMPTY",
+    "CableMixin", "LABEL_ZH", "OFF_FRAME", "OFF_FRAME_CHOICE", "OFF_FRAME_ON_BENCH",
+    "OFF_FRAME_TAG", "OFF_FRAME_ZH", "OP_RANGE", "RULE_UNTIL", "TAG_ZH", "UntilSpan",
+    "accept_own_label", "apply_cable", "cable_one", "cable_range", "cable_reason",
+    "cable_until_change", "label_reason", "open_about", "range_bounds", "until_span",
 ]
 
 #: The op ``Ctrl+I`` logs: one instance's override on several frames.
 OP_RANGE = "set_frame_overrides"
+#: The ``rule`` key of such an op whose span 「直到拔掉」 worked out (W3i).
+RULE_UNTIL = "until_change"
+#: 「直到拔掉」 from a frame this view is not asked to annotate (W3i).
+CABLE_UNTIL_EMPTY = "这一帧不可标注（缺图或 ignore 步）：没有可标被线挡住的帧"
 #: A part lying on the staging area: never 画框外 (task U39 round 3).
 ON_BENCH_PLACEMENT = Placement.ON_BENCH.value
 #: The key both directions of a cable op carry: who said it, so that the undo
@@ -153,6 +174,62 @@ def range_bounds(db: Db, key: FrameKey, cache: Optional[InputCache] = None
     if not steps:
         return key.step, key.step
     return min(steps + [key.step]), max(steps + [key.step])
+
+
+@dataclass(frozen=True)
+class UntilSpan:
+    """How far 「被线挡住，直到拔掉」 reaches from one frame (W3i, :func:`until_span`)."""
+
+    #: The annotatable frames from the one asked about to the last one on
+    #: which the part is still in its place, ascending.
+    steps: tuple[int, ...]
+    #: The step of the part's next own state change, ``None`` when nothing
+    #: changes it again in this view's step list.
+    until: Optional[int]
+    #: ``("state" | "placement", old, new)`` of that change, ``None`` without one.
+    change: Optional[tuple[str, str, str]]
+    #: How many pose segments the frames lie in.
+    segments: int
+
+
+def _own_state(db: Db, tax, desktop: int, step: int, instance: str, cache: InputCache,
+               view: str) -> Optional[tuple[str, str]]:
+    found = state_of(db, tax, desktop, step, cache, view=view).get(instance)
+    return None if found is None else (str(found.state), str(found.placement))
+
+
+def until_span(db: Db, tax, key: FrameKey, instance: str,
+               cache: Optional[InputCache] = None) -> UntilSpan:
+    """The frames from ``key`` to the part's next own state change, across pose segments.
+
+    Every step of the view's step list from ``key.step`` on is asked for the
+    part's state and placement (:func:`~tda.core.truth_inputs.state_of`); the
+    first one that differs from the frame's own ends the span, and the span is
+    the annotatable frames before it (no ``ignore`` step, no frame without an
+    image). A step the table skips still counts as a change when the state
+    moves there. Pose segments are not a boundary: the frame overrides are per
+    frame, and the shape each frame needs is judged frame by frame.
+    """
+    cache = cache if cache is not None else InputCache()
+    table = sorted(s for s in view_steps(db, key.desktop, key.view) if s >= key.step)
+    keep = set(annotatable_steps(db, key.desktop, key.view, table))
+    base = _own_state(db, tax, key.desktop, key.step, instance, cache, key.view)
+    steps: list[int] = []
+    until: Optional[int] = None
+    change: Optional[tuple[str, str, str]] = None
+    for step in table:
+        now = _own_state(db, tax, key.desktop, step, instance, cache, key.view)
+        if now != base:
+            until = step
+            if base is not None and now is not None:
+                attr = "state" if now[0] != base[0] else "placement"
+                change = (attr, base[0 if attr == "state" else 1], now[0 if attr == "state" else 1])
+            break
+        if step in keep:
+            steps.append(step)
+    segments = len({pose_segment_of(db, FrameKey(key.desktop, s, key.view), cache)
+                    for s in steps})
+    return UntilSpan(tuple(steps), until, change, segments)
 
 
 def _refuse_gallery(key: FrameKey) -> None:
@@ -390,6 +467,45 @@ def cable_range(db: Db, truth: TruthService, key: FrameKey, instance: str,
     seg = pose_segment_of(db, key, cache)
     steps = [s for s in annotatable_steps(db, key.desktop, key.view, range(first, last + 1))
              if pose_segment_of(db, FrameKey(key.desktop, s, key.view), cache) == seg]
+    return _label_run(db, truth, key, instance, label, steps, annotator, occluder, cache)
+
+
+def cable_until_change(db: Db, truth: TruthService, key: FrameKey, instance: str,
+                       label: Optional[str] = FULL, annotator: str = "system",
+                       occluder: str = OCCLUDER_CABLE) -> dict:
+    """「被线挡住，直到拔掉」 (W3i): ``label`` from this frame to the part's next state change.
+
+    The frames are :func:`until_span`'s -- this view's annotatable ones from
+    this frame to the last on which the part is still in its place, whatever
+    pose segments they lie in. 完全 by default; the same refusals as
+    :func:`cable_range` (no shape on a frame, named; the part taken out or on
+    the bench), 撤回 never refused; one ``set_frame_overrides`` op, one
+    ``Ctrl+Z``; confirmed frames re-signed through :func:`accept_own_label`.
+
+    Returns what :func:`cable_range` returns plus ``until`` (the step the span
+    ended at, ``None`` when the part's state never changes again), ``change``
+    (``[attr, old, new]`` of that step), ``segments`` (how many pose segments
+    the span crossed) and ``rule`` (:data:`RULE_UNTIL`); the op's payload
+    carries the same four keys.
+    """
+    _refuse_gallery(key)
+    cache = InputCache()
+    span = until_span(db, truth.tax, key, instance, cache)
+    if not span.steps:
+        raise SessionRefusal(CABLE_UNTIL_EMPTY)
+    return _label_run(db, truth, key, instance, label, list(span.steps), annotator, occluder,
+                      cache, rule=RULE_UNTIL, until=span.until,
+                      change=list(span.change) if span.change else None,
+                      segments=span.segments)
+
+
+def _label_run(db: Db, truth: TruthService, key: FrameKey, instance: str,
+               label: Optional[str], steps: list[int], annotator: str, occluder: str,
+               cache: InputCache, **extra) -> dict:
+    """``label`` on every frame of ``steps`` as one op: the body ``Ctrl+I`` and 「直到拔掉」 share.
+
+    ``extra`` goes into the op's payload (both directions) and the result.
+    """
     if label is not None:
         # once for the run; 画框外 reads no shape at all
         shapes = None if label == OFF_FRAME else db.keyframes(key.desktop, key.view, instance)
@@ -424,9 +540,10 @@ def cable_range(db: Db, truth: TruthService, key: FrameKey, instance: str,
     written = [f["step"] for f in frames]
     if not frames:
         return _settled(db, truth, key, steps, None, label, changed=False, frames=[],
-                        measured=measured, accepted=[], withdrawn=[])
+                        measured=measured, accepted=[], withheld=[], withdrawn=[],
+                        span=list(steps), **extra)
     common = {"desktop": key.desktop, "view": key.view, "step": key.step,
-              "instance": instance, "steps": written, CABLE_BY: annotator}
+              "instance": instance, "steps": written, CABLE_BY: annotator} | extra
     payload = common | {"frames": frames}
     inverse = common | {"frames": before}
     disputed = disputed_before(db, truth, key.desktop, key.view, instance, written)
@@ -436,7 +553,8 @@ def cable_range(db: Db, truth: TruthService, key: FrameKey, instance: str,
                             state)
         db.log_op(key.desktop, key.view, OP_RANGE, payload, inverse, annotator)
     out = _settled(db, truth, key, written, Op(OP_RANGE, payload, inverse), label,
-                   frames=written, measured=measured, withdrawn=sorted(withdrawn))
+                   frames=written, measured=measured, withdrawn=sorted(withdrawn),
+                   span=list(steps), **extra)
     return _signed(db, truth, key.desktop, key.view, instance, written, annotator,
                    disputed, out, key.step)
 
@@ -580,6 +698,10 @@ class CableMixin:
         """``(low, high)`` of the steps ``Ctrl+I`` can reach from the open frame."""
         return range_bounds(self.db, self.current())
 
+    def cable_until_span(self, instance: str) -> UntilSpan:
+        """How far 「被线挡住，直到拔掉」 would reach from the open frame (W3i)."""
+        return until_span(self.db, self.tax, self.current(), str(instance))
+
     # -- writes --------------------------------------------------------------
     def _refuse_cable_edit(self, instance: str, label: Optional[str]) -> None:
         if label is not None and self.layer.instance == str(instance) and self.layer.changed():
@@ -639,6 +761,16 @@ class CableMixin:
         return self._after_edit(cable_range(self.db, self.truth, self.current(),
                                             str(instance), label, int(to_step),
                                             self.annotator))
+
+    def set_cable_until(self, instance: str, label: Optional[str] = FULL) -> dict:
+        """「被线挡住，直到拔掉」 (W3i): ``label`` from this frame to the part's next state change.
+
+        One op (one ``Ctrl+Z``), across pose segments; 完全 by default
+        (:func:`cable_until_change`).
+        """
+        self._refuse_cable_edit(instance, label)
+        return self._after_edit(cable_until_change(self.db, self.truth, self.current(),
+                                                   str(instance), label, self.annotator))
 
     # -- what the canvas draws -----------------------------------------------
     def cable_outlines(self) -> list[tuple[str, list[list[tuple[float, float]]]]]:

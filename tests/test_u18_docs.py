@@ -21,7 +21,9 @@ SPEC = ROOT / "docs" / "superpowers" / "specs" / "2026-09-17-teardown-annotator-
 def test_the_key_table_has_the_right_click_row_and_the_window_its_slot():
     from tda.ui.app import MainWindow
 
-    [entry] = A.MENU_ENTRIES
+    # W3i added the instance table's 「被线挡住 → 直到拔掉」 after it: this is the first
+    [entry] = [e for e in A.MENU_ENTRIES if e.name == "context_object"]
+    assert entry is A.MENU_ENTRIES[0]
     assert entry.where == "右键画布 → 框外零件…" and T.MENU_TEXT in entry.where
     # the label names the grave key (U22): escaped in the Markdown cell, so its
     # two backticks do not open a code span

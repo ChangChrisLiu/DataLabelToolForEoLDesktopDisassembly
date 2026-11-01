@@ -150,7 +150,9 @@ def test_every_palette_button_is_an_action_with_its_own_key(window):
         assert action.short, f"{name} has no palette caption"
         assert (button.name, button.note) == A.short_parts(action)
         assert button.key == A.key_caption(action)
-        assert button.key.replace("按住 ", "") in action.keys
+        # W3i's 「被线挡住 → 直到拔掉」 has no key: an empty keycap, the tooltip says so
+        assert (button.key.replace("按住 ", "") in action.keys if action.keys
+                else button.key == "" and A.NO_KEY_TEXT in button.toolTip())
         assert action.label_zh in button.toolTip()
         for key in action.keys:
             assert key in button.toolTip()

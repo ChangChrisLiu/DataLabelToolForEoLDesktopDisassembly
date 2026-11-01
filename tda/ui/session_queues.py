@@ -24,8 +24,11 @@ from tda.core.vis_review import (
     occluders_on_frame,
     order_of,
     order_runs,
+    order_visible_runs,
+    plain_visible,
     review_rows,
     runs_of,
+    visible_rows,
 )
 from tda.core.vis_runs import Side, hidden_stretches, read_side
 from tda.ui import session_api as api
@@ -54,6 +57,11 @@ class ReviewState:
         #: Is the 「可见性审查」 queue on screen (Review mode)? :meth:`queues`
         #: lists it only then (task U24): it reads every confirmed row.
         self.visibility_live = False
+        #: 「也列 visible 的段（接头优先）」 (W3i): the queue also lists the runs of
+        #: plain ``visible`` rows, connectors first, and the progress counts
+        #: them. The panel's toggle, remembered for the session (not reset by
+        #: :meth:`open`); off by default.
+        self.visibility_all = False
         #: ``(write token, entries, (reviewed, total))`` of the last build.
         self._vis_memo: Optional[tuple] = None
         #: ``(step, part, input_hash, label) -> occluders``: what a confirmed row
@@ -231,7 +239,7 @@ class ReviewState:
             self._vis_memo = None
             return
         # a split moves no row: it is part of what the queue was built for
-        token = (self._write_token(), frozenset(self.vis_splits))
+        token = (self._write_token(), frozenset(self.vis_splits), bool(self.visibility_all))
         if self._vis_memo is not None and self._vis_memo[0] == token:
             return
         pending, done = review_rows(self.db, self.desktop, self.view)
@@ -259,10 +267,24 @@ class ReviewState:
         runs = runs_of(pending, order, names, self.vis_splits)
         # task U36: a run that is all of the part's confirmed frames, and the
         # part with the longest run first
+        presence = self.db.vis_presence(self.desktop, self.view) if runs else None
         if runs:
-            mark_whole(runs, self.db.vis_presence(self.desktop, self.view), order)
-        self._vis_memo = (token, [run.entry() for run in order_runs(runs)],
-                          (len(done), len(done) + len(pending)))
+            mark_whole(runs, presence, order)
+        entries = [run.entry() for run in order_runs(runs)]
+        reviewed, total = len(done), len(done) + len(pending)
+        if self.visibility_all:
+            # W3i's check round: the plain visible runs after the queue proper,
+            # connectors first; a hidden connector wrongly labelled visible is
+            # answered there with ` or 「这一段起直到拔掉都被线挡住」
+            seen, seen_done = visible_rows(self.db, self.desktop, self.view)
+            plain = runs_of(seen, order, {}, self.vis_splits)
+            if plain:
+                mark_whole(plain, presence if presence is not None
+                           else self.db.vis_presence(self.desktop, self.view), order)
+            entries += [run.entry() for run in order_visible_runs(plain)]
+            reviewed += len(seen_done)
+            total += len(seen_done) + len(seen)
+        self._vis_memo = (token, entries, (reviewed, total))
 
     # -- the other views (task U36) ----------------------------------------------
     def visibility_sides(self) -> dict[str, Side]:
@@ -287,7 +309,8 @@ class ReviewState:
         「—」 (no confirmed frame there); see
         :func:`~tda.core.vis_runs.hidden_stretches`.
         """
-        entries = self.visibility_queue()
+        # the check round's plain visible lines (W3i) are not 看不见 anywhere
+        entries = [e for e in self.visibility_queue() if not plain_visible(e)]
         if not entries:
             return []
         sides = self.visibility_sides()
