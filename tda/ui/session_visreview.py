@@ -54,6 +54,7 @@ from tda.core.vis_review import (
     VERDICT_VIEWPOINT,
     VERDICTS,
     make_stamp,
+    stamp_covers,
     with_stamp,
 )
 from tda.ui import session_api as api
@@ -163,7 +164,9 @@ class VisReviewMixin:
         again). Every frame of it gets the label (the U15 override, ``hw``
         read per frame); the **confirmed** ones get the stamp too (verdict
         ``cable``, as `` ` `` leaves on a run), the others only the label --
-        a stamp answers a confirmed row. One ``review_visibility`` op, one
+        a stamp answers a confirmed row. A confirmed frame that already carries
+        the label **and** a cable stamp for it is left alone, so a second click
+        writes nothing. One ``review_visibility`` op, one
         ``Ctrl+Z``; the U15 safeguards hold per frame
         (:func:`~tda.ui.session_cable.accept_own_label`).
 
@@ -201,14 +204,19 @@ class VisReviewMixin:
             confirmed = (self.db.get_frame(here) or {}).get("review_status") == VERIFIED
             state = {"step": step, "flags": flags}
             back = {"step": step, "flags": flags}
-            if confirmed:
+            new, old = override_state(after), override_state(previous)
+            same = _same(new, old)
+            # a confirmed frame already labelled so and stamped so (verdict cable
+            # for 完全 / cable) needs nothing: a second click is a no-op (review S1)
+            answered = (same and stamp_covers(flags, FULL, OCCLUDER_CABLE)
+                        and (flags or {}).get("verdict") == VERDICT_CABLE)
+            if confirmed and not answered:
                 state["flags"] = with_stamp(flags, make_stamp(self.annotator, VERDICT_CABLE,
                                                               FULL, OCCLUDER_CABLE))
                 stamped.append(step)
-            new, old = override_state(after), override_state(previous)
-            if not _same(new, old):
+            if not same:
                 state["override"], back["override"] = new, old
-            if confirmed or "override" in state:
+            if (confirmed and not answered) or "override" in state:
                 frames.append(state)
                 before.append(back)
         if refused:

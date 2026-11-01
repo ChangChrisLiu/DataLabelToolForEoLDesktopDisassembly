@@ -9,12 +9,14 @@ frames ``visible`` and 可见性审查 never lists them. Pinned here:
   changes it again, across pose segments; frames without a shape refused by
   name; 撤回 never refused;
 * one ``set_frame_overrides`` op with one inverse (one ``Ctrl+Z`` puts every
-  frame back), confirmed frames re-signed;
+  override back; the confirmed rows come back re-signed by the undoer with the
+  current input hash -- U15's semantics, not byte for byte);
 * the Review button's op: the label over the span, the stamp on the confirmed
-  frames, one undo;
+  frames, one undo, a second click a no-op;
 * the toggle 「也列 visible 的段（接头优先）」: the plain visible runs after the
   queue proper, connectors first, the progress counting them only while on;
-* no new key: a keyless palette button, a right-click entry, a panel button.
+* no new key and no new palette row: 「看不见」's dropdown entry, a right-click
+  entry, a Review panel button.
 """
 from __future__ import annotations
 
@@ -149,7 +151,8 @@ def test_the_op_is_one_set_frame_overrides_with_one_inverse(scene):
     for step in (10, 11):
         fo = scene.db.frame_overrides(key(step))[FAN_CONNECTOR]
         assert fo.occluder == OCCLUDER_CABLE
-    # one Ctrl+Z puts every frame back; redo writes them all again
+    # one Ctrl+Z puts every override back (a confirmed row would come back
+    # re-signed by the undoer, U15); redo writes them all again
     assert scene.undo()
     assert labels(scene, FAN_CONNECTOR) == [None] * 6
     assert scene.redo()
@@ -269,6 +272,26 @@ def test_the_review_button_answers_the_line_and_stamps_the_confirmed_frames(conf
     assert any(e["instance"] == TINY for e in session.visibility_queue())
     assert session.redo()
     assert stamps(session, TINY) == [VR.VERDICT_CABLE] * 5
+
+
+def test_a_second_click_of_the_review_button_writes_nothing(confirmed):
+    """Review S1: every frame already carries the label and a cable stamp -> no op."""
+    session = confirmed
+    first = session.review_cable_until(TINY, 10)
+    assert first["changed"] and first["op"] is not None
+    ops_before = [o["id"] for o in session.db.ops(DESKTOP, VIEW, limit=50) if o["kind"] == VIS_OP]
+    stamps_before = [session.db.instance_flags(key(s), TINY) for s in range(10, 15)]
+    again = session.review_cable_until(TINY, 10)
+    assert not again["changed"] and again["op"] is None
+    assert again["frames"] == [10, 11, 12, 13, 14] and again["stamped"] == []
+    assert [o["id"] for o in session.db.ops(DESKTOP, VIEW, limit=50)
+            if o["kind"] == VIS_OP] == ops_before
+    assert [session.db.instance_flags(key(s), TINY) for s in range(10, 15)] == stamps_before
+    # a stamp of another verdict over the same label is still an answer to give
+    session.review_visibility(TINY, VR.VERDICT_COMPUTED, steps=[12])
+    third = session.review_cable_until(TINY, 10)
+    assert third["changed"] and third["stamped"] == [12] and third["moved"] == []
+    assert session.db.instance_flags(key(12), TINY)["verdict"] == VR.VERDICT_CABLE
 
 
 def test_the_review_button_labels_past_the_confirmed_frames_but_stamps_only_them(confirmed):
@@ -401,8 +424,9 @@ def test_the_status_line_says_the_span_the_segments_and_the_change():
 def test_no_new_key_is_bound():
     action = A.action_named("cable_until")
     assert action.keys == () and action.slot == "act_cable_until"
-    assert action.modes == (A.MODE_ANNOTATE,) and action.short == "被线挡住 → 直到拔掉"
-    assert A.PALETTE_OTHER[0] == "cable_until" and "cable_until" not in A.PALETTE_STATE
+    assert action.modes == (A.MODE_ANNOTATE,)
+    assert "cable_until" not in (A.PALETTE_TOOLS + A.PALETTE_ACTIONS + A.PALETTE_STATE
+                                 + A.PALETTE_OTHER + A.PALETTE_REVIEW)      # no row of its own
     assert A.key_caption(action) == "" and A.NO_KEY_TEXT in A.shortcut_markdown()
     assert any(entry.name == "cable_until_menu" and entry.slot == "act_cable_until"
                for entry in A.MENU_ENTRIES)
@@ -450,22 +474,40 @@ def window(qapp, tmp_path: Path):
     close_window(win)
 
 
-def button_state(win: MainWindow, name: str = "cable_until") -> tuple[bool, str]:
+def dropdown_state(win: MainWindow, item: str = "cable_until") -> tuple[bool, str]:
     win.refresh_guidance()
-    button = win.palette.button(name)
-    return button.isEnabled(), button.reason()
+    return win.palette.dropdown_state(item)
 
 
-def test_the_palette_button_is_greyed_with_its_reason_and_writes_the_span(window):
-    button = window.palette.button("cable_until")
-    assert button.key == "" and A.NO_KEY_TEXT in button.toolTip()
+def trigger_dropdown(win: MainWindow, item: str = "cable_until") -> None:
+    menu = win.palette.dropdown_menu("mark_absent")
+    [entry] = [a for a in menu.actions() if a.data() == item]
+    entry.trigger()
+    QApplication.processEvents()
+
+
+def test_the_dropdown_entry_is_greyed_with_its_reason_and_writes_the_span(window):
+    # 「看不见」 carries the arrow; nothing else in the palette is W3i's
+    button = window.palette.button("mark_absent")
+    assert button.dropdown and not button.arrow_rect().isEmpty()
+    assert button.arrow_rect().right() <= button.width()
+    assert not button.arrow_rect().contains(button.rect().center())   # the click is still 看不见
+    assert "cable_until" not in window.palette.buttons()
+    assert window.palette.dropdown_items("mark_absent") == (("cable_until", "直到拔掉 / 拆下"),)
     window.instances.table().setCurrentCell(-1, -1)
     QApplication.processEvents()
-    enabled, why = button_state(window)
+    enabled, why = dropdown_state(window)
     assert not enabled and why.startswith(UNTIL_PICK_FIRST)
+    menu = window.palette.dropdown_menu("mark_absent")
+    [entry] = menu.actions()
+    assert entry.text() == "直到拔掉 / 拆下" and why in entry.toolTip()
+    entry.trigger()                                  # a greyed entry answers with its reason
+    QApplication.processEvents()
+    assert why in window.status_message()
+    assert labels(window.session, FAN_CONNECTOR) == [None] * 6
     assert window.instances.select_instance(FAN_CONNECTOR)
-    assert button_state(window) == (True, "")
-    click(button)
+    assert dropdown_state(window) == (True, "")
+    trigger_dropdown(window)
     assert labels(window.session, FAN_CONNECTOR) == [None, FULL, FULL, None, None, None]
     assert "第 10–11 步被线挡住（完全），直到第 12 步拔掉" in window.status_message()
     # the part under the pointer in the instance table: the right-click entry
@@ -480,13 +522,39 @@ def test_the_palette_button_is_greyed_with_its_reason_and_writes_the_span(window
     assert "直到这个视角最后一帧（第 14 步）" in window.status_message()
 
 
-def test_a_part_without_a_shape_greys_the_button_with_the_keys_sentence(window):
+@pytest.mark.parametrize("size", [(1920, 1000), (1920, 1080)])
+def test_the_arrow_adds_no_height_and_the_group_stays_in_view(qapp, tmp_path, size):
+    """Review M1: the first round's own button sat under the fold at 1920x1000
+    (viewport 814 px, top 822). The dropdown is part of 「看不见」: nothing moves."""
+    session = make_app_session(tmp_path)
+    session.sweeper_enabled = False
+    win = MainWindow(session, make_paths(tmp_path), "tester", sam_queue=StubSamQueue())
+    try:
+        win.resize(*size)
+        win.show()
+        QApplication.processEvents()
+        answer_roi(win)
+        QApplication.processEvents()
+        scroll = win.palette.scroll
+        inner = scroll.widget()
+        viewport = scroll.viewport().height()
+        button = win.palette.button("mark_absent")
+        bottom = button.mapTo(inner, button.rect().bottomLeft()).y()
+        assert scroll.verticalScrollBar().value() == 0
+        assert bottom <= viewport, (bottom, viewport)
+        assert button.height() <= max(win.palette.button(n).height() for n in A.PALETTE_ACTIONS)
+        assert button.arrow_rect().height() <= button.height()
+    finally:
+        close_window(win)
+
+
+def test_a_part_without_a_shape_greys_the_entry_with_the_keys_sentence(window):
     assert window.instances.select_instance("cpu.01")   # drawn at 10: live
-    assert button_state(window) == (True, "")
+    assert dropdown_state(window) == (True, "")
     window.session.goto(14, force=True)                 # the cooler is gone at 14
     QApplication.processEvents()
     assert window.instances.select_instance(CHASSIS)
-    assert button_state(window) == (True, "")
+    assert dropdown_state(window) == (True, "")
     assert not window.instances.select_instance("cpu_cooler.fan.01")   # removed: no row
     window.act_cable_until("cpu_cooler.fan.01")
     assert "没有可标的" in window.status_message() or "不要它的形状" in window.status_message()

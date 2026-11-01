@@ -206,9 +206,8 @@ def test_the_group_sits_under_its_own_heading_after_the_actions(window):
     operations = next(w for w in widgets if isinstance(w, QLabel) and w.text() == "操作")
     assert header.styleSheet() == operations.styleSheet()
     assert header.font().bold()
-    # follow-up: the action buttons clicked least close the strip, under 「其他」;
-    # W3i's keyless 「被线挡住 → 直到拔掉」 leads them, right under 「看不见」
-    assert A.PALETTE_OTHER == ("cable_until", "flash_compare", "cycle_candidate", "clear_edit")
+    # follow-up: the action buttons clicked least close the strip, under 「其他」
+    assert A.PALETTE_OTHER == ("flash_compare", "cycle_candidate", "clear_edit")
     assert not set(A.PALETTE_OTHER) & set(A.PALETTE_ACTIONS)
     other = window.palette.other_header
     assert other.text() == "其他" and other.styleSheet() == operations.styleSheet()
