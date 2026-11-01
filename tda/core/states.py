@@ -60,6 +60,7 @@ from tda.core.model import (
     is_cage_latch,
     is_context,
     is_gallery_only,
+    is_in_gallery,
     is_provisional,
 )
 from tda.core.taxonomy import Taxonomy
@@ -713,6 +714,11 @@ def is_gallery_part(instances: dict[str, InstanceRec], final: FrameState, key: s
     A gallery-only part (task U45) always is, whatever its class and whatever
     ``final`` says: it is in no snapshot of the teardown (it has no events),
     and the annotator added it because it lies on the table.
+
+    A sequence part of an excluded class with ``attrs.in_gallery`` (task W3k,
+    :func:`tda.core.model.is_in_gallery`) is judged like any other part: the
+    annotator says this one screw can be told apart in the layout, so the
+    gallery asks for it when it was taken out on its own.
     """
     rec = instances.get(key)
     if rec is not None and is_gallery_only(rec) and not is_provisional(key):
@@ -720,7 +726,9 @@ def is_gallery_part(instances: dict[str, InstanceRec], final: FrameState, key: s
     inst = final.get(key)
     if rec is None or inst is None or is_provisional(key):
         return False
-    if rec.cls in set(excluded) or inst.state != REMOVED or inst.absent:
+    if rec.cls in set(excluded) and not is_in_gallery(rec):
+        return False      # a plug, a cable, a screw: not told apart in a layout
+    if inst.state != REMOVED or inst.absent:
         return False      # absent (U34): it was never taken out, it was never there
     return not gone_with_parent(final, key)
 
