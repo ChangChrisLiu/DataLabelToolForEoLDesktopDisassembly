@@ -70,14 +70,14 @@ from tda.ui.panels import session_is_open
 from tda.ui.session_cable import LABEL_ZH as CABLE_ZH
 from tda.ui.session_cable import OFF_FRAME_TAG
 from tda.ui.session_cable import TAG_ZH as CABLE_TAGS
-
-#: The right-click entry (W3i): the palette's 「被线挡住 → 直到拔掉」 on this row.
-CABLE_UNTIL_MENU = "被线挡住 → 直到拔掉"
-CABLE_UNTIL_MENU_TIP = ("这一行的零件从这一帧起、到它下一次状态变化（拔掉 / 拆下 / 挪开 / 打开）前的最后一帧"
-                        "都标被线挡住（完全），跨位姿段，一次撤销")
 from tda.ui.session_rows import HIDING_VISIBILITY
 
 __all__ = ["InstanceListPanel"]
+
+#: The right-click entry (W3i): 「看不见」's dropdown 「直到拔掉 / 拆下」 on this row.
+CABLE_UNTIL_MENU = "被线挡住 → 直到拔掉"
+CABLE_UNTIL_MENU_TIP = ("这一行的零件从这一帧起、到它下一次状态变化（拔掉 / 拆下 / 挪开 / 打开）前的最后一帧"
+                        "都标被线挡住（完全），跨位姿段，一次撤销")
 
 KEY_ROLE = int(Qt.ItemDataRole.UserRole)
 

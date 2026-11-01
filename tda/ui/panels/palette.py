@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QScrollArea,
     QSizePolicy,
     QSlider,
@@ -62,6 +63,14 @@ __all__ = ["PALETTE_WIDTH", "RADIUS_MAX", "RADIUS_MIN", "PaletteButton",
 #: The strip's width in logical pixels (see the module docstring for why a
 #: strip at all).  Measured against ``tests/test_app.py``'s canvas share.
 PALETTE_WIDTH = 124
+#: The buttons with a dropdown arrow (W3i) and what the menu offers:
+#: ``button -> ((action name, menu text), ...)``. 「看不见」 carries
+#: 「直到拔掉 / 拆下」 -- the same part under a cable from this frame until its
+#: next state change -- so the palette gains no row (a sixth 「状态」 button, or
+#: one at the top of 「其他」, sits under the fold at 1920x1000).
+DROPDOWNS: dict[str, tuple[tuple[str, str], ...]] = {
+    "mark_absent": (("cable_until", "直到拔掉 / 拆下"),),
+}
 #: The extra space above a group's heading (工具 / 笔刷大小 / 操作 / 状态 / 其他).
 GROUP_GAP = 2
 #: The brush, the eraser and the occluder share one radius, in image pixels --
@@ -228,23 +237,45 @@ class PaletteButton(QAbstractButton):
     #: 「状态」 group fits a maximized 1080p window unscrolled (U13 follow-up).
     VPAD = 3
     GAP = 4
+    #: The dropdown arrow strip at the right edge of a button that has one
+    #: (W3i: 「看不见」 offers 「直到拔掉 / 拆下」 there; the strip adds no height,
+    #: so the 「状态」 group still fits 1920x1000).
+    ARROW_W = 14
 
     #: A press on the button while it is greyed out: say why (round 2).
     sigRefusedClick = Signal()
+    #: The arrow strip was clicked: the palette shows the dropdown (W3i).
+    sigMenu = Signal()
 
     def event(self, event) -> bool:  # noqa: D102 - Qt override
         # A disabled widget still receives its mouse events here (Qt only
         # ignores them afterwards); a greyed button answers a click with its
-        # reason instead of with nothing.
+        # reason instead of with nothing -- its arrow still opens the menu,
+        # whose entry says its own reason.
         if not self.isEnabled() and event.type() == QEvent.Type.MouseButtonRelease:
-            self.sigRefusedClick.emit()
+            if self.dropdown and self.arrow_rect().contains(event.position().toPoint()):
+                self.sigMenu.emit()
+            else:
+                self.sigRefusedClick.emit()
             return True
         return super().event(event)
 
+    def mouseReleaseEvent(self, event) -> None:  # noqa: D102 - Qt override
+        # a release on the arrow strip is the menu, not the click (W3i)
+        if self.dropdown and self.arrow_rect().contains(event.position().toPoint()):
+            self.setDown(False)
+            self.update()
+            event.accept()
+            self.sigMenu.emit()
+            return
+        super().mouseReleaseEvent(event)
+
     def __init__(self, action: A.Action, checkable: bool = False,
-                 parent: Optional[QWidget] = None) -> None:
+                 parent: Optional[QWidget] = None, dropdown: bool = False) -> None:
         super().__init__(parent)
         self.action = action
+        #: The button has a dropdown arrow strip (:data:`ToolPalette.DROPDOWNS`).
+        self.dropdown = bool(dropdown)
         self.name, self.note = A.short_parts(action)
         self.key = A.key_caption(action)
         self._icon = tool_icon(action.name, self.devicePixelRatioF() or 1.0)
@@ -294,11 +325,18 @@ class PaletteButton(QAbstractButton):
     def _text_left(self) -> int:
         return self.PAD + ((ICON_PX + self.GAP) if self._icon is not None else 0)
 
+    def arrow_rect(self) -> QRect:
+        """The dropdown arrow strip, in the button's coordinates (empty without one)."""
+        if not self.dropdown:
+            return QRect()
+        return QRect(self.width() - self.PAD - self.ARROW_W, 1, self.ARROW_W + self.PAD - 1,
+                     self.height() - 2)
+
     def _layout(self, width: int) -> dict:
         name_font, small_font = self._fonts()
         nm, sm = QFontMetrics(name_font), QFontMetrics(small_font)
         left = self._text_left()
-        room = max(20, width - left - self.PAD)
+        room = max(20, width - left - self.PAD - (self.ARROW_W if self.dropdown else 0))
         # no key, no keycap (W3i): the name has the whole line
         key_w = sm.horizontalAdvance(self.key) + 8 if self.key else 0
         key_h = sm.height() + 2
@@ -383,6 +421,15 @@ class PaletteButton(QAbstractButton):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRoundedRect(cap.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3)
             painter.drawText(cap, int(Qt.AlignmentFlag.AlignCenter), self.key)
+        if self.dropdown:
+            # the arrow strip (W3i): a hairline, then ▾ -- the menu is a click away
+            strip = self.arrow_rect()
+            painter.setPen(QPen(sub, 1.0))
+            painter.drawLine(QPointF(strip.left() + 0.5, 5.0),
+                             QPointF(strip.left() + 0.5, self.height() - 5.0))
+            painter.setFont(small_font)
+            painter.drawText(QRect(strip.left(), 0, strip.width(), self.height()),
+                             int(Qt.AlignmentFlag.AlignCenter), "▾")
         if self.note:
             painter.setPen(sub)
             painter.drawText(lay["note"], int(Qt.TextFlag.TextWordWrap
@@ -445,6 +492,8 @@ class ToolPalette(QWidget):
         # maximized 1080p window (U13)
         layout.setSpacing(2)
         self._buttons: dict[str, PaletteButton] = {}
+        #: ``action name -> (enabled, reason)`` of the dropdown entries (W3i).
+        self._menu_states: dict[str, tuple[bool, str]] = {}
         self._mode = ""
         #: The drawing half of the strip, hidden in Review (round 1, item 3).
         self._tool_widgets: list[QWidget] = []
@@ -547,8 +596,10 @@ class ToolPalette(QWidget):
 
     def _add(self, name: str, checkable: bool) -> PaletteButton:
         action = A.action_named(name)
-        button = PaletteButton(action, checkable=checkable)
+        button = PaletteButton(action, checkable=checkable, dropdown=name in DROPDOWNS)
         button.sigRefusedClick.connect(lambda n=name, b=button: self.sigRefused.emit(n, b.reason()))
+        if name in DROPDOWNS:
+            button.sigMenu.connect(lambda n=name: self._show_dropdown(n))
         if action.hold:
             button.pressed.connect(lambda n=name: self.sigAction.emit(n, True))
             button.released.connect(lambda n=name: self.sigAction.emit(n, False))
@@ -566,11 +617,53 @@ class ToolPalette(QWidget):
         """Every button by action name (a copy)."""
         return dict(self._buttons)
 
+    def dropdown_items(self, name: str) -> tuple[tuple[str, str], ...]:
+        """``((action name, menu text), ...)`` under ``name``'s arrow (W3i); empty without one."""
+        return DROPDOWNS.get(name, ())
+
+    def dropdown_state(self, item: str) -> tuple[bool, str]:
+        """``(enabled, reason)`` the window last gave a dropdown entry (:meth:`apply_states`)."""
+        return self._menu_states.get(item, (True, ""))
+
+    def dropdown_menu(self, name: str) -> QMenu:
+        """The menu under ``name``'s arrow: each entry runs its action as a click would.
+
+        An entry the window has greyed stays clickable and answers with its
+        reason (:attr:`sigRefused`), as a greyed button does; the tooltip
+        says the same. Built apart from the click so a test can trigger it.
+        """
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        for item, text in self.dropdown_items(name):
+            action = A.action_named(item)
+            enabled, reason = self.dropdown_state(item)
+            entry = menu.addAction(text)
+            entry.setData(item)
+            entry.setToolTip(f"{action.label_zh}（{A.NO_KEY_TEXT}）"
+                             + (f"\n现在不能用：{reason}" if not enabled and reason else ""))
+            if enabled:
+                entry.triggered.connect(lambda _c=False, n=item: self.sigAction.emit(n, True))
+            else:
+                entry.triggered.connect(
+                    lambda _c=False, n=item, r=reason: self.sigRefused.emit(n, r))
+        return menu
+
+    def _show_dropdown(self, name: str) -> None:
+        button = self._buttons[name]
+        menu = self.dropdown_menu(name)
+        menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
+
     def apply_states(self, states: dict, suggested: str = "") -> None:
-        """``{name: (enabled, checked, reason)}``; buttons not named are left alone."""
+        """``{name: (enabled, checked, reason)}``; buttons not named are left alone.
+
+        A name with no button of its own is a dropdown entry's (W3i): its state
+        is kept for :meth:`dropdown_menu`.
+        """
         for name, (enabled, checked, reason) in states.items():
             button = self._buttons.get(name)
             if button is None:
+                if any(name == item for items in DROPDOWNS.values() for item, _t in items):
+                    self._menu_states[name] = (bool(enabled), "" if enabled else str(reason))
                 continue
             if button.isEnabled() != bool(enabled):
                 button.setEnabled(bool(enabled))
