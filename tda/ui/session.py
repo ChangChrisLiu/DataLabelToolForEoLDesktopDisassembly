@@ -61,6 +61,7 @@ from tda.ui.session_visruns import VisRunsMixin, apply_sync
 from tda.ui.session_absent import OP_KIND as ABSENT_OP
 from tda.ui.session_absent import AbsentMixin, apply_absent
 from tda.ui.session_notes import NotesMixin
+from tda.ui.session_rulings import FLIP_OP
 from tda.ui.session_rulings import OP_KIND as RULING_OP
 from tda.ui.session_rulings import RulingsMixin
 from tda.ui.session_gallery import OP_KIND as GALLERY_PARTS_OP
@@ -224,6 +225,9 @@ class AnnotationSession(CommitMixin, ReviewMixin, ResignMixin, StateMixin, VerbM
         # 谁压着谁 (task W3c): no input of the compiler either -- the rows, and
         # the dock told
         self.undo_stack.register(RULING_OP, self._apply_ruling_op, self._apply_ruling_op)
+        # 上下翻转 (task W3h): the pair override is an input, and the rows of the
+        # two parts are settled the same way in both directions
+        self.undo_stack.register(FLIP_OP, self._apply_flip_op, self._apply_flip_op)
         # a brush stroke is undone in the same history, but it touches nothing
         # but the editing layer: no database write, no recompilation
         self.undo_stack.register(

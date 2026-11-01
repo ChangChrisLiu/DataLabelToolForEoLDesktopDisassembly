@@ -45,7 +45,9 @@ the loader refuses such a pair outright. Only an explicit user ruling wins over
 a structural reason.
 
 **Task W3g: the whitelist is the user's class-level rulings** (``version:
-W2``). Each ``pairs:`` entry names the ``edge`` it writes where the pixels
+W2``; ``W3`` since task W3h adds the 11 pairs the user decided on the pair
+cards -- A8, B7-B10, C11's SSD, E1-E5 -- so the shipped rows are
+``pixels:W3``). Each ``pairs:`` entry names the ``edge`` it writes where the pixels
 overlap: ``covered_by`` (the default), ``blocked_by.contained`` -- the new
 ``blocked_by`` mode ``contained`` (:data:`~tda.core.graph_rules.BLOCKED_GATES`:
 only the lower part's ``remove`` waits, for the upper part ``removed``; the

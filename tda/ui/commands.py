@@ -45,6 +45,7 @@ KINDS: frozenset[str] = frozenset(
         "set_frame_note",  # 这一帧的说明: the annotator's note on one frame (U35)
         "add_gallery_parts",  # ＋ 这张里还有…: gallery-only parts, made or taken back (U45)
         "cover_ruling",  # 谁压着谁: the user's 挡着 / 不挡 on overlapping pairs (W3c)
+        "flip_pair_layers",  # 上下翻转: a PairOverride plus the rows it settles, both ways (W3h)
     }
 )
 
