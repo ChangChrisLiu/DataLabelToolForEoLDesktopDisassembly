@@ -37,6 +37,17 @@ pairs the graph orders indirectly or the log already decides are folded away
 or hand-written events change).  Task W3g folds a third kind away, the pairs
 whose class pair the user ruled 不挡 (the shipped whitelist's ``not_blocks:``,
 read once by :func:`~tda.ui.cover_rulings.class_rulings`).
+
+**Task W3h.**  W3f's 「日志已证明不挡」 fold is now 「日志里下面那件先动了（k）」:
+the same pairs, no longer a proof -- the user decides with the picture between
+不挡 and a layer order painted the wrong way round; a class pair the user ruled
+挡 (either way round) is tagged 「用户已定：挡 → 层序可能画反」.  Its second button
+「上下翻转」 ends in :meth:`RulingsWindowMixin.on_flip_layers` ->
+:meth:`~tda.ui.session_rulings.RulingsMixin.flip_pair_layers` (the pair
+override, the re-checks, ``accept_new`` on the two parts, the re-sign); the
+status line says what it did (:func:`~tda.ui.cover_rulings.flip_text`) or why
+it refused.  The segment's pair overrides are read here
+(``db.pair_overrides``) so a flipped pair shows 「已翻过」.  No key.
 """
 from __future__ import annotations
 
@@ -49,7 +60,7 @@ from tda.core.db_rulings import OP_KIND as RULING_OP
 from tda.core.graph import edges_from_db
 from tda.core.model import is_component_view
 from tda.core.states import initial_overrides
-from tda.core.truth_inputs import state_of
+from tda.core.truth_inputs import pose_segment_of, state_of
 from tda.ui import app_actions as A
 from tda.ui import app_compat as compat
 from tda.ui import app_support as S
@@ -59,12 +70,15 @@ from tda.ui.cover_rulings import (
     RULING_TEXT,
     chassis_pairs,
     cover_log,
+    flip_text,
     status_text,
     triage_pairs,
 )
+from tda.ui.session_api import SessionRefusal
 
-__all__ = ["ABOVE_CHIP", "ABOVE_RGB", "BELOW_CHIP", "BELOW_RGB", "HOVER_TEXT", "NO_SHAPE",
-           "RULINGS_SETTING", "RULING_CLEARED", "RULING_UNCHANGED", "RulingsWindowMixin"]
+__all__ = ["ABOVE_CHIP", "ABOVE_RGB", "BELOW_CHIP", "BELOW_RGB", "FLIP_OUTSIDE", "HOVER_TEXT",
+           "NO_SHAPE", "RULINGS_SETTING", "RULING_CLEARED", "RULING_UNCHANGED",
+           "RulingsWindowMixin"]
 
 #: Is the section unfolded?  Remembered (task W3c).
 RULINGS_SETTING = "notes/rulings_open"
@@ -78,6 +92,8 @@ ABOVE_CHIP = "上：{key}"
 BELOW_CHIP = "下：{key}"
 HOVER_TEXT = "橙框 = 压在上面的 {above}{above_state}，蓝框 = 被压的 {below}{below_state}（只是显示，不改任何东西）"
 NO_SHAPE = "（这一帧这个视角上没有它的形状）"
+#: 「上下翻转」 arriving outside Review (task W3h): nothing is written.
+FLIP_OUTSIDE = "没有翻：只在复查模式、打开的机器视角上翻层序"
 
 
 def _as_bool(value, default: bool = True) -> bool:
@@ -99,6 +115,7 @@ class RulingsWindowMixin:
         section.sigRule.connect(self.on_rule_pairs)
         section.sigClear.connect(self.on_clear_ruling)
         section.sigHover.connect(self.on_rulings_hover)
+        section.sigFlip.connect(self.on_flip_layers)
         changed = getattr(self.session, "sigRulingsChanged", None)
         if changed is not None:
             changed.connect(self._on_rulings_changed)
@@ -159,8 +176,17 @@ class RulingsWindowMixin:
         except Exception:  # noqa: BLE001 - a state word is never worth the section
             states = {}
         self._rulings_states = states
+        overrides: set = set()
+        if here:
+            try:  # task W3h: the segment's pair overrides, so a flipped pair says 「已翻过」
+                seg = pose_segment_of(db, frame[0])
+                overrides = {(p.above, p.below)
+                             for p in db.pair_overrides(desktop, str(frame[0].view), seg)}
+            except Exception:  # noqa: BLE001 - without them every row keeps its button
+                overrides = set()
         tri = triage_pairs(triples, records, edges_from_db(db, desktop), rulings,
-                           log=self._desktop_cover_log(desktop, records), states=states)
+                           log=self._desktop_cover_log(desktop, records), states=states,
+                           overrides=overrides)
         section.set_rulings(tri.asked, rulings, proven=tri.proven, indirect=tri.indirect,
                             class_not_blocks=tri.class_not_blocks)
         self.rulings_ms = (time.perf_counter() - started) * 1000.0
@@ -271,6 +297,39 @@ class RulingsWindowMixin:
         self.report(RULING_CLEARED.format(desktop=int(self.session.desktop), above=above,
                                           below=below,
                                           word=RULING_TEXT.get(before["ruling"], "?")))
+
+    @S.guard
+    def on_flip_layers(self, above: str, below: str) -> None:
+        """「上下翻转」 on a 日志里下面那件先动了 row (task W3h): the session flips, the status line says.
+
+        One ``set_pair_override`` op (``below`` above ``above`` for this view's
+        pose segment, with a note), the view's queued re-checks run now, the
+        conflicts of the two parts closed with ``accept_new``, demoted frames
+        re-signed; a refusal is reported with its reason and writes nothing.
+        """
+        if not self.rulings_apply():
+            self.report(FLIP_OUTSIDE)
+            return
+        key = self.session.current()
+        try:
+            result = self.session.flip_pair_layers(str(above), str(below))
+        except SessionRefusal as refused:
+            self.logger.info("flip refused D%s %s step %s %s over %s: %s", key.desktop,
+                             key.view, key.step, below, above, refused)
+            self.report(str(refused))
+            return
+        self.logger.info("flip D%s %s step %s: %s over %s on %d frame(s), accepted %d, "
+                         "resigned %d, left open %d", key.desktop, key.view, key.step, below,
+                         above, len(result.get("frames") or []), result.get("accepted", 0),
+                         result.get("resigned", 0), len(result.get("left_open") or []))
+        # the frame was re-announced with its new compilation: rebuild the order
+        # list and the section from it now, not on the timer
+        rebuild = getattr(self, "refresh_notes_order", None)
+        if callable(rebuild):
+            rebuild(force=True)
+        else:
+            self.refresh_rulings()
+        self.report(flip_text(key.desktop, key.step, str(above), str(below), result))
 
     def ruling_op_text(self, undo: bool) -> str:
         """「撤销：D13 的「谁压着谁」裁定（1 对）」 when ``Ctrl+Z`` / ``Ctrl+Y`` replays a ruling op."""
