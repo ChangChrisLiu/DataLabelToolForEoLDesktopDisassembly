@@ -46,8 +46,7 @@ the same pairs, no longer a proof -- the user decides with the picture between
 :meth:`~tda.ui.session_rulings.RulingsMixin.flip_pair_layers` (the pair
 override, the re-checks, ``accept_new`` on the two parts, the re-sign); the
 status line says what it did (:func:`~tda.ui.cover_rulings.flip_text`) or why
-it refused.  The segment's pair overrides are read here
-(``db.pair_overrides``) so a flipped pair shows 「已翻过」.  No key.
+it refused.  No key.
 """
 from __future__ import annotations
 
@@ -60,7 +59,7 @@ from tda.core.db_rulings import OP_KIND as RULING_OP
 from tda.core.graph import edges_from_db
 from tda.core.model import is_component_view
 from tda.core.states import initial_overrides
-from tda.core.truth_inputs import pose_segment_of, state_of
+from tda.core.truth_inputs import state_of
 from tda.ui import app_actions as A
 from tda.ui import app_compat as compat
 from tda.ui import app_support as S
@@ -176,17 +175,8 @@ class RulingsWindowMixin:
         except Exception:  # noqa: BLE001 - a state word is never worth the section
             states = {}
         self._rulings_states = states
-        overrides: set = set()
-        if here:
-            try:  # task W3h: the segment's pair overrides, so a flipped pair says 「已翻过」
-                seg = pose_segment_of(db, frame[0])
-                overrides = {(p.above, p.below)
-                             for p in db.pair_overrides(desktop, str(frame[0].view), seg)}
-            except Exception:  # noqa: BLE001 - without them every row keeps its button
-                overrides = set()
         tri = triage_pairs(triples, records, edges_from_db(db, desktop), rulings,
-                           log=self._desktop_cover_log(desktop, records), states=states,
-                           overrides=overrides)
+                           log=self._desktop_cover_log(desktop, records), states=states)
         section.set_rulings(tri.asked, rulings, proven=tri.proven, indirect=tri.indirect,
                             class_not_blocks=tri.class_not_blocks)
         self.rulings_ms = (time.perf_counter() - started) * 1000.0
@@ -319,9 +309,10 @@ class RulingsWindowMixin:
             self.report(str(refused))
             return
         self.logger.info("flip D%s %s step %s: %s over %s on %d frame(s), accepted %d, "
-                         "resigned %d, left open %d", key.desktop, key.view, key.step, below,
-                         above, len(result.get("frames") or []), result.get("accepted", 0),
-                         result.get("resigned", 0), len(result.get("left_open") or []))
+                         "resigned %d frame(s) %d row(s), left open %d", key.desktop, key.view,
+                         key.step, below, above, len(result.get("frames") or []),
+                         result.get("accepted", 0), result.get("resigned", 0),
+                         result.get("rewritten", 0), len(result.get("left_open") or []))
         # the frame was re-announced with its new compilation: rebuild the order
         # list and the section from it now, not on the timer
         rebuild = getattr(self, "refresh_notes_order", None)
