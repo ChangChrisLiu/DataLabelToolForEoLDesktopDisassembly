@@ -214,6 +214,27 @@ def is_gallery_only(rec: Optional["InstanceRec"]) -> bool:
             and not is_context(rec))
 
 
+#: ``attrs`` flag of a sequence part of an excluded class (a screw, a
+#: connector, a cable) that the annotator laid out and drew in the components
+#: gallery anyway (task W3k): the gallery asks for that one instance.
+IN_GALLERY_ATTR = "in_gallery"
+
+
+def is_in_gallery(rec: Optional["InstanceRec"]) -> bool:
+    """Is this sequence part opted into the components gallery (task W3k)?
+
+    :data:`GALLERY_EXCLUDED_CLASSES` keeps the log's screws, connectors and
+    cables out of the layout photo because one cannot be told from the next.
+    A single distinctive one can: D02's motherboard screw 6 is also the drive
+    latch's stop screw, and the user drew it in the gallery shot (2026-11-01).
+    ``attrs.in_gallery: true`` makes :func:`tda.core.states.is_gallery_part`
+    ask for exactly that instance; everything else about it -- its events, its
+    step, the sequence's frames -- is unchanged, unlike a gallery-only part.
+    """
+    return (rec is not None and bool((rec.attrs or {}).get(IN_GALLERY_ATTR))
+            and not is_context(rec) and not is_gallery_only(rec))
+
+
 def teardown_only(instances: dict) -> dict:
     """``instances`` as the teardown sequence knows them (task U45).
 
