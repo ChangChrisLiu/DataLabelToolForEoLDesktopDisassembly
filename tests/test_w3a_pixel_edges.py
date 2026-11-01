@@ -112,10 +112,10 @@ def whitelist_file(tmp: Path, body: str) -> Path:
 def test_the_shipped_whitelist_loads():
     wl = PE.load_whitelist(Path(__file__).resolve().parents[1] / PE.DEFAULT_WHITELIST, TAX)
     # task W3g: W2 is the user's class rulings (re-pinned from W1's suggestions)
-    assert wl.version == "W3" and wl.source == "pixels:W3"   # W3: + the user's card rulings (2026-10-31)
+    assert wl.version == "W4" and wl.source == "pixels:W4"   # W3/W4: + the user's card rulings (2026-10-31)
     assert (wl.min_px, wl.min_frac) == (1000, 0.03)
     labels = [p.label() for p in wl.pairs]
-    assert labels[0] == "drive_cage -> motherboard" and len(labels) == 30   # 19 (W2) + 11 card rulings (W3)
+    assert labels[0] == "drive_cage -> motherboard" and len(labels) == 32   # 19 (W2) + 11 (W3) + 2 (W4)
     # a part on the board is a rule edge (task W3d; structural by the support table
     # where it gets none): never a candidate, so not the whitelist's
     assert "expansion_card.gpu -> motherboard" not in labels
