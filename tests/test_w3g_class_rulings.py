@@ -62,9 +62,9 @@ def shipped() -> PE.Whitelist:
 # --------------------------------------------------------------------------- #
 def test_the_shipped_whitelist_is_the_users_rulings():
     wl = shipped()
-    assert wl.version == "W2" and wl.source == "pixels:W2"
+    assert wl.version == "W3" and wl.source == "pixels:W3"   # W3: the card rulings of 2026-10-31
     edges = {p.label(): p.edge for p in wl.pairs}
-    assert len(edges) == 19 and len(wl.not_blocks) == 12
+    assert len(edges) == 30 and len(wl.not_blocks) == 12
     for label in ("drive_cage -> motherboard", "optical_drive -> motherboard",
                   "storage_drive.ssd -> motherboard", "storage_drive.hdd -> motherboard",
                   "case_fan -> motherboard", "cooler_bracket -> motherboard",
@@ -91,10 +91,15 @@ def test_the_shipped_whitelist_is_the_users_rulings():
     assert wl.not_blocking("drive_cage", "cpu_socket_lever") is not None
     assert wl.not_blocking("case_fan", "cpu") is None                  # C11 is 挡
     assert wl.match("psu", "motherboard") is None
-    # the undecided rows are in neither list: still asked in Review
-    for above, below in (("storage_drive.ssd", "optical_drive"), ("storage_drive.hdd", "psu"),
-                         ("storage_drive.ssd", "psu"), ("psu", "storage_drive.ssd"),
-                         ("cover", "cover"), ("expansion_card.gpu", "cover")):
+    # W3: the card rulings (B7-B10, A8, C11 ssd, E1-E5) are 挡 ...
+    for label in ("storage_drive.ssd -> optical_drive", "storage_drive.ssd -> psu",
+                  "psu -> storage_drive.ssd", "psu -> storage_drive.hdd", "misc_part -> motherboard",
+                  "case_fan -> storage_drive.ssd", "cover -> cover", "cover -> expansion_card",
+                  "storage_drive.ssd -> cover", "cover -> psu", "optical_drive -> optical_drive"):
+        assert edges[label] == "covered_by", label
+    assert wl.match("cover", "expansion_card.gpu") is not None          # the bare class covers every kind
+    # ... and the reversed pairs the cards showed were layer errors, fixed in the data: in neither list
+    for above, below in (("storage_drive.hdd", "psu"), ("expansion_card.gpu", "cover")):
         assert wl.match(above, below) is None and wl.not_blocking(above, below) is None
     doc = wl.as_json()
     assert doc["pairs"][6]["edge"] == "blocked_by.contained" and len(doc["not_blocks"]) == 12
@@ -410,8 +415,8 @@ def test_triage_folds_the_class_pairs_ruled_not_blocks():
     assert tri.class_not_blocks[0].reason.startswith("A4 不挡")
     assert [(c.above, c.below, c.tag) for c in tri.asked] == [
         ("optical_drive.01", "motherboard.01", CR.TAG_USER_BLOCKS),
-        ("cover.01", "psu.01", CR.TAG_OTHER)]
-    assert tri.asked[0].reason == "A2 挡"
+        ("cover.01", "psu.01", CR.TAG_USER_BLOCKS)]          # E4: 挡 since W3 (the card rulings)
+    assert tri.asked[0].reason == "A2 挡" and tri.asked[1].reason.startswith("E4 挡")
     assert CR.class_not_blocks_text(tri.class_not_blocks[1]) == (
         "drive_cage.01 → cpu.01 · 像素 4 406 · C 不挡：只是拆的习惯顺序")
     # without class rulings every one of them is asked, as before W3g
@@ -500,5 +505,5 @@ def test_no_new_keys_and_the_docs_say_it():
     quick = (ROOT / "docs" / "trial_quickstart.md").read_text(encoding="utf-8")
     assert "「用户已定不挡（类级）（k）」" in quick and "「建议收」" not in quick
     yaml_text = (ROOT / PE.DEFAULT_WHITELIST).read_text(encoding="utf-8")
-    assert "version: W2" in yaml_text and "not_blocks:" in yaml_text
-    assert json.loads(json.dumps(shipped().as_json()))["version"] == "W2"
+    assert "version: W3" in yaml_text and "not_blocks:" in yaml_text   # W3 = W2 + the card rulings
+    assert json.loads(json.dumps(shipped().as_json()))["version"] == "W3"

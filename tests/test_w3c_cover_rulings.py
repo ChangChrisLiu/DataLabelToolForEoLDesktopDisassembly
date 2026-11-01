@@ -207,7 +207,7 @@ def test_small_and_latch_parts_on_top_and_screws_connectors_cables_underneath_ar
 def test_the_tags_are_the_users_class_rulings_of_the_shipped_whitelist():
     """Task W3g: the W2 whitelist replaced the sheet's 建议收 / 存疑 tables."""
     classes = CR.class_rulings()
-    assert len(classes.blocks) == 19 and len(classes.not_blocks) == 12
+    assert len(classes.blocks) == 30 and len(classes.not_blocks) == 12   # W3: 19 + the 11 card rulings
     assert ("optical_drive", "motherboard", "A2 挡") in classes.blocks
     # the support table wins: a part on the board is a rule edge, never a tag
     for above, below, _note in classes.blocks + classes.not_blocks:
