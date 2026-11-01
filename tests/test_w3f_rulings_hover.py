@@ -181,12 +181,15 @@ def test_d04_the_log_proven_pair_is_folded_with_one_not_blocks(d04):
     assert [(c.above, c.below) for c in section.proven_candidates] == [("psu.01", "cover.01")]
     assert section.proven_toggle.text() == PROVEN_TITLE.format(k=1)
     assert not section.proven_toggle.isHidden() and not section.proven_toggle.isChecked()
+    # W3h: a question, not a proof -- 「不挡」 or 「上下翻转」; the dock's own class
+    # rulings say cover → psu 挡, so the row carries the layer tag
     assert section.proven_texts() == [
-        "psu.01（装着）→ cover.01（打开） · 像素 1 200 · 第 2 步 cover.01 打开时 psu.01 还是装着"]
-    [(cand, free)] = section.proven_buttons
-    assert free.text() == "不挡"
+        "psu.01（装着）→ cover.01（打开） · 像素 1 200 · 第 2 步先动了下面的 cover.01 · "
+        "用户已定：挡 → 层序可能画反"]
+    [(cand, free, flip)] = section.proven_buttons
+    assert (free.text(), flip.text()) == ("不挡", "上下翻转")
     buttons = section.proven.findChildren(QPushButton)
-    assert [b.text() for b in buttons] == ["不挡"]                  # never 「挡着」
+    assert [b.text() for b in buttons] == ["不挡", "上下翻转"]        # never 「挡着」
     # the indirect fold: the chain in words, no button
     assert [(c.above, c.below) for c in section.indirect_candidates] == [
         ("cover.02", "motherboard.01")]
@@ -239,7 +242,7 @@ def test_the_docs_say_it():
     entries = [line for line in spec.split("## 14. 修订记录", 1)[1].splitlines()
                if line.startswith("- ")]
     # on top when it landed; whatever lands later goes above it
-    [entry] = [e for e in entries[:2] if e.startswith("- **v1.51（2026-10-31）**")]
+    [entry] = [e for e in entries[:3] if e.startswith("- **v1.51（2026-10-31）**")]
     for needed in ("（W3f，§4.4）", "`RulingsSection.sigHover", "`cover_rulings.triage_pairs`",
                    "`indirect_chain`", "`cover_log`", "`log_proof`", "`COVER_CLEAR`",
                    "间接 74、日志 21、要问 348", "间接 26、日志 10、要问 50"):
@@ -249,5 +252,5 @@ def test_the_docs_say_it():
     review_part = quick.split("## 4. 走完之后：Review", 1)[1].split("### 冲突从哪来", 1)[0]
     item = review_part.split("\n6. ", 1)[1]
     assert item.count("\n   ") == 1                         # two lines
-    for needed in ("橙框", "蓝框", "「日志已证明不挡（k）」", "「规则已间接覆盖（k）」"):
+    for needed in ("橙框", "蓝框", "「日志里下面那件先动了（k）」", "「规则已间接覆盖（k）」"):   # W3h's name
         assert needed in item, needed

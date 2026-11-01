@@ -38,6 +38,16 @@ pairs whose class pair the user ruled 不挡 for the whole class (the
 whitelist's ``not_blocks:``), the user's words on each row, no button.  An
 open row whose class pair the user ruled 挡 is tagged 「用户已定：挡」 and keeps
 both buttons.
+
+Task W3h turns W3f's 「日志已证明不挡」 into 「日志里下面那件先动了（k）」 (subtitle
+「不挡，或者层序画反了 —— 请看图定」): the same pairs (the log moved the lower part
+while the upper one was still in the way), no longer a proof -- the user
+decides with the picture whether the pair is 不挡 or the layer order is painted
+the wrong way round.  Each row says which step moved the lower part, carries
+the tag 「用户已定：挡 → 层序可能画反」 when the class pair is one the user ruled
+挡 (either way round), and has **two** buttons: 「不挡」 (the ordinary ruling, as
+before) and 「上下翻转」 (:attr:`RulingsSection.sigFlip`; the window's session
+writes the pair override and settles the frozen frames).  Buttons only, no key.
 """
 from __future__ import annotations
 
@@ -62,6 +72,7 @@ from PySide6.QtWidgets import (
 
 from tda.ui.cover_rulings import (
     BLOCKS,
+    FLIP_TEXT,
     NOT_BLOCKS,
     RULING_TEXT,
     Candidate,
@@ -71,15 +82,16 @@ from tda.ui.cover_rulings import (
     class_pairs,
     indirect_text,
     proven_text,
+    proven_tip,
     ruled_text,
 )
 from tda.ui.occlusion_order import FLOOR_NOTE, OrderLine, header_text, line_text
 from tda.ui.panels.frame_note import FrameNoteBox
 
-__all__ = ["BATCH_TEXT", "CLASS_NO_TIP", "CLASS_NO_TITLE", "DOCK_TITLE", "INDIRECT_TIP",
-           "INDIRECT_TITLE", "NONE_PENDING",
+__all__ = ["BATCH_TEXT", "CLASS_NO_TIP", "CLASS_NO_TITLE", "DOCK_TITLE", "FLIP_TIP",
+           "INDIRECT_TIP", "INDIRECT_TITLE", "NONE_PENDING",
            "ORDER_TITLE", "ORDER_TIP", "INSTANCE_ROLE", "NotesDock", "NotesPanel",
-           "OcclusionList", "PROVEN_TIP", "PROVEN_TITLE", "RULED_TITLE",
+           "OcclusionList", "PROVEN_NOTE", "PROVEN_TIP", "PROVEN_TITLE", "RULED_TITLE",
            "RULINGS_TIP", "RULINGS_TITLE", "RulingsSection", "UNDO_RULING"]
 
 DOCK_TITLE = "说明"
@@ -102,7 +114,9 @@ RULINGS_TIP = ("这一帧上重叠的对（像素 ≥ 1000，机箱里），还�
                "拧住、主板上的 CPU / 内存 / 散热器 / 扩展卡）、这台也还没裁定的。看图判断："
                "「挡着」= 拆下面那件之前必须先拿走上面那件；「不挡」= 只是画面上重叠。每对这台只问一次。"
                "「用户已定：挡」= 你已经按类别裁定这一类对挡着（悬停一行看你的原话），这一对仍可以单独改判；"
-               "按类别裁定不挡的对折在「用户已定不挡（类级）」里，不再问。没有快捷键；"
+               "按类别裁定不挡的对折在「用户已定不挡（类级）」里，不再问。"
+               "日志里下面那件先动了的对折在「日志里下面那件先动了」里：要么不挡，要么层序画反了，"
+               "看图定——点「不挡」记一条裁定，或点「上下翻转」改层级。没有快捷键；"
                "Ctrl+Z 撤回最近一次裁定，「已裁定」里的「撤销」去掉任一条。"
                "鼠标停在任一行上，画布上框出这两件：橙框 = 压在上面的，蓝框 = 被压的（只是显示）。"
                "括号里是这一帧的状态；悬停看日志对两件做了什么。")
@@ -110,9 +124,18 @@ RULINGS_TIP = ("这一帧上重叠的对（像素 ≥ 1000，机箱里），还�
 INDIRECT_TITLE = "规则已间接覆盖（{k}）"
 INDIRECT_TIP = ("图里已经有边通过别的零件定了这两件的先后（例：盖板挡着主板螺丝、螺丝拧住主板），"
                 "不用再裁定。悬停看是哪几条边。")
-PROVEN_TITLE = "日志已证明不挡（{k}）"
-PROVEN_TIP = ("日志里下面那件被拆下 / 打开 / 挪开的时候，上面那件还在原处：它显然没挡着，"
-              "「挡着」这条边会和日志矛盾，所以不问。想留个记录可以点「不挡」。")
+#: Task W3h: W3f's 日志已证明不挡 became a question the user answers with the picture.
+PROVEN_TITLE = "日志里下面那件先动了（{k}）"
+PROVEN_NOTE = "不挡，或者层序画反了 —— 请看图定"
+PROVEN_TIP = ("日志里下面那件被拆下 / 打开 / 挪开（或拧下 / 拔掉 / 松开）的时候，上面那件还在原处。"
+              "这不是「不挡」的证明：拆解顺序是主要参考，也可能是层序画反了（例：翻下来压住硬盘的电源模块"
+              "被画在硬盘之下）。看图定——「不挡」记一条普通裁定；「上下翻转」把下面那件翻到上面那件之上"
+              "（这一视角这一段的改层级，一个 op），重查这一段已确认的帧，只接受这两件的新值并重签"
+              "（容差以内得到像素的一方也重签）；Ctrl+Z 撤回覆盖并同样接受 / 重签这两件的行；"
+              "所到的帧上有未裁决的冲突时不翻。「用户已定：挡 → 层序可能画反」= 这一类对"
+              "你已按类别裁定挡着（正着或反着），多半是画反了。悬停看日志和你的原话。")
+FLIP_TIP = ("把下面那件翻到上面那件之上（这一视角这一段）：写一条改层级，重查已确认帧，"
+            "接受这两件的新值并重签；Ctrl+Z 撤回改层级并同样接受 / 重签")
 #: Task W3g: the pairs whose class pair the user ruled 不挡 for the whole class.
 CLASS_NO_TITLE = "用户已定不挡（类级）（{k}）"
 CLASS_NO_TIP = ("这一类对你已经按类别裁定为不挡（只是拆的习惯顺序，或两件彼此独立；"
@@ -200,6 +223,9 @@ class RulingsSection(QWidget):
     #: ``(above, below)``: the pointer rests on that pair's row; ``("", "")``:
     #: it left (or the rows were rebuilt under it).  Display only (task W3f).
     sigHover = Signal(str, str)
+    #: ``(above, below)``: 「上下翻转」 on a 日志里下面那件先动了 row -- put ``below``
+    #: above ``above`` for this segment (task W3h; the window's session writes).
+    sigFlip = Signal(str, str)
 
     def __init__(self, parent: Optional[QWidget] = None, opened: bool = True) -> None:
         super().__init__(parent)
@@ -259,10 +285,11 @@ class RulingsSection(QWidget):
         self.ruled_buttons: list[tuple[tuple[str, str], QPushButton]] = []
         self._row_labels: list[QLabel] = []
         self._ruled_labels: list[QLabel] = []
-        #: The folded lists (W3f): what is in them, and 「不挡」 per proven row.
+        #: The folded lists (W3f): what is in them, and per 日志里下面那件先动了 row
+        #: 「不挡」 and 「上下翻转」 (W3h).
         self.indirect_candidates: list[Candidate] = []
         self.proven_candidates: list[Candidate] = []
-        self.proven_buttons: list[tuple[Candidate, QPushButton]] = []
+        self.proven_buttons: list[tuple[Candidate, QPushButton, QPushButton]] = []
         self._indirect_labels: list[QLabel] = []
         self._proven_labels: list[QLabel] = []
         #: The 用户已定不挡（类级） fold (W3g): what is in it; no buttons.
@@ -324,10 +351,11 @@ class RulingsSection(QWidget):
                     class_not_blocks: Optional[list[Candidate]] = None) -> None:
         """Show the frame's ``candidates`` (in order) and the desktop's ``ruled`` rows.
 
-        ``proven`` / ``indirect`` (task W3f) and ``class_not_blocks`` (task W3g)
-        fill the folded lists; a fold with nothing in it is not shown.
-        Rebuilding under a resting pointer
-        reports the hover gone (``sigHover("", "")``): its row is no more.
+        ``proven`` / ``indirect`` (task W3f; ``proven`` is the 日志里下面那件先动了
+        bucket since task W3h) and ``class_not_blocks`` (task W3g) fill the
+        folded lists; a fold with nothing in it is not shown.  Rebuilding under
+        a resting pointer reports the hover gone (``sigHover("", "")``): its row
+        is no more.
         """
         if self.hovered is not None:
             self.hovered = None
@@ -358,6 +386,11 @@ class RulingsSection(QWidget):
         self.proven_candidates = list(proven or [])
         _clear(self.proven_layout)
         self.proven_buttons, self._proven_labels = [], []
+        if self.proven_candidates:                  # the subtitle (W3h): what to do here
+            self.proven_note = QLabel(PROVEN_NOTE)
+            self.proven_note.setStyleSheet("color: gray")
+            self.proven_note.setToolTip(PROVEN_TIP)
+            self.proven_layout.addWidget(self.proven_note)
         for cand in self.proven_candidates:
             self._add_proven(cand)
         self.proven_layout.addStretch(1)
@@ -439,14 +472,17 @@ class RulingsSection(QWidget):
         self.row_buttons.append((cand, blocks, free))
 
     def _add_proven(self, cand: Candidate) -> None:
-        """A 日志已证明不挡 row: one 「不挡」 for the record, never 「挡着」 (W3f)."""
-        free = _button(RULING_TEXT[NOT_BLOCKS], "记一条「不挡」（日志已经说明了，不点也不会问）")
+        """A 日志里下面那件先动了 row: 「不挡」 (the ruling) and 「上下翻转」 (W3h), never 「挡着」."""
+        free = _button(RULING_TEXT[NOT_BLOCKS], "记一条「不挡」：上面那件没挡着，只是画面上重叠")
         free.clicked.connect(partial(self._emit_rule, [(cand.above, cand.below)], NOT_BLOCKS,
                                      None))
-        self._proven_labels.append(self._line(self.proven_layout, proven_text(cand),
-                                              self._tip(cand), [free],
-                                              hover=(cand.above, cand.below)))
-        self.proven_buttons.append((cand, free))
+        flip = _button(FLIP_TEXT, FLIP_TIP)
+        flip.clicked.connect(partial(self._emit_flip, cand.above, cand.below))
+        # the class hint, then the log's story (which ends with the 日志 line)
+        tip = f"{cand.above_class} → {cand.below_class}：{cand.reason}\n{proven_tip(cand)}"
+        self._proven_labels.append(self._line(self.proven_layout, proven_text(cand), tip,
+                                              [free, flip], hover=(cand.above, cand.below)))
+        self.proven_buttons.append((cand, free, flip))
 
     def _add_batch(self, classes: tuple[str, str], group: list[Candidate]) -> None:
         text = BATCH_TEXT.format(above=classes[0], below=classes[1], n=len(group))
@@ -474,6 +510,9 @@ class RulingsSection(QWidget):
     def _emit_clear(self, above: str, below: str, *_args) -> None:
         self.sigClear.emit(above, below)
 
+    def _emit_flip(self, above: str, below: str, *_args) -> None:
+        self.sigFlip.emit(above, below)
+
     def texts(self) -> list[str]:
         """The pending lines as shown, rows then batch lines (tests, the report)."""
         return [label.text() for label in self._row_labels] + [
@@ -485,7 +524,7 @@ class RulingsSection(QWidget):
         return [label.text() for label in self._ruled_labels]
 
     def proven_texts(self) -> list[str]:
-        """The 「日志已证明不挡」 lines as shown (W3f)."""
+        """The 「日志里下面那件先动了」 lines as shown (W3f, W3h)."""
         return [label.text() for label in self._proven_labels]
 
     def indirect_texts(self) -> list[str]:
