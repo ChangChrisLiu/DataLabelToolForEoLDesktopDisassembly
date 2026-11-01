@@ -8,13 +8,15 @@ and the user decides with the picture (「不挡」 / 「上下翻转」).
   still not; a class pair the user ruled 挡 either way round carries the tag
   「用户已定：挡 → 层序可能画反」; above-first stays asked; judged after the chain and
   the class-level 不挡;
-* the row text and tip, 「已翻过」 on a flipped segment, the status line;
-* the dock's fold: 「不挡」 and 「上下翻转」 per row, the subtitle, ``sigFlip``, no flip
-  button once flipped;
+* the row text and tip, the status line;
+* the dock's fold: 「不挡」 and 「上下翻转」 per row, the subtitle, ``sigFlip``;
 * the flip on a tiny synthetic desktop with a confirmed frame (offscreen Qt): one
-  ``set_pair_override`` op with a note, the two parts' rows re-signed through
-  ``accept_new``, the frame still verified, ``Ctrl+Z`` takes the override away; the
-  refusals (another part's conflict, already flipped, by hand, outside Review);
+  ``flip_pair_layers`` op (``set_pair_override`` in the op log) with a note, the two
+  parts' rows re-signed through ``accept_new``, the frame still verified, ``Ctrl+Z``
+  takes the override away **and** puts the rows back (no conflict left); the part that
+  gained pixels within the tolerance is re-signed by the refreeze (round 2, L1); a frame
+  demoted before the flip stays demoted (M1); the refusals (another part's conflict,
+  already flipped, by hand, no shared frame, outside Review);
 * no new key; the docs (spec §4.4 / §7.3 / §8.1 / §14 v1.53, handoff, the discussion docs).
 """
 from __future__ import annotations
@@ -27,7 +29,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton
+from PySide6.QtWidgets import QApplication, QPushButton
 
 import app_scene
 from test_w3c_rulings_dock import box, open_window, review, settle
@@ -41,7 +43,6 @@ from tda.ui import cover_rulings as CR
 from tda.ui.app_rulings import FLIP_OUTSIDE
 from tda.ui.cover_rulings import (
     FLIP_TEXT,
-    FLIPPED_TEXT,
     TAG_LAYER,
     TAG_OTHER,
     TAG_USER_BLOCKS,
@@ -55,7 +56,14 @@ from tda.ui.cover_rulings import (
     triage_pairs,
 )
 from tda.ui.panels.notes_dock import PROVEN_NOTE, PROVEN_TITLE, RulingsSection
-from tda.ui.session_rulings import FLIP_ALREADY, FLIP_BY_HAND, FLIP_CONFLICT
+from tda.ui.session_api import SessionRefusal
+from tda.ui.session_rulings import (
+    FLIP_ALREADY,
+    FLIP_BY_HAND,
+    FLIP_CONFLICT,
+    FLIP_NO_FRAMES,
+    FLIP_OP,
+)
 
 D = 4
 TAX = load_taxonomy()
@@ -122,7 +130,7 @@ def test_the_bucket_is_the_log_proof_set_and_the_ruled_pairs_carry_the_tag():
     assert (cand.proof.step, cand.proof.verb) == (22, "open")
     assert cand.ruled == ("cover", "psu") and cand.ruled_reversed and "E4" in cand.ruled_note
     assert cand.layer_tag == TAG_LAYER == "用户已定：挡 → 层序可能画反"
-    assert cand.tag == TAG_OTHER and not cand.flipped
+    assert cand.tag == TAG_OTHER
     # D22 before the fix: the HDD painted over the PSU that folds down on it (B8 reversed)
     [cand] = triage_pairs([HDD_PSU], SCENE, [], {}, log=cover_log(SCENE, D22_LOG, TAX)).proven
     assert (cand.proof.step, cand.proof.verb) == (12, "displace")
@@ -146,7 +154,7 @@ def test_the_bucket_is_the_log_proof_set_and_the_ruled_pairs_carry_the_tag():
 
 def test_a_small_part_on_top_joins_the_bucket_but_is_never_asked():
     # the Dell cage swung aside (displace) with the drive still plugged in: the connector
-    # painted over the cage went nowhere first
+    # painted over the cage went nowhere first; the latch opened before the cage moved
     log = cover_log(SCENE, [act(3, "card_latch.01", "open"), act(9, "drive_cage.01", "displace"),
                             act(20, "connector.02", "disconnect")], TAX)
     pairs = [("connector.02", "drive_cage.01", 1973), ("card_latch.01", "drive_cage.01", 1500)]
@@ -207,7 +215,7 @@ def test_the_row_text_and_the_tip():
     tip = proven_tip(cand)
     lines = tip.splitlines()
     assert lines[0].startswith("第 22 步打开 cover.01 时 psu.01 还是装着：要么 psu.01 没挡着")
-    assert "「不挡」" in lines[0] and "「上下翻转」" in lines[0]
+    assert "「不挡」" in lines[0] and "「上下翻转」" in lines[0] and "Ctrl+Z" in lines[0]
     assert lines[1].startswith("你按类别裁定 cover → psu 挡（E4 挡")
     assert "cover.01 应画在 psu.01 之上，这一帧却画反了" in lines[1]
     assert lines[-1] == "日志：psu.01 第 39 步 拆下，cover.01 第 22 步 打开"
@@ -232,20 +240,17 @@ def test_the_row_text_and_the_tip():
         "a → b · 像素 1 500 · 其他"
 
 
-def test_a_flipped_segment_says_so_and_the_status_line():
-    log = cover_log(SCENE, D04_LOG, TAX)
-    [cand] = triage_pairs([PSU_COVER], SCENE, [], {}, log=log,
-                          overrides={("cover.01", "psu.01")}).proven
-    assert cand.flipped
-    [other] = triage_pairs([PSU_COVER], SCENE, [], {}, log=log,
-                           overrides={("psu.01", "cover.01")}).proven
-    assert not other.flipped                                      # the picture's own order
-    result = {"frames": list(range(1, 22)), "frozen": [3, 7, 21], "accepted": 6, "resigned": 1}
+def test_the_status_line():
+    result = {"frames": list(range(1, 22)), "frozen": [3, 7, 21], "accepted": 6, "resigned": 1,
+              "rewritten": 9}
     assert flip_text(4, 21, "psu.01", "cover.01", result) == (
-        "D04 第 21 帧：cover.01 翻到 psu.01 之上 · 这一段 21 帧（已确认 3 帧）· 接受新值 6 条 · 重签 1 帧")
+        "D04 第 21 帧：cover.01 翻到 psu.01 之上 · 这一段 21 帧（已确认 3 帧）· 接受新值 6 条 · "
+        "重签 1 帧 9 行")
     result["left_open"] = [(7, "motherboard.01")]
-    assert flip_text(4, 21, "psu.01", "cover.01", result).endswith(
-        "；另有 1 条别的零件的冲突留在复查队列（第 7 帧 motherboard.01）")
+    result["verify_refused"] = [(3, "conflict 9 is open")]
+    text = flip_text(4, 21, "psu.01", "cover.01", result)
+    assert text.endswith("；另有 1 条别的零件的冲突留在复查队列（第 7 帧 motherboard.01）"
+                         "；1 帧没能重签（第 3 帧 conflict 9 is open）")
 
 
 # --------------------------------------------------------------------------- #
@@ -280,17 +285,9 @@ def test_the_dock_fold_has_two_buttons_per_row(qapp):
     free1.click()
     assert ruled == [([("optical_drive.01", "drive_cage.01")], "not_blocks")]
     assert ("psu.01", "cover.01") in [pair for pair, _row in section.hover_rows]
-    assert "你按类别裁定 cover → psu 挡" in section._proven_labels[1].toolTip()
-    assert "日志：" in section._proven_labels[1].toolTip()
-    # flipped: the row keeps 「不挡」, says 「已翻过」 and has no flip button
-    [done] = triage_pairs([PSU_COVER], SCENE, [], {}, log=log,
-                          overrides={("cover.01", "psu.01")}).proven
-    section.set_rulings([], {}, proven=[done])
-    assert [b.text() for b in section.proven.findChildren(QPushButton)
-            if not b.parentWidget().isHidden()] == ["不挡"]   # the old rows wait for deleteLater
-    assert [lab.text() for lab in section.proven.findChildren(QLabel)
-            if lab.text() == FLIPPED_TEXT] == ["已翻过"]
-    assert section.proven_buttons[0][2] is None
+    tip = section._proven_labels[1].toolTip()
+    assert tip.startswith("psu → cover：") and "你按类别裁定 cover → psu 挡" in tip
+    assert tip.count("日志：") == 1                           # the 日志 line once (round 2, S3)
     section.set_rulings([], {})
     assert section.proven_toggle.isHidden()
 
@@ -301,6 +298,8 @@ def test_the_dock_fold_has_two_buttons_per_row(qapp):
 #: The dock's own class rulings: the cover must open before the PSU comes out (E4),
 #: so a PSU painted over an opened cover is a layer error.
 FLIP_CLASSES = ClassRulings(blocks=(("cover", "psu", "测试：先开盖板再拆电源"),))
+#: The small part the tolerance test paints over the board: 7 x 7 = 49 px, 1.2 % of it.
+SMALL = box(10, 17, 10, 17)
 
 
 @pytest.fixture
@@ -309,12 +308,11 @@ def flip_class_rulings(monkeypatch):
     monkeypatch.setattr(CR, "class_rulings", lambda path=None: FLIP_CLASSES)
 
 
-def seed_flip(session) -> dict:
-    """The PSU painted over the expansion-slot cover (D04 frame 21), every other
-    chassis part of the last step a small cell underneath, so the frame can be confirmed
-    and the pair's 1 200 overlapping pixels are the pair's alone."""
-    shapes = {"motherboard.01": box(0, 64, 0, 64), "cover.01": box(0, 30, 0, 40),
-              "psu.01": box(0, 64, 0, 60)}
+def seed_pile(session, top: dict) -> None:
+    """``top`` painted in order over the full-frame board, every other chassis part of the
+    last step a small cell underneath, so the frame can be confirmed and the overlaps are
+    the pairs' alone; the last frame confirmed and on screen."""
+    shapes = {"motherboard.01": box(0, 64, 0, 64), **top}
     others = [k for k in app_scene.chassis_instances(session, LAST) if k not in shapes]
     order = []
     for key, mask in [(k, app_scene.cell(i)) for i, k in enumerate(others)] + list(shapes.items()):
@@ -330,7 +328,11 @@ def seed_flip(session) -> dict:
     session.goto(LAST, force=True)
     assert session.confirm_frame() is True         # the last frame is frozen ...
     session.goto(LAST, force=True)                 # ... and on screen
-    return shapes
+
+
+def seed_flip(session) -> None:
+    """The PSU painted over the expansion-slot cover (D04 frame 21)."""
+    seed_pile(session, {"cover.01": box(0, 30, 0, 40), "psu.01": box(0, 64, 0, 60)})
 
 
 @pytest.fixture
@@ -363,11 +365,13 @@ def test_the_flip_writes_the_override_and_resigns_the_two_parts(flip_window):
     [(cand, _free, flip)] = section.proven_buttons
     flip.click()
     settle()
-    # one op, with the note naming the pair and the frames
+    # one op-log row, with the note naming the pair and the frames; the undo stack's op
+    # is the flip's own kind
     [op] = flip_ops(win)
     assert (op["payload"]["above"], op["payload"]["below"]) == ("cover.01", "psu.01")
     assert op["payload"]["flip"] is True and op["payload"]["steps"] == list(range(1, LAST + 1))
     assert op["payload"]["note"].startswith("日志里下面那件先动了（W3h）：按拆解顺序把 cover.01 翻到 psu.01 之上")
+    assert win.session.undo_stack.ops[-1].kind == FLIP_OP == "flip_pair_layers"
     assert db.pair_overrides(DESKTOP, VIEW, 1) == [PairOverride(DESKTOP, VIEW, 1, "cover.01", "psu.01")]
     # the two parts' rows were re-signed through accept_new; the frame stays verified
     rows = db.compiled(key)
@@ -381,15 +385,27 @@ def test_the_flip_writes_the_override_and_resigns_the_two_parts(flip_window):
     assert {c["resolution"] for c in closed} == {"accept_new"}
     assert db.get_frame(key)["review_status"] == "verified"
     assert win.status_message() == (f"D13 第 {LAST} 帧：cover.01 翻到 psu.01 之上 · 这一段 {LAST} 帧"
-                                    "（已确认 1 帧）· 接受新值 2 条 · 重签 0 帧")
+                                    "（已确认 1 帧）· 接受新值 2 条 · 重签 0 帧 0 行")
     # the section follows the new picture: the cover now lies over the PSU, an open row
     assert section.proven_candidates == [] and section.proven_toggle.isHidden()
     assert ("cover.01", "psu.01") in keys(section.candidates)
-    # Ctrl+Z takes the override away like any layering edit
+    # Ctrl+Z takes the override away AND puts the rows back, leaving no conflict (round 2, M2)
     win.act_undo()
     settle()
     assert db.pair_overrides(DESKTOP, VIEW, 1) == []
-    assert len(flip_ops(win)) == 1                   # a replay logs nothing new
+    assert len(flip_ops(win)) == 1                   # a replay logs no second override row
+    assert {k: visible_px(db, key, k) for k in ("psu.01", "cover.01")} == before
+    rows = db.compiled(key)
+    assert {rows[k]["status"] for k in ("psu.01", "cover.01")} == {"verified"}
+    assert db.conflicts(DESKTOP, VIEW, open_only=True) == []
+    assert db.get_frame(key)["review_status"] == "verified"
+    assert keys(section.proven_candidates) == [("psu.01", "cover.01")]
+    # ... and redo flips again
+    win.act_redo()
+    settle()
+    assert db.pair_overrides(DESKTOP, VIEW, 1) == [PairOverride(DESKTOP, VIEW, 1, "cover.01", "psu.01")]
+    assert visible_px(db, key, "cover.01") == before["cover.01"] + 1200
+    assert db.conflicts(DESKTOP, VIEW, open_only=True) == []
 
 
 def test_the_flip_refuses_with_a_reason(flip_window):
@@ -406,12 +422,9 @@ def test_the_flip_refuses_with_a_reason(flip_window):
     assert win.status_message() == FLIP_CONFLICT.format(step=LAST, instance="ram_module.01", n=1)
     assert flip_ops(win) == [] and db.pair_overrides(DESKTOP, VIEW, 1) == []
     db.resolve_conflict(cid, "edited")
-    # the segment already holds the override: the row says 「已翻过」, the press is refused
+    # the segment already holds the override: refused (the row itself is gone from the
+    # picture by then, so no 「已翻过」 is shown -- the guard is the data's)
     db.set_pair_override(PairOverride(DESKTOP, VIEW, 1, "cover.01", "psu.01"))
-    win.refresh_rulings()
-    section = win.notes_panel.rulings
-    [(cand, free, flip)] = section.proven_buttons
-    assert cand.flipped and flip is None and free.text() == "不挡"
     win.on_flip_layers("psu.01", "cover.01")
     assert win.status_message() == FLIP_ALREADY.format(above="psu.01", below="cover.01")
     assert flip_ops(win) == []
@@ -421,6 +434,68 @@ def test_the_flip_refuses_with_a_reason(flip_window):
     win.on_flip_layers("psu.01", "cover.01")
     assert win.status_message() == FLIP_BY_HAND.format(above="psu.01", below="cover.01")
     assert flip_ops(win) == []
+    db.delete_pair_override(PairOverride(DESKTOP, VIEW, 1, "psu.01", "cover.01"))
+    # a part this frame does not have is the layering gestures' own refusal ...
+    with pytest.raises(SessionRefusal, match="no such instance in this frame"):
+        win.session.flip_pair_layers("psu.01", "storage_drive.ssd.01")
+    # ... and a pair that shares no frame where both are mask layers is this one's (S4)
+    from tda.ui import session_rulings as SR
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(SR.edit, "pair_steps", lambda *a, **k: [])
+        with pytest.raises(SessionRefusal, match=FLIP_NO_FRAMES):
+            win.session.flip_pair_layers("psu.01", "cover.01")
+    assert flip_ops(win) == [] and db.pair_overrides(DESKTOP, VIEW, 1) == []
+
+
+def test_the_part_that_gained_pixels_within_the_tolerance_is_resigned_too(qapp, tmp_path,
+                                                                            flip_class_rulings):
+    """Round 2, L1: ``cover.02`` (49 px) over the board; flipping moves 49 px between the
+    two -- 1.2 % of the board, 9 px beyond the 2-px band of the small one: no conflict --
+    which only the refreeze re-signs; the undo takes them back the same way."""
+    session = app_scene.make_session(tmp_path)
+    seed_pile(session, {"cover.02": SMALL})
+    db, key = session.db, FrameKey(DESKTOP, LAST, VIEW)
+    board, small = visible_px(db, key, "motherboard.01"), visible_px(db, key, "cover.02")
+    assert small == 49 and db.compiled(key)["motherboard.01"]["verified_by"] == "tester"
+    result = session.flip_pair_layers("cover.02", "motherboard.01")
+    # 49 px either way is within the 2 % / 20 px tolerance band for both rows: no conflict
+    # opens, and without the refreeze both would have kept their old masks (a hole)
+    assert result["accepted"] == 0 and result["left_open"] == []
+    assert result["rewritten"] == 2 and result["rewritten_frames"] == 1   # both, by refreeze
+    assert result["resigned"] == 0 and result["verify_refused"] == []
+    assert visible_px(db, key, "motherboard.01") == board + 49
+    assert visible_px(db, key, "cover.02") == 0
+    rows = db.compiled(key)
+    assert {rows[k]["status"] for k in ("motherboard.01", "cover.02")} == {"verified"}
+    assert db.conflicts(DESKTOP, VIEW, open_only=True) == []
+    assert db.get_frame(key)["review_status"] == "verified"
+    assert len(db.ops_of_kind(DESKTOP, "refreeze_frame")) == 1   # one refreeze_frame op
+    # undo: the board loses the 49 px within the tolerance -> refreeze again; the small
+    # part's conflict is accepted
+    assert session.undo()
+    assert visible_px(db, key, "motherboard.01") == board
+    assert visible_px(db, key, "cover.02") == small
+    assert db.conflicts(DESKTOP, VIEW, open_only=True) == []
+    assert db.pair_overrides(DESKTOP, VIEW, 1) == []
+    assert len(db.ops_of_kind(DESKTOP, "refreeze_frame")) == 2   # the undo's own
+    session.close()
+
+
+def test_a_frame_demoted_before_the_flip_stays_demoted(qapp, tmp_path, flip_class_rulings):
+    """Round 2, M1: the flip is not the confirmation of a frame the annotator still owes."""
+    session = app_scene.make_session(tmp_path)
+    seed_flip(session)
+    db, key = session.db, FrameKey(DESKTOP, LAST, VIEW)
+    session.truth.demote_frame(key, "test: a part was added")
+    assert db.get_frame(key)["review_status"] == "needs_review"
+    signed_before = len(db.ops_of_kind(DESKTOP, "verify_frame"))
+    result = session.flip_pair_layers("psu.01", "cover.01")
+    assert result["frozen"] == [LAST] and result["accepted"] == 2      # its signed rows still count
+    assert result["resigned"] == 0 and result["verify_refused"] == []
+    assert db.get_frame(key)["review_status"] == "needs_review"        # not signed by the flip
+    assert db.conflicts(DESKTOP, VIEW, open_only=True) == []
+    assert len(db.ops_of_kind(DESKTOP, "verify_frame")) == signed_before   # nobody signed it
+    session.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -434,16 +509,18 @@ def test_no_key_was_added_and_the_docs_say_it():
     review_section = spec.split("### 4.4 审阅模式", 1)[1].split("### 4.5", 1)[0]
     [para] = [line for line in review_section.splitlines() if line.startswith("  **v1.51（W3f）")]
     for needed in ("**日志里下面那件先动了（k）**", "v1.53（W3h", "你的遮挡关系算错了", "「不挡」", "「上下翻转」",
-                   "「用户已定：挡 → 层序可能画反」", "「已翻过」"):
+                   "「用户已定：挡 → 层序可能画反」", "重签", "Ctrl+Z"):
         assert needed in para, needed
+    assert "已翻过" not in para
     section = spec.split("### 7.3 生成", 1)[1].split("### 7.4", 1)[0]
     [para] = [line for line in section.splitlines()
               if line.startswith("**看图裁定：白名单 W3 与层序修正（v1.53，W3h）**")]
     for needed in ("`version: W3`", "你的遮挡关系算错了", "用我们的拆解的顺序作为主要参考", "B8", "E1",
                    "`pair_override`", "`fix_layer_pairs.py`", "D02", "「日志里下面那件先动了（k）」",
                    "「上下翻转」", "`log_proof`", "`session_rulings.flip_pair_layers`", "`accept_new`",
-                   "「已翻过」", "pixels:W3", "**241**"):
+                   "`TruthService.refreeze`", "pixels:W3", "**241**"):
         assert needed in para, needed
+    assert "已翻过" not in para
     cv = spec.split("### 8.1 CV 导出", 1)[1].split("### 8.2", 1)[0]
     assert "pixels:W3" in cv and "W3h" in cv
     entries = [line for line in spec.split("## 14. 修订记录", 1)[1].splitlines()
@@ -451,8 +528,9 @@ def test_no_key_was_added_and_the_docs_say_it():
     # on top when it landed; whatever lands later goes above it
     [entry] = [e for e in entries[:1] if e.startswith("- **v1.53（2026-10-31）**")]
     for needed in ("（W3h，", "W3", "日志里下面那件先动了", "上下翻转", "`pair_override`", "D02",
-                   "**241**", "**22**"):
+                   "**241**", "**22**", "refreeze"):
         assert needed in entry, needed
+    assert "已翻过" not in entry
     assert spec.index("- **v1.53") < spec.index("- **v1.52") < spec.index("- **v1.51")
     handoff = (ROOT / "docs" / "HANDOFF_2026-10-28.md").read_text(encoding="utf-8")
     export = handoff.split("## 5. 导出与 HuggingFace 准备", 1)[1].split("\n## ", 1)[0]

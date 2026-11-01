@@ -47,8 +47,7 @@ the wrong way round.  Each row says which step moved the lower part, carries
 the tag 「用户已定：挡 → 层序可能画反」 when the class pair is one the user ruled
 挡 (either way round), and has **two** buttons: 「不挡」 (the ordinary ruling, as
 before) and 「上下翻转」 (:attr:`RulingsSection.sigFlip`; the window's session
-writes the pair override and settles the frozen frames); a pair the segment
-already flipped shows 「已翻过」 in the second button's place.  Buttons only, no key.
+writes the pair override and settles the frozen frames).  Buttons only, no key.
 """
 from __future__ import annotations
 
@@ -74,7 +73,6 @@ from PySide6.QtWidgets import (
 from tda.ui.cover_rulings import (
     BLOCKS,
     FLIP_TEXT,
-    FLIPPED_TEXT,
     NOT_BLOCKS,
     RULING_TEXT,
     Candidate,
@@ -132,11 +130,12 @@ PROVEN_NOTE = "不挡，或者层序画反了 —— 请看图定"
 PROVEN_TIP = ("日志里下面那件被拆下 / 打开 / 挪开（或拧下 / 拔掉 / 松开）的时候，上面那件还在原处。"
               "这不是「不挡」的证明：拆解顺序是主要参考，也可能是层序画反了（例：翻下来压住硬盘的电源模块"
               "被画在硬盘之下）。看图定——「不挡」记一条普通裁定；「上下翻转」把下面那件翻到上面那件之上"
-              "（这一视角这一段的改层级，一个 op，Ctrl+Z 可撤回），重查这一段已确认的帧，只接受这两件的新值"
-              "并重签；别的零件有冲突时不翻，已翻过的写「已翻过」。「用户已定：挡 → 层序可能画反」= 这一类对"
+              "（这一视角这一段的改层级，一个 op），重查这一段已确认的帧，只接受这两件的新值并重签"
+              "（容差以内得到像素的一方也重签）；Ctrl+Z 撤回覆盖并同样接受 / 重签这两件的行；"
+              "所到的帧上有未裁决的冲突时不翻。「用户已定：挡 → 层序可能画反」= 这一类对"
               "你已按类别裁定挡着（正着或反着），多半是画反了。悬停看日志和你的原话。")
 FLIP_TIP = ("把下面那件翻到上面那件之上（这一视角这一段）：写一条改层级，重查已确认帧，"
-            "接受这两件的新值并重签；Ctrl+Z 撤回改层级")
+            "接受这两件的新值并重签；Ctrl+Z 撤回改层级并同样接受 / 重签")
 #: Task W3g: the pairs whose class pair the user ruled 不挡 for the whole class.
 CLASS_NO_TITLE = "用户已定不挡（类级）（{k}）"
 CLASS_NO_TIP = ("这一类对你已经按类别裁定为不挡（只是拆的习惯顺序，或两件彼此独立；"
@@ -287,10 +286,10 @@ class RulingsSection(QWidget):
         self._row_labels: list[QLabel] = []
         self._ruled_labels: list[QLabel] = []
         #: The folded lists (W3f): what is in them, and per 日志里下面那件先动了 row
-        #: 「不挡」 and 「上下翻转」 (W3h; ``None`` on a row that says 「已翻过」).
+        #: 「不挡」 and 「上下翻转」 (W3h).
         self.indirect_candidates: list[Candidate] = []
         self.proven_candidates: list[Candidate] = []
-        self.proven_buttons: list[tuple[Candidate, QPushButton, Optional[QPushButton]]] = []
+        self.proven_buttons: list[tuple[Candidate, QPushButton, QPushButton]] = []
         self._indirect_labels: list[QLabel] = []
         self._proven_labels: list[QLabel] = []
         #: The 用户已定不挡（类级） fold (W3g): what is in it; no buttons.
@@ -473,26 +472,16 @@ class RulingsSection(QWidget):
         self.row_buttons.append((cand, blocks, free))
 
     def _add_proven(self, cand: Candidate) -> None:
-        """A 日志里下面那件先动了 row: 「不挡」 (the ruling) and 「上下翻转」 (W3h), never 「挡着」.
-
-        A pair the segment already flipped says 「已翻过」 in the second
-        button's place.
-        """
+        """A 日志里下面那件先动了 row: 「不挡」 (the ruling) and 「上下翻转」 (W3h), never 「挡着」."""
         free = _button(RULING_TEXT[NOT_BLOCKS], "记一条「不挡」：上面那件没挡着，只是画面上重叠")
         free.clicked.connect(partial(self._emit_rule, [(cand.above, cand.below)], NOT_BLOCKS,
                                      None))
-        if cand.flipped:
-            done = QLabel(FLIPPED_TEXT)
-            done.setStyleSheet("color: gray")
-            done.setToolTip("这一段已经把下面那件翻到上面那件之上了")
-            widgets, flip = [free, done], None
-        else:
-            flip = _button(FLIP_TEXT, FLIP_TIP)
-            flip.clicked.connect(partial(self._emit_flip, cand.above, cand.below))
-            widgets = [free, flip]
-        self._proven_labels.append(self._line(self.proven_layout, proven_text(cand),
-                                              f"{proven_tip(cand)}\n{self._tip(cand)}",
-                                              widgets, hover=(cand.above, cand.below)))
+        flip = _button(FLIP_TEXT, FLIP_TIP)
+        flip.clicked.connect(partial(self._emit_flip, cand.above, cand.below))
+        # the class hint, then the log's story (which ends with the 日志 line)
+        tip = f"{cand.above_class} → {cand.below_class}：{cand.reason}\n{proven_tip(cand)}"
+        self._proven_labels.append(self._line(self.proven_layout, proven_text(cand), tip,
+                                              [free, flip], hover=(cand.above, cand.below)))
         self.proven_buttons.append((cand, free, flip))
 
     def _add_batch(self, classes: tuple[str, str], group: list[Candidate]) -> None:

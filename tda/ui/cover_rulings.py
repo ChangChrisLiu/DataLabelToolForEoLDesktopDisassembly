@@ -90,9 +90,9 @@ picture is the other way round, :func:`class_blocking`) carries the tag
 (an ordinary ``not_blocks`` ruling, what the old fold's one button did) and
 「上下翻转」 (the pair override ``below`` above ``above`` for the view's pose
 segment through the session's ``flip_pair_layers``, which re-checks the frozen
-frames and accepts the two parts' new values).  A segment that already holds
-that override shows 「已翻过」 in the button's place (``overrides=``;
-:attr:`Candidate.flipped`).  The 「本版不做」 classes on top (a connector, a
+frames, accepts the two parts' new values and re-signs the rows the tolerance
+left behind; ``Ctrl+Z`` takes the override away and settles the rows the same
+way).  The 「本版不做」 classes on top (a connector, a
 clip, a latch) take part in this bucket alone (a screw / connector / cable
 underneath never does): on the live copy (2026-10-31) the bucket is mostly
 ``connector → drive_cage`` (the Dell cage swung aside with its drives still
@@ -121,7 +121,7 @@ from tda.core.states import REMOVED, events_from_actions, state_at
 from tda.ui.class_names import state_zh
 
 __all__ = ["BLOCKS", "COVER_CLEAR", "COVER_GATED", "Candidate", "ClassRulings", "CoverLog",
-           "FIXED_CLASSES", "FLIPPED_TEXT", "FLIP_LEFT_OPEN", "FLIP_NOTE", "FLIP_TEXT",
+           "FIXED_CLASSES", "FLIP_LEFT_OPEN", "FLIP_NOTE", "FLIP_REFUSED_VERIFY", "FLIP_TEXT",
            "LogMove", "MIN_PX", "MOVE_ZH", "NOT_BLOCKS",
            "RULINGS", "RULING_MARK", "RULING_TEXT", "SMALL_ABOVE", "SMALL_BELOW", "SUPPORT",
            "TAGS", "TAG_LAYER", "TAG_OTHER", "TAG_USER_BLOCKS", "TAG_USER_NOT_BLOCKS", "Triage",
@@ -151,13 +151,14 @@ TAG_USER_BLOCKS = "用户已定：挡"
 TAG_USER_NOT_BLOCKS = "用户已定：不挡"
 #: A 日志里下面那件先动了 row whose class pair the user ruled 挡 (either way round, W3h).
 TAG_LAYER = "用户已定：挡 → 层序可能画反"
-#: The 日志里下面那件先动了 row's second button, and what replaces it once the segment is flipped (W3h).
+#: The 日志里下面那件先动了 row's second button (W3h).
 FLIP_TEXT = "上下翻转"
-FLIPPED_TEXT = "已翻过"
 #: The op-log note of a flip: the pair, and the frames the override reaches.
 FLIP_NOTE = "日志里下面那件先动了（W3h）：按拆解顺序把 {below} 翻到 {above} 之上，这一段第 {frames} 帧"
 #: The status line's tail when a conflict of another part stayed open.
 FLIP_LEFT_OPEN = "；另有 {n} 条别的零件的冲突留在复查队列（{who}）"
+#: ... and when a demoted frame could not be re-signed.
+FLIP_REFUSED_VERIFY = "；{n} 帧没能重签（{who}）"
 TAG_OTHER = "其他"
 #: The order candidates are listed in.
 TAGS = (TAG_USER_BLOCKS, TAG_OTHER, TAG_USER_NOT_BLOCKS)
@@ -290,9 +291,6 @@ class Candidate:
     ruled: tuple = ()
     #: The user's words of that entry (``""`` without one).
     ruled_note: str = ""
-    #: The segment already holds the override ``below`` above ``above`` (W3h):
-    #: the row says 「已翻过」 in the place of 「上下翻转」.
-    flipped: bool = False
 
     @property
     def classes(self) -> tuple[str, str]:
@@ -607,7 +605,7 @@ class Triage:
     #: Open questions: the rows with 「挡着」 / 「不挡」.
     asked: list[Candidate] = field(default_factory=list)
     #: 日志里下面那件先动了 (W3f's 日志已证明不挡 until task W3h): each with its
-    #: :attr:`Candidate.proof`; 「不挡」 and 「上下翻转」 (or 「已翻过」) per row,
+    #: :attr:`Candidate.proof`; 「不挡」 and 「上下翻转」 per row,
     #: :attr:`Candidate.layer_tag` on the class pairs the user ruled 挡.
     proven: list[Candidate] = field(default_factory=list)
     #: 规则已间接覆盖: each with its :attr:`Candidate.chain`.
@@ -624,8 +622,7 @@ def _order(cand: Candidate) -> tuple:
 def triage_pairs(frame_pairs: PairsLike, instances: Mapping, edges: Iterable,
                  rulings: Mapping, min_px: int = MIN_PX, *, log: Optional[CoverLog] = None,
                  states: Optional[Mapping[str, str]] = None,
-                 classes: Optional[ClassRulings] = None,
-                 overrides: Optional[Iterable[tuple[str, str]]] = None) -> Triage:
+                 classes: Optional[ClassRulings] = None) -> Triage:
     """The candidates of one frame (see the module docstring), sorted into the four lists.
 
     ``frame_pairs``: ``(above, below, px)`` triples (or ``{(above, below): px}``)
@@ -636,9 +633,7 @@ def triage_pairs(frame_pairs: PairsLike, instances: Mapping, edges: Iterable,
     desktop (``None``: nothing is proven by the log, and no 日志 line);
     ``states``: each part's state at the frame (``{key: state}``), for the row
     text; ``classes``: the user's class rulings (``None``: the shipped
-    whitelist, :func:`class_rulings`; ``ClassRulings()``: none);
-    ``overrides``: the ``(above, below)`` pair overrides in force for the
-    frame's pose segment (task W3h; ``None``: none known).  A pair the
+    whitelist, :func:`class_rulings`; ``ClassRulings()``: none).  A pair the
     graph orders indirectly goes to ``indirect`` (whatever the rest says), else
     one whose class pair the user ruled 不挡 goes to ``class_not_blocks`` (task
     W3g), else one whose lower part the log moved first (:func:`log_proof`)
@@ -652,7 +647,6 @@ def triage_pairs(frame_pairs: PairsLike, instances: Mapping, edges: Iterable,
     edges = list(edges)
     states = states or {}
     classes = class_rulings() if classes is None else classes
-    flipped = {(str(a), str(b)) for a, b in (overrides or ())}
     picked = []
     for above, below, px in _triples(frame_pairs):
         if above == below or px < int(min_px) or (above, below) in rulings:
@@ -680,8 +674,7 @@ def triage_pairs(frame_pairs: PairsLike, instances: Mapping, edges: Iterable,
         picked.append(Candidate(above, below, keys[0], keys[1], px, tag, reason, 0,
                                 str(states.get(above) or ""), str(states.get(below) or ""),
                                 log_line(log, above, below), proof, chain, ruled,
-                                "" if entry is None else str(entry[2] or ""),
-                                (below, above) in flipped))
+                                "" if entry is None else str(entry[2] or "")))
     out = Triage()
     for cand in picked:
         (out.indirect if cand.chain
@@ -767,7 +760,8 @@ def proven_tip(cand: Candidate) -> str:
     held = state_zh(move.before.get(cand.above, ""))
     what = (f"第 {move.step} 步{verb} {cand.below} 时 {cand.above} 还是{held}：要么 {cand.above} 没挡着"
             f"（点「{RULING_TEXT[NOT_BLOCKS]}」记一条裁定），要么层序画反了（点「{FLIP_TEXT}」把 "
-            f"{cand.below} 翻到 {cand.above} 之上，这一视角这一段；重查已确认帧、接受这两件的新值并重签）")
+            f"{cand.below} 翻到 {cand.above} 之上，这一视角这一段；重查已确认帧、接受这两件的新值并重签；"
+            f"Ctrl+Z 撤回覆盖并同样接受 / 重签）")
     note = f"（{cand.ruled_note}）" if cand.ruled_note else ""
     if not cand.ruled:
         said = ""
@@ -804,20 +798,24 @@ def chain_tip(cand: Candidate) -> str:
 def flip_text(desktop: int, step: int, above: str, below: str, result: Mapping) -> str:
     """The status line after 「上下翻转」 (W3h).
 
-    「D22 第 5 帧：psu.01 翻到 storage_drive.hdd.01 之上 · 这一段 12 帧（已确认 9 帧）· 接受新值 18 条 · 重签 0 帧」,
-    plus :data:`FLIP_LEFT_OPEN` when a conflict of another part stayed open.
+    「D22 第 5 帧：psu.01 翻到 storage_drive.hdd.01 之上 · 这一段 12 帧（已确认 9 帧）· 接受新值 18 条 · 重签 0 帧 9 行」
+    -- ``resigned`` frames re-signed whole (``verify_frame``), ``rewritten`` rows
+    the tolerance left behind and U32's refreeze re-signed -- plus
+    :data:`FLIP_LEFT_OPEN` when a conflict of another part stayed open and
+    :data:`FLIP_REFUSED_VERIFY` when a demoted frame could not be re-signed.
     """
     frames = list(result.get("frames") or [])
     frozen = list(result.get("frozen") or [])
     text = (f"D{int(desktop):02d} 第 {int(step)} 帧：{below} 翻到 {above} 之上 · 这一段 {len(frames)} 帧"
             f"（已确认 {len(frozen)} 帧）· 接受新值 {int(result.get('accepted') or 0)} 条 · "
-            f"重签 {int(result.get('resigned') or 0)} 帧")
-    left = list(result.get("left_open") or [])
-    if left:
-        who = "、".join(f"第 {s} 帧 {inst}" for s, inst in left[:4])
-        if len(left) > 4:
-            who += " …"
-        text += FLIP_LEFT_OPEN.format(n=len(left), who=who)
+            f"重签 {int(result.get('resigned') or 0)} 帧 {int(result.get('rewritten') or 0)} 行")
+    for key, words in (("left_open", FLIP_LEFT_OPEN), ("verify_refused", FLIP_REFUSED_VERIFY)):
+        items = list(result.get(key) or [])
+        if items:
+            who = "、".join(f"第 {s} 帧 {what}" for s, what in items[:4])
+            if len(items) > 4:
+                who += " …"
+            text += words.format(n=len(items), who=who)
     return text
 
 
