@@ -62,9 +62,10 @@ def shipped() -> PE.Whitelist:
 # --------------------------------------------------------------------------- #
 def test_the_shipped_whitelist_is_the_users_rulings():
     wl = shipped()
-    assert wl.version == "W3" and wl.source == "pixels:W3"   # W3: the card rulings of 2026-10-31
+    assert wl.version == "W4" and wl.source == "pixels:W4"   # W3: the card rulings of 2026-10-31; W4: + the 47 cards
     edges = {p.label(): p.edge for p in wl.pairs}
-    assert len(edges) == 30 and len(wl.not_blocks) == 12
+    assert len(edges) == 32 and len(wl.not_blocks) == 12
+    assert edges["cover -> ram_module"] == "covered_by" and edges["cover -> cpu_cooler"] == "covered_by"   # W4
     for label in ("drive_cage -> motherboard", "optical_drive -> motherboard",
                   "storage_drive.ssd -> motherboard", "storage_drive.hdd -> motherboard",
                   "case_fan -> motherboard", "cooler_bracket -> motherboard",
@@ -505,5 +506,5 @@ def test_no_new_keys_and_the_docs_say_it():
     quick = (ROOT / "docs" / "trial_quickstart.md").read_text(encoding="utf-8")
     assert "「用户已定不挡（类级）（k）」" in quick and "「建议收」" not in quick
     yaml_text = (ROOT / PE.DEFAULT_WHITELIST).read_text(encoding="utf-8")
-    assert "version: W3" in yaml_text and "not_blocks:" in yaml_text   # W3 = W2 + the card rulings
-    assert json.loads(json.dumps(shipped().as_json()))["version"] == "W3"
+    assert "version: W4" in yaml_text and "not_blocks:" in yaml_text   # W3 = W2 + the card rulings; W4 = + the 47 cards
+    assert json.loads(json.dumps(shipped().as_json()))["version"] == "W4"

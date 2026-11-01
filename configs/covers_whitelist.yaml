@@ -45,7 +45,7 @@
 # the blue cover.02 that opens first, cover.02 over the fan shroud cover.01) were layer-order
 # errors and were corrected in the data (pair overrides / a layer move), not ruled here: a
 # `hdd -> psu` pair is therefore neither 挡 nor 不挡 -- it should not exist.
-version: W3
+version: W4
 defaults:
   min_px: 1000
   min_frac: 0.03
@@ -91,6 +91,9 @@ pairs:
   - {above: storage_drive.ssd, below: cover, note: "E3 挡：SSD 在导风罩上面，先拿走 SSD（看图确认）"}
   - {above: cover, below: psu, note: "E4 挡：先打开 / 拿走盖板再拆电源（看图确认）"}
   - {above: optical_drive, below: optical_drive, note: "E5 挡：上面的光驱先拆（D36 看图确认）"}
+  # ---- W4: the 47 cards (2026-10-31 late night, Q08-Q12 / Q15-Q25: D49 D62 D63): 「这个导风罩挡住了下面所有的东西」
+  - {above: cover, below: ram_module, min_frac: 0.25, note: "W4 挡：导风罩 / 内存盖板挡住下面的内存条，橙色的先拿走（看图确认 Q08–Q25）"}
+  - {above: cover, below: cpu_cooler, note: "W4 挡：导风罩同时挡住散热器（看图确认 Q12 Q19）"}
 not_blocks:
   # ---- A4: independent parts; PSU first is only the habit
   - {above: psu, below: motherboard, note: "A4 不挡：电源和主板是独立的，先电源再主板只是习惯"}
