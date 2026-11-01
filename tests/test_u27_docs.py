@@ -58,8 +58,8 @@ def test_the_spec_has_the_paragraph_in_3_2_and_v1_27_on_top():
                                   "- **v1.41", "- **v1.42", "- **v1.43", "- **v1.44",
                                   "- **v1.45", "- **v1.46", "- **v1.47", "- **v1.48",
                                   "- **v1.49", "- **v1.50", "- **v1.51", "- **v1.52",
-                                  "- **v1.53", "- **v1.54", "- **v1.55", "- **v1.56"))
-    [entry] = [e for e in entries[:30] if e.startswith("- **v1.27")]
+                                  "- **v1.53", "- **v1.54", "- **v1.55", "- **v1.56", "- **v1.57"))
+    [entry] = [e for e in entries[:31] if e.startswith("- **v1.27")]
     assert entry.startswith("- **v1.27（2026-10-24）**：**关系字段重导保留**（U27，§3.2）")
     for needed in ("`relation_fix`", "`replay_relations`", "`adopt-relations",
                    "`tda/core/relation_replay.py`", "手设的螺丝头", "无迁移",

@@ -242,7 +242,7 @@ def test_the_docs_say_it():
     entries = [line for line in spec.split("## 14. 修订记录", 1)[1].splitlines()
                if line.startswith("- ")]
     # on top when it landed; whatever lands later goes above it
-    [entry] = [e for e in entries[:6] if e.startswith("- **v1.51（2026-10-31）**")]
+    [entry] = [e for e in entries[:7] if e.startswith("- **v1.51（2026-10-31）**")]
     for needed in ("（W3f，§4.4）", "`RulingsSection.sigHover", "`cover_rulings.triage_pairs`",
                    "`indirect_chain`", "`cover_log`", "`log_proof`", "`COVER_CLEAR`",
                    "间接 74、日志 21、要问 348", "间接 26、日志 10、要问 50"):

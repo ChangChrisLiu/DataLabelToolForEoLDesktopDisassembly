@@ -366,6 +366,13 @@ POWER_LEAD_KINDS = frozenset({"atx_24pin", "cpu_power", "sata_power", "molex"})
 
 #: Connector kinds with a detachable plug at *both* ends, owned by nobody.
 TWO_ENDED_KINDS = frozenset({"sata_data"})
+#: Instance ``attrs`` flag saying this one connector's cable has a detachable
+#: plug at both ends whatever its kind (task W3l): the HP SFF drive power lead
+#: runs from a board header (its board end is the sheet's 「Optical drive -
+#: motherboard connector」), so the drive-end ``sata_power`` plug is nobody's
+#: harness and gates only its own socket host.  Set by the annotator (or the
+#: controller) on the instance, never inferred.
+TWO_ENDED_ATTR = "two_ended"
 
 #: The class a fan lead can be captive to.
 COOLER_CLASS = "cpu_cooler"
@@ -423,7 +430,13 @@ def connector_owner(
       drive classes of :data:`DETACHABLE_CABLE_OWNERS` -- an untyped connector
       filed under a drive is one of its SATA leads -- and, for a fan lead, a
       cooler that cannot carry a fan (see :func:`owns_fan_lead`).
+
+    ``attrs[TWO_ENDED_ATTR]`` (task W3l) overrides the kind: the annotator says
+    this lead is detachable at both ends (an HP drive power lead off a board
+    header), so it belongs to nobody -- the PSU may come out with it plugged.
     """
+    if rec.attrs.get(TWO_ENDED_ATTR):
+        return None
     kind = str(rec.attrs.get("kind") or "")
     if kind in POWER_LEAD_KINDS:
         return _unique_of_class(instances, "psu")

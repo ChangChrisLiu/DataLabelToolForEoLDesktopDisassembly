@@ -185,7 +185,7 @@ def test_the_docs_say_it():
     entries = [line for line in spec.split("## 14. 修订记录", 1)[1].splitlines()
                if line.startswith("- ")]
     # on top when it landed; whatever lands later goes above it
-    [entry] = [e for e in entries[:2] if e.startswith("- **v1.55（2026-11-01）**")]
+    [entry] = [e for e in entries[:3] if e.startswith("- **v1.55（2026-11-01）**")]
     for needed in ("（W3j，", "**unplugged**", "第19步的时候这个connector一定已经不在了",
                    "为啥你说还没拿走呢", "needs_mask", "`would_violate`", "`BLOCKED_REQUIRED` 不动",
                    "**22 → 22**", "**29 → 12**", "**0 → 0**", "`tests/vlm_checker.py`",

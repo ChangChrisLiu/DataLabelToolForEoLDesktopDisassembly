@@ -420,8 +420,8 @@ def test_the_spec_has_v1_22_on_top_with_the_whole_table():
                                   "- **v1.41", "- **v1.42", "- **v1.43", "- **v1.44",
                                   "- **v1.45", "- **v1.46", "- **v1.47", "- **v1.48",
                                   "- **v1.49", "- **v1.50", "- **v1.51", "- **v1.52",
-                                  "- **v1.53", "- **v1.54", "- **v1.55", "- **v1.56"))
-    [first] = [e for e in entries[:35] if e.startswith("- **v1.22")]
+                                  "- **v1.53", "- **v1.54", "- **v1.55", "- **v1.56", "- **v1.57"))
+    [first] = [e for e in entries[:36] if e.startswith("- **v1.22")]
     assert first.startswith("- **v1.22（2026-10-23）**：**左手键**（U22，§4.6）")
     for name, keys in MAP.items():
         if name in ("confirm", "tool_eraser", "flash_compare", "review_rework",
