@@ -58,8 +58,10 @@ cover at step 22 with the PSU still in place.
 * **日志已证明不挡** (:func:`log_proof`): the recorded log acted on ``below``
   with a verb a ``covered_by(below <- above)`` edge would gate (every gated
   verb: :data:`COVER_GATED`) while ``above`` was in none of the states that
-  free it (:data:`COVER_CLEAR`: open / removed / displaced) -- exactly what
-  W3a's ``pixel-edges`` refuses as ``would_violate``.  The replay is the one
+  free it (:data:`COVER_CLEAR`: open / removed / displaced, and since task
+  W3j unplugged -- an unplugged connector has no geometry, spec §6.2) --
+  exactly what W3a's ``pixel-edges`` refuses as ``would_violate``.  The
+  replay is the one
   :func:`tda.core.graph.validate_sequence` does (:func:`cover_log`): actions in
   ``(step, idx)`` order, the hand-written initial states, the settled parts.
 

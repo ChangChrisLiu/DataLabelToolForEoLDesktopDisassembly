@@ -52,8 +52,8 @@ def test_v1_31_is_on_top_of_14():
                                   "- **v1.41", "- **v1.42", "- **v1.43", "- **v1.44",
                                   "- **v1.45", "- **v1.46", "- **v1.47", "- **v1.48",
                                   "- **v1.49", "- **v1.50", "- **v1.51", "- **v1.52",
-                                  "- **v1.53", "- **v1.54"))
-    [entry] = [e for e in entries[:24] if e.startswith("- **v1.31")]
+                                  "- **v1.53", "- **v1.54", "- **v1.55"))
+    [entry] = [e for e in entries[:25] if e.startswith("- **v1.31")]
     assert entry.startswith("- **v1.31（2026-10-25）**：**重签：容差以内的冻结行改成今天的编译**"
                             "（U32，§3.4、§4.4）")
     for needed in ("262 408", "`tda/core/truth_refreeze.py`", "`cli refreeze", "--undo last",
