@@ -544,4 +544,4 @@ def test_no_key_was_added_and_the_docs_say_it():
     minutes = (DISCUSSION / "05-minutes.md").read_text(encoding="utf-8")
     assert "### 7.7" in minutes and "W3h" in minutes.split("### 7.7", 1)[1]
     yaml_text = (ROOT / "configs" / "covers_whitelist.yaml").read_text(encoding="utf-8")
-    assert "version: W3" in yaml_text
+    assert "version: W4" in yaml_text        # W3 (the card rulings) + W4 (the shroud over RAM / heatsink, cards Q08-Q25)
