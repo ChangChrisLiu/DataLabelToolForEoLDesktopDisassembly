@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# One evaluation job: subset -> (blind) -> chat -> model -> score. (W4-B)
+#
+# Everything is an environment variable so the same file serves the Slurm
+# templates, an interactive node and a laptop:
+#
+#   PACK        the vlmpack copy (required)              e.g. $SCRATCH/vlmpack_2026-11-05
+#   VIEW        scan | oak1 | oak2 | rs (required)
+#   BACKEND     gold | openai | vllm | transformers      (default vllm)
+#   MODEL       model id: HF id / local path / API name  (required unless gold)
+#   MODEL_TAG   directory name for the model             (default: MODEL with / -> _)
+#   VARIANT     image | blind                            (default image; blind = image-ablated)
+#   SUBSET      eval | all | <ids file>                  (default eval: $PACK/eval_v1/$VIEW.jsonl)
+#   RUNS        where runs go                            (default $PACK/runs)
+#   TOOLS       the pack's tools directory               (default $PACK/tools)
+#   IMAGE_ROOT  what the manifest paths are relative to  (default $PACK/images; see the pack README)
+#   TRUTH       the view's full export with sidecars     (default: $PACK/$VIEW.jsonl or $PACK/vlm_$VIEW.jsonl)
+#   CHAT_FORMAT openai | qwen | internvl                 (default openai -- vlm_run reads all three)
+#   ROI         none | view                              (default none)
+#   MAX_SIDE    longest image side sent, pixels          (default: unchanged)
+#   MAX_TOKENS  completion budget                        (default 512)
+#   REPEAT      k answers per question                   (default 1; 3 for the closed-model repeat subset)
+#   API_KEY_ENV / BASE_URL   openai backend: the NAME of the key variable, and the endpoint
+#   RUN_ARGS    anything else for vlm_run.py             (e.g. "--tensor-parallel 2 --dtype bf16")
+#   PYTHON      interpreter                              (default python)
+#
+# Output: $RUNS/$MODEL_TAG/$VARIANT/$VIEW/{truth/,chat.jsonl,pred.jsonl,run.log,score/}
+# Re-running resumes: vlm_run.py skips the ids already in pred.jsonl.
+set -euo pipefail
+
+: "${PACK:?set PACK to the vlmpack directory}"
+: "${VIEW:?set VIEW to scan | oak1 | oak2 | rs}"
+BACKEND="${BACKEND:-vllm}"
+MODEL="${MODEL:-}"
+if [[ "$BACKEND" != "gold" && -z "$MODEL" ]]; then echo "set MODEL" >&2; exit 2; fi
+MODEL_TAG="${MODEL_TAG:-${MODEL:-gold}}"
+MODEL_TAG="${MODEL_TAG//\//_}"
+VARIANT="${VARIANT:-image}"
+SUBSET="${SUBSET:-eval}"
+RUNS="${RUNS:-$PACK/runs}"
+TOOLS="${TOOLS:-$PACK/tools}"
+IMAGE_ROOT="${IMAGE_ROOT:-$PACK/images}"
+CHAT_FORMAT="${CHAT_FORMAT:-openai}"
+ROI="${ROI:-none}"
+MAX_TOKENS="${MAX_TOKENS:-512}"
+REPEAT="${REPEAT:-1}"
+PYTHON="${PYTHON:-python}"
+RUN_ARGS="${RUN_ARGS:-}"
+
+# the view's full export (records + .images_manifest.jsonl + .oracle.jsonl + .summary.json)
+if [[ -z "${TRUTH:-}" ]]; then
+  for cand in "$PACK/$VIEW.jsonl" "$PACK/vlm_$VIEW.jsonl" "$PACK/export/vlm_$VIEW.jsonl"; do
+    if [[ -f "$cand" ]]; then TRUTH="$cand"; break; fi
+  done
+fi
+: "${TRUTH:?no export found for $VIEW under $PACK; set TRUTH}"
+
+OUT="$RUNS/$MODEL_TAG/$VARIANT/$VIEW"
+mkdir -p "$OUT/truth" "$OUT/score"
+RUN="$TOOLS/vlm_run"
+echo "[run_eval] $BACKEND ${MODEL:-gold} / $VARIANT / $VIEW -> $OUT"
+
+# 1. the records to run, as a truth file of their own (sidecars copied beside it)
+SUB="$OUT/truth/$VIEW.jsonl"
+case "$SUBSET" in
+  eval) "$PYTHON" "$RUN/vlm_collect.py" subset --export "$TRUTH" --out "$SUB" \
+          --records "$PACK/eval_v1/$VIEW.jsonl" ;;
+  all)  "$PYTHON" "$RUN/vlm_collect.py" subset --export "$TRUTH" --out "$SUB" --records "$TRUTH" ;;
+  *)    "$PYTHON" "$RUN/vlm_collect.py" subset --export "$TRUTH" --out "$SUB" --ids "$SUBSET" ;;
+esac
+
+# 2. the input variant
+RECORDS="$SUB"
+if [[ "$VARIANT" == "blind" ]]; then
+  RECORDS="$OUT/truth/blind.jsonl"
+  "$PYTHON" "$RUN/vlm_collect.py" blind --records "$SUB" --out "$RECORDS"
+elif [[ "$VARIANT" != "image" ]]; then
+  echo "VARIANT must be image or blind" >&2; exit 2
+fi
+
+# 3. chat requests (crops / scaled copies, if any, go under chat_assets/)
+CHAT="$OUT/chat.jsonl"
+TO_CHAT=(--export "$SUB" --records "$RECORDS" --format "$CHAT_FORMAT" --image-root "$IMAGE_ROOT"
+         --out "$CHAT" --roi "$ROI" --assets "$OUT/chat_assets")
+if [[ -n "${MAX_SIDE:-}" ]]; then TO_CHAT+=(--max-side "$MAX_SIDE"); fi
+"$PYTHON" "$TOOLS/vlm_to_chat.py" "${TO_CHAT[@]}"
+
+# 4. the model
+PRED="$OUT/pred.jsonl"
+ARGS=(--backend "$BACKEND" --chat "$CHAT" --out "$PRED" --image-root "$IMAGE_ROOT"
+      --max-tokens "$MAX_TOKENS" --repeat "$REPEAT" --log "$OUT/run.log")
+case "$BACKEND" in
+  gold)   ARGS+=(--truth "$SUB") ;;
+  openai) ARGS+=(--model "$MODEL" --base-url "${BASE_URL:?set BASE_URL}"
+                 --api-key-env "${API_KEY_ENV:?set API_KEY_ENV to the NAME of the key variable}") ;;
+  *)      ARGS+=(--model "$MODEL") ;;
+esac
+# shellcheck disable=SC2086
+"$PYTHON" "$RUN/vlm_run.py" "${ARGS[@]}" $RUN_ARGS || status=$?
+status="${status:-0}"
+if [[ "$status" == "3" ]]; then echo "[run_eval] some requests failed; re-run to retry them" >&2; fi
+if [[ "$status" != "0" && "$status" != "3" ]]; then exit "$status"; fi
+
+# 5. scores: the file as it is (raw_text = repeat 1) and, when repeated, each repeat
+"$PYTHON" "$TOOLS/vlm_score.py" --truth "$SUB" --pred "$PRED" --chat "$CHAT" \
+  --out "$OUT/score" --name "$MODEL_TAG"
+if [[ "$REPEAT" -gt 1 ]]; then
+  "$PYTHON" "$RUN/vlm_collect.py" split --pred "$PRED" --out-dir "$OUT"
+  for i in $(seq 1 "$REPEAT"); do
+    "$PYTHON" "$TOOLS/vlm_score.py" --truth "$SUB" --pred "$OUT/pred.r$i.jsonl" --chat "$CHAT" \
+      --out "$OUT/score" --name "$MODEL_TAG.r$i"
+  done
+fi
+echo "[run_eval] scores -> $OUT/score/$MODEL_TAG.score.md"
+exit "$status"
