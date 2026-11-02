@@ -6,9 +6,10 @@ script that does the selection.
 
 ## 中文摘要（先读这一段）
 
-1. **对应关系**：每个标注帧都是在扫描仪的一张 RGB 图（1600×1600）上画的。那张图在本仓库的
+1. **对应关系**：每个标注帧都是在扫描仪的一张 RGB 图（1600×1600）上画的。那张图就在本文件夹的
+   `D<NN>/images/S<nn>.png`（与原始文件逐字节相同）；原始文件在本仓库的
    `raw/scanner/<source_folder 去掉开头的 "UGA DATA/">/<file_name>`（`frames.json` 里逐帧写着；一般是 `P_0.png`，
-   少数帧因为 `P_0` 太暗用了别的曝光，见 `burst_choice`）。你们的三维重建只要能做到「每个 3D 点 ↔ 这张图上的一个像素」
+   少数帧因为 `P_0` 太暗用了别的曝光，见 `burst_choice`；同一次拍摄的其他曝光 `P_0…P_9` 也在那个文件夹里）。你们的三维重建只要能做到「每个 3D 点 ↔ 这张图上的一个像素」
    （有组织点云，或与这张 RGB 配准的深度图），零件的点就是 `labels/S<nn>.png == instance_id` 的像素下的那些点。
 2. **先看计划表** `parts_3d_plan.csv`：66 台、3 209 个零件，每个零件一行，告诉你用哪条路、用哪一帧：
    - `clean`（2 832 个）：在 `best_frame` 这一帧上它完全没被挡，掩码下的点就是扫描仪看到的它的全部表面——**直接用**；
@@ -27,10 +28,10 @@ script that does the selection.
 | item | where | note |
 |---|---|---|
 | the annotations | `annotations/scanner/D<NN>/` | `labels/S<nn>.png` (16-bit id map), `annotations.json` (COCO, visible + amodal), `instances.json`, `frames.json`, `sequence.json` |
-| the picture each frame was drawn on | `raw/scanner/...` | path below; not repeated in `annotations/` |
+| the picture each frame was drawn on | `annotations/scanner/D<NN>/images/S<nn>.png` | the raw file byte for byte; the whole burst (`P_0 … P_9`) is in `raw/scanner/` (path below) |
 | your 3D reconstruction of that capture | yours | one per scanner capture (desktop, step) |
 | the plan | `annotations/scanner/parts_3d_plan.csv` | one row per part, 66 desktops |
-| the script | `annotations/scanner/tools/parts3d.py` | `pip install numpy pillow` (and `huggingface_hub` to download pictures) |
+| the script | `annotations/scanner/tools/parts3d.py` | `pip install numpy pillow` (`huggingface_hub` only for `where --download`) |
 
 **Step numbers.** `S<nn>` is the step. `S01` is the untouched machine; every other picture is taken **after** that
 step's action (on `S05` the part removed at step 5 is already gone). Frames are 1600 × 1600; coordinates are image
@@ -38,14 +39,16 @@ pixels `(x, y)`, x = column, y = row, origin top-left; masks, boxes `[x, y, w, h
 
 ## 2. Find the picture and line your cloud up with it
 
-`frames.json` → `frames["<step>"]` gives `source_folder` and `file_name`. On this repository the file is
+The picture is `D<NN>/images/S<nn>.png` in this folder. It is a byte-for-byte copy of the raw file that
+`frames.json` → `frames["<step>"]` names with `source_folder` and `file_name`; on this repository that file is
 
 ```
 raw/scanner/<source_folder without the leading "UGA DATA/">/<file_name>
 e.g. D22 S01 -> raw/scanner/TAMU_B2.3_20-29_RGB/TAMU_B2.3_20-29_RGB/22/RGB11/P_0.png
 ```
 
-`python tools/parts3d.py where --pack . --desktop 22 --frames 1,12 [--download pictures/]` prints (and fetches) them.
+`python tools/parts3d.py where --pack . --desktop 22 --frames 1,12 [--download raw/]` prints (and fetches) the raw
+paths — useful when your reconstruction needs the other exposures of the burst.
 The scanner writes a burst of exposures `P_0 … P_9` per capture; the masks were drawn on the one `file_name` names —
 `P_0` on 2 735 frames; on 65 frames `P_0` was dark, missing or an outlier and another exposure was used
 (`burst_choice.reason`, `burst_choice.p_index`). All exposures of a burst come from the same camera pose, so the pixel
@@ -186,8 +189,8 @@ pip install numpy pillow huggingface_hub
 huggingface-cli download ChangChrisLiu/E3D-Desktop-Disassembly --repo-type dataset \
     --include "annotations/scanner/*" --local-dir e3d
 cd e3d/annotations/scanner
-python tools/parts3d.py where --pack . --desktop 22 --frames 1,11,12 --download ../../pictures
-# reconstruct those captures; save each as an organized cloud D22_S<nn>_cloud.npy (section 2)
+# the pictures are D22/images/S01.png, S11.png, S12.png; reconstruct those captures and save each
+# as an organized cloud D22_S<nn>_cloud.npy (section 2)
 python tools/parts3d.py extract --pack . --desktop 22 --frame 1 --cloud D22_S01_cloud.npy --out parts/
 python tools/parts3d.py diff --pack . --desktop 22 --part psu.01 --cloud-before D22_S11_cloud.npy \
     --cloud-after D22_S12_cloud.npy --out parts/

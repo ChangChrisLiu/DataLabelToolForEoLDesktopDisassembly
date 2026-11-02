@@ -260,6 +260,23 @@ def _id(built, key: str) -> int:
     return next(v["id"] for v in built["instances"]["instances"].values() if v["key"] == key)
 
 
+
+def test_the_pack_ships_the_3d_kit_and_public_terms(built):
+    """The per-part 3D kit is inside the pack and in its manifest; the terms match the dataset card (2026-11-02)."""
+    import csv as _csv
+    pack = built["pack"]
+    manifest = json.loads((pack / "manifest.json").read_text(encoding="utf-8"))["files"]
+    for rel in ("HOW_TO_EXTRACT_3D_PARTS.md", "parts_3d_plan.csv", "tools/parts3d.py", "LICENSE_NOTE.txt", "README.md"):
+        assert (pack / rel).is_file() and rel in manifest, rel
+    rows = list(_csv.DictReader(open(pack / "parts_3d_plan.csv", encoding="utf-8")))
+    keys = {v["key"] for v in built["instances"]["instances"].values() if v["frames"]["annotations"]}
+    assert {r["key"] for r in rows} == keys
+    assert {r["route"] for r in rows} <= {"clean", "diff", "visible", "none"}
+    note = (pack / "LICENSE_NOTE.txt").read_text(encoding="utf-8")
+    assert "pre-release" in note and "not for redistribution" not in note and "public service" not in note
+    readme = (pack / "README.md").read_text(encoding="utf-8")
+    assert "HOW_TO_EXTRACT_3D_PARTS.md" in readme and "raw/scanner/" in readme and "请勿外传" not in readme
+
 # --------------------------------------------------------------------------- #
 # the label map
 # --------------------------------------------------------------------------- #
