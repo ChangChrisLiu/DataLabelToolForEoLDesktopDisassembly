@@ -526,7 +526,7 @@ def test_no_key_was_added_and_the_docs_say_it():
     entries = [line for line in spec.split("## 14. 修订记录", 1)[1].splitlines()
                if line.startswith("- ")]
     # on top when it landed; whatever lands later goes above it
-    [entry] = [e for e in entries[:5] if e.startswith("- **v1.53（2026-10-31）**")]
+    [entry] = [e for e in entries[:6] if e.startswith("- **v1.53（2026-10-31）**")]
     for needed in ("（W3h，", "W3", "日志里下面那件先动了", "上下翻转", "`pair_override`", "D02",
                    "**241**", "**22**", "refreeze"):
         assert needed in entry, needed

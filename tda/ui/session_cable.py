@@ -39,6 +39,19 @@ exist on each (carried from a keyframe of its own segment as usual).
 :func:`cable_until_change` writes 完全 over it as the one op ``Ctrl+``` logs
 (``set_frame_overrides``, one inverse, one ``Ctrl+Z``), with the same
 refusals and the same re-signing of confirmed frames.
+
+**「往前直到最开始都被线挡住」** (W3m, 2026-11-01) is its mirror: the user
+annotates in reverse order and meets the hidden connector at, say, frame 24 --
+"from here back to the beginning it is hidden". :func:`since_span` runs from
+the frame on screen **back** to the first annotatable frame on which the part
+is in the same state -- the frame after its previous own state change in this
+view's step list, or the view's first frame -- across pose segments, and
+:func:`cable_since_start` writes 完全 over it as the same one op. The same
+function with ``label=None`` is **「往前直到最开始都可见」**: from a middle frame
+the cable override is withdrawn back to the beginning (the compiled visibility
+is left to speak), so after 「24 起往前都挡住」 then 「9 起往前都可见」 frames
+10..24 stay hidden and 1..9 are visible; the inverse puts the withdrawn rows
+back as they were.
 """
 from __future__ import annotations
 
@@ -87,11 +100,12 @@ from tda.ui.session_ops import _write_override, frozen_among, override_state, se
 
 __all__ = [
     "CABLE_BY", "CABLE_EDITING", "CABLE_GALLERY", "CABLE_NEEDS_SHAPE", "CABLE_NOW_PARTIAL",
-    "CABLE_ON_BENCH", "CABLE_OTHER_SEGMENT", "CABLE_REMOVED", "CABLE_UNTIL_EMPTY",
-    "CableMixin", "LABEL_ZH", "OFF_FRAME", "OFF_FRAME_CHOICE", "OFF_FRAME_ON_BENCH",
-    "OFF_FRAME_TAG", "OFF_FRAME_ZH", "OP_RANGE", "RULE_UNTIL", "TAG_ZH", "UntilSpan",
-    "accept_own_label", "apply_cable", "cable_one", "cable_range", "cable_reason",
-    "cable_until_change", "label_reason", "open_about", "range_bounds", "until_span",
+    "CABLE_ON_BENCH", "CABLE_OTHER_SEGMENT", "CABLE_REMOVED", "CABLE_SINCE_EMPTY",
+    "CABLE_UNTIL_EMPTY", "CableMixin", "LABEL_ZH", "OFF_FRAME", "OFF_FRAME_CHOICE",
+    "OFF_FRAME_ON_BENCH", "OFF_FRAME_TAG", "OFF_FRAME_ZH", "OP_RANGE", "RULE_SINCE",
+    "RULE_UNTIL", "SinceSpan", "TAG_ZH", "UntilSpan", "accept_own_label", "apply_cable",
+    "cable_one", "cable_range", "cable_reason", "cable_since_start", "cable_until_change",
+    "label_reason", "open_about", "range_bounds", "since_span", "until_span",
 ]
 
 #: The op ``Ctrl+I`` logs: one instance's override on several frames.
@@ -100,6 +114,10 @@ OP_RANGE = "set_frame_overrides"
 RULE_UNTIL = "until_change"
 #: 「直到拔掉」 from a frame this view is not asked to annotate (W3i).
 CABLE_UNTIL_EMPTY = "这一帧不可标注（缺图或 ignore 步）：没有可标被线挡住的帧"
+#: The ``rule`` key of an op whose span 「往前直到最开始」 worked out (W3m).
+RULE_SINCE = "since_start"
+#: 「往前直到最开始」 from a frame this view is not asked to annotate (W3m).
+CABLE_SINCE_EMPTY = "这一帧不可标注（缺图或 ignore 步）：往前没有可标被线挡住的帧"
 #: A part lying on the staging area: never 画框外 (task U39 round 3).
 ON_BENCH_PLACEMENT = Placement.ON_BENCH.value
 #: The key both directions of a cable op carry: who said it, so that the undo
@@ -230,6 +248,63 @@ def until_span(db: Db, tax, key: FrameKey, instance: str,
     segments = len({pose_segment_of(db, FrameKey(key.desktop, s, key.view), cache)
                     for s in steps})
     return UntilSpan(tuple(steps), until, change, segments)
+
+
+@dataclass(frozen=True)
+class SinceSpan:
+    """How far 「往前直到最开始都被线挡住」 reaches back from one frame (W3m, :func:`since_span`)."""
+
+    #: The annotatable frames from the first one on which the part is in the
+    #: state it has on the frame asked about, to that frame, ascending.
+    steps: tuple[int, ...]
+    #: The step of the part's previous own state change -- the last step of
+    #: the view's step list before the span on which its state or placement
+    #: differed; ``None`` when it has been so since the view's first step.
+    since: Optional[int]
+    #: ``("state" | "placement", then, now)`` of that change, ``None`` without one.
+    change: Optional[tuple[str, str, str]]
+    #: How many pose segments the frames lie in.
+    segments: int
+
+
+def since_span(db: Db, tax, key: FrameKey, instance: str,
+               cache: Optional[InputCache] = None) -> SinceSpan:
+    """The frames from the part's previous own state change to ``key``, across pose segments.
+
+    The mirror of :func:`until_span`: every step of the view's step list from
+    ``key.step`` **back** is asked for the part's state and placement; the
+    first one that differs from the frame's own ends the span (``since`` is
+    that step -- the one before the part came to be as it is now; a displaced
+    part going backwards stops where it was put in its place, as going forwards
+    it stops at the displace), and the span is the annotatable frames after it
+    (no ``ignore`` step, no frame without an image; a change on a skipped step
+    still counts). A part that has been so from the view's first step runs to
+    the view's first annotatable frame (``since = None``). Pose segments are no
+    boundary.
+    """
+    cache = cache if cache is not None else InputCache()
+    table = sorted((s for s in view_steps(db, key.desktop, key.view) if s <= key.step),
+                   reverse=True)
+    keep = set(annotatable_steps(db, key.desktop, key.view, table))
+    base = _own_state(db, tax, key.desktop, key.step, instance, cache, key.view)
+    steps: list[int] = []
+    since: Optional[int] = None
+    change: Optional[tuple[str, str, str]] = None
+    for step in table:
+        then = _own_state(db, tax, key.desktop, step, instance, cache, key.view)
+        if then != base:
+            since = step
+            if base is not None and then is not None:
+                attr = "state" if then[0] != base[0] else "placement"
+                at = 0 if attr == "state" else 1
+                change = (attr, then[at], base[at])
+            break
+        if step in keep:
+            steps.append(step)
+    steps.reverse()
+    segments = len({pose_segment_of(db, FrameKey(key.desktop, s, key.view), cache)
+                    for s in steps})
+    return SinceSpan(tuple(steps), since, change, segments)
 
 
 def _refuse_gallery(key: FrameKey) -> None:
@@ -499,6 +574,38 @@ def cable_until_change(db: Db, truth: TruthService, key: FrameKey, instance: str
                       segments=span.segments)
 
 
+def cable_since_start(db: Db, truth: TruthService, key: FrameKey, instance: str,
+                      label: Optional[str] = FULL, annotator: str = "system",
+                      occluder: str = OCCLUDER_CABLE) -> dict:
+    """「往前直到最开始都被线挡住」 (W3m): ``label`` from the part's previous state change to this frame.
+
+    The frames are :func:`since_span`'s -- this view's annotatable ones from
+    the first on which the part is as it is now (the frame after its previous
+    own state change, or the view's first frame) to this one, whatever pose
+    segments they lie in. 完全 by default, with :func:`cable_range`'s refusals
+    (no shape on a frame, named; the part taken out or on the bench); ``None``
+    is **「往前直到最开始都可见」**: the 被线挡住 / 画框外 labels over the span are
+    withdrawn, never refused, the frames without one left alone (nothing to
+    withdraw: ``changed`` is ``False`` and no op is made). One
+    ``set_frame_overrides`` op either way, one ``Ctrl+Z``; confirmed frames
+    re-signed through :func:`accept_own_label`.
+
+    Returns what :func:`cable_range` returns plus ``since`` (the step of the
+    previous state change, ``None`` from the view's first frame), ``change``
+    (``[attr, then, now]`` of that step), ``segments`` and ``rule``
+    (:data:`RULE_SINCE`); the op's payload carries the same four keys.
+    """
+    _refuse_gallery(key)
+    cache = InputCache()
+    span = since_span(db, truth.tax, key, instance, cache)
+    if not span.steps:
+        raise SessionRefusal(CABLE_SINCE_EMPTY)
+    return _label_run(db, truth, key, instance, label, list(span.steps), annotator, occluder,
+                      cache, rule=RULE_SINCE, since=span.since,
+                      change=list(span.change) if span.change else None,
+                      segments=span.segments)
+
+
 def _label_run(db: Db, truth: TruthService, key: FrameKey, instance: str,
                label: Optional[str], steps: list[int], annotator: str, occluder: str,
                cache: InputCache, **extra) -> dict:
@@ -702,6 +809,10 @@ class CableMixin:
         """How far 「被线挡住，直到拔掉」 would reach from the open frame (W3i)."""
         return until_span(self.db, self.tax, self.current(), str(instance))
 
+    def cable_since_span(self, instance: str) -> SinceSpan:
+        """How far back 「往前直到最开始都被线挡住」 would reach from the open frame (W3m)."""
+        return since_span(self.db, self.tax, self.current(), str(instance))
+
     # -- writes --------------------------------------------------------------
     def _refuse_cable_edit(self, instance: str, label: Optional[str]) -> None:
         if label is not None and self.layer.instance == str(instance) and self.layer.changed():
@@ -771,6 +882,17 @@ class CableMixin:
         self._refuse_cable_edit(instance, label)
         return self._after_edit(cable_until_change(self.db, self.truth, self.current(),
                                                    str(instance), label, self.annotator))
+
+    def set_cable_since(self, instance: str, label: Optional[str] = FULL) -> dict:
+        """「往前直到最开始都被线挡住」 (W3m): ``label`` from the part's previous state change to here.
+
+        One op (one ``Ctrl+Z``), across pose segments; 完全 by default,
+        ``None`` is 「往前直到最开始都可见」 -- the labels withdrawn, never
+        refused (:func:`cable_since_start`).
+        """
+        self._refuse_cable_edit(instance, label)
+        return self._after_edit(cable_since_start(self.db, self.truth, self.current(),
+                                                  str(instance), label, self.annotator))
 
     # -- what the canvas draws -----------------------------------------------
     def cable_outlines(self) -> list[tuple[str, list[list[tuple[float, float]]]]]:

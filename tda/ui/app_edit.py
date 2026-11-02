@@ -339,6 +339,9 @@ class EditMixin:
         # W3i: the instance table's right-click 「被线挡住 → 直到拔掉」, the palette
         # button's path on the row under the pointer
         self.instances.sigCableUntil.connect(self.act_cable_until)
+        # W3m: the same backwards, and 「往前直到最开始都可见」
+        self.instances.sigCableSince.connect(self.act_cable_since)
+        self.instances.sigCableSinceVisible.connect(self.act_cable_since_visible)
         # The task card's commit / confirm buttons and the Review dock's Keep
         # old / Take new are gone (U2b rounds 1 and 1b): the tool palette is
         # the one place for actions, and its buttons dispatch through ACTIONS

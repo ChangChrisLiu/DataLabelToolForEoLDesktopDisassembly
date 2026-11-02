@@ -87,6 +87,9 @@ GALLERY_REFUSALS: dict[str, str] = {
     "cable_range": f"零件合照里没有「被线挡住」：不在这张里的零件按 {ABSENT_KEY} 键（看不见）",
     # W3i: the palette's 「被线挡住 → 直到拔掉」 is the sequence's too
     "cable_until": f"零件合照里没有「被线挡住」：不在这张里的零件按 {ABSENT_KEY} 键（看不见）",
+    # W3m: and its two backwards gestures
+    "cable_since": f"零件合照里没有「被线挡住」：不在这张里的零件按 {ABSENT_KEY} 键（看不见）",
+    "cable_since_visible": f"零件合照里没有「被线挡住」：不在这张里的零件按 {ABSENT_KEY} 键（看不见）",
 }
 
 

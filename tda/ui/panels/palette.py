@@ -67,9 +67,13 @@ PALETTE_WIDTH = 124
 #: ``button -> ((action name, menu text), ...)``. 「看不见」 carries
 #: 「直到拔掉 / 拆下」 -- the same part under a cable from this frame until its
 #: next state change -- so the palette gains no row (a sixth 「状态」 button, or
-#: one at the top of 「其他」, sits under the fold at 1920x1000).
+#: one at the top of 「其他」, sits under the fold at 1920x1000). W3m adds the
+#: two gestures backwards: 「往前直到最开始都被线挡住」 and its withdrawal
+#: 「往前直到最开始都可见」 (the same menu, no new key, no new row).
 DROPDOWNS: dict[str, tuple[tuple[str, str], ...]] = {
-    "mark_absent": (("cable_until", "直到拔掉 / 拆下"),),
+    "mark_absent": (("cable_until", "直到拔掉 / 拆下"),
+                    ("cable_since", "往前直到最开始都被线挡住"),
+                    ("cable_since_visible", "往前直到最开始都可见")),
 }
 #: The extra space above a group's heading (工具 / 笔刷大小 / 操作 / 状态 / 其他).
 GROUP_GAP = 2
