@@ -1,0 +1,315 @@
+"""The VLM evaluation pack (W4-A): ``scripts/export_vlmpack.py`` on the W3b scene.
+
+The scene is one desktop with the scanner confirmed and OAK1 frames only, so
+the pack is built over both views with a tiny fake frame cache; no model, no
+network, no real database.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import shutil
+import sys
+from pathlib import Path
+
+import pytest
+
+import w3b_scene as W
+from tda.core.db import Db
+
+SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+
+import export_vlmpack as P  # noqa: E402
+import vlm_io as IO  # noqa: E402
+
+VIEWS = (W.VIEW, W.OTHER)
+
+
+def _sha(path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _scene(root: Path) -> tuple[Path, Path]:
+    """The scene database and a fake frame cache with one PNG per frame."""
+    from PIL import Image
+
+    db_path = root / "scene.sqlite"
+    db = Db(str(db_path))
+    W.build(db)
+    db.close()
+    cache = root / "cache"
+    for view in VIEWS:
+        for step in W.STEPS:
+            path = cache / view / f"D{W.DESKTOP:02d}" / f"s{step:03d}.png"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", W.HW, (step * 20 % 255, 90 if view == W.VIEW else 30, 120)).save(path)
+    return db_path, cache
+
+
+def _build(root: Path, db_path: Path, cache: Path, name: str, **kw) -> dict:
+    return P.build_pack(str(db_path), str(root / name), cache_dir=str(cache),
+                        work_dir=str(root / f"{name}_work"), views=VIEWS, seed=0,
+                        audit=20, live_db=str(root / "live.sqlite"), log=lambda *_: None,
+                        **kw)
+
+
+@pytest.fixture(scope="module")
+def built(tmp_path_factory) -> dict:
+    root = tmp_path_factory.mktemp("w4a_pack")
+    db_path, cache = _scene(root)
+    before = _sha(db_path)
+    summary = _build(root, db_path, cache, "pack")
+    return {"root": root, "db": db_path, "db_sha_before": before, "cache": cache,
+            "pack": root / "pack", "summary": summary,
+            "manifest": json.loads((root / "pack" / "manifest.json").read_text(encoding="utf-8"))}
+
+
+# --------------------------------------------------------------------------- #
+# the layout and the manifest
+# --------------------------------------------------------------------------- #
+def test_the_pack_has_the_promised_layout(built):
+    pack = built["pack"]
+    for rel in ("README.md", "LICENSE_NOTE.txt", "manifest.json", "eval_v1/ids.txt",
+                "eval_v1/table.md", "eval_v1/table.json", "eval_v1/audit/audit.sheet.md",
+                "tools/vlm_score.py", "tools/vlm_to_chat.py", "tools/vlm_references.py",
+                "tools/vlm_selfcheck.py", "tools/vlm_eval_set.py", "tools/requirements.txt",
+                "tools/tda/core/export/vlm_check.py", "tools/tda/core/export/vlm_tasks.py",
+                "tools/configs/taxonomy.yaml"):
+        assert (pack / rel).is_file(), rel
+    for view in VIEWS:
+        for suffix in ("jsonl", "images_manifest.jsonl", "oracle.jsonl", "summary.json"):
+            assert (pack / "data" / f"vlm_{view}.{suffix}").is_file()
+            assert (pack / "eval_v1" / f"{view}.{suffix}").is_file()
+    assert (pack / "images" / W.VIEW / f"D{W.DESKTOP:02d}" / "s001.png").is_file()
+    assert not list(pack.rglob("__pycache__"))
+    assert not (pack / P.BUILDING).exists()
+
+
+def test_the_manifest_lists_every_file_with_its_sha256(built):
+    pack, files = built["pack"], built["manifest"]["files"]
+    on_disk = {p.relative_to(pack).as_posix() for p in pack.rglob("*") if p.is_file()}
+    assert set(files) == on_disk - {"manifest.json"}
+    for rel, entry in files.items():
+        path = pack / rel
+        assert entry["bytes"] == path.stat().st_size, rel
+        assert entry["sha256"] == _sha(path), rel
+    image = next(k for k in files if k.startswith("images/"))
+    assert files[image]["view"] in VIEWS and files[image]["desktop"] == W.DESKTOP
+    m = built["manifest"]
+    assert m["package"] == "vlmpack" and m["eval_version"] == "eval_v1"
+    assert m["views"] == list(VIEWS) and m["desktops"] == [W.DESKTOP]
+    assert m["selfcheck"]["ok"] is True
+    assert set(m["exports"]) == set(VIEWS)
+    assert m["exports"][W.VIEW]["by_task"]["V4"] > 0
+
+
+def test_every_manifest_image_is_in_the_pack_and_nothing_else(built):
+    pack, files = built["pack"], built["manifest"]["files"]
+    named = set()
+    for view in VIEWS:
+        for entry in IO.load_manifest(pack / "data" / f"vlm_{view}.jsonl").values():
+            named.add("images/" + entry["path"])
+    shipped = {k for k in files if k.startswith("images/")}
+    assert shipped == named
+    # byte for byte the cached frame
+    rel = sorted(shipped)[0]
+    assert _sha(pack / rel) == _sha(built["cache"] / rel[len("images/"):])
+
+
+def test_the_input_database_is_not_written(built):
+    assert _sha(built["db"]) == built["db_sha_before"]
+    # the build opened a copy of its own, under the work directory
+    assert (built["root"] / "pack_work" / "vlmpack_work.sqlite").is_file()
+
+
+def test_two_builds_are_byte_identical(built):
+    root = built["root"]
+    _build(root, built["db"], built["cache"], "pack2")
+    a = {p.relative_to(built["pack"]).as_posix(): _sha(p)
+         for p in built["pack"].rglob("*") if p.is_file()}
+    b = {p.relative_to(root / "pack2").as_posix(): _sha(p)
+         for p in (root / "pack2").rglob("*") if p.is_file()}
+    assert a == b
+
+
+def test_no_machine_path_or_clock_in_the_shipped_text(built):
+    pack = built["pack"]
+    root = str(built["root"])
+    for rel in ("README.md", "manifest.json", "eval_v1/table.md", "eval_v1/table.json"):
+        text = (pack / rel).read_text(encoding="utf-8")
+        assert root not in text and root.replace("\\", "/") not in text, rel
+        assert "D:/DataSet" not in text and "D:\\DataSet" not in text, rel
+
+
+# --------------------------------------------------------------------------- #
+# refusals
+# --------------------------------------------------------------------------- #
+def test_the_live_database_is_refused_by_name(tmp_path):
+    with pytest.raises(P.PackError, match="live database"):
+        P.refuse_live(P.LIVE_DB)
+    with pytest.raises(P.PackError, match="live database"):
+        P.refuse_live(P.LIVE_DB.replace("/", "\\").upper())
+    live = tmp_path / "live.sqlite"
+    live.write_bytes(b"")
+    with pytest.raises(P.PackError, match="live database"):
+        P.build_pack(str(live), str(tmp_path / "out"), live_db=str(live))
+    with pytest.raises(P.PackError, match="no such database"):
+        P.refuse_live(str(tmp_path / "nowhere.sqlite"))
+
+
+def test_a_missing_image_stops_the_build_before_anything_is_copied(tmp_path):
+    db_path, cache = _scene(tmp_path)
+    gone = cache / W.OTHER / f"D{W.DESKTOP:02d}" / "s005.png"
+    gone.unlink()
+    with pytest.raises(P.PackError) as err:
+        _build(tmp_path, db_path, cache, "pack")
+    assert "1 of" in str(err.value) and f"{W.OTHER}/D{W.DESKTOP:02d}/s005.png" in str(err.value)
+    assert not (tmp_path / "pack" / "images").exists()
+    # the half-built directory is recognised and replaced with --force
+    assert (tmp_path / "pack" / P.BUILDING).is_file()
+    with pytest.raises(P.PackError, match="--force"):
+        _build(tmp_path, db_path, cache, "pack")
+    summary = _build(tmp_path, db_path, cache, "pack", force=True, images="none")
+    assert summary["image_mode"] == "none" and summary["images"] == 0
+    assert "carries no images" in (tmp_path / "pack" / "README.md").read_text(encoding="utf-8")
+
+
+def test_a_directory_that_is_not_a_pack_is_never_deleted(tmp_path):
+    out = tmp_path / "mine"
+    out.mkdir()
+    (out / "thesis.tex").write_text("precious", encoding="utf-8")
+    db_path, cache = _scene(tmp_path)
+    with pytest.raises(P.PackError, match="refusing to delete"):
+        _build(tmp_path, db_path, cache, "mine", force=True)
+    assert (out / "thesis.tex").read_text(encoding="utf-8") == "precious"
+
+
+# --------------------------------------------------------------------------- #
+# the subset inside the pack
+# --------------------------------------------------------------------------- #
+def test_the_subset_files_agree_with_ids_and_carry_their_sidecars(built):
+    pack = built["pack"]
+    ids = [l for l in (pack / "eval_v1" / "ids.txt").read_text(encoding="utf-8").splitlines() if l]
+    assert len(ids) == len(set(ids)) == built["summary"]["eval"]["records"]
+    seen: list[str] = []
+    for view in VIEWS:
+        truth = pack / "eval_v1" / f"{view}.jsonl"
+        records = list(IO.read_jsonl(truth))
+        full = {r["id"]: r for r in IO.read_jsonl(pack / "data" / f"vlm_{view}.jsonl")}
+        assert all(r == full[r["id"]] for r in records)
+        seen += [r["id"] for r in records]
+        used = {img for r in records for img in r["prompt"]["images"]}
+        manifest = IO.load_manifest(truth)
+        assert set(manifest) == used
+        worlds, frames = IO.load_oracle(truth)
+        assert set(frames) == used and set(worlds) == {W.DESKTOP}
+        assert (IO.load_summary(truth)
+                == IO.load_summary(pack / "data" / f"vlm_{view}.jsonl"))
+        # V6 pairs travel whole
+        pairs = {}
+        for r in records:
+            if r["prompt"]["task"] == "V6":
+                pairs.setdefault(r["label"]["v6_pair"], set()).add(r["label"]["v6_form"])
+        assert all(forms == {"open", "mc"} for forms in pairs.values())
+    assert sorted(seen) == sorted(ids)
+
+
+def test_the_audit_sample_is_drawn_from_inside_the_subset(built):
+    pack = built["pack"]
+    ids = set((pack / "eval_v1" / "ids.txt").read_text(encoding="utf-8").split())
+    audit = [l for l in (pack / "eval_v1" / "audit" / "audit.ids.txt")
+             .read_text(encoding="utf-8").splitlines() if l]
+    assert audit and set(audit) <= ids
+    sheet = (pack / "eval_v1" / "audit" / "audit.sheet.md").read_text(encoding="utf-8")
+    assert sheet.count("\n|") >= len(audit) + 1 and "ok?" in sheet
+
+
+def test_images_eval_ships_only_what_the_subset_names(tmp_path):
+    db_path, cache = _scene(tmp_path)
+    summary = _build(tmp_path, db_path, cache, "pack", images="eval")
+    pack = tmp_path / "pack"
+    named = set()
+    for view in VIEWS:
+        named |= {"images/" + e["path"]
+                  for e in IO.load_manifest(pack / "eval_v1" / f"{view}.jsonl").values()}
+    files = json.loads((pack / "manifest.json").read_text(encoding="utf-8"))["files"]
+    assert {k for k in files if k.startswith("images/")} == named
+    assert summary["images"] == len(named)
+    assert "holds only the frames `eval_v1` names" in (pack / "README.md").read_text(
+        encoding="utf-8")
+
+
+# --------------------------------------------------------------------------- #
+# the tools
+# --------------------------------------------------------------------------- #
+def test_the_vendored_tools_stand_alone(built):
+    pack = built["pack"]
+    stub = (pack / "tools" / "tda" / "core" / "export" / "vlm_tasks.py").read_text(encoding="utf-8")
+    assert "def class_label" in stub and "SCREW_PRESENCE" in stub and "INITIALISMS" in stub
+    init = (pack / "tools" / "tda" / "core" / "export" / "__init__.py").read_text(encoding="utf-8")
+    assert "import" not in init  # no exporter, no database layer
+    for name in P.TOOLS:
+        assert (pack / "tools" / name).read_bytes() == (SCRIPTS / name).read_bytes()
+    # the build already imported them with -I and ran the self-check from the pack
+    P.smoke_import(pack / "tools")
+    check = built["summary"]["selfcheck"]
+    assert check["ok"] and {f["file"] for f in check["files"]} == {f"{v}.jsonl" for v in VIEWS}
+    assert all(abs(m - 1.0) < 1e-9 for f in check["files"] for m in f["tasks"].values())
+
+
+def test_the_self_check_catches_a_wrong_oracle(built, tmp_path):
+    import vlm_selfcheck
+
+    pack = built["pack"]
+    truth = pack / "eval_v1" / f"{W.VIEW}.jsonl"
+    assert vlm_selfcheck.main(["--truth", str(truth), "--out", str(tmp_path / "ok")]) == 0
+    # a truth file whose oracle has lost the desktop's world (parts, edges, log)
+    # cannot ground a model's wording: the check says so, even though the gold
+    # replies (raw keys) still score
+    broken = tmp_path / "broken" / f"{W.VIEW}.jsonl"
+    broken.parent.mkdir()
+    shutil.copyfile(truth, broken)
+    shutil.copyfile(IO.sidecar(truth, "summary.json"), IO.sidecar(broken, "summary.json"))
+    shutil.copyfile(IO.sidecar(truth, "images_manifest.jsonl"),
+                    IO.sidecar(broken, "images_manifest.jsonl"))
+    rows = [r for r in IO.read_jsonl(IO.sidecar(truth, "oracle.jsonl"))
+            if r.get("type") != "desktop"]
+    IO.write_jsonl(IO.sidecar(broken, "oracle.jsonl"), rows)
+    assert vlm_selfcheck.main(["--truth", str(broken), "--out", str(tmp_path / "bad")]) == 1
+    report = json.loads((tmp_path / "bad" / "selfcheck.json").read_text(encoding="utf-8"))
+    assert not report["ok"] and report["files"][0]["missing_worlds"] == [W.DESKTOP]
+    good = json.loads((tmp_path / "ok" / "selfcheck.json").read_text(encoding="utf-8"))
+    assert good["files"][0]["missing_worlds"] == [] and good["files"][0]["missing_frames"] == []
+
+
+# --------------------------------------------------------------------------- #
+# the data card
+# --------------------------------------------------------------------------- #
+def test_the_readme_is_a_data_card(built):
+    text = (built["pack"] / "README.md").read_text(encoding="utf-8")
+    for needle in ("## Tasks", "## Records", "## Answer formats", "## Images, crops, ROI",
+                   "## The evaluation subset", "## How to run", "## Known limitations",
+                   "| V4 |", "| V6 |", "truth_source", "graph_blocked_pixels",
+                   "prior_is_correct", "v6_pair", "view_confirmed", "--roi view",
+                   "Never crop around a record's evidence", "vlm_selfcheck.py",
+                   "vlm_score.py --truth", "Unconfirmed views", "V15 is the `moment` variant",
+                   "Shortcut bounds are in-sample", "Captive screws"):
+        assert needle in text, needle
+    from tda.core.export.vlm_check import RESPONSE_FORMATS
+
+    for key, fmt in RESPONSE_FORMATS.items():
+        if not key.startswith("V5"):
+            assert fmt.split("{allowed}")[0] in text, key
+    # the scene has no HP optical bracket: the card does not pretend it does
+    assert "optical-drive bracket" not in text.split("## Known limitations")[1].split(
+        "## Provenance")[0]
+
+
+def test_the_card_names_the_optical_bracket_when_a_desktop_has_one(built):
+    summary = dict(built["summary"])
+    summary["composition"] = dict(summary["composition"], optical_bracket_desktops=[3, 8])
+    text = P.readme_text(summary)
+    issues = text.split("## Known limitations")[1]
+    assert "optical-drive bracket" in issues and "D03, D08" in issues
+    assert "\"Drive cage N\"" in issues and "**not** accepted" in issues
