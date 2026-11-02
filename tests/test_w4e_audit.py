@@ -1,0 +1,560 @@
+"""W4-E: the fillable audit sheet, the audit summary (Wilson) and the human-baseline form.
+
+All on the :mod:`tests.w3b_scene` export (scanner confirmed, OAK1 frames only)
+with a tiny fake frame cache; the pack test builds ``scripts/export_vlmpack.py``
+over it. No model, no network, no real database.
+"""
+from __future__ import annotations
+
+import csv
+import hashlib
+import io
+import json
+import math
+import re
+import sys
+from pathlib import Path
+
+import pytest
+
+import w3b_scene as W
+from tda.core.db import Db
+from tda.core.export.vlm import export_vlm
+
+SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+
+import vlm_audit_sheet as S  # noqa: E402
+import vlm_audit_summary as A  # noqa: E402
+import vlm_eval_set as E  # noqa: E402
+import vlm_human_sheet as H  # noqa: E402
+import vlm_io as IO  # noqa: E402
+import vlm_score  # noqa: E402
+
+VIEWS = (W.VIEW, W.OTHER)
+
+
+@pytest.fixture(scope="module")
+def scene(tmp_path_factory) -> dict:
+    """The two-view export, a fake ``images/`` tree and ``eval_v1`` with a 20-item audit."""
+    from PIL import Image
+
+    tmp = tmp_path_factory.mktemp("w4e")
+    db = Db(str(tmp / "s.sqlite"))
+    tax = W.build(db)
+    data = tmp / "data"
+    data.mkdir()
+    for view in VIEWS:
+        export_vlm(db, tax, [W.DESKTOP], view, str(data / f"vlm_{view}.jsonl"))
+    db.close()
+    images = tmp / "images"
+    for view in VIEWS:
+        for entry in IO.load_manifest(data / f"vlm_{view}.jsonl").values():
+            path = images / entry["path"]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", W.HW, (entry["step"] * 20 % 255, 80, 120)).save(path)
+    eval_dir = tmp / "eval_v1"
+    E.build([data / f"vlm_{v}.jsonl" for v in VIEWS], eval_dir, seed=0, audit=20)
+    exports = [eval_dir / f"{v}.jsonl" for v in VIEWS]
+    return {"tmp": tmp, "data": data, "images": images, "eval": eval_dir, "exports": exports,
+            "audit": list(IO.read_jsonl(eval_dir / "audit" / "audit.jsonl"))}
+
+
+def _sha(path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _articles(text: str) -> list[str]:
+    return re.findall(r"<article class=\"item\".*?</article>", text, re.S)
+
+
+# --------------------------------------------------------------------------- #
+# the audit sheet
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def audit_sheet(scene) -> dict:
+    out = scene["eval"] / "audit"
+    result = S.build(scene["audit"], scene["exports"], scene["images"], out, batch=8)
+    return {"out": out, "result": result,
+            "pages": [(out / f).read_text(encoding="utf-8") for f in result["files"]
+                      if f.endswith(".html")]}
+
+
+def test_the_sheet_has_one_item_per_record_in_batches(scene, audit_sheet):
+    records = scene["audit"]
+    result = audit_sheet["result"]
+    # (vlm_sample.draw over-draws on a one-desktop pool: more than the 20 asked; W4-A's note)
+    assert result["items"] == len(records) >= 20
+    n_batches = math.ceil(len(records) / 8)
+    assert result["batches"] == n_batches == len(audit_sheet["pages"]) >= 3
+    assert result["files"] == [f"audit.sheet.b{b:02d}.html" for b in range(1, n_batches + 1)] \
+        + ["audit.sheet.csv"]
+    articles = [a for page in audit_sheet["pages"] for a in _articles(page)]
+    assert len(articles) == len(records)
+    ids = re.findall(r'data-id="(rec_[0-9a-f]+)"', "".join(audit_sheet["pages"]))
+    assert ids == [r["id"] for r in records]  # the sample's order, task by task
+    assert not result["images_without_manifest"]
+
+
+def test_two_image_items_show_both_frames_and_paths_resolve(scene, audit_sheet):
+    by_id = {r["id"]: r for r in scene["audit"]}
+    two = 0
+    for page in audit_sheet["pages"]:
+        for article in _articles(page):
+            rid = re.search(r'data-id="([^"]+)"', article).group(1)
+            srcs = re.findall(r'<img src="([^"]+)"', article)
+            assert len(srcs) == len(by_id[rid]["prompt"]["images"])
+            two += len(srcs) == 2
+            for src in srcs:
+                assert src.startswith("../../images/"), src
+                assert (audit_sheet["out"] / src).resolve().is_file(), src
+            if len(srcs) == 2:
+                assert "image 1 of 2" in article and "image 2 of 2" in article
+    assert two >= 1  # V3 / V12 pairs are in a 20-item scene audit
+
+
+def test_the_sheet_shows_the_gold_answer_evidence_and_rationale(scene, audit_sheet):
+    manifest, worlds = S.load_context(scene["exports"])
+    world = worlds[W.DESKTOP]
+    text = "".join(audit_sheet["pages"])
+    for r in scene["audit"]:
+        article = next(a for a in _articles(text) if f'data-id="{r["id"]}"' in a)
+        assert r["label"]["readable_id"] in article
+        assert "Gold answer" in article and "raw JSON" in article
+        # the raw JSON travels whole (escaped), the words name the parts
+        assert S.esc(json.dumps(r["label"]["answer"], ensure_ascii=False, indent=1)) in article
+        for key, value in S.gold_lines(r, world):
+            assert S.esc(value) in article, (r["prompt"]["task"], key)
+        if (r["label"].get("rationale") or {}).get("steps"):
+            assert 'class="rationale"' in article
+    # the gold option of a multiple choice is marked; evidence boxes are data
+    mc = [r for r in scene["audit"] if r["prompt"].get("options")]
+    for r in mc:
+        article = next(a for a in _articles(text) if f'data-id="{r["id"]}"' in a)
+        assert article.count('<li class="gold">') == 1
+    v8 = next((r for r in scene["audit"] if r["prompt"]["task"] == "V8"), None)
+    if v8 is not None:
+        boxes = S.boxes_of(v8, world)
+        assert boxes[0]["bbox"] == [float(v) for v in v8["label"]["answer"]["bbox"]]
+        assert boxes[0]["kind"] == "answer"
+        assert boxes[0]["label"] == world.instances[v8["label"]["answer"]["instance"]]["label"]
+    # instance keys are spelled the way the oracle labels them
+    v3 = next(r for r in scene["audit"] if r["prompt"]["task"] == "V3")
+    lines = dict(S.gold_lines(v3, world))
+    key = v3["label"]["answer"]["target_instance"]
+    assert world.instances[key]["label"] in lines["action"] and key not in lines["action"]
+
+
+def test_the_sheet_is_static_fillable_and_deterministic(scene, audit_sheet, tmp_path):
+    for page in audit_sheet["pages"]:
+        assert "<script src" not in page and "<link " not in page
+        assert not re.search(r"https?://(?!www\.w3\.org/2000/svg)", page)
+        for value, zh, _ in S.VERDICTS:
+            assert f'value="{value}"' in page and zh in page
+        assert 'id="export"' in page and "localStorage" in page and 'class="note"' in page
+        assert "D:/DataSet" not in page and str(scene["tmp"]) not in page
+    skeleton = (audit_sheet["out"] / "audit.sheet.csv").read_text(encoding="utf-8")
+    rows = list(csv.DictReader(io.StringIO(skeleton)))
+    assert [r["id"] for r in rows] == [r["id"] for r in scene["audit"]]
+    assert list(rows[0]) == list(S.CSV_COLUMNS)
+    assert {r["batch"] for r in rows} == {str(b) for b in range(1, audit_sheet["result"]["batches"] + 1)}
+    assert rows[7]["batch"] == "1" and rows[8]["batch"] == "2"
+    assert all(r["verdict"] == "" and r["note"] == "" for r in rows)
+    # a second build writes the same bytes (no clock, no machine path)
+    again = tmp_path / "again"
+    S.build(scene["audit"], scene["exports"], scene["images"], again, batch=8)
+    for name in audit_sheet["result"]["files"]:
+        a, b = (audit_sheet["out"] / name).read_text(encoding="utf-8"), \
+            (again / name).read_text(encoding="utf-8")
+        if name.endswith(".html"):
+            # only the relative image paths differ between two directories
+            a = a.replace("../../images/", "IMG/")
+            b = b.replace(Path(S.rel_image(scene["images"], "", again)).as_posix().rstrip("/") + "/",
+                          "IMG/")
+        assert a == b, name
+
+
+def test_the_cli_builds_the_sheet(scene, tmp_path, capsys):
+    out = tmp_path / "cli"
+    rc = S.main(["--records", str(scene["eval"] / "audit" / "audit.jsonl"),
+                 "--export", *map(str, scene["exports"]), "--image-root", str(scene["images"]),
+                 "--out", str(out), "--batch", "50"])
+    assert rc == 0
+    assert (out / "audit.sheet.b01.html").is_file() and (out / "audit.sheet.csv").is_file()
+    assert f"{len(scene['audit'])} items in 1 pages" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- #
+# Wilson and the summary
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("k, n, lo, hi", [
+    (0, 300, 0.0, 0.01264),        # the paper's "0 errors in 300 bounds it at about 1 %"
+    (81, 263, 0.2553, 0.3662),     # Newcombe (1998), method 3
+    (15, 148, 0.0624, 0.1605),     # Newcombe (1998)
+    (0, 20, 0.0, 0.1611),          # Newcombe (1998)
+    (1, 29, 0.0061, 0.1718),       # Newcombe (1998)
+    (5, 10, 0.2366, 0.7634),       # symmetric about 0.5
+    (10, 10, 0.7225, 1.0),
+])
+def test_the_wilson_interval_matches_known_values(k, n, lo, hi):
+    p, got_lo, got_hi = A.wilson(k, n)
+    assert p == pytest.approx(k / n)
+    assert got_lo == pytest.approx(lo, abs=5e-5)
+    assert got_hi == pytest.approx(hi, abs=5e-5)
+    assert 0.0 <= got_lo <= p <= got_hi <= 1.0
+
+
+def test_the_wilson_interval_edge_cases():
+    assert A.wilson(0, 0) == (None, None, None)
+    with pytest.raises(ValueError):
+        A.wilson(11, 10)
+    # wider for a smaller n, narrower for a larger one, same proportion
+    _, lo_s, hi_s = A.wilson(3, 30)
+    _, lo_l, hi_l = A.wilson(30, 300)
+    assert hi_s - lo_s > hi_l - lo_l
+    # the 90 % interval is inside the 95 % one
+    _, lo90, hi90 = A.wilson(7, 50, z=1.6448536)
+    _, lo95, hi95 = A.wilson(7, 50)
+    assert lo95 < lo90 and hi90 < hi95
+
+
+def test_verdict_spellings():
+    assert A.normalise_verdict("正确") == "correct" and A.normalise_verdict(" WRONG ") == "wrong"
+    assert A.normalise_verdict("?") == "doubtful" and A.normalise_verdict("存疑") == "doubtful"
+    assert A.normalise_verdict("") is None and A.normalise_verdict("banana") is None
+
+
+def _filled_csv(records, verdicts: dict, reviewer: str, path: Path, notes=None) -> Path:
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=list(S.CSV_COLUMNS), lineterminator="\r\n")
+    writer.writeheader()
+    for i, r in enumerate(records):
+        row = S.csv_row(r, i // 8 + 1)
+        row["verdict"] = verdicts.get(r["id"], "")
+        row["note"] = (notes or {}).get(r["id"], "")
+        row["reviewer"] = reviewer
+        row["answered_at"] = "2026-11-03T10:00:00Z" if row["verdict"] else ""
+        writer.writerow(row)
+    path.write_text("\ufeff" + buf.getvalue(), encoding="utf-8", newline="")
+    return path
+
+
+def test_the_summary_counts_rates_flags_and_disagreements(scene, tmp_path):
+    records = scene["audit"]
+    ids = [r["id"] for r in records]
+    tasks = {r["id"]: r["prompt"]["task"] for r in records}
+    # reviewer A: item 0 wrong, item 1 doubtful, the last one not reviewed, the rest correct
+    verdicts_a = {i: "正确" for i in ids[:-1]}
+    verdicts_a[ids[0]] = "错误"
+    verdicts_a[ids[1]] = "存疑"
+    notes = {ids[0]: "the screw is already out", ids[1]: "blurred | cannot see the latch"}
+    a = _filled_csv(records, verdicts_a, "A", tmp_path / "a.csv", notes)
+    # reviewer B marks items 0 and 2 only: agrees on 0 (wrong), says 2 is wrong (A: correct)
+    b = _filled_csv(records, {ids[0]: "wrong", ids[2]: "wrong"}, "B", tmp_path / "b.csv",
+                    {ids[2]: "wrong frame"})
+    rows = A.read_verdicts([a, b])
+    assert len(rows) == 2 * len(records)
+    result = A.summarise(rows, records)
+    assert result["items_total"] == len(records)
+    assert result["items_reviewed"] == len(records) - 1
+    assert result["not_reviewed"] == [ids[-1]]
+    o = result["overall"]
+    assert (o["wrong"], o["doubtful"]) == (2, 1)  # item 2 takes B's worse verdict
+    assert o["error_rate"]["k"] == 2 and o["error_rate"]["n"] == len(records) - 1
+    p, lo, hi = A.wilson(2, len(records) - 1)
+    assert o["error_rate"]["rate"] == pytest.approx(p, abs=1e-5)
+    assert o["error_rate"]["ci95"] == [pytest.approx(lo, abs=1e-5), pytest.approx(hi, abs=1e-5)]
+    assert o["error_or_doubt_rate"]["k"] == 3
+    per = result["by_task"]
+    assert sum(c["reviewed"] for c in per.values()) == len(records) - 1
+    assert per[tasks[ids[0]]]["wrong"] >= 1
+    flagged = {f["id"]: f for f in result["flagged"]}
+    assert set(flagged) == {ids[0], ids[1], ids[2]}
+    assert "already out" in flagged[ids[0]]["note"] and "A:" in flagged[ids[0]]["note"]
+    assert flagged[ids[1]]["note"] == notes[ids[1]]
+    agr = result["agreement"]
+    assert agr["items_with_several_verdicts"] == 2 and agr["pairs"] == 2 and agr["agree"] == 1
+    assert [d["id"] for d in agr["disagreements"]] == [ids[2]]
+    md = A.markdown(result, "trial")
+    assert "| **all** |" in md and "Wilson" in md
+    assert "Items marked wrong or doubtful" in md and "the screw is already out" in md
+    assert "blurred \\| cannot see the latch" in md
+    assert "Agreement between reviewers" in md and "Not yet reviewed (1)" in md
+    for task in per:
+        assert f"| {task} |" in md
+    # the CLI writes both files
+    out = tmp_path / "summary"
+    rc = A.main(["--csv", str(a), str(b), "--records",
+                 str(scene["eval"] / "audit" / "audit.jsonl"), "--out", str(out), "--name", "trial"])
+    assert rc == 0
+    data = json.loads((out / "trial.summary.json").read_text(encoding="utf-8"))
+    assert data["overall"]["wrong"] == 2
+    assert (out / "trial.summary.md").read_text(encoding="utf-8") == md
+
+
+def test_zero_errors_in_the_paper_sample_reads_as_one_point_three_percent():
+    rows = [{"id": f"r{i}", "task": "V4", "verdict": "correct", "verdict_raw": "correct",
+             "source": "x.csv", "reviewer": "A", "note": ""} for i in range(300)]
+    result = A.summarise(rows)
+    assert result["overall"]["error_rate"]["rate"] == 0.0
+    assert result["overall"]["error_rate"]["ci95"][1] == pytest.approx(0.01264, abs=5e-5)
+    assert "0.0% [0.0%, 1.3%]" in A.markdown(result)
+
+
+# --------------------------------------------------------------------------- #
+# the human-baseline form
+# --------------------------------------------------------------------------- #
+LEAKS = ("rationale", "readable_id", "evidence", "truth_source", "demonstrated",
+         "state_inapplicable", "graph_blocked", "captive_screw", "hidden_events",
+         "prior_is_correct", "answer_check", "different_moment", "unanswerable")
+
+
+@pytest.fixture(scope="module")
+def human(scene) -> dict:
+    records = [r for p in scene["exports"] for r in IO.read_jsonl(p)]
+    chosen = H.draw_subset(records, size=40, per_task=4, seed=0)
+    out = scene["tmp"] / "human"
+    result = H.build(chosen, scene["exports"], scene["images"], out, batch=16)
+    pages = [(out / f).read_text(encoding="utf-8") for f in result["files"] if f.endswith(".html")]
+    return {"records": chosen, "out": out, "result": result, "pages": pages}
+
+
+def test_the_human_form_has_no_answer_in_it(scene, human):
+    text = "".join(human["pages"])
+    assert len(_articles(text)) == len(human["records"]) == human["result"]["items"]
+    for r in human["records"]:
+        label = r["label"]
+        article = next(a for a in _articles(text) if f'data-id="{r["id"]}"' in a)
+        assert json.dumps(label["answer"], ensure_ascii=False) not in article
+        assert S.esc(json.dumps(label["answer"], ensure_ascii=False)) not in article
+        assert label["readable_id"] not in article
+        for leak in LEAKS:
+            assert leak not in article, (leak, r["prompt"]["task"])
+        # the question, the options and the model's format sentence are there
+        assert S.esc(r["prompt"]["question"]) in article
+        for o in r["prompt"].get("options") or []:
+            assert S.esc(o["target_label"]) in article
+        assert "model format:" in article
+        assert f"D{W.DESKTOP:02d}" not in article.split("<img")[0]  # no desktop / step in the header
+        # the gold option of a multiple choice is not marked
+        assert 'class="gold"' not in article
+        # no boxes shipped with the frame
+        assert 'data-boxes="[]"' in article
+    for page in human["pages"]:
+        assert "<script src" not in page and "answered_at" in page and "started_at" in page
+        assert 'data-classes="' in page and "IntersectionObserver" in page
+
+
+def test_the_human_form_fields_follow_the_answer_format(human):
+    text = "".join(human["pages"])
+    seen = set()
+    for r in human["records"]:
+        key = H.format_key(r)
+        seen.add(key)
+        article = next(a for a in _articles(text) if f'data-id="{r["id"]}"' in a)
+        assert f'data-fk="{key}"' in article
+        for field in H.FIELDS[key]:
+            assert f'data-field="{field}"' in article, (key, field)
+        n_img = len(r["prompt"]["images"])
+        assert article.count("<figure") == n_img
+        if key in ("V1", "V8"):
+            assert article.count('class="frame drawable"') == n_img
+            assert f'data-boxmode="{"multi" if key == "V1" else "single"}"' in article
+        if key == "V6.options":
+            assert article.count('data-field="choice"') == len(r["prompt"]["options"])
+        if key == "V14":
+            assert f'value="{H.CANNOT_TELL}"' in article
+            for state in H.allowed_states(r):
+                assert f'value="{state}"' in article
+        if key in ("V12", "V15.moment", "V4", "V16"):
+            assert 'value="yes"' in article and 'value="no"' in article
+    assert {"V12", "V4", "V6.open", "V6.options", "V3"} <= seen
+    ids = (human["out"] / "human.ids.txt").read_text(encoding="utf-8").split()
+    assert ids == [r["id"] for r in human["records"]]
+
+
+def test_pairs_are_shown_open_form_first():
+    def rec(form, pair, n):
+        return {"id": f"r{n}", "prompt": {"task": "V6"}, "label": {"v6_form": form, "v6_pair": pair}}
+
+    rows = [rec("mc", "p1", 1), rec("open", "p2", 2), rec("open", "p1", 3), rec("mc", "p3", 4)]
+    out = H.order_pairs(rows)
+    assert [r["id"] for r in out] == ["r3", "r2", "r1", "r4"]
+
+
+def test_the_default_draw_is_stratified_and_not_the_audit(scene):
+    records = [r for p in scene["exports"] for r in IO.read_jsonl(p)]
+    chosen = H.draw_subset(records, size=40, per_task=4, seed=0)
+    tasks = {}
+    for r in chosen:
+        tasks[r["prompt"]["task"]] = tasks.get(r["prompt"]["task"], 0) + 1
+    assert len(chosen) == len({r["id"] for r in chosen}) and len(tasks) >= 8
+    assert max(tasks.values()) <= 8  # the 20 % cap
+    audit_ids = {r["id"] for r in scene["audit"]}
+    assert {r["id"] for r in chosen} != audit_ids
+    again = H.draw_subset(records, size=40, per_task=4, seed=0)
+    assert [r["id"] for r in again] == [r["id"] for r in chosen]
+
+
+def test_fields_map_to_the_model_formats():
+    assert H.to_answer("V4", {"feasible": "no", "blockers": "CPU cooler 1; Fan connector 1"}) == \
+        {"feasible": False, "blockers": ["CPU cooler 1", "Fan connector 1"]}
+    assert H.to_answer("V4", {"feasible": "yes", "blockers": "ignored"}) == {"feasible": True, "blockers": []}
+    assert H.to_answer("V7", {"plan": "1. unscrew Motherboard screw 2\n2) remove PSU 1\n\n- open Lever 1"}) == \
+        {"plan": [{"verb": "unscrew", "target": "Motherboard screw 2"},
+                  {"verb": "remove", "target": "PSU 1"}, {"verb": "open", "target": "Lever 1"}]}
+    assert H.to_answer("V16", {"valid": "yes", "first_error_step": "3"}) == \
+        {"valid": True, "first_error_step": None}
+    assert H.to_answer("V16", {"valid": "no", "first_error_step": "3"}) == \
+        {"valid": False, "first_error_step": 3}
+    assert H.to_answer("V14", {"state": H.CANNOT_TELL}) == {"answerable": False, "state": None}
+    assert H.to_answer("V14", {"state": "open"}) == {"answerable": True, "state": "open"}
+    assert H.to_answer("V2.count", {"count": "3"}) == {"count": 3}
+    assert H.to_answer("V2.count", {"count": "three"}) is None
+    assert H.to_answer("V1", {"boxes": json.dumps([{"class": "cpu", "bbox": [1, 2, 3, 4]},
+                                                   {"class": "", "bbox": [5, 6, 7, 8]}])}) == \
+        {"components": [{"class": "cpu", "bbox": [1, 2, 3, 4]}]}
+    assert H.to_answer("V8", {"boxes": "[]"}) is None
+    assert H.to_answer("V12", {"changed": ""}) is None
+    assert H.to_answer("V3", {"verb": "Remove", "target": "PSU 1", "tool": ""}) == \
+        {"verb": "remove", "target": "PSU 1", "tool": None}
+
+
+def _gold_csv(records, worlds, path: Path, *, blank_first: bool = False) -> Path:
+    rows = []
+    for i, r in enumerate(records):
+        fields = {} if (blank_first and i == 0) else H.gold_fields(r, worlds.get(IO.desktop_of(r)))
+        rows.append({"id": r["id"], "task": r["prompt"]["task"], "format_key": H.format_key(r),
+                     "fields_json": json.dumps(fields), "started_at": "2026-11-03T10:00:00.000Z",
+                     "answered_at": "2026-11-03T10:00:42.000Z", "seconds": "42", "reviewer": "gold"})
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=list(H.CSV_COLUMNS), lineterminator="\r\n")
+    writer.writeheader()
+    writer.writerows(rows)
+    path.write_text("\ufeff" + buf.getvalue(), encoding="utf-8", newline="")
+    return path
+
+
+def test_gold_answers_through_the_form_score_one(scene, tmp_path):
+    """CSV -> convert -> cut truth -> vlm_score: 1.0 on every task row of both views.
+
+    On the whole scene export (every task; the one-desktop eval cut is small).
+    """
+    for view in VIEWS:
+        truth = scene["data"] / f"vlm_{view}.jsonl"
+        records = list(IO.read_jsonl(truth))
+        worlds, _ = IO.load_oracle(truth)
+        csv_path = _gold_csv(records, worlds, tmp_path / f"{view}.csv")
+        out = tmp_path / view
+        rc = H.main(["convert", "--csv", str(csv_path), "--out", str(out), "--export", str(truth),
+                     "--name", "person"])
+        assert rc == 0
+        preds = list(IO.read_jsonl(out / "person.pred.jsonl"))
+        assert [p["id"] for p in preds] == [r["id"] for r in records]
+        assert all(p["meta"]["seconds"] == 42.0 and p["meta"]["reviewer"] == "gold" for p in preds)
+        cut = out / f"person.{view}.jsonl"
+        assert [r["id"] for r in IO.read_jsonl(cut)] == [r["id"] for r in records]
+        assert IO.sidecar(cut, "oracle.jsonl").is_file() and IO.sidecar(cut, "images_manifest.jsonl").is_file()
+        result = vlm_score.score(cut, out / "person.pred.jsonl", resamples=20)
+        assert result["predicted"] == result["records"] == len(records)
+        for mode in ("strict", "lenient"):
+            assert result[mode]["parse_failure_rate_all"] == 0.0
+            for task, cell in result[mode]["by_task"].items():
+                assert cell["mean"] == pytest.approx(1.0), (view, mode, task)
+        tasks = set(result["strict"]["by_task"])
+        if view == W.VIEW:
+            assert {"V1", "V8", "V2", "V14", "V6", "V6-mc", "V7", "V10", "V16", "V12", "V3", "V4"} <= tasks
+
+
+def test_convert_skips_blank_rows_and_passes_answer_json_through(scene, tmp_path):
+    truth = scene["eval"] / f"{W.VIEW}.jsonl"
+    records = list(IO.read_jsonl(truth))[:6]
+    worlds, _ = IO.load_oracle(truth)
+    csv_path = _gold_csv(records, worlds, tmp_path / "p.csv", blank_first=True)
+    rows = H.read_csvs([csv_path])
+    rows[1]["answer_json"] = '{"hand": "written"}'
+    preds, stats = H.convert(rows)
+    assert stats == {"answered": 5, "skipped": 1, "answer_json_rows": 1}
+    assert [p["id"] for p in preds] == [r["id"] for r in records[1:]]
+    assert json.loads(preds[0]["raw_text"]) == {"hand": "written"}
+    # the cut truth holds only the answered ids
+    cut = H.cut_truth([truth], {p["id"] for p in preds}, tmp_path, "p")
+    assert cut == {W.VIEW: 5}
+    assert [r["id"] for r in IO.read_jsonl(tmp_path / f"p.{W.VIEW}.jsonl")] == [r["id"] for r in records[1:]]
+
+
+def test_the_human_cli_builds_from_an_ids_file(scene, tmp_path, capsys):
+    ids = [r["id"] for r in scene["audit"][:5]]
+    ids_file = tmp_path / "ids.txt"
+    ids_file.write_text("".join(i + "\n" for i in ids) + "rec_nowhere\n", encoding="utf-8")
+    out = tmp_path / "form"
+    rc = H.main(["build", "--export", *map(str, scene["exports"]), "--image-root",
+                 str(scene["images"]), "--out", str(out), "--ids", str(ids_file), "--batch", "2"])
+    assert rc == 0
+    text = capsys.readouterr().out
+    assert "5 items" in text and "1 ids are in no truth file" in text
+    assert sorted(p.name for p in out.glob("*.html")) == [f"human.sheet.b0{i}.html" for i in (1, 2, 3)]
+    assert (out / "human.ids.txt").read_text(encoding="utf-8").split() == ids
+
+
+# --------------------------------------------------------------------------- #
+# the pack
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def pack(tmp_path_factory) -> dict:
+    """``export_vlmpack.build_pack`` over the scene (as tests/test_w4a_vlmpack.py does)."""
+    from PIL import Image
+
+    import export_vlmpack as P
+
+    root = tmp_path_factory.mktemp("w4e_pack")
+    db_path = root / "scene.sqlite"
+    db = Db(str(db_path))
+    W.build(db)
+    db.close()
+    cache = root / "cache"
+    for view in VIEWS:
+        for step in W.STEPS:
+            path = cache / view / f"D{W.DESKTOP:02d}" / f"s{step:03d}.png"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", W.HW, (step * 20 % 255, 90, 120)).save(path)
+    summary = P.build_pack(str(db_path), str(root / "pack"), cache_dir=str(cache),
+                           work_dir=str(root / "work"), views=VIEWS, seed=0, audit=20,
+                           live_db=str(root / "live.sqlite"), log=lambda *_: None)
+    return {"pack": root / "pack", "summary": summary,
+            "manifest": json.loads((root / "pack" / "manifest.json").read_text(encoding="utf-8"))}
+
+
+def test_the_pack_ships_the_sheet_and_the_tools(pack):
+    import export_vlmpack as P
+
+    root = pack["pack"]
+    audit = root / "eval_v1" / "audit"
+    assert (audit / "audit.sheet.b01.html").is_file() and (audit / "audit.sheet.csv").is_file()
+    page = (audit / "audit.sheet.b01.html").read_text(encoding="utf-8")
+    srcs = set(re.findall(r'<img src="([^"]+)"', page))
+    assert srcs and all(s.startswith("../../images/") for s in srcs)
+    assert all((audit / s).resolve().is_file() for s in srcs)
+    n = len((audit / "audit.ids.txt").read_text(encoding="utf-8").split())
+    assert len(_articles(page)) == n >= 20
+    for name in ("vlm_audit_sheet.py", "vlm_audit_summary.py", "vlm_human_sheet.py"):
+        assert name in P.TOOLS
+        assert (root / "tools" / name).read_bytes() == (SCRIPTS / name).read_bytes()
+    sheet = pack["summary"]["eval"]["audit"]["sheet"]
+    assert sheet["batches"] == 1 and sheet["files"] == ["audit.sheet.b01.html", "audit.sheet.csv"]
+    files = pack["manifest"]["files"]
+    assert "eval_v1/audit/audit.sheet.b01.html" in files and "eval_v1/audit/audit.sheet.csv" in files
+    assert files["eval_v1/audit/audit.sheet.csv"]["sha256"] == _sha(audit / "audit.sheet.csv")
+    # the vendored tools import from the pack alone (the build already did this with -I)
+    P.smoke_import(root / "tools")
+
+
+def test_the_card_has_the_audit_and_human_baseline_paragraph(pack):
+    text = (pack["pack"] / "README.md").read_text(encoding="utf-8")
+    assert "## Audit and human baseline" in text
+    for needle in ("audit.sheet.b01.html", "audit.sheet.csv", "vlm_audit_summary.py",
+                   "Wilson 95 % intervals", "vlm_human_sheet.py build", "vlm_human_sheet.py convert",
+                   "without answers", "not hand them to a human-baseline participant",
+                   "training signal", "started_at", "0 of 300 -> [0, 1.3 %]"):
+        assert needle in text, needle
+    assert "D:/DataSet" not in text
