@@ -78,6 +78,13 @@ __all__ = ["InstanceListPanel"]
 CABLE_UNTIL_MENU = "被线挡住 → 直到拔掉"
 CABLE_UNTIL_MENU_TIP = ("这一行的零件从这一帧起、到它下一次状态变化（拔掉 / 拆下 / 挪开 / 打开）前的最后一帧"
                         "都标被线挡住（完全），跨位姿段，一次撤销")
+#: The two entries backwards (W3m): 「看不见」's 「往前直到最开始都被线挡住 / 都可见」 on this row.
+CABLE_SINCE_MENU = "被线挡住 → 往前直到最开始"
+CABLE_SINCE_MENU_TIP = ("这一行的零件从这一帧起往前、到它上一次状态变化后的第一帧（没变过的到这个视角第一帧）"
+                        "都标被线挡住（完全），跨位姿段，一次撤销")
+CABLE_SINCE_VISIBLE_MENU = "往前直到最开始都可见"
+CABLE_SINCE_VISIBLE_MENU_TIP = ("这一行的零件从这一帧起往前到同一处，撤回被线挡住 / 画框外的标签"
+                                "（没标的帧不动），一次撤销")
 
 KEY_ROLE = int(Qt.ItemDataRole.UserRole)
 
@@ -175,6 +182,9 @@ class InstanceListPanel(QWidget):
     sigCorrectVerb = Signal(str, str)
     #: The right-click entry 「被线挡住 → 直到拔掉」 was chosen on a row: its key (W3i).
     sigCableUntil = Signal(str)
+    #: ... 「被线挡住 → 往前直到最开始」 / 「往前直到最开始都可见」 on a row: its key (W3m).
+    sigCableSince = Signal(str)
+    sigCableSinceVisible = Signal(str)
 
     #: Four columns, not seven.  Class and placement are in every row's tooltip
     #: instead: the instance key already names the class (``screw.cpu_cooler.01``)
@@ -509,9 +519,18 @@ class InstanceListPanel(QWidget):
         can trigger it without a modal loop.
         """
         menu = QMenu(self)
+        menu.setToolTipsVisible(True)
         action = menu.addAction(CABLE_UNTIL_MENU)
         action.setToolTip(CABLE_UNTIL_MENU_TIP)
         action.triggered.connect(lambda _c=False, key=str(instance): self.sigCableUntil.emit(key))
+        # W3m: the same backwards, and its withdrawal
+        action = menu.addAction(CABLE_SINCE_MENU)
+        action.setToolTip(CABLE_SINCE_MENU_TIP)
+        action.triggered.connect(lambda _c=False, key=str(instance): self.sigCableSince.emit(key))
+        action = menu.addAction(CABLE_SINCE_VISIBLE_MENU)
+        action.setToolTip(CABLE_SINCE_VISIBLE_MENU_TIP)
+        action.triggered.connect(
+            lambda _c=False, key=str(instance): self.sigCableSinceVisible.emit(key))
         return menu
 
     def _on_context_menu(self, pos) -> None:

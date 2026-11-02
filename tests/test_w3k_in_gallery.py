@@ -98,7 +98,7 @@ def test_the_docs_say_it():
         assert needed in gallery, needed
     entries = [line for line in spec.split("## 14. 修订记录", 1)[1].splitlines() if line.startswith("- ")]
     # on top when it landed; whatever lands later goes above it
-    [entry] = [e for e in entries[:2] if e.startswith("- **v1.56（2026-11-01）**")]
+    [entry] = [e for e in entries[:3] if e.startswith("- **v1.56（2026-11-01）**")]
     for needed in ("（W3k，", "attrs.in_gallery", "`is_gallery_part`", "GALLERY_EXCLUDED_CLASSES",
                    "motherboard screw 06", "tests/test_w3k_in_gallery.py"):
         assert needed in entry, needed

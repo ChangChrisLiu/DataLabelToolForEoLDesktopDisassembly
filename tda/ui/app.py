@@ -253,6 +253,7 @@ class MainWindow(EditMixin, CommitMixin, RoiMixin, AdoptMixin, PoseMixin, StateM
         self.on_frame_changed_edit(key)
         self.on_frame_changed_pose(key)
         self.on_frame_changed_assist(key)
+        self.on_frame_changed_visreview(key)      # W3m: 「第 N 帧起往前…」 names this frame
         self.mark_view_buttons()          # once per machine, not per frame
         self._set_title()                 # 「零件合照 OAK1 第 k/N 张」 in the gallery
         self.update_status()

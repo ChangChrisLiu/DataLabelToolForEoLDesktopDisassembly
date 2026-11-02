@@ -359,6 +359,24 @@ ACTIONS: tuple[Action, ...] = (
            "（拔掉 / 拆下 / 挪开 / 打开）前的最后一帧都标被线挡住（完全），跨位姿段，一次撤销；"
            "状态不再变的到最后一帧",
            "edit", (), _ANN, short="直到拔掉 / 拆下（被线挡住）"),
+    # W3m (2026-11-01): the same span backwards -- the user annotates in reverse
+    # order and meets the hidden connector at frame 24: "from here back to the
+    # beginning it is hidden"; and from a middle frame, "from here back it is
+    # visible" (the labels withdrawn). No key, no button: two more entries under
+    # 「看不见」's arrow and the instance table's right-click menu.
+    Action("cable_since", (), "act_cable_since",
+           "Selected part under a cable (full) from this frame back to the first frame it "
+           "is in its present state -- after its previous state change, or the view's first "
+           "frame -- across pose segments, one op (「看不见」's dropdown)",
+           "「看不见」按钮的下拉「往前直到最开始都被线挡住」：选中零件从这一帧起往前，到它上一次状态变化后的"
+           "第一帧（没变过的到这个视角第一帧）都标被线挡住（完全），跨位姿段，一次撤销",
+           "edit", (), _ANN, short="往前直到最开始都被线挡住"),
+    Action("cable_since_visible", (), "act_cable_since_visible",
+           "Selected part visible again from this frame back to the same frame: the cable "
+           "labels over that span withdrawn (one op), the compiled label speaks",
+           "「看不见」按钮的下拉「往前直到最开始都可见」：选中零件从这一帧起往前到同一处，撤回被线挡住 / "
+           "画框外的标签（没标的帧不动），一次撤销；先 24 起往前挡住、再 9 起往前可见 = 10–24 挡住、1–9 可见",
+           "edit", (), _ANN, short="往前直到最开始都可见"),
     # -- 可见性审查 (task U24): Review mode only -------------------------------
     # While annotating nobody sets a visibility label any more (the compiler
     # derives it; ` still says 被线挡住 while drawing). At the end, Review's
@@ -484,6 +502,17 @@ MENU_ENTRIES: tuple[MenuEntry, ...] = (
               "state change (「看不见」's dropdown entry on that part)",
               "实例表右键的那一行从这一帧起到拔掉 / 拆下前都标被线挡住（完全），"
               "同「看不见」按钮下拉里的「直到拔掉 / 拆下」"),
+    # W3m: the two backwards gestures on the row under the pointer
+    MenuEntry("cable_since_menu", "右键实例表 → 被线挡住 → 往前直到最开始", "act_cable_since",
+              "The row under the pointer: under a cable from this frame back to its previous "
+              "state change (「看不见」's dropdown entry on that part)",
+              "实例表右键的那一行从这一帧起往前到它上一次状态变化后的第一帧都标被线挡住（完全），"
+              "同「看不见」按钮下拉里的「往前直到最开始都被线挡住」"),
+    MenuEntry("cable_since_visible_menu", "右键实例表 → 往前直到最开始都可见", "act_cable_since_visible",
+              "The row under the pointer: the cable labels withdrawn from this frame back "
+              "(「看不见」's dropdown entry on that part)",
+              "实例表右键的那一行从这一帧起往前撤回被线挡住 / 画框外的标签，"
+              "同「看不见」按钮下拉里的「往前直到最开始都可见」"),
 )
 
 
