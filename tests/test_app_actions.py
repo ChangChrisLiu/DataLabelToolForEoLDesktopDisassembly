@@ -66,8 +66,10 @@ def test_every_action_has_a_name_keys_and_chinese_label():
 
 
 #: The actions with no key at all (task U42): reached by a button. W3i's
-#: 「被线挡住 → 直到拔掉」 is the second: a palette button and a right-click entry.
-KEYLESS = {"view_cmp_scan", "cable_until"}
+#: 「被线挡住 → 直到拔掉」 is the second: 「看不见」's dropdown entry and a right-click
+#: entry; W3m's two backwards gestures (「往前直到最开始都被线挡住 / 都可见」) sit
+#: in the same dropdown and menu.
+KEYLESS = {"view_cmp_scan", "cable_until", "cable_since", "cable_since_visible"}
 
 
 def test_the_keyless_actions_are_the_known_ones():

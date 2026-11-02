@@ -255,7 +255,8 @@ def test_ctrl_i_is_a_key_not_a_button(window):
         assert "cable_range" not in group and "cable_until" not in group
     assert len(A.PALETTE_STATE) == 5
     assert not A.action_named("cable_until").keys
-    assert window.palette.dropdown_items("mark_absent") == (("cable_until", "直到拔掉 / 拆下"),)
+    # W3i's entry first; W3m's two backwards entries after it (tests/test_w3m_cable_since.py)
+    assert window.palette.dropdown_items("mark_absent")[0] == ("cable_until", "直到拔掉 / 拆下")
 
 
 def test_the_refusals_grey_the_button_and_the_key_says_them(window):

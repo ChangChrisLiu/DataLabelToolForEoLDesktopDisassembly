@@ -159,6 +159,10 @@ class ReviewPanel(QWidget):
     #: 「这一段起直到拔掉都被线挡住」 was clicked (W3i): the selected line's part,
     #: from the line's first frame.
     sigCableUntil = Signal()
+    #: 「第 N 帧起往前都被线挡住」 / 「第 N 帧起往前都可见」 was clicked (W3m): the
+    #: selected line's part, from the frame on screen back.
+    sigCableSince = Signal()
+    sigCableSinceVisible = Signal()
     #: 「也列 visible 的段（接头优先）」 was toggled (W3i): list the plain visible runs.
     sigListVisible = Signal(bool)
     #: 「这一帧的说明」 (task U35): ``(frame key, text)`` -- 「保存」 was clicked.
@@ -366,6 +370,8 @@ class ReviewPanel(QWidget):
         self.run_detail.sigSplit.connect(self.sigSplitRun)
         self.run_detail.sigSync.connect(self.sigSyncViews)
         self.run_detail.sigUntil.connect(self.sigCableUntil)
+        self.run_detail.sigSince.connect(self.sigCableSince)
+        self.run_detail.sigSinceVisible.connect(self.sigCableSinceVisible)
         lw.setMinimumHeight(LIST_MIN_ROWS * (lw.fontMetrics().height() + 2)
                             + 2 * lw.frameWidth() + 6)
         queue = QWidget()
@@ -460,6 +466,7 @@ class ReviewPanel(QWidget):
         keep = self.selected_visibility()
         here = (int(self._session.current().step) if session_is_open(self._session)
                 else None)
+        self.run_detail.set_anchor(here)          # W3m: the backwards buttons name it
         lines = entries
         if self.per_frame():
             lines = [dict(entry, step=int(step), steps=[int(step)], whole=False, changes=[])
@@ -533,6 +540,10 @@ class ReviewPanel(QWidget):
     def set_sync_offer(self, text: Optional[str]) -> None:
         """Offer 「同步到其他视角」 (what it would do), or take the offer back (``None``)."""
         self.run_detail.set_sync_offer(text)
+
+    def set_vis_anchor(self, step: Optional[int]) -> None:
+        """The frame on screen (W3m): 「第 N 帧起往前…」 names it and acts from it."""
+        self.run_detail.set_anchor(step)
 
     def _on_summary_part(self, instance: str) -> None:
         """A summary row was clicked: select that part's first line, as a click would."""

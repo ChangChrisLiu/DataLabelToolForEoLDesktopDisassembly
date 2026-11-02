@@ -188,6 +188,10 @@ class RunDetail(QWidget):
     sigSync = Signal()
     #: 「这一段起直到拔掉都被线挡住」 was clicked (W3i).
     sigUntil = Signal()
+    #: 「第 N 帧起往前都被线挡住」 / 「第 N 帧起往前都可见」 was clicked (W3m): from
+    #: the frame on screen back.
+    sigSince = Signal()
+    sigSinceVisible = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -229,11 +233,22 @@ class RunDetail(QWidget):
         self.until_button = QToolButton()
         self.until_button.setText(VT.UNTIL_BUTTON)
         self.until_button.setToolTip(VT.UNTIL_TIP)
-        for button in (self.split_button, self.sync_button, self.until_button):
+        # W3m: the same from the frame on screen back, and its withdrawal; the
+        # caption names the anchor frame (set_anchor follows the canvas)
+        self._anchor: Optional[int] = None
+        self.since_button = QToolButton()
+        self.since_button.setToolTip(VT.SINCE_TIP)
+        self.since_visible_button = QToolButton()
+        self.since_visible_button.setToolTip(VT.SINCE_VISIBLE_TIP)
+        self.set_anchor(None)
+        for button in (self.split_button, self.sync_button, self.until_button,
+                       self.since_button, self.since_visible_button):
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.split_button.clicked.connect(lambda _c=False: self.sigSplit.emit())
         self.sync_button.clicked.connect(lambda _c=False: self.sigSync.emit())
         self.until_button.clicked.connect(lambda _c=False: self.sigUntil.emit())
+        self.since_button.clicked.connect(lambda _c=False: self.sigSince.emit())
+        self.since_visible_button.clicked.connect(lambda _c=False: self.sigSinceVisible.emit())
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
         buttons.addWidget(self.split_button)
@@ -243,6 +258,11 @@ class RunDetail(QWidget):
         until.setContentsMargins(0, 0, 0, 0)
         until.addWidget(self.until_button)
         until.addStretch(1)
+        since = QHBoxLayout()
+        since.setContentsMargins(0, 0, 0, 0)
+        since.addWidget(self.since_button)
+        since.addWidget(self.since_visible_button)
+        since.addStretch(1)
         # the most needed first: the default dock (320 px high, the list keeping
         # five lines) shows the two buttons; the suggestion (also the guide's
         # line), the views and the pictures are a scroll or a drag away
@@ -251,6 +271,7 @@ class RunDetail(QWidget):
         box.setSpacing(2)
         box.addLayout(buttons)
         box.addLayout(until)
+        box.addLayout(since)
         box.addWidget(self._suggestion)
         box.addWidget(self.views)
         box.addWidget(self._changes)
@@ -293,8 +314,32 @@ class RunDetail(QWidget):
         self._suggestion.setText(text)
         self._suggestion.setVisible(bool(text))
         self.split_button.setEnabled(entry is not None and len(entry.get("steps") or ()) > 0)
+        # W3m: the two backwards buttons want a line (its part) and a frame on screen
+        for button in (self.since_button, self.since_visible_button):
+            button.setEnabled(entry is not None and self._anchor is not None)
+        self._has_entry = entry is not None
         if entry is None:
             self.set_strip([])
+
+    def set_anchor(self, step: Optional[int]) -> None:
+        """The frame on screen (W3m): the backwards buttons name it and act from it.
+
+        ``None`` (no frame): the captions say 「这一帧」 and the buttons are off.
+        """
+        step = None if step is None else int(step)
+        if step == self._anchor and self.since_button.text():
+            return
+        self._anchor = step
+        shown = "这一" if step is None else str(step)
+        self.since_button.setText(VT.SINCE_BUTTON.format(step=shown))
+        self.since_visible_button.setText(VT.SINCE_VISIBLE_BUTTON.format(step=shown))
+        live = step is not None and getattr(self, "_has_entry", False)
+        for button in (self.since_button, self.since_visible_button):
+            button.setEnabled(live)
+
+    def anchor(self) -> Optional[int]:
+        """The frame the backwards buttons act from (W3m), ``None`` without one."""
+        return self._anchor
 
     def set_strip(self, frames: list[dict]) -> None:
         """The run's thumbnails: ``[{"step", "image"}]`` (at most three)."""

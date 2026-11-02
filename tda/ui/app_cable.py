@@ -48,9 +48,9 @@ from tda.ui.session_cable import (
 )
 
 __all__ = ["CABLE_DONE", "CABLE_NO_TARGET", "HAND_NOT_BACK", "HAND_REPLACED",
-           "MEASURED_NOTE", "OFF_FRAME_OFF", "STALE_OFF", "UNTIL_NO_TARGET", "UNTIL_SAME",
-           "WITHHELD_NOTE", "CableMixin", "CableRangeDialog", "cable_note", "choice_text",
-           "range_note"]
+           "MEASURED_NOTE", "OFF_FRAME_OFF", "SINCE_NO_TARGET", "STALE_OFF", "UNTIL_NO_TARGET",
+           "UNTIL_SAME", "WITHHELD_NOTE", "CableMixin", "CableRangeDialog", "cable_note",
+           "choice_text", "range_note"]
 
 #: `````` / ``Ctrl+``` on a sequence frame with nothing to act on (``I`` /
 #: ``Ctrl+I`` before task U22). It names the gallery's meaning too: on a gallery
@@ -85,6 +85,9 @@ UNTIL_PICK_FIRST = "「被线挡住 → 直到拔掉」在拆解序列里对选�
 UNTIL_NO_TARGET = f"{UNTIL_PICK_FIRST} / select a part first"
 #: ... when every frame of the span already said so.
 UNTIL_SAME = "{label}：从这一帧起到拔掉前的每一帧本来就标着被线挡住（完全），没有改"
+#: 「往前直到最开始都被线挡住 / 都可见」 (W3m) with nothing to act on.
+SINCE_PICK_FIRST = "「往前直到最开始」在拆解序列里对选中的零件用：先在实例表选中零件"
+SINCE_NO_TARGET = f"{SINCE_PICK_FIRST} / select a part first"
 
 
 def cable_note(label: str, value: Optional[str], result: Optional[dict] = None) -> str:
@@ -385,6 +388,79 @@ class CableMixin:
             self.report(UNTIL_SAME.format(label=label))
             return
         note = VT.until_note(label, result)
+        withheld = sorted(set(result.get("withheld") or []))
+        if withheld:
+            note += WITHHELD_NOTE.format(n=len(withheld),
+                                         steps="、".join(str(s) for s in withheld))
+        if time.perf_counter() - started > SLOW_RANGE_S and result.get("measured"):
+            note += MEASURED_NOTE.format(n=int(result["measured"]))
+        self._after_cable(note)
+
+    # ------------------------------------------------------------- 往前直到最开始 (W3m)
+    def cable_since_refusal(self, instance: Optional[str] = None,
+                            dirty: Optional[bool] = None, cached: bool = True,
+                            label: Optional[str] = FULL) -> str:
+        """Why 「往前直到最开始都被线挡住」 (or, ``label=None``, 「…都可见」) would do nothing, ``""`` if it may.
+
+        For 完全 the gates of :meth:`cable_until_refusal` (the frame on
+        screen's part has to carry the label; the write names the span's other
+        frames). The withdrawal is never refused for the part: only no view, a
+        gallery shot, a removed row or no part at all grey it.
+        """
+        if not compat.is_open(self.session):
+            return SINCE_NO_TARGET
+        if getattr(self.session, "gallery", False):
+            return CABLE_GALLERY
+        if instance is None and self.instances.selected_is_removed():
+            return REMOVED_ROW
+        if label is None:
+            return SINCE_NO_TARGET if self._cable_pick(instance)[0] is None else ""
+        why = self.cable_until_refusal(instance, dirty, cached)
+        return why.replace(UNTIL_PICK_FIRST, SINCE_PICK_FIRST) if why else ""
+
+    @S.guard
+    def act_cable_since(self, instance: Optional[str] = None) -> None:
+        """「往前直到最开始都被线挡住」: 完全 from this frame back to the part's previous state change.
+
+        The dropdown entry and the instance table's right-click entry (W3m, no
+        key): one op of the session
+        (:meth:`~tda.ui.session_cable.CableMixin.set_cable_since`), across pose
+        segments, confirmed frames re-signed; the status line says the span,
+        where it stopped going back, and how many confirmed frames were
+        re-signed.
+        """
+        self._act_cable_since(instance, FULL)
+
+    @S.guard
+    def act_cable_since_visible(self, instance: Optional[str] = None) -> None:
+        """「往前直到最开始都可见」: the cable labels withdrawn from this frame back (one op).
+
+        From a middle frame of a hidden stretch: the frames before it (back to
+        the part's previous state change) lose their 被线挡住 / 画框外 label and
+        the compiled visibility speaks; the frames after it keep theirs.
+        """
+        self._act_cable_since(instance, None)
+
+    def _act_cable_since(self, instance: Optional[str], value: Optional[str]) -> None:
+        why = self.cable_since_refusal(instance, cached=False, label=value)
+        if why:
+            self.report(why)
+            return
+        target = self._cable_target(instance)
+        label = self._label_of(target)[0] or target
+        self._drop_clean_layer(target)
+        started = time.perf_counter()
+        try:
+            result = self.session.set_cable_since(target, value)
+        except ValueError as refused:            # SessionRefusal is one
+            self.report(f"{label}：{refused}")
+            return
+        step = int(self.session.current().step)
+        if not result.get("frames"):
+            self.report((VT.SINCE_VISIBLE_NOTHING if value is None else VT.SINCE_NOTHING)
+                        .format(label=label, step=step))
+            return
+        note = VT.since_note(label, result, visible=value is None)
         withheld = sorted(set(result.get("withheld") or []))
         if withheld:
             note += WITHHELD_NOTE.format(n=len(withheld),
