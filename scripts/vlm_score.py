@@ -26,8 +26,16 @@ with replacement, ``--resamples`` times, seeded). Beside the primary score:
 * V7 adds violation-free rate, required-action recall and goal-reached rate;
 * records whose truth rests on a captive screw's tightness
   (``image_undecidable``) are also scored without;
-* the export's text-only shortcut upper bound per task (``<truth>.summary.json``)
-  is a standing column.
+* two reference rows stand beside every task (W4-C): **chance** -- the
+  expected score of a uniform guess over the record's answer space, by the
+  rule in :data:`CHANCE_RULES` (binary tasks 0.5, V6-mc 1/|options|, V2
+  1/|allowed|, open tasks 0) -- and **frequency** -- the most frequent gold
+  reply over the truth file's ``train`` desktops (``label.split``; for V6-mc
+  the most frequent option letter), given as the answer to every record and
+  graded like a model;
+* the export's text-only shortcut bound per task (``<truth>.summary.json``) is
+  a standing column, labelled what it is: an **in-sample upper bound**,
+  measured on the full export by prompt-only classifiers.
 
 Writes ``<out>/<name>.score.json`` and ``<out>/<name>.score.md``.
 """
@@ -37,7 +45,7 @@ import argparse
 import json
 import random
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Optional
 
@@ -55,6 +63,27 @@ V6_MC = "V6-mc"
 V2_ALL = "V2-all"
 
 
+#: How the ``chance`` row is computed, per table row (printed under the table).
+CHANCE_RULES = {
+    "V1": "0: the set of (class, box) pairs is open; a guess has F1 0",
+    "V2": "state form 1/|allowed| (the class's state vocabulary; presence = 2); "
+          "count form 1/(n+1), n the desktop's screws of that role",
+    V2_ALL: "as V2, over every V2 question",
+    "V3": "0: verb and target are open and the score needs both",
+    "V4": "0.5: feasible yes / no (blockers are the extra row blockers_f1)",
+    "V6": "0: the next action is open",
+    V6_MC: "1/|options| per record",
+    "V7": "0: the plan is open",
+    "V8": "0: a box with IoU >= 0.5 by chance",
+    "V10": "0: the set F1 over the done actions is open; the progress bin alone is "
+           "1/|bins| (the extra row bin_accuracy)",
+    "V12": "0.5: changed yes / no",
+    "V14": "unanswerable 0.5; answerable 0.5 x 1/|states| of the part's class (presence = 2)",
+    "V15": "0.5: same moment yes / no",
+    "V16": "0.5: valid yes / no (the error step is the extra row localised)",
+}
+
+
 def task_key(record: dict) -> str:
     """The table row of a record: its task, with V6's two forms apart."""
     task = record["prompt"]["task"]
@@ -62,6 +91,102 @@ def task_key(record: dict) -> str:
                          or record["prompt"].get("options")):
         return V6_MC
     return task
+
+
+def _rows_of(task: str, label: dict) -> list[str]:
+    """The table rows a record counts in: its task; V2 also ``V2-all``.
+
+    V2's headline row is the questions the class prior gets wrong (review M);
+    every V2 question is the secondary row ``V2-all``.
+    """
+    if task == "V2":
+        return [V2_ALL] + (["V2"] if label.get("prior_is_correct") is False else [])
+    return [task]
+
+
+def _states_of(record: dict, world, tax) -> list[str]:
+    """The answer space of a state question: ``allowed``, presence, or the class's."""
+    check = record["label"]["answer_check"]
+    allowed = check.get("allowed") or []
+    if allowed:
+        return list(allowed)
+    if check.get("state_space") == "presence":
+        return ["present", "removed"]
+    inst = check.get("instance")
+    cls = (world.cls_of(inst) if (world is not None and inst) else None) or check.get("class")
+    if cls and tax is not None:
+        try:
+            return list(tax.states_of(cls))
+        except KeyError:
+            pass
+    return []
+
+
+def chance_of(record: dict, world, tax) -> Optional[float]:
+    """The expected score of a uniform guess over the record's answer space
+    (:data:`CHANCE_RULES`); ``None`` when the space cannot be sized."""
+    task = record["prompt"]["task"]
+    label = record["label"]
+    answer = label["answer"]
+    check = label["answer_check"]
+    if task == "V6":
+        options = record["prompt"].get("options") or label.get("options")
+        return 1.0 / len(options) if options else 0.0
+    if task in ("V1", "V3", "V7", "V8", "V10"):
+        return 0.0
+    if task == "V2":
+        if "count" in answer:
+            if world is None:
+                return None
+            role, captive = check.get("role"), check.get("captive")
+            n = sum(1 for inst in world.instances.values()
+                    if inst.get("class") == "screw"
+                    and (inst.get("attrs") or {}).get("role") == role
+                    and (captive is None
+                         or bool((inst.get("attrs") or {}).get("captive")) == bool(captive)))
+            return 1.0 / (n + 1)
+        states = _states_of(record, world, tax)
+        return 1.0 / len(states) if states else None
+    if task in ("V4", "V12", "V16"):
+        return 0.5
+    if task == "V15":
+        return 0.5 if "same_moment" in answer else 0.0
+    if task == "V14":
+        if not answer.get("answerable"):
+            return 0.5
+        states = _states_of(record, world, tax)
+        return 0.5 / len(states) if states else None
+    return None
+
+
+def frequency_rows(records: list[dict], worlds: dict, tax, *, resamples: int, seed: int
+                   ) -> dict[str, dict]:
+    """Per table row: the most frequent gold reply over the row's ``train``
+    records, answered to every record of the row and graded strict.
+
+    Fitted on ``label.split == "train"`` (in-sample there, out of sample on the
+    test desktops); a row with no train record is fitted on all its records and
+    says so (``fit``). Ties take the smallest reply string.
+    """
+    from tda.core.export.vlm_check import gold_reply
+
+    by_row: dict[str, list[dict]] = defaultdict(list)
+    for record in records:
+        for key in _rows_of(task_key(record), record["label"]):
+            by_row[key].append(record)
+    out: dict[str, dict] = {}
+    for key, rows in sorted(by_row.items()):
+        train = [r for r in rows if r["label"].get("split") == "train"]
+        pool, fit = (train, "train") if train else (rows, "all (no train record)")
+        counts: Counter = Counter(gold_reply(r, worlds.get(IO.desktop_of(r))) for r in pool)
+        best = min(counts, key=lambda s: (-counts[s], s))
+        graded = [(IO.desktop_of(r), grade(r, best, worlds.get(IO.desktop_of(r)), tax,
+                                           mode="strict").score) for r in rows]
+        cell = _cell(graded, resamples, seed)
+        cell.update({"answer": best, "fit": fit, "fit_records": len(pool),
+                     "answer_share_in_fit": _r(counts[best] / len(pool))})
+        out[key] = cell
+    return out
 
 
 def _task_order(task: str) -> tuple:
@@ -131,6 +256,8 @@ def score(truth_path, pred_path, chat_path=None, *, resamples: int = 1000,
                 transforms[str(row["id"])] = meta["transforms"]
     out: dict = {"records": len(records), "predicted": sum(1 for r in records
                                                            if r["id"] in preds)}
+    chance_rows: dict[str, list[float]] = defaultdict(list)
+    chance_unsized: dict[str, int] = defaultdict(int)
     for mode in ("strict", "lenient"):
         per_task: dict[str, list] = defaultdict(list)
         per_layer: dict[str, list] = defaultdict(list)
@@ -147,12 +274,14 @@ def score(truth_path, pred_path, chat_path=None, *, resamples: int = 1000,
             g = grade(record, preds.get(record["id"]), world, tax, mode=mode,
                       transform=trans[0] if trans else None)
             row = (desk, g.score)
-            # V2's headline row is the questions the class prior gets wrong
-            # (review M); every V2 question is the secondary row `V2-all`
-            rows_of = [task]
-            if task == "V2":
-                rows_of = [V2_ALL] + (["V2"] if label.get("prior_is_correct") is False
-                                      else [])
+            rows_of = _rows_of(task, label)
+            if mode == "strict":
+                p = chance_of(record, world, tax)
+                for key in rows_of:
+                    if p is None:
+                        chance_unsized[key] += 1
+                    else:
+                        chance_rows[key].append(p)
             if not g.parsed:
                 failed_records += 1
                 for key in rows_of:
@@ -195,7 +324,25 @@ def score(truth_path, pred_path, chat_path=None, *, resamples: int = 1000,
             "extra": {t: {k: _cell(v, resamples, seed) for k, v in sorted(d.items())}
                       for t, d in sorted(extras.items())},
         }
+    # the in-sample text-only bound (the export's prompt-only classifiers)
     out["shortcut_upper_bound"] = _shortcuts(summary)
+    out["shortcut_upper_bound_note"] = ("in-sample upper bound: the best prompt-only "
+                                        "classifier measured on the full export, not a model")
+    # the two reference rows (W4-C): chance by rule, frequency fitted on train
+    out["chance"] = {}
+    for key in sorted(set(chance_rows) | set(chance_unsized)):
+        values = chance_rows.get(key) or []
+        cell = {"n": len(values), "mean": _r(sum(values) / len(values)) if values else None,
+                "rule": CHANCE_RULES.get(key, "no rule: not a reference row")}
+        if chance_unsized.get(key):
+            cell["unsized"] = chance_unsized[key]
+        if key == "V10":
+            bins = next((r["label"]["answer_check"].get("bins") for r in records
+                         if r["prompt"]["task"] == "V10"
+                         and r["label"]["answer_check"].get("bins")), None)
+            cell["extra"] = {"bin_accuracy": _r(1.0 / len(bins)) if bins else 0.25}
+        out["chance"][key] = cell
+    out["frequency"] = frequency_rows(records, worlds, tax, resamples=resamples, seed=seed)
     # V6's headline is the open form; the multiple choice rides beside it
     out["headline"] = {"v6_open": out["strict"]["by_task"].get("V6"),
                        "v6_mc": out["strict"]["by_task"].get(V6_MC),
@@ -235,6 +382,8 @@ def markdown(result: dict, name: str) -> str:
     s, l = result["strict"], result["lenient"]
     short = result.get("shortcut_upper_bound") or {}
     prior = result.get("protocol_prior") or {}
+    chance = result.get("chance") or {}
+    freq = result.get("frequency") or {}
 
     def pct(x):
         return "–" if x is None else f"{x:.1%}"
@@ -247,10 +396,15 @@ def markdown(result: dict, name: str) -> str:
              "V6 is the open question, graded group-equivalently (the headline); "
              f"{V6_MC} is the multiple choice (secondary). V2 is the questions the "
              f"class prior answers wrong (the headline); {V2_ALL} is every V2 "
-             "question (secondary).", "",
-             "| task | n | strict | lenient | parse fail (strict / lenient) | "
-             "text-only upper bound | protocol prior |",
-             "|---|---|---|---|---|---|---|"]
+             "question (secondary). Reference columns: *chance* is a uniform guess "
+             "over the answer space (rules below); *frequency* is the most frequent "
+             "gold reply over the file's train desktops given to every record "
+             "(strict); *text-only upper bound (in-sample)* is the export's best "
+             "prompt-only classifier measured on the full export -- a ceiling for "
+             "template leakage, not a model.", "",
+             "| task | n | strict | lenient | parse fail (strict / lenient) | chance | "
+             "frequency | text-only upper bound (in-sample) | protocol prior |",
+             "|---|---|---|---|---|---|---|---|---|"]
     for task in sorted(s["by_task"], key=_task_order):
         sc = short.get(task) or {}
         bound = sc.get("option_verb", sc.get("best_text_only"))
@@ -258,7 +412,19 @@ def markdown(result: dict, name: str) -> str:
                      f"{fmt(l['by_task'][task])} | "
                      f"{s['parse_failure_rate'][task]:.1%} / "
                      f"{l['parse_failure_rate'][task]:.1%} | "
+                     f"{pct((chance.get(task) or {}).get('mean'))} | "
+                     f"{fmt(freq.get(task))} | "
                      f"{pct(bound)} | {pct(prior.get(task))} |")
+    if chance:
+        lines += ["", "| task | chance rule | frequency answer (fit) |", "|---|---|---|"]
+        for task in sorted(set(chance) | set(freq), key=_task_order):
+            f = freq.get(task) or {}
+            answer = f.get("answer")
+            shown = (answer if answer is None or len(answer) <= 60 else answer[:57] + "...")
+            fit = (f"`{shown}` ({f.get('fit')}, {f.get('answer_share_in_fit', 0):.0%} of "
+                   f"{f.get('fit_records')})" if answer is not None else "–")
+            rule = (chance.get(task) or {}).get("rule", "–")
+            lines.append(f"| {task} | {rule} | {fit} |")
     lines += ["", "| layer | n | strict | lenient |", "|---|---|---|---|"]
     for layer, cell in s["by_layer"].items():
         lines.append(f"| {layer} | {cell['n']} | {fmt(cell)} | {fmt(l['by_layer'][layer])} |")

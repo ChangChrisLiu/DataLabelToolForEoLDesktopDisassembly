@@ -9,7 +9,11 @@
 #   BACKEND     gold | openai | vllm | transformers      (default vllm)
 #   MODEL       model id: HF id / local path / API name  (required unless gold)
 #   MODEL_TAG   directory name for the model             (default: MODEL with / -> _)
-#   VARIANT     image | blind                            (default image; blind = image-ablated)
+#   VARIANT     image | blind | overlay                  (default image; blind = image-ablated;
+#                                                         overlay = GT masks painted on the frame, W4-C)
+#   OVERLAYS    where the painted frames live / go       (default $PACK/overlays; the pack ships eval_v1's,
+#                                                         missing ones are painted from the .masks.jsonl sidecar)
+#   MASKS       a masks sidecar to paint from            (default: <truth>.masks.jsonl beside the subset)
 #   SUBSET      eval | all | <ids file>                  (default eval: $PACK/eval_v1/$VIEW.jsonl)
 #   RUNS        where runs go                            (default $PACK/runs)
 #   TOOLS       the pack's tools directory               (default $PACK/tools)
@@ -49,7 +53,7 @@ RUN_ARGS="${RUN_ARGS:-}"
 
 # the view's full export (records + .images_manifest.jsonl + .oracle.jsonl + .summary.json)
 if [[ -z "${TRUTH:-}" ]]; then
-  for cand in "$PACK/$VIEW.jsonl" "$PACK/vlm_$VIEW.jsonl" "$PACK/export/vlm_$VIEW.jsonl"; do
+  for cand in "$PACK/data/vlm_$VIEW.jsonl" "$PACK/$VIEW.jsonl" "$PACK/vlm_$VIEW.jsonl" "$PACK/export/vlm_$VIEW.jsonl"; do
     if [[ -f "$cand" ]]; then TRUTH="$cand"; break; fi
   done
 fi
@@ -69,25 +73,37 @@ case "$SUBSET" in
   *)    "$PYTHON" "$RUN/vlm_collect.py" subset --export "$TRUTH" --out "$SUB" --ids "$SUBSET" ;;
 esac
 
-# 2. the input variant
+# 2. the input variant (the manifest the chat step reads, and what its paths are relative to)
 RECORDS="$SUB"
+CHAT_EXPORT="$SUB"
+CHAT_ROOT="$IMAGE_ROOT"
 if [[ "$VARIANT" == "blind" ]]; then
   RECORDS="$OUT/truth/blind.jsonl"
   "$PYTHON" "$RUN/vlm_collect.py" blind --records "$SUB" --out "$RECORDS"
+elif [[ "$VARIANT" == "overlay" ]]; then
+  # the GT-mask overlay: eligible records only (confirmed frames with masks, no V8);
+  # the variant carries its own manifest, whose paths are the painted copies
+  OVERLAYS="${OVERLAYS:-$PACK/overlays}"
+  RECORDS="$OUT/truth/mask_overlay.jsonl"
+  OVL=(render --export "$SUB" --image-root "$IMAGE_ROOT" --assets "$OVERLAYS" --out "$RECORDS")
+  if [[ -n "${MASKS:-}" ]]; then OVL+=(--masks "$MASKS"); fi
+  "$PYTHON" "$TOOLS/vlm_overlay.py" "${OVL[@]}"
+  CHAT_EXPORT="$RECORDS"
+  CHAT_ROOT="$OVERLAYS"
 elif [[ "$VARIANT" != "image" ]]; then
-  echo "VARIANT must be image or blind" >&2; exit 2
+  echo "VARIANT must be image, blind or overlay" >&2; exit 2
 fi
 
 # 3. chat requests (crops / scaled copies, if any, go under chat_assets/)
 CHAT="$OUT/chat.jsonl"
-TO_CHAT=(--export "$SUB" --records "$RECORDS" --format "$CHAT_FORMAT" --image-root "$IMAGE_ROOT"
+TO_CHAT=(--export "$CHAT_EXPORT" --records "$RECORDS" --format "$CHAT_FORMAT" --image-root "$CHAT_ROOT"
          --out "$CHAT" --roi "$ROI" --assets "$OUT/chat_assets")
 if [[ -n "${MAX_SIDE:-}" ]]; then TO_CHAT+=(--max-side "$MAX_SIDE"); fi
 "$PYTHON" "$TOOLS/vlm_to_chat.py" "${TO_CHAT[@]}"
 
 # 4. the model
 PRED="$OUT/pred.jsonl"
-ARGS=(--backend "$BACKEND" --chat "$CHAT" --out "$PRED" --image-root "$IMAGE_ROOT"
+ARGS=(--backend "$BACKEND" --chat "$CHAT" --out "$PRED" --image-root "$CHAT_ROOT"
       --max-tokens "$MAX_TOKENS" --repeat "$REPEAT" --log "$OUT/run.log")
 case "$BACKEND" in
   gold)   ARGS+=(--truth "$SUB") ;;
@@ -101,7 +117,9 @@ status="${status:-0}"
 if [[ "$status" == "3" ]]; then echo "[run_eval] some requests failed; re-run to retry them" >&2; fi
 if [[ "$status" != "0" && "$status" != "3" ]]; then exit "$status"; fi
 
-# 5. scores: the file as it is (raw_text = repeat 1) and, when repeated, each repeat
+# 5. scores: the file as it is (raw_text = repeat 1) and, when repeated, each repeat.
+#    The truth is always the plain subset: the overlay variant answers fewer records
+#    (its summary says which were left out), and the unanswered ones count as parse failures.
 "$PYTHON" "$TOOLS/vlm_score.py" --truth "$SUB" --pred "$PRED" --chat "$CHAT" \
   --out "$OUT/score" --name "$MODEL_TAG"
 if [[ "$REPEAT" -gt 1 ]]; then
