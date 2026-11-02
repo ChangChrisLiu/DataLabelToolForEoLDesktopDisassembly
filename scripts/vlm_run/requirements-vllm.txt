@@ -1,0 +1,10 @@
+# GPU extras for the open models (vllm offline, transformers fallback).
+# vllm 0.11 ships against torch 2.8; let it pick the matching torch wheel for
+# the CUDA module loaded (12.8 by default). Pin after the first successful
+# install with `pip freeze > requirements-vllm.lock`.
+vllm==0.11.0
+transformers==4.57.1
+accelerate==1.10.1
+qwen-vl-utils==0.0.14
+timm==1.0.19
+einops==0.8.1
