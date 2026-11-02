@@ -151,13 +151,14 @@ TASK_MEANINGS = {
     "V16": "is a candidate plan legal from this state; the first step that is not",
 }
 LICENSE_NOTE = """\
-Internal evaluation data -- not for redistribution.
+E3D: End-of-Life Desktop Disassembly Dataset -- pre-release.
 
-This pack (pictures, questions, answers, tools) is for running and scoring the
-paper's VLM evaluation on another machine. Do not redistribute it, publish it,
-upload it to a public service or use it to train models for release without
-written permission from the dataset owners. The annotations are a work in
-progress and may change.
+Published on Hugging Face (ChangChrisLiu/E3D-Desktop-Disassembly) by its owners at
+Texas A&M University. A licence and a citation are added with the first tagged
+release; until then the data is provided for inspection and research evaluation.
+Please do not redistribute copies or train models for release on it before then
+without permission from the dataset owners (contact: ChangChrisLiu on Hugging
+Face or GitHub). The annotations may still change between releases.
 """
 
 
@@ -1046,7 +1047,7 @@ without the annotation tool or its database: `tools/` is self-contained (Python
 
 ```
 README.md                 this file
-LICENSE_NOTE.txt          internal evaluation data, not for redistribution
+LICENSE_NOTE.txt          pre-release terms (licence and citation come with the first tagged release)
 manifest.json             build parameters, counts, size + sha256 of every other file
 data/
   vlm_<view>.jsonl                   one record per line (the whole question set of a view)

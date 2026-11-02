@@ -1243,6 +1243,7 @@ def build_pack(db_path: str, out_dir: str, desktops: Sequence[int] = DEFAULT_DES
     }
     (out / "LICENSE_NOTE.txt").write_text(LICENSE_NOTE, encoding="utf-8", newline="\n")
     (out / "README.md").write_text(readme_text(summary), encoding="utf-8", newline="\n")
+    _write_parts3d(out)
     files = {}
     for path in sorted(p for p in out.rglob("*") if p.is_file()):
         rel = path.relative_to(out).as_posix()
@@ -1252,6 +1253,24 @@ def build_pack(db_path: str, out_dir: str, desktops: Sequence[int] = DEFAULT_DES
     write_json(out / "manifest.json", dict(summary, files=files))
     write_json(work / "qa.json", qa)
     return dict(summary, qa=qa)
+
+
+def _write_parts3d(out: Path) -> None:
+    """The per-part 3D extraction kit, shipped inside the pack and listed in the manifest.
+
+    ``HOW_TO_EXTRACT_3D_PARTS.md`` (from ``docs/scanner_3d_parts.md``), ``tools/parts3d.py`` (from
+    ``scripts/scanpack_parts3d.py``) and ``parts_3d_plan.csv`` computed from the pack just written.
+    """
+    import importlib.util
+    repo = Path(__file__).resolve().parents[1]
+    guide, tool = repo / "docs" / "scanner_3d_parts.md", repo / "scripts" / "scanpack_parts3d.py"
+    (out / "tools").mkdir(parents=True, exist_ok=True)
+    (out / "HOW_TO_EXTRACT_3D_PARTS.md").write_bytes(guide.read_bytes().replace(b"\r\n", b"\n"))
+    (out / "tools" / "parts3d.py").write_bytes(tool.read_bytes().replace(b"\r\n", b"\n"))
+    spec = importlib.util.spec_from_file_location("parts3d", out / "tools" / "parts3d.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.main(["plan", "--pack", str(out), "--out", str(out / "parts_3d_plan.csv")])
 
 
 def _write_clean_csv(path: Path, rows: list[dict]) -> None:
@@ -1264,13 +1283,14 @@ def _write_clean_csv(path: Path, rows: list[dict]) -> None:
 
 
 LICENSE_NOTE = """\
-Internal test data -- not for redistribution.
+E3D: End-of-Life Desktop Disassembly Dataset -- pre-release.
 
-This package (scanner pictures, masks, annotations) is shared with our research
-collaborators for an internal test of point-cloud extraction only. Do not
-redistribute it, publish it, upload it to a public service or use it to train
-models for release without written permission from the dataset owners. The
-annotations are a work in progress and may change.
+Published on Hugging Face (ChangChrisLiu/E3D-Desktop-Disassembly) by its owners at
+Texas A&M University. A licence and a citation are added with the first tagged
+release; until then the data is provided for inspection and research evaluation.
+Please do not redistribute copies or train models for release on it before then
+without permission from the dataset owners (contact: ChangChrisLiu on Hugging
+Face or GitHub). The annotations may still change between releases.
 """
 
 
@@ -1562,7 +1582,8 @@ def readme_text(summary: dict) -> str:
 ## 中文摘要
 
 本包是 {len(summary['desktops'])} 台台式机（{desks}）结构光扫描仪俯视 RGB 帧（{width}×{height}）的二维分割标注，
-供 3D 合作方测试"用 2D 掩码从重建点云里取出每个零件的点"。每台机器一个文件夹 `D<nn>/`：
+是 E3D 数据集扫描仪视角的标注；它也能用 2D 掩码从同一帧的三维重建里取出每个零件的点（步骤、逐零件计划和脚本见
+`HOW_TO_EXTRACT_3D_PARTS.md`、`parts_3d_plan.csv`、`tools/parts3d.py`）。每台机器一个文件夹 `D<nn>/`：
 `images/S<nn>.png` 是标注时画掩码所用的那张原始扫描图（从原始盘逐字节拷贝），
 `labels/S<nn>.png` 是 16 位实例 id 图（0 = 背景，id 见 `instances.json`，只在本台机器内有效），
 `annotations.json` 是 COCO 格式（可见掩码 + 完整形状 amodal 掩码 + 遮挡信息），
@@ -1583,7 +1604,7 @@ def readme_text(summary: dict) -> str:
 (2) 用拆卸顺序：零件在第 r 步离开，取第 r-1 帧重建里有、第 r 帧重建里没有、且落在它第 r-1 帧 amodal 掩码内的点。
 完全被挡住的零件是 crowd 行（`iscrowd: 1`，可见掩码为空），那一帧上没有它的点。
 amodal 掩码是完整轮廓，不是点集——被挡住的表面扫描仪看不到。已知问题见文末 *Known issues*。
-内部测试数据，请勿外传（见 `LICENSE_NOTE.txt`）。
+预发布数据，使用条件见 `LICENSE_NOTE.txt`。
 
 ## What this is
 
@@ -1591,9 +1612,11 @@ Two-dimensional instance segmentation of the top-down RGB frames of the
 structured-light scanner, for {len(summary['desktops'])} desktop computers being
 taken apart step by step. Every frame was annotated and then confirmed by a
 human annotator; the visible masks here are exactly the confirmed ones (see
-*Confirmed and derived fields* for what else is in the files). The goal of the
-package is to test whether these masks let you select each annotated part's
-points in your 3D reconstruction of the same scanner frame.
+*Confirmed and derived fields* for what else is in the files). Besides 2D
+detection and segmentation, the masks select each part's points in a 3D
+reconstruction of the same scanner frame: `HOW_TO_EXTRACT_3D_PARTS.md` gives the
+steps, `parts_3d_plan.csv` the route and best frame for every part, and
+`tools/parts3d.py` does the selection.
 
 | Desktop | Model | Frames | Parts | Annotations | Fully covered (crowd) | Clean | Clean parts |
 |---|---|---|---|---|---|---|---|
@@ -1615,9 +1638,12 @@ Clean annotations by class: {classes}.
 
 ```
 README.md            this file
-LICENSE_NOTE.txt     internal test data, not for redistribution
+LICENSE_NOTE.txt     pre-release terms (licence and citation come with the first tagged release)
 manifest.json        counts, and size + sha256 of every other file
 clean_parts.csv      desktop, step, instance_id, class, area, instance_key
+HOW_TO_EXTRACT_3D_PARTS.md   taking each part's 3D points out of a scanner reconstruction
+parts_3d_plan.csv    per part: route (clean / diff / visible / none), best frame, leaving frames
+tools/parts3d.py     plan / where / extract / diff (numpy + Pillow)
 D<nn>/
   images/S<nn>.png   the scanner picture of step <nn> (original file, byte for byte)
   labels/S<nn>.png   16-bit instance-id map of the visible masks (0 = background)
@@ -1635,7 +1661,10 @@ step's action: on `S05` the part removed at step 5 is already gone.
 
 The scanner writes a burst of images per step (`P_0.png`, `P_1.png`, ...) and
 one of them is the picture the masks were drawn on. `frames.json` names it:
-`source_folder` (below the dataset root on our scanner drive) and `file_name`,
+`source_folder` (below the dataset root on our scanner drive; on the Hugging
+Face repository the file is `raw/scanner/<source_folder without the leading
+"UGA DATA/">/<file_name>`, and `images/S<nn>.png` here is that file byte for
+byte) and `file_name`,
 with `burst_choice`: `index` is its position in the burst as listed,
 `p_index` the number in its file name (`P_<p_index>.png`), `burst_size` how
 many images the burst has, `reason` why it was chosen and `by` who chose it
