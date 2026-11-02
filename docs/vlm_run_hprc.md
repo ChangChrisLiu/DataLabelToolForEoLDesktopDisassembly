@@ -137,6 +137,13 @@ squeue -u $USER
 `eval_v1/<view>.jsonl`（所有模型同一子集）。闭源模型另跑 **重复子集**（`eval_v1/repeat.ids.txt`，`REPEAT=3`，
 每题问三次写 `raw_text_1..3`）。
 
+第三种变体 `VARIANT=overlay`（W4-C）：把**已确认的可见掩码**按类别颜色画在原图上（固定透明度、细描边，不写字不画框），
+只对每张图都是已确认帧且有掩码的题出（V8 除外——框就是答案），是论文的"感知参照线"。包里 `overlays/` 已预先画好
+`eval_v1` 的那份；别的子集会从 `<view>.masks.jsonl` sidecar 现画（`OVERLAYS=` 指到可写目录）。它答的题比原图少，
+`run_eval.sh` 仍按完整子集评分（没答的记为 parse failure），看 `truth/mask_overlay.summary.json` 知道少了哪些；
+`vlm_score.py` 的 `score.md` 同时给出 `chance` / `frequency` 两行参照。`submit_matrix.sh` 的清单默认只有
+`image blind`，要跑 overlay 自己加进 `VARIANTS`（闭源模型多一份预算）。
+
 **中断 / 失败重跑**：同一命令再提交一次即可——`vlm_run.py` 跳过 `pred.jsonl` 里已答的 id，只补 `raw_text = null`
 的行；退出码 3 = 有请求失败（行已写、带 `meta.error`），0 = 全部答完。
 

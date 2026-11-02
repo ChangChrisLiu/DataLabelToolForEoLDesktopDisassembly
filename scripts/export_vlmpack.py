@@ -6,7 +6,7 @@
         [--out D:/DataSet/exports/vlmpack_<date>] [--cache-dir D:/DataSet/cache] \
         [--views scan,oak1,oak2,rs] [--desktops 1-66] [--seed 0] \
         [--images all|eval|none] [--work <dir>] [--allow-conflicts] [--force] \
-        [--no-selfcheck]
+        [--no-selfcheck] [--coco-root D:/DataSet/exports/scanpack_<date>] [--overlays eval|none]
 
 The models are run elsewhere (another machine, the HPRC), so everything the
 evaluation needs travels in one directory that neither the annotation tool nor
@@ -16,13 +16,19 @@ its database has to be present for::
     manifest.json             what was built, counts, and size + sha256 of every other file
     data/vlm_<view>.jsonl     the four-view question set of ``export_vlm`` (all records)
     data/vlm_<view>.images_manifest.jsonl / .oracle.jsonl / .summary.json
+    data/vlm_<view>.masks.jsonl   (with --coco-root) the confirmed visible masks of every
+                              confirmed frame, COCO RLE, from the scanner pack's COCO
     images/<view>/D<nn>/s<nn>.<ext>   the frames the manifests name, byte for byte
     eval_v1/                  the frozen evaluation subset (``scripts/vlm_eval_set.py``):
-                              ids.txt, <view>.jsonl + sidecars, table.md, table.json,
-                              audit/ (the 300-item human-audit sample, the fillable HTML
-                              sheet and its CSV skeleton -- ``scripts/vlm_audit_sheet.py``)
-    tools/                    the scorer, converters, references, samplers and the
-                              self-check, with the ``tda`` modules they import vendored
+                              ids.txt, <view>.jsonl + sidecars (+ .masks.jsonl), table.md,
+                              table.json, audit/ (the 300-item human-audit sample, the fillable HTML
+                              sheet and its CSV skeleton -- ``scripts/vlm_audit_sheet.py``),
+                              mask_overlay/<view>.jsonl (+ manifest) -- the GT-mask overlay
+                              variant of the subset (W4-C), painted into overlays/
+    overlays/<view>/D<nn>/s<nn>.png   the subset's frames with the confirmed masks painted
+    tools/                    the scorer, converters, references, the overlay painter, samplers,
+                              the audit / human-baseline sheets and the self-check, with the
+                              ``tda`` modules they import vendored
                               (``tools/tda``, ``tools/configs``) and ``requirements.txt``
 
 **The database is never written.** The script refuses the live database by path
@@ -37,6 +43,15 @@ only those the evaluation subset names (``eval``), is copied from
 hashed as it is written. **A missing image stops the build before anything is
 copied** (:class:`PackError`), as does too little free space. ``none`` is a dry
 run (export + subset + tools, no pictures) and the manifest says so.
+
+**Masks and overlays (W4-C).** The export's oracle carries no mask, so with
+``--coco-root`` (the scanner pack, ``scripts/export_scanpack.py``: confirmed
+rows only, full-frame RLE) the build writes ``data/vlm_<view>.masks.jsonl``
+(and the subset's cut) through :mod:`vlm_overlay`, which refuses a COCO whose
+visibility disagrees with the oracle's; then it paints the subset's
+``mask_overlay`` variant (``--overlays eval``, the default; ``none`` leaves the
+painting to the receiving machine, which can do it from the sidecar). Without
+``--coco-root`` nothing of this is built and the card says so.
 
 **Self-check.** The build ends by running ``tools/vlm_selfcheck.py`` from the
 pack in a subprocess (``python -I``: no cwd, no ``PYTHONPATH``): the gold reply
@@ -72,6 +87,7 @@ if str(SCRIPTS) not in sys.path:
 
 import vlm_eval_set  # noqa: E402
 import vlm_io as IO  # noqa: E402
+import vlm_overlay  # noqa: E402
 from tda.core.db import Db  # noqa: E402
 from tda.core.export.vlm import TASKS, export_vlm, manifest_path  # noqa: E402
 from tda.core.export.vlm_check import CAPABILITY_LAYERS, RESPONSE_FORMATS  # noqa: E402
@@ -81,8 +97,9 @@ from tda.core.taxonomy import Taxonomy, load_taxonomy  # noqa: E402
 from tda.core.truth import TruthService  # noqa: E402
 from tda.pipeline import parse_desktops  # noqa: E402
 
-__all__ = ["IMAGE_MODES", "LIVE_DB", "PACK_VERSION", "TOOLS", "VENDORED", "PackError",
-           "build_pack", "main", "readme_text", "refuse_live", "sha256_of", "work_copy"]
+__all__ = ["IMAGE_MODES", "LIVE_DB", "OVERLAY_MODES", "PACK_VERSION", "TOOLS", "VENDORED",
+           "PackError", "build_pack", "main", "masks_sidecars", "readme_text", "refuse_live",
+           "render_overlays", "sha256_of", "work_copy"]
 
 #: The annotation tool's live database: never opened here, by name.
 LIVE_DB = "D:/DataSet/annotations/tda.sqlite"
@@ -91,9 +108,11 @@ PACK_NAME = "vlmpack"
 DEFAULT_CACHE_DIR = "D:/DataSet/cache"
 DEFAULT_WORK = "D:/DataSet/.cache/tmp/w4a/work"
 IMAGE_MODES = ("all", "eval", "none")
-#: The W3b scripts shipped under ``tools/`` (W4-A's own two and W4-E's three included).
+#: Which overlays the build paints: the subset's, or none (the sidecar still ships).
+OVERLAY_MODES = ("eval", "none")
+#: The W3b scripts shipped under ``tools/`` (W4-A's own two, W4-C's painter and W4-E's three included).
 TOOLS = ("vlm_io.py", "vlm_to_chat.py", "vlm_score.py", "vlm_references.py",
-         "vlm_sample.py", "vlm_eval_set.py", "vlm_selfcheck.py",
+         "vlm_overlay.py", "vlm_sample.py", "vlm_eval_set.py", "vlm_selfcheck.py",
          "vlm_audit_sheet.py", "vlm_audit_summary.py", "vlm_human_sheet.py")
 #: Items per page of the audit sheet the build writes into ``eval_v1/audit/``.
 AUDIT_BATCH = 50
@@ -454,9 +473,10 @@ def smoke_import(tools: Path, python: str = sys.executable) -> None:
     """Import every tool from the pack alone, in a subprocess with ``-I``."""
     code = ("import sys, pathlib; tools = pathlib.Path(sys.argv[1]); "
             "sys.path.insert(0, str(tools)); "
-            "import vlm_io, vlm_to_chat, vlm_score, vlm_references, vlm_sample, "
+            "import vlm_io, vlm_to_chat, vlm_score, vlm_references, vlm_overlay, vlm_sample, "
             "vlm_eval_set, vlm_selfcheck, vlm_audit_sheet, vlm_audit_summary, "
             "vlm_human_sheet, tda, tda.core.export.vlm_check as C; "
+            "vlm_overlay.taxonomy_classes(); "
             "from tda.core.taxonomy import load_taxonomy; load_taxonomy(); "
             "where = pathlib.Path(tda.__file__).resolve().parent; "
             "assert where == (tools / 'tda').resolve(), where; print(where)")
@@ -488,6 +508,79 @@ def run_selfcheck(out: Path, views: Sequence[str], work: Path,
         {"file": f["file"], "records": f["records"],
          "tasks": {t: row["strict_mean"] for t, row in f["rows"].items()}}
         for f in report["files"]]}
+
+
+# --------------------------------------------------------------------------- #
+# 3b. the masks and the overlay variant (W4-C)
+# --------------------------------------------------------------------------- #
+def masks_sidecars(data_dir: Path, eval_dir: Path, views: Sequence[str], coco_root: str,
+                   log=print) -> dict:
+    """``data/vlm_<view>.masks.jsonl`` and ``eval_v1/<view>.masks.jsonl`` from the COCO.
+
+    One pass over the scanner pack for all views (an image id is the same in
+    every export file), then one sidecar per view with the rows its manifest
+    names. Returns per view: confirmed frames, frames with masks, masks, and the
+    confirmed frames the COCO does not cover (the OAK frames of a V15 pair).
+    """
+    classes = vlm_overlay.taxonomy_classes(str(REPO / "configs" / "taxonomy.yaml"))
+    manifest: dict[str, dict] = {}
+    frames: dict[str, dict] = {}
+    per_view: dict[str, tuple[dict, dict]] = {}
+    for view in views:
+        export = data_dir / f"vlm_{view}.jsonl"
+        m, f = vlm_overlay.load_manifest(export), vlm_overlay.load_frames(export)
+        per_view[view] = (m, f)
+        manifest.update(m)
+        frames.update(f)
+    try:
+        rows, stats = vlm_overlay.masks_from_coco(coco_root, manifest, frames, log)
+    except vlm_overlay.OverlayError as exc:
+        raise PackError(f"masks: {exc}") from exc
+    by_image = {r["image"]: r for r in rows}
+    out: dict = {"source": stats["source"], "views": {}}
+    for view in views:
+        m, f = per_view[view]
+        mine = [by_image[i] for i in sorted(m) if i in by_image]
+        mine.sort(key=lambda r: (r["desktop"], r["view"], r["step"]))
+        confirmed = [i for i, fr in f.items() if fr.get("confirmed") and i in m]
+        missing = sorted(f"D{m[i]['desktop']:02d} {m[i]['view']} s{m[i]['step']:03d}"
+                         for i in confirmed if i not in by_image)
+        target = data_dir / f"vlm_{view}.masks.jsonl"
+        vlm_overlay.write_masks(target, mine, classes, stats["source"])
+        row = {"confirmed_frames": len(confirmed), "frames_with_masks": len(mine),
+               "masks": sum(len(r["masks"]) for r in mine),
+               "confirmed_without_masks": len(missing),
+               "confirmed_without_masks_examples": missing[:20]}
+        subset = eval_dir / f"{view}.jsonl"
+        if subset.exists():
+            used = {img for r in IO.read_jsonl(subset) for img in r["prompt"].get("images") or []}
+            n = vlm_overlay.cut_masks(target, eval_dir / f"{view}.masks.jsonl", used) - 1
+            row["eval_frames_with_masks"] = n
+        out["views"][view] = row
+        log(f"[vlmpack] masks {view}: {len(mine)} of {len(confirmed)} confirmed frames, "
+            f"{row['masks']} masks" + (f", {len(missing)} confirmed frames without masks"
+                                       if missing else ""))
+    return out
+
+
+def render_overlays(out: Path, eval_dir: Path, views: Sequence[str], log=print) -> dict:
+    """The subset's ``mask_overlay`` variant per view: ``eval_v1/mask_overlay/<view>.jsonl``
+    and the painted frames under ``overlays/``; returns the painter's summary per view."""
+    result: dict = {}
+    for view in views:
+        truth = eval_dir / f"{view}.jsonl"
+        if not truth.exists() or not vlm_overlay.sidecar(truth, vlm_overlay.MASKS_SUFFIX).exists():
+            continue
+        try:
+            summary = vlm_overlay.render_export(
+                truth, eval_dir / "mask_overlay" / f"{view}.jsonl", out / "images",
+                out / "overlays", taxonomy=str(REPO / "configs" / "taxonomy.yaml"),
+                log=lambda line: log(line.replace("[vlm-overlay]", "[vlmpack] overlay")))
+        except vlm_overlay.OverlayError as exc:
+            raise PackError(f"overlay {view}: {exc}") from exc
+        result[view] = {k: summary[k] for k in ("records_in", "records", "skipped", "overlays",
+                                                 "masks_painted_by_class", "alpha", "outline_px")}
+    return result
 
 
 # --------------------------------------------------------------------------- #
@@ -533,10 +626,15 @@ def build_pack(db_path: str, out_dir: str, *, cache_dir: Optional[str] = DEFAULT
                images: str = "all", allow_conflicts: bool = False, force: bool = False,
                selfcheck: bool = True, audit: int = 300, tax: Optional[Taxonomy] = None,
                repo: Path = REPO, python: str = sys.executable, log=print,
-               live_db: str = LIVE_DB) -> dict:
+               live_db: str = LIVE_DB, coco_root: Optional[str] = None,
+               overlays: str = "eval") -> dict:
     """Build the pack at ``out_dir``; returns the manifest's summary."""
     if images not in IMAGE_MODES:
         raise ValueError(f"images={images!r}: one of {', '.join(IMAGE_MODES)}")
+    if overlays not in OVERLAY_MODES:
+        raise ValueError(f"overlays={overlays!r}: one of {', '.join(OVERLAY_MODES)}")
+    if coco_root and not Path(coco_root).is_dir():
+        raise PackError(f"--coco-root {coco_root}: no such directory")
     refuse_live(db_path, live_db)
     views = [str(v) for v in views]
     if not views:
@@ -584,6 +682,19 @@ def build_pack(db_path: str, out_dir: str, *, cache_dir: Optional[str] = DEFAULT
     needed = images_needed(data_dir, views, images, eval_dir)
     image_files = copy_images(cache_dir or "", needed, out, log) if needed else {}
 
+    # the confirmed masks (from the scanner pack's COCO) and the subset's overlay variant
+    references: dict = {"masks": None, "mask_overlay": None, "overlay_mode": overlays}
+    if coco_root:
+        log(f"[vlmpack] masks from {coco_root} ...")
+        references["masks"] = masks_sidecars(data_dir, eval_dir, views, coco_root, log)
+        if overlays == "eval" and images != "none":
+            log("[vlmpack] painting the subset's mask overlays ...")
+            references["mask_overlay"] = render_overlays(out, eval_dir, views, log)
+        elif overlays == "eval":
+            references["mask_overlay_skipped"] = "no images in this pack (--images none)"
+    else:
+        references["skipped"] = "no --coco-root: no masks sidecar, no overlay variant"
+
     # the tools, imported from the pack alone, then the self-check from the pack
     tools = out / "tools"
     tool_files = vendor_tools(tools, repo)
@@ -603,6 +714,7 @@ def build_pack(db_path: str, out_dir: str, *, cache_dir: Optional[str] = DEFAULT
         "exports": {v: _summary_for_manifest(s) for v, s in exports.items()},
         "eval": eval_result,
         "composition": comp,
+        "references": references,
         "selfcheck": check,
         "tools": tool_files,
     }
@@ -807,6 +919,74 @@ def _known_issues(summary: dict) -> str:
     return "\n\n".join(f"{i}. {text}" for i, text in enumerate(items, start=1))
 
 
+def _references_text(summary: dict) -> str:
+    """The card's paragraph on the reference lines: what each is, for, and not for."""
+    refs = summary.get("references") or {}
+    para = (
+        "Every model row is read against reference lines, none of which is a model "
+        "(`tools/vlm_references.py`, `tools/vlm_overlay.py`, and two rows the scorer "
+        "prints itself). **chance** is the expected score of a uniform guess over the "
+        "record's answer space (binary tasks 0.5, `V6-mc` 1/|options|, V2 1/|allowed|, V14 "
+        "0.5 x 1/|states| when answerable, open tasks 0; the rule per task is printed under "
+        "the score table). **frequency** is the most frequent gold reply over the truth "
+        "file's `train` desktops (`label.split`; for `V6-mc` the most frequent letter) given "
+        "as the answer to every record and graded like a model -- the floor a model has to "
+        "clear to have read anything at all. **blind** is the record without its picture "
+        "(question and options only): what it scores is template leakage, and the export's "
+        "*text-only upper bound (in-sample)* is the ceiling of the same thing. "
+        "**protocol_prior** answers V6 / V7 / V16 from nothing but the previous demonstrated "
+        "action, by a bigram fitted on the other desktops (leave-one-desktop-out): the line a "
+        "text model reading the log starts from. **state_oracle** replaces each picture by "
+        "the structured state table of that moment (perfect perception, screws shown "
+        "present / removed only); it has no V14 items, because V14 asks whether the view can "
+        "settle a part's state and the table's visibility column is that answer. "
+        "**mask_overlay** shows the frame with the confirmed visible masks painted in one "
+        "fixed colour per class (the order of `configs/taxonomy.yaml`, alpha 0.45, a 2 px "
+        "outline, no text, no box, nothing that depends on the record), for every record "
+        "whose frames are all confirmed frames with masks, except V8 (the box is the "
+        "answer): the gap between it and the plain frame is the price of perception. Use "
+        "the references to place a model -- above chance and frequency, below the oracle "
+        "lines -- and to split its error into perception and reasoning. Do **not** report a "
+        "reference as a model result, do not compare `mask_overlay` or `state_oracle` "
+        "against the model on different records (they answer fewer: score them on the same "
+        "truth file and read `mask_overlay.summary.json` for what was left out), do not "
+        "train or tune anything on the overlays or the state tables, and never crop or "
+        "paint anything else into a picture a model is scored on."
+    )
+    masks = refs.get("masks")
+    if not masks:
+        status = ("**This copy carries no masks sidecar and no overlay variant** (built without "
+                  "`--coco-root`): `blind`, `protocol_prior`, `state_oracle`, `chance` and "
+                  "`frequency` are available; for `mask_overlay` build the pack with the "
+                  "scanner pack (`--coco-root exports/scanpack_<date>`) or run "
+                  "`tools/vlm_overlay.py masks --coco-root <scanner pack>` where it exists.")
+    else:
+        rows = masks.get("views") or {}
+        per_view = ", ".join(f"{v} {r['frames_with_masks']}/{r['confirmed_frames']}"
+                             for v, r in rows.items())
+        without = sum(r.get("confirmed_without_masks", 0) for r in rows.values())
+        painted = refs.get("mask_overlay") or {}
+        if painted:
+            lines = []
+            for v, s in painted.items():
+                skipped = ", ".join(f"{k} {n}" for k, n in sorted(s["skipped"].items())) or "none"
+                lines.append(f"{v} {s['records']} of {s['records_in']} records "
+                             f"({s['overlays']} overlays; left out: {skipped})")
+            painted_text = ("The subset's overlay variant is pre-painted (`eval_v1/mask_overlay/`, "
+                            "`overlays/`): " + "; ".join(lines) + ".")
+        else:
+            painted_text = ("The overlays are **not** pre-painted in this copy "
+                            f"({refs.get('mask_overlay_skipped') or 'built with --overlays none'}): "
+                            "`tools/vlm_overlay.py render` paints them from the sidecar.")
+        status = (f"The masks come from the scanner pack `{masks.get('source')}` (confirmed "
+                  f"rows, visibility checked against the oracle) as `data/vlm_<view>.masks.jsonl` "
+                  f"and `eval_v1/<view>.masks.jsonl`; confirmed frames with masks per view: "
+                  f"{per_view}" + (f"; {without} confirmed frames have no masks (OAK frames of "
+                                   f"V15 pairs -- their records are left out of the variant)."
+                                   if without else ".") + " " + painted_text)
+    return para + "\n\n" + status
+
+
 def readme_text(summary: dict) -> str:
     views = summary["views"]
     n_desktops = len(summary["desktops"])
@@ -867,18 +1047,25 @@ data/
   vlm_<view>.images_manifest.jsonl   opaque image id -> path under images/, desktop, view, step, roi
   vlm_<view>.oracle.jsonl            label-side world: instances, edges, log per desktop; state table per image
   vlm_<view>.summary.json            counts, silences, shortcut bounds of that export
+  vlm_<view>.masks.jsonl             (with masks) the confirmed visible masks of every confirmed frame, COCO RLE
 images/<view>/D<nn>/s<nn>.<ext>      the frames, byte for byte the dataset's cached files (the source's extension)
+overlays/<view>/D<nn>/s<nn>.png      (with masks) the subset's frames with the confirmed masks painted (mask_overlay)
 eval_v1/
   ids.txt                 the subset's record ids, task order
   <view>.jsonl            the subset's records of that view, with .images_manifest.jsonl,
-                          .oracle.jsonl (cut to the subset) and .summary.json (the export's) beside it
+                          .oracle.jsonl (cut to the subset), .summary.json (the export's) and,
+                          with masks, .masks.jsonl (cut to the subset) beside it
+  mask_overlay/<view>.jsonl   (with masks) the subset's GT-mask overlay variant: eligible records,
+                          their .images_manifest.jsonl pointing into overlays/, .summary.json (what was left out)
   table.md / table.json   the n table: target, drawn, by view, strata, desktops
   audit/                  the human-audit sample: audit.ids.txt, audit.jsonl, audit.sheet.md,
                           the fillable pages audit.sheet.b01.html ... and the CSV skeleton audit.sheet.csv
 tools/
   vlm_to_chat.py          records -> OpenAI / Qwen-VL / InternVL chat JSONL (images by path or base64)
-  vlm_score.py            {{id, raw_text}} replies -> scores per task / layer / template, 95 % CIs
-  vlm_references.py       the text references: blind, protocol prior (bigram), state oracle
+  vlm_score.py            {{id, raw_text}} replies -> scores per task / layer / template, 95 % CIs,
+                          with the chance and frequency reference rows beside every task
+  vlm_references.py       the references: blind, protocol prior (bigram), state oracle (no V14), mask overlay
+  vlm_overlay.py          the confirmed-mask painter (masks sidecar from a scanner pack's COCO; overlays)
   vlm_sample.py           stratified seeded samples (audit / repeat)
   vlm_eval_set.py         the procedure that drew eval_v1 (re-runnable, byte-identical)
   vlm_selfcheck.py        gold replies must score 1.0 everywhere -- run it first
@@ -1059,12 +1246,18 @@ show. The human rows are a reference line beside the models in the results table
 training signal and not a relabelling of the data: a disagreement between a person and
 the truth is an item for the audit, not a correction.
 
-## Text-only shortcut upper bounds (full export, in-sample)
+## Reference lines
+
+{_references_text(summary)}
+
+### Text-only shortcut upper bounds (full export, in-sample)
 
 The best of four prompt-only classifiers (majority, verb, class, verb + class,
 template) per task, from `summary.json`; a model below these has read nothing
 from the picture. On the unconfirmed views V3 / V4 are high because only large
-parts are asked there.
+parts are asked there. The scorer prints it as *text-only upper bound
+(in-sample)*: it is measured on the full export, not on `eval_v1`, and it is a
+ceiling for template leakage, not a model.
 
 {_shortcut_table(summary)}
 
@@ -1088,12 +1281,17 @@ python tools/vlm_to_chat.py --export eval_v1/scan.jsonl --format openai \\
 python tools/vlm_score.py --truth eval_v1/scan.jsonl --pred runs/<model>.scan.jsonl \\
     --chat runs/scan.openai.jsonl --out runs/scores --name <model>-scan
 
-# references (text only): blind, protocol prior, state oracle
-python tools/vlm_references.py --export eval_v1/scan.jsonl --out runs/refs/scan
+# references: blind, protocol prior, state oracle (no V14) and, with --assets, the mask overlay
+python tools/vlm_references.py --export eval_v1/scan.jsonl --out runs/refs/scan \\
+    --assets overlays --image-root images                     # overlays/ is pre-painted for eval_v1
 python tools/vlm_to_chat.py --export eval_v1/scan.jsonl --records runs/refs/scan/blind.jsonl \\
     --format openai --out runs/scan.blind.jsonl
+python tools/vlm_to_chat.py --export runs/refs/scan/mask_overlay.jsonl --format openai \\
+    --image-root overlays --out runs/scan.overlay.jsonl       # the variant carries its own manifest
 python tools/vlm_score.py --truth eval_v1/scan.jsonl --pred runs/refs/scan/protocol_prior.predictions.jsonl \\
     --out runs/scores --name protocol-prior-scan
+# (or, for any subset: python tools/vlm_overlay.py render --export <truth.jsonl> --image-root images \\
+#      --assets <dir> --out <dir>/mask_overlay.jsonl; tools/vlm_run/run_eval.sh VARIANT=overlay does this)
 ```
 
 `vlm_score.py` writes `<name>.score.json` and `<name>.score.md`: per task, per
@@ -1152,6 +1350,12 @@ def main(argv=None) -> int:
                     help="export frames with an open disagreement as unverified")
     ap.add_argument("--no-selfcheck", action="store_true")
     ap.add_argument("--force", action="store_true", help="replace a pack at --out")
+    ap.add_argument("--coco-root", default=None,
+                    help="the scanner pack (D<nn>/annotations.json): the confirmed masks for the "
+                         "masks sidecars and the GT-mask overlay variant")
+    ap.add_argument("--overlays", default="eval", choices=OVERLAY_MODES,
+                    help="paint the subset's overlays into the pack (eval), or ship only the "
+                         "masks sidecar (none)")
     args = ap.parse_args(argv)
     out = args.out or f"D:/DataSet/exports/{PACK_NAME}_{date.today().isoformat()}"
     try:
@@ -1160,7 +1364,8 @@ def main(argv=None) -> int:
         build_pack(args.db, out, cache_dir=args.cache_dir, work_dir=args.work, views=views,
                    desktops=wanted, seed=args.seed, images=args.images,
                    allow_conflicts=bool(args.allow_conflicts), force=bool(args.force),
-                   selfcheck=not args.no_selfcheck, audit=args.audit)
+                   selfcheck=not args.no_selfcheck, audit=args.audit,
+                   coco_root=args.coco_root, overlays=args.overlays)
     except PackError as exc:
         print(f"[vlmpack] refused: {exc}")
         return 2

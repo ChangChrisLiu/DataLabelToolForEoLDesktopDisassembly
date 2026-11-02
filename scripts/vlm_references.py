@@ -1,6 +1,7 @@
-"""The three text references of the VLM evaluation (W3b; minutes 2026-10-31 §3).
+"""The reference lines of the VLM evaluation (W3b; minutes 2026-10-31 §3; W4-C).
 
-``python scripts/vlm_references.py --export <vlm_scan.jsonl> --out <dir>``
+``python scripts/vlm_references.py --export <vlm_scan.jsonl> --out <dir>
+[--assets <dir> --image-root <images> [--masks <masks.jsonl> | --coco-root <scanpack>]]``
 
 Reads one export and its sidecars -- never the database -- and writes:
 
@@ -15,20 +16,30 @@ Reads one export and its sidecars -- never the database -- and writes:
   ``protocol_prior.report.json`` gives its accuracy by task -- the line a text
   model reading the log would start from. Its next-action accuracy over coarse
   ``(verb, class)`` is reported too, the number the 71.8 % probe measured.
-* ``state_oracle.jsonl`` -- every record with each image replaced by the
-  structured state table of that moment (instances with state, placement and,
-  only where that view has confirmed rows, visibility): the "perfect
+* ``state_oracle.jsonl`` -- every record **except V14** with each image replaced
+  by the structured state table of that moment (instances with state, placement
+  and, only where that view has confirmed rows, visibility): the "perfect
   perception" upper bound. A screw is shown as present / removed, never as
   tight or loose -- no picture shows that either. Records whose truth rests on
   a captive screw's tightness keep ``label.image_undecidable = true`` so the
-  oracle-vs-VLM gap can leave them out.
+  oracle-vs-VLM gap can leave them out. V14 asks whether *this view* can settle
+  a part's state: the table's visibility column is that answer, so the oracle
+  has no V14 items (W4-C) and the summary says how many were left out.
+* ``mask_overlay.jsonl`` (+ ``.images_manifest.jsonl``, with ``--assets``) --
+  every eligible record with its frames replaced by a copy on which the
+  confirmed visible masks are painted in class colours (:mod:`vlm_overlay`):
+  the "minimal set" perception reference. Eligible: every frame confirmed and
+  carrying masks, task not V8 (the box is the answer). Needs ``--image-root``
+  and the masks -- ``<export>.masks.jsonl`` beside the export, ``--masks``, or
+  ``--coco-root`` (the scanner pack's COCO). Without ``--assets`` the variant
+  is not written and the summary says so.
 
 The protocol prior refuses (exit 2, nothing written) when a desktop has no
 other desktop's log to be fitted on.
 
 Each variant keeps the record ids and the label side (``answer_check``
 included); only ``prompt`` changes, and ``label.reference`` says which variant
-it is.
+it is. ``references.summary.json`` in ``--out`` counts every variant.
 """
 from __future__ import annotations
 
@@ -101,6 +112,24 @@ def state_oracle(record: dict, worlds: dict[int, World], frames: dict[str, dict]
     out["label"]["reference"] = "state_oracle"
     out["label"]["image_undecidable"] = bool(record["label"].get("image_undecidable"))
     return out
+
+
+#: Tasks the state oracle does not answer: V14 asks whether the view can settle
+#: a part's state, and the table's visibility column is exactly that (W4-C).
+ORACLE_SKIPS = ("V14",)
+
+
+def state_oracle_rows(records: list[dict], worlds: dict[int, World],
+                      frames: dict[str, dict]) -> tuple[list[dict], dict[str, int]]:
+    """``(oracle records, skipped per task)``: every record but V14's."""
+    rows, skipped = [], Counter()
+    for record in records:
+        task = record["prompt"]["task"]
+        if task in ORACLE_SKIPS:
+            skipped[task] += 1
+            continue
+        rows.append(state_oracle(record, worlds, frames))
+    return rows, dict(skipped)
 
 
 # --------------------------------------------------------------------------- #
@@ -316,6 +345,16 @@ def main(argv=None) -> int:
     ap.add_argument("--train-desktops", default=None,
                     help="e.g. 1-40: fit the protocol prior on these (default: "
                          "leave one desktop out)")
+    ap.add_argument("--assets", default=None,
+                    help="also write the mask_overlay variant; the painted frames go "
+                         "here as <view>/D<nn>/s<nn>.png")
+    ap.add_argument("--image-root", default=None,
+                    help="the frames the manifest names (needed with --assets)")
+    ap.add_argument("--masks", default=None,
+                    help="the masks sidecar (default: <export>.masks.jsonl beside the export)")
+    ap.add_argument("--coco-root", default=None,
+                    help="build the masks from a scanner pack's COCO when there is no sidecar")
+    ap.add_argument("--force", action="store_true", help="repaint overlays that already exist")
     args = ap.parse_args(argv)
     from tda.core.taxonomy import load_taxonomy
 
@@ -329,22 +368,51 @@ def main(argv=None) -> int:
     except PriorRefused as exc:
         print(f"[vlm-references] refused: {exc}")
         return 2
+    if args.assets and not args.image_root:
+        print("[vlm-references] refused: --assets needs --image-root (the frames to paint)")
+        return 2
     n_blind = IO.write_jsonl(out / "blind.jsonl", (blind(r) for r in records))
-    n_oracle = IO.write_jsonl(out / "state_oracle.jsonl",
-                              (state_oracle(r, worlds, frames) for r in records))
+    oracle_rows, oracle_skipped = state_oracle_rows(records, worlds, frames)
+    n_oracle = IO.write_jsonl(out / "state_oracle.jsonl", oracle_rows)
     IO.write_jsonl(out / "protocol_prior.jsonl", variant)
     IO.write_jsonl(out / "protocol_prior.predictions.jsonl", predictions)
     (out / "protocol_prior.report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=1, sort_keys=True) + "\n",
         encoding="utf-8")
-    print(f"[vlm-references] blind {n_blind}, state oracle {n_oracle}, "
-          f"protocol prior {len(variant)} -> {out}")
+    summary = {
+        "blind": {"records": n_blind},
+        "state_oracle": {"records": n_oracle, "skipped": oracle_skipped,
+                         "skipped_why": "V14 asks whether the view can settle the state; "
+                                        "the table's visibility column is that answer"},
+        "protocol_prior": {"records": len(variant), "report": report},
+    }
+    skipped_text = ", ".join(f"{t} {n} skipped" for t, n in oracle_skipped.items()) or "nothing skipped"
+    print(f"[vlm-references] blind {n_blind}, state oracle {n_oracle} ({skipped_text}: its "
+          f"visibility column would be the answer), protocol prior {len(variant)} -> {out}")
     for task, row in report["by_task"].items():
         print(f"[vlm-references] protocol prior {task}: {row['accuracy']:.1%} "
               f"({row['records']} records)")
     if report["v6_next_verb_class_coarse"] is not None:
         print(f"[vlm-references] protocol prior next (verb, class): "
               f"{report['v6_next_verb_class_coarse']:.1%}")
+    if args.assets:
+        import vlm_overlay
+
+        try:
+            summary["mask_overlay"] = vlm_overlay.render_export(
+                args.export, out / "mask_overlay.jsonl", args.image_root, args.assets,
+                masks_path=args.masks, coco_root=args.coco_root, force=args.force,
+                log=lambda line: print(line.replace("[vlm-overlay]", "[vlm-references]")))
+        except vlm_overlay.OverlayError as exc:
+            print(f"[vlm-references] refused: {exc}")
+            return 2
+    else:
+        summary["mask_overlay"] = {"records": 0, "skipped_why": "not asked for: pass --assets "
+                                                                 "and --image-root"}
+        print("[vlm-references] mask overlay not written (pass --assets <dir> --image-root <images>)")
+    (out / "references.summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=1, sort_keys=True) + "\n",
+        encoding="utf-8")
     return 0
 
 
