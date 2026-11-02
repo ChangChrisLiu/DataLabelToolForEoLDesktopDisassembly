@@ -19,7 +19,8 @@ its database has to be present for::
     images/<view>/D<nn>/s<nn>.<ext>   the frames the manifests name, byte for byte
     eval_v1/                  the frozen evaluation subset (``scripts/vlm_eval_set.py``):
                               ids.txt, <view>.jsonl + sidecars, table.md, table.json,
-                              audit/ (the 300-item human-audit sample and reviewer sheet)
+                              audit/ (the 300-item human-audit sample, the fillable HTML
+                              sheet and its CSV skeleton -- ``scripts/vlm_audit_sheet.py``)
     tools/                    the scorer, converters, references, samplers and the
                               self-check, with the ``tda`` modules they import vendored
                               (``tools/tda``, ``tools/configs``) and ``requirements.txt``
@@ -90,9 +91,12 @@ PACK_NAME = "vlmpack"
 DEFAULT_CACHE_DIR = "D:/DataSet/cache"
 DEFAULT_WORK = "D:/DataSet/.cache/tmp/w4a/work"
 IMAGE_MODES = ("all", "eval", "none")
-#: The W3b scripts shipped under ``tools/`` (W4-A's own two included).
+#: The W3b scripts shipped under ``tools/`` (W4-A's own two and W4-E's three included).
 TOOLS = ("vlm_io.py", "vlm_to_chat.py", "vlm_score.py", "vlm_references.py",
-         "vlm_sample.py", "vlm_eval_set.py", "vlm_selfcheck.py")
+         "vlm_sample.py", "vlm_eval_set.py", "vlm_selfcheck.py",
+         "vlm_audit_sheet.py", "vlm_audit_summary.py", "vlm_human_sheet.py")
+#: Items per page of the audit sheet the build writes into ``eval_v1/audit/``.
+AUDIT_BATCH = 50
 #: The ``tda`` modules :mod:`tda.core.export.vlm_check` needs, copied verbatim
 #: under ``tools/tda``: the scorer's whole import closure, nothing of the tool.
 VENDORED = ("tda/__init__.py", "tda/core/__init__.py", "tda/core/taxonomy.py",
@@ -451,7 +455,8 @@ def smoke_import(tools: Path, python: str = sys.executable) -> None:
     code = ("import sys, pathlib; tools = pathlib.Path(sys.argv[1]); "
             "sys.path.insert(0, str(tools)); "
             "import vlm_io, vlm_to_chat, vlm_score, vlm_references, vlm_sample, "
-            "vlm_eval_set, vlm_selfcheck, tda, tda.core.export.vlm_check as C; "
+            "vlm_eval_set, vlm_selfcheck, vlm_audit_sheet, vlm_audit_summary, "
+            "vlm_human_sheet, tda, tda.core.export.vlm_check as C; "
             "from tda.core.taxonomy import load_taxonomy; load_taxonomy(); "
             "where = pathlib.Path(tda.__file__).resolve().parent; "
             "assert where == (tools / 'tda').resolve(), where; print(where)")
@@ -561,6 +566,19 @@ def build_pack(db_path: str, out_dir: str, *, cache_dir: Optional[str] = DEFAULT
                                      seed=seed, audit=audit)
     log(f"[vlmpack] {vlm_eval_set.EVAL_VERSION}: {eval_result['records']} records: "
         + " ".join(f"{r['task']}={r['records']}" for r in eval_result["rows"]))
+    # the fillable audit sheet (W4-E): static pages + CSV skeleton beside audit.jsonl,
+    # image paths relative to the page, so the pack travels whole
+    audit_dir = eval_dir / "audit"
+    if eval_result.get("audit") and (audit_dir / "audit.jsonl").is_file():
+        import vlm_audit_sheet
+
+        sheet = vlm_audit_sheet.build(
+            list(IO.read_jsonl(audit_dir / "audit.jsonl")),
+            [p for p in (eval_dir / f"{v}.jsonl" for v in views) if p.exists()],
+            out / "images", audit_dir, batch=AUDIT_BATCH, name="audit")
+        eval_result["audit"]["sheet"] = {"files": sheet["files"], "batches": sheet["batches"],
+                                         "batch_size": sheet["batch_size"]}
+        log(f"[vlmpack] audit sheet: {sheet['items']} items in {sheet['batches']} pages")
 
     # the pictures
     needed = images_needed(data_dir, views, images, eval_dir)
@@ -804,12 +822,20 @@ def readme_text(summary: dict) -> str:
                  "point `--image-root` at the dataset's frame cache."),
     }[summary["image_mode"]]
     audit = ev.get("audit") or {}
+    sheet = audit.get("sheet") or {}
+    pages = ""
+    if sheet:
+        which = ("the fillable page `audit.sheet.b01.html`" if sheet["batches"] == 1 else
+                 f"the fillable pages `audit.sheet.b01.html` ... `b{sheet['batches']:02d}` "
+                 f"({sheet['batch_size']} items each)")
+        pages = (f", {which} and the CSV skeleton `audit.sheet.csv` "
+                 f"(see *Audit and human baseline*)")
     audit_line = (f"`eval_v1/audit/` is the {audit['size']}-item human-audit sample drawn from "
                   f"inside the subset (`tools/vlm_sample.py --purpose audit`: about 25 per "
                   f"task, positives and negatives balanced, every desktop represented, "
-                  f"{audit['desktops']} desktops): `audit.ids.txt`, `audit.jsonl` and the "
-                  f"reviewer sheet `audit.sheet.md` (image path, question, answer, an empty "
-                  f"`ok?` column)." if audit else
+                  f"{audit['desktops']} desktops): `audit.ids.txt`, `audit.jsonl`, the "
+                  f"Markdown sheet `audit.sheet.md` (image path, question, answer, an empty "
+                  f"`ok?` column){pages}." if audit else
                   "No audit sample was drawn (`--audit 0`).")
     check = summary.get("selfcheck")
     check_line = ("The build ran it: every task row of every `eval_v1/<view>.jsonl` scored "
@@ -847,7 +873,8 @@ eval_v1/
   <view>.jsonl            the subset's records of that view, with .images_manifest.jsonl,
                           .oracle.jsonl (cut to the subset) and .summary.json (the export's) beside it
   table.md / table.json   the n table: target, drawn, by view, strata, desktops
-  audit/                  the human-audit sample and its reviewer sheet
+  audit/                  the human-audit sample: audit.ids.txt, audit.jsonl, audit.sheet.md,
+                          the fillable pages audit.sheet.b01.html ... and the CSV skeleton audit.sheet.csv
 tools/
   vlm_to_chat.py          records -> OpenAI / Qwen-VL / InternVL chat JSONL (images by path or base64)
   vlm_score.py            {{id, raw_text}} replies -> scores per task / layer / template, 95 % CIs
@@ -855,6 +882,9 @@ tools/
   vlm_sample.py           stratified seeded samples (audit / repeat)
   vlm_eval_set.py         the procedure that drew eval_v1 (re-runnable, byte-identical)
   vlm_selfcheck.py        gold replies must score 1.0 everywhere -- run it first
+  vlm_audit_sheet.py      the fillable audit pages (gold shown) + CSV skeleton; rebuilds eval_v1/audit/*.html
+  vlm_audit_summary.py    filled audit CSVs -> error rates with Wilson 95 % intervals, flagged items
+  vlm_human_sheet.py      the human-baseline form (no answers, timed) and its CSV -> prediction converter
   vlm_io.py               shared reading
   tda/, configs/          the scorer's modules and the taxonomy, vendored
   requirements.txt
@@ -975,6 +1005,59 @@ over desktops (the scorer does this).
 {_eval_table(summary)}
 
 The strata counts are in `eval_v1/table.md`. {audit_line}
+
+## Audit and human baseline
+
+Two things people do with this pack, both scored by the same tools as the models.
+
+**Author audit (error rate of the generated truth).** Open
+`eval_v1/audit/audit.sheet.b01.html` (and the following pages) in a browser from the
+pack directory -- plain HTML with inline script, no server, no network; the frames are
+loaded by relative path (`../../images/...`). Every item shows the picture(s), the
+question, the gold answer in words and as JSON, its evidence boxes drawn on the frame
+and the rationale chain; the reviewer marks 正确 / 错误 / 存疑 (correct / wrong /
+doubtful) and may leave a note. Answers stay in the browser until **Export answers**
+downloads a CSV (`id, task, readable_id, desktop, view, step, batch, verdict, note,
+reviewer, answered_at`); `audit.sheet.csv` is the same table empty, for a spreadsheet.
+Then
+
+```
+python tools/vlm_audit_summary.py --csv runs/audit/*.csv --records eval_v1/audit/audit.jsonl \\
+    --out runs/audit                   # audit.summary.md / .json
+```
+
+reports, per task and overall, the error rate (marked wrong) and the error-or-doubt
+rate with **Wilson 95 % intervals** (0 of 300 -> [0, 1.3 %]), the items marked wrong or
+doubtful with their notes, and the disagreements where several reviewers marked one
+item (an item then takes its worst verdict). The audit pages contain the answers: do
+not hand them to a human-baseline participant.
+
+**Human baseline.** `tools/vlm_human_sheet.py build` writes pages **without answers**
+for a subset of `eval_v1` (default: a stratified draw of 300 by `vlm_sample.draw`,
+`purpose="human"`, about 25 per task, positives and negatives balanced, every desktop
+represented; `--ids` takes any list) -- the frame(s), the question, the options and a
+plain form per task (yes / no and state buttons, verb list + target box, one action per
+line for plans, a box-drawing tool on the picture for V1 / V8). The page records when an
+item first came into view and when its answer last changed (`started_at`, `answered_at`,
+`seconds`), so participants should work in order without going back. `convert` maps the
+exported fields to the models' JSON formats and cuts the truth files to the answered ids,
+after which `vlm_score.py` scores the person exactly like a model:
+
+```
+python tools/vlm_human_sheet.py build --export eval_v1/scan.jsonl eval_v1/oak1.jsonl \\
+    eval_v1/oak2.jsonl eval_v1/rs.jsonl --image-root images --out runs/human [--size 300 --seed 0]
+# the participant opens runs/human/human.sheet.b01.html ... and exports the CSVs
+python tools/vlm_human_sheet.py convert --csv runs/human/*.csv --out runs/human/scored \\
+    --export eval_v1/scan.jsonl eval_v1/oak1.jsonl eval_v1/oak2.jsonl eval_v1/rs.jsonl
+python tools/vlm_score.py --truth runs/human/scored/human.scan.jsonl \\
+    --pred runs/human/scored/human.pred.jsonl --out runs/human/scored --name human-scan   # per view
+```
+
+Nothing of the label side is in the human pages but the record id and the task; the
+image path does carry the view and the step index (`s021.png`), which the page does not
+show. The human rows are a reference line beside the models in the results table, not a
+training signal and not a relabelling of the data: a disagreement between a person and
+the truth is an item for the audit, not a correction.
 
 ## Text-only shortcut upper bounds (full export, in-sample)
 
