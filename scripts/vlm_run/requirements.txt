@@ -1,0 +1,13 @@
+# Environment for running the VLM evaluation pack (W4-B), no `tda` package.
+# Pinned to the releases current when this file was written (2026-11); check
+# them against the cluster's CUDA module before installing (`pip index versions
+# vllm`) and bump in lock step -- vllm pins its own torch build.
+#
+# Base: the converters, the scorer, the gold self-check, the openai backend.
+Pillow==11.3.0
+numpy==2.2.6
+PyYAML==6.0.2
+pycocotools==2.0.10
+
+# Open models, offline, GPU node: `pip install -r requirements.txt -r requirements-vllm.txt`
+# (kept apart so the CPU-only closed-model and gold jobs stay small).
