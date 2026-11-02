@@ -233,8 +233,14 @@ BUILDING = ".vlmpack_building"
 def _prepare_out(out: Path, force: bool) -> None:
     if out.exists() and any(out.iterdir()):
         marker = out / "manifest.json"
-        is_pack = (marker.is_file() and f'"{PACK_NAME}"' in marker.read_text(
-            encoding="utf-8")[:400]) or (out / BUILDING).is_file()
+        is_pack = (out / BUILDING).is_file()
+        if marker.is_file():
+            # the real manifest's "package" key sits past the first few hundred bytes
+            # (the file list comes first), so read the JSON instead of a text prefix
+            try:
+                is_pack = is_pack or json.loads(marker.read_text(encoding="utf-8")).get("package") == PACK_NAME
+            except (OSError, ValueError):
+                pass
         if not force:
             raise PackError(f"{out} is not empty; pass --force to replace a pack there")
         if not is_pack:
