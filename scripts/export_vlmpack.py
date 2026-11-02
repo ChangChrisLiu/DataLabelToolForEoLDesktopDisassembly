@@ -371,6 +371,24 @@ def vendor_tools(tools: Path, repo: Path = REPO) -> list[str]:
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, dst)
         written.append(rel)
+    # W4-B's model driver, its Slurm templates and requirements travel with the pack
+    # (``tools/vlm_run/``), the run guide beside the card (``docs/vlm_run_hprc.md``):
+    # the pack is what gets copied to HPRC, nothing else.
+    driver = repo / "scripts" / "vlm_run"
+    if not driver.is_dir():
+        raise PackError(f"driver folder {driver} is missing")
+    for src in sorted(p for p in driver.rglob("*") if p.is_file() and "__pycache__" not in p.parts):
+        rel = (Path("vlm_run") / src.relative_to(driver)).as_posix()
+        dst = tools / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dst)
+        written.append(rel)
+    guide = repo / "docs" / "vlm_run_hprc.md"
+    if not guide.is_file():
+        raise PackError(f"run guide {guide} is missing")
+    docs = tools.parent / "docs"
+    docs.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(guide, docs / "vlm_run_hprc.md")
     write_text(tools / "tda" / "core" / "export" / "__init__.py",
                '"""The scorer\'s export subset (vendored by scripts/export_vlmpack.py).\n\n'
                'Only :mod:`tda.core.export.vlm_check` is here; the exporters stay in the\n'
@@ -1001,9 +1019,10 @@ intervals over desktops, the text-only upper bound beside each task, V6 open
 (headline) and `V6-mc`, V2 (prior-wrong) and `V2-all`, V7's violation-free /
 required-recall / goal-reached, V4's blockers F1, V10's bin accuracy. Score the
 four views separately (each truth file has its own oracle) and pool in your
-analysis; `eval_v1/ids.txt` is the subset. The model drivers for the HPRC and
-the OpenAI-compatible APIs are a separate deliverable and are added under
-`tools/vlm_run/` when ready; this card documents the data and the scorer.
+analysis; `eval_v1/ids.txt` is the subset. The model driver (`tools/vlm_run/vlm_run.py`:
+OpenAI-compatible APIs, vLLM, transformers, and a `gold` pseudo backend), its Slurm
+templates and `run_eval.sh` ship in `tools/vlm_run/`; `docs/vlm_run_hprc.md` is the
+step-by-step run guide for TAMU HPRC. This card documents the data and the scorer.
 
 **Self-check.** {check_line} Re-run it on the receiving machine before anything
 else; it needs no image.

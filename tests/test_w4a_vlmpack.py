@@ -251,6 +251,13 @@ def test_the_vendored_tools_stand_alone(built):
     assert "import" not in init  # no exporter, no database layer
     for name in P.TOOLS:
         assert (pack / "tools" / name).read_bytes() == (SCRIPTS / name).read_bytes()
+    # W4-B's driver, Slurm templates and requirements travel with the pack byte for byte, the run guide beside the card
+    driver = SCRIPTS / "vlm_run"
+    shipped = sorted(p for p in driver.rglob("*") if p.is_file() and "__pycache__" not in p.parts)
+    assert any(p.name == "vlm_run.py" for p in shipped)
+    for src in shipped:
+        assert (pack / "tools" / "vlm_run" / src.relative_to(driver)).read_bytes() == src.read_bytes(), src.name
+    assert (pack / "docs" / "vlm_run_hprc.md").read_bytes() == (SCRIPTS.parent / "docs" / "vlm_run_hprc.md").read_bytes()
     # the build already imported them with -I and ran the self-check from the pack
     P.smoke_import(pack / "tools")
     check = built["summary"]["selfcheck"]
