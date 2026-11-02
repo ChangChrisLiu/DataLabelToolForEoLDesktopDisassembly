@@ -1,0 +1,214 @@
+# 在 HPRC 上跑 VLM 评测：从拷包到分数表
+
+这份是**照着做**的流程（W4-B，2026-11）。模型不在本工作站上跑：评测包（W4-A 的 `exports/vlmpack_<date>/`）
+拷到 TAMU HPRC（或任何有 GPU / 有 API 出口的机器），用包里 `tools/` 的脚本完成
+导出子集 → 输入变体 → 对话请求 → 模型 → 评分 → 汇总 一条链，全程不需要 `tda` 包，也不碰数据库。
+
+驱动脚本在仓库里是 `scripts/vlm_run/`，W4-A 把它拷进包的 `tools/vlm_run/`：
+
+| 文件 | 作用 |
+|---|---|
+| `vlm_run.py` | 调模型：`openai`（任何 OpenAI 兼容端点）/ `vllm`（离线）/ `transformers`（回退）/ `gold`（伪模型，从标签作答） |
+| `vlm_collect.py` | `subset`（按 id 取子集并带上 sidecar）/ `blind`（去图像变体）/ `split`（拆 `--repeat` 文件）/ `table`（汇总分数表） |
+| `run_eval.sh` | 一个作业：子集 → 变体 → `vlm_to_chat` → `vlm_run` → `vlm_score`，全靠环境变量 |
+| `collect_scores.sh` | 把 `runs/` 下所有 `*.score.json` 汇成 `runs/score.md` |
+| `slurm/gold_check.sbatch` | 集群上的 gold 自检（CPU，array 四个视角） |
+| `slurm/open_model.sbatch` | 开源模型 × 一种输入变体，array 四个视角，一张 GPU |
+| `slurm/closed_model.sbatch` | 闭源模型（API），CPU，key 只从环境变量来 |
+| `slurm/submit_matrix.sh` | 模型 × 变体全部提交 |
+| `requirements.txt` / `requirements-vllm.txt` | 环境（见 §2） |
+
+输出目录固定为 `runs/<model_tag>/<variant>/<view>/`：`truth/`（本次跑的记录 + sidecar）、`chat.jsonl`、`pred.jsonl`、
+`run.log`、`score/<model_tag>.score.{json,md}`（重复跑另有 `pred.r1..rk.jsonl` 与 `<model_tag>.r1..rk.score.*`）。
+
+---
+
+## 1. 拷包
+
+```bash
+# 工作站 → HPRC（Grace 用 grace.hprc.tamu.edu；大包走数据传输节点或 Globus）
+rsync -avP exports/vlmpack_2026-11-05/ USER@grace.hprc.tamu.edu:/scratch/user/USER/vlmpack_2026-11-05/
+```
+
+到了集群先核对包的 `manifest.json`（sha256，见包内 README），再：
+
+```bash
+export PACK=$SCRATCH/vlmpack_2026-11-05
+ls $PACK            # <view>.jsonl + .images_manifest.jsonl + .oracle.jsonl + .summary.json, eval_v1/, images/, tools/
+```
+
+`run_eval.sh` 默认按 `$PACK/<view>.jsonl` 或 `$PACK/vlm_<view>.jsonl` 找全量导出，图像根目录默认 `$PACK/images`；
+包的 README 若写的是别的路径，用 `TRUTH=` / `IMAGE_ROOT=` 覆盖。**从 Windows 拷过去的 `.sh` / `.sbatch` 若带 CRLF
+会报 `$'\r': command not found`**，仓库已用 `.gitattributes` 固定 LF；不放心就 `dos2unix tools/vlm_run/*.sh tools/vlm_run/slurm/*`。
+
+## 2. 建环境（一次）
+
+```bash
+# TODO(hprc)：按集群当时的模块名改；vllm 0.11 对应 CUDA 12.8
+module purge
+module load GCCcore/13.3.0 Python/3.12.3 CUDA/12.8.0
+python -m venv $SCRATCH/venvs/vlmpack && source $SCRATCH/venvs/vlmpack/bin/activate
+pip install -U pip
+pip install -r $PACK/tools/vlm_run/requirements.txt                 # 转换器 + 评分器 + gold + openai 后端
+pip install -r $PACK/tools/vlm_run/requirements-vllm.txt            # 开源模型（GPU 节点才需要）
+pip freeze > $PACK/tools/vlm_run/requirements.lock                   # 装成功后锁一份，写进论文附录
+```
+
+权重放 scratch，不放 `$HOME`（配额小）。登录节点有网，先下好，计算节点离线跑：
+
+```bash
+export HF_HOME=$SCRATCH/hf
+hf download Qwen/Qwen3-VL-8B-Instruct
+hf download OpenGVLab/InternVL3_5-8B
+```
+
+`sbatch` 模板里 `HF_HUB_OFFLINE=1`；计算节点要联网（闭源 API）时 `module load WebProxy`（模板里是注释，按集群文档开）。
+
+## 3. gold 自检（不用模型，必须每项 1.000）
+
+先在登录节点跑一个视角，几十秒：
+
+```bash
+cd $PACK
+PACK=$PACK VIEW=scan BACKEND=gold MODEL_TAG=gold bash tools/vlm_run/run_eval.sh
+cat runs/gold/image/scan/score/gold.score.md
+```
+
+期望：`parse failures: strict 0.0%, lenient 0.0%`，每个任务 strict = lenient = `1.000 [1.000, 1.000]`。
+不是 1.000 说明包、转换器或评分器三者之一在这台机器上不一致——先修这个，再花 GPU 时。四个视角一起：
+
+```bash
+mkdir -p logs && sbatch --export=ALL,PACK=$PACK tools/vlm_run/slurm/gold_check.sbatch
+```
+
+去图像变体的 gold 也应是 1.000（gold 从标签作答，不看图）：`VARIANT=blind`。
+
+## 4. 100 题试点（一个开源模型，一个视角）
+
+试点只在 **train 台**上做（论文 §6.2），从评测集里按任务分层抽 100 条：
+
+```bash
+python - <<'EOF'
+import hashlib, json, collections
+rows = [json.loads(l) for l in open(f"{__import__('os').environ['PACK']}/eval_v1/scan.jsonl", encoding="utf-8")]
+rows = [r for r in rows if r["label"].get("split") == "train"]
+rows.sort(key=lambda r: hashlib.sha256(("pilot0|" + r["id"]).encode()).hexdigest())
+per = collections.Counter(); keep = []
+for r in rows:
+    t = r["prompt"]["task"]
+    if per[t] < 9: per[t] += 1; keep.append(r["id"])
+open("pilot_ids.txt", "w").write("\n".join(keep[:100]) + "\n")
+print(len(keep[:100]), dict(per))
+EOF
+```
+
+**先 dry-run**（不加载模型，校验每张图都在，打印第一条完整提示）：
+
+```bash
+VIEW=scan; OUT=runs/pilot_qwen3vl8b/image/$VIEW
+python tools/vlm_run/vlm_collect.py subset --export $PACK/$VIEW.jsonl --out $OUT/truth/$VIEW.jsonl --ids pilot_ids.txt
+python tools/vlm_to_chat.py --export $OUT/truth/$VIEW.jsonl --format openai --image-root $PACK/images --out $OUT/chat.jsonl
+python tools/vlm_run/vlm_run.py --backend vllm --model Qwen/Qwen3-VL-8B-Instruct --chat $OUT/chat.jsonl \
+  --out $OUT/pred.jsonl --image-root $PACK/images --max-side 1568 --dry-run
+```
+
+然后提交（`--array=0` 只跑 scan）：
+
+```bash
+sbatch --array=0 --export=ALL,PACK=$PACK,MODEL=Qwen/Qwen3-VL-8B-Instruct,SUBSET=$PWD/pilot_ids.txt,MODEL_TAG=pilot_qwen3vl8b \
+  tools/vlm_run/slurm/open_model.sbatch
+```
+
+看三样东西：`score/pilot_qwen3vl8b.score.md` 的 **parse failure**（strict 高、lenient 低 = 模型爱加说明文字，
+提示词或 `--max-tokens` 要调）；`run.log` 的每批耗时（推全量用）；`pred.jsonl` 里 `meta.prompt_tokens` /
+`completion_tokens` 的均值（闭源预算用，见 §7）。回退路线：`BACKEND=transformers`（一条一条生成，慢十倍，
+需要 HF 格式权重，InternVL 用 `*-hf` 仓库；vllm 两种都认）。
+
+## 5. 全量评测
+
+编辑 `tools/vlm_run/slurm/submit_matrix.sh` 的两张模型清单，然后：
+
+```bash
+PACK=$PACK bash tools/vlm_run/slurm/submit_matrix.sh
+squeue -u $USER
+```
+
+每个作业 = 一个模型 × 一种变体（`image` 原图 / `blind` 去图像，题面与选项不变）× array 四个视角，评测集
+`eval_v1/<view>.jsonl`（所有模型同一子集）。闭源模型另跑 **重复子集**（`eval_v1/repeat.ids.txt`，`REPEAT=3`，
+每题问三次写 `raw_text_1..3`）。
+
+**中断 / 失败重跑**：同一命令再提交一次即可——`vlm_run.py` 跳过 `pred.jsonl` 里已答的 id，只补 `raw_text = null`
+的行；退出码 3 = 有请求失败（行已写、带 `meta.error`），0 = 全部答完。
+
+**闭源的 key**：`echo 'export OPENAI_API_KEY=...' > ~/.vlm_keys.env && chmod 600 ~/.vlm_keys.env`。
+`closed_model.sbatch` source 这个文件，`API_KEY_ENV` 只传**变量名**；`vlm_run.py` 不打印、不写入、错误信息里也替换掉。
+别的端点：`BASE_URL=https://.../v1 API_KEY_ENV=MY_KEY`（Gemini / Anthropic 的 OpenAI 兼容层、或集群内 `vllm serve`
+加 `RUN_ARGS=--no-api-key`）。
+
+常用旋钮（都走环境变量进 `run_eval.sh`）：`MAX_SIDE`（送图最长边，默认 1568）、`MAX_TOKENS`（默认 512）、
+`ROI=view`（按视角固定底盘裁切）、`CHAT_FORMAT`、`RUN_ARGS="--tensor-parallel 4 --dtype bf16 --batch-size 8
+--gpu-mem 0.85 --max-model-len 16384"`。OOM 先降 `--batch-size` 与 `MAX_SIDE`，再加卡 + `--tensor-parallel`。
+
+## 6. 收分数
+
+```bash
+PACK=$PACK bash tools/vlm_run/collect_scores.sh
+cat runs/score.md
+```
+
+`vlm_collect.py table` 把每个 `runs/<model>/<variant>/<view>/score/*.score.json` 变成一行（strict 准确率 +
+按台聚类自助法 95 % 区间），重复跑（`*.r1..rk`）折成 **均值 ± 样本标准差 (k=3)**。单个作业的细表看
+`score/<model_tag>.score.md`：按任务 / 能力层 / 模板，附加指标（V6 blocked_rate、V7 violation_free、
+V16 localised、V4 blockers_f1、V10 bin_accuracy）、文本捷径上界列。
+
+**论文要报的**（§6.2）：
+- parse-failure 率两种（strict / lenient），分母是真值文件的全部记录，没答的算失败；
+- 闭源三次重复的标准差（重复子集），开源 temperature 0 只跑一次；
+- 置信区间 = 按台聚类自助法（簇 = 66 台，1 000 次，`vlm_score.py --resamples 1000 --seed 0`，`run_eval.sh` 用默认值）；
+- 每个任务旁边的文本捷径上界与（V6 / V7 / V16）protocol prior；
+- 七轴：模型快照 `meta.model_snapshot`、送图尺寸 `meta.image_sizes_sent`、`max_tokens`、temperature、
+  变体、提示模板 id `meta.prompt_template_id`、`requirements.lock`——全在 `pred.jsonl` 的 `meta` 里。
+
+## 7. 闭源模型预算
+
+从试点（§4）读 `meta.prompt_tokens` / `completion_tokens` 的均值，再填下表（价格按供应商当天的报价）：
+
+```
+tokens_in  = N_items × ( T_text + n_img × T_img )          # T_img：供应商的图 token 规则；用试点实测均值更准
+tokens_out = N_items × T_out
+cost       = tokens_in × P_in + tokens_out × P_out
+```
+
+| 量 | 值 | 来源 |
+|---|---|---|
+| N_items（image 变体，四视角合计） | ⟨ ⟩ | `eval_v1/table.md` 各任务 n 之和 |
+| N_items（blind 变体） | ⟨同上⟩ | 同一子集，n_img = 0 |
+| n_img 均值 | ⟨ ⟩ | 单图任务 1，V3 / V12 / V15 2 |
+| T_text（文字 token 均值） | ⟨ ⟩ | blind 试点的 `prompt_tokens` |
+| T_img（每图 token，MAX_SIDE=⟨ ⟩） | ⟨ ⟩ | image 试点的 `prompt_tokens` − T_text |
+| T_out | ⟨ ⟩ | 试点 `completion_tokens` 均值（JSON 短答一般 < 60） |
+| 重复子集 | N_rep = ⟨ ⟩ × (k−1 = 2) | `eval_v1/repeat.ids.txt` |
+| P_in / P_out（每百万 token） | ⟨ ⟩ / ⟨ ⟩ | 供应商报价 |
+| 总计（每个闭源模型） | ⟨ ⟩ | 上式 ×（image + blind）+ 重复子集 |
+
+试点 100 题 × 一个模型就能把 T_* 全部实测出来，不要靠猜。
+
+## 8. 常见问题
+
+- `bash: $'\r': command not found` → CRLF，`dos2unix`（§1）。
+- `environment variable X is not set` → `~/.vlm_keys.env` 没 source 或变量名写错；`--dry-run` 会打印 key 是否已设。
+- `HTTP 429` / `503` → 已自动指数退避重试（`--max-retries`，尊重 `Retry-After`）；仍失败的行留 `meta.error`，重跑补齐。
+- vllm `ValueError: ... images` → 多图题超过 `--max-images`（默认 2，V3 / V12 / V15 都是两图）。
+- `transformers` 后端 `apply_chat_template` 报错 → 版本太旧或权重不是 HF 格式；驱动会退到「模板文本 + processor」两步法，
+  再不行换 `-hf` 仓库或走 vllm。
+- `--dry-run` 报 `missing image` → `IMAGE_ROOT` 与 manifest 的相对路径不配，看包 README。
+- 想在工作站上先过一遍链路：`tests/test_w4b_vlm_run.py` 用 gold 后端与本机假服务器把全链跑通（不装 vllm）。
+
+## 9. 后端接口（要加模型时）
+
+`vlm_run.py` 把三种聊天格式都归一成 `Request(id, system, parts[("text"|"image", value)], meta)`；一个后端是
+`Backend` 的子类：`describe() -> dict`（写进每行 `meta`）、`generate(list[Request]) -> list[Reply]`（同序，
+`Reply(text, error, latency_s, prompt_tokens, completion_tokens, model_snapshot, finish_reason, image_sizes, attempts)`），
+`batch_size` 决定一次送几条。图像统一经 `ImagePrep.load(ref) -> Picture(data, mime, size, source_size)`
+（`--max-side` 在这里缩放），`openai_messages(req, prep)` 生成带 `data:` 图的 OpenAI 消息，vllm 与 openai 后端都用它。
+`vllm` / `transformers` / `torch` 只在对应后端 `_ensure()` 时导入；`--dry-run` 与 `gold` / `openai` 后端在没有它们的机器上照常跑。
