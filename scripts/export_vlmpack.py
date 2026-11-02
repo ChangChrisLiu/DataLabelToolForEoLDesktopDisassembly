@@ -1,0 +1,1069 @@
+"""The self-contained VLM evaluation pack (task W4-A; paper plan 6.2, spec 8.2).
+
+::
+
+    python scripts/export_vlmpack.py --db <read-only copy of tda.sqlite> \
+        [--out D:/DataSet/exports/vlmpack_<date>] [--cache-dir D:/DataSet/cache] \
+        [--views scan,oak1,oak2,rs] [--desktops 1-66] [--seed 0] \
+        [--images all|eval|none] [--work <dir>] [--allow-conflicts] [--force] \
+        [--no-selfcheck]
+
+The models are run elsewhere (another machine, the HPRC), so everything the
+evaluation needs travels in one directory that neither the annotation tool nor
+its database has to be present for::
+
+    README.md                 the data card (English): tasks, fields, formats, how to run
+    manifest.json             what was built, counts, and size + sha256 of every other file
+    data/vlm_<view>.jsonl     the four-view question set of ``export_vlm`` (all records)
+    data/vlm_<view>.images_manifest.jsonl / .oracle.jsonl / .summary.json
+    images/<view>/D<nn>/s<nn>.<ext>   the frames the manifests name, byte for byte
+    eval_v1/                  the frozen evaluation subset (``scripts/vlm_eval_set.py``):
+                              ids.txt, <view>.jsonl + sidecars, table.md, table.json,
+                              audit/ (the 300-item human-audit sample and reviewer sheet)
+    tools/                    the scorer, converters, references, samplers and the
+                              self-check, with the ``tda`` modules they import vendored
+                              (``tools/tda``, ``tools/configs``) and ``requirements.txt``
+
+**The database is never written.** The script refuses the live database by path
+(:data:`LIVE_DB`) and copies whatever file it is given with the sqlite backup
+API into ``--work``; only the copy is opened, because the export's
+``ensure_fresh`` writes compiled rows. The frame cache is only read.
+
+**Images.** Every image a manifest names (``--images all``, the default), or
+only those the evaluation subset names (``eval``), is copied from
+``--cache-dir`` under ``images/`` with the manifest's own relative path, so
+``tools/vlm_to_chat.py --image-root <pack>/images`` finds them; the copy is
+hashed as it is written. **A missing image stops the build before anything is
+copied** (:class:`PackError`), as does too little free space. ``none`` is a dry
+run (export + subset + tools, no pictures) and the manifest says so.
+
+**Self-check.** The build ends by running ``tools/vlm_selfcheck.py`` from the
+pack in a subprocess (``python -I``: no cwd, no ``PYTHONPATH``): the gold reply
+of every record of the subset must score 1.0 on every task with the vendored
+tools alone, and the ``tda`` it imported must be the pack's. The clean-virtual-
+environment run is the separate ``scripts/vlmpack_cleanvenv_check.py``.
+
+Deterministic: two runs over the same database and cache write the same bytes
+(no wall clock and no machine path in any shipped file; the pack directory's
+date is only its name).
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import sqlite3
+import subprocess
+import sys
+from collections import Counter, defaultdict
+from datetime import date
+from pathlib import Path
+from typing import Iterable, Optional, Sequence
+
+REPO = Path(__file__).resolve().parents[1]
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+SCRIPTS = Path(__file__).resolve().parent
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+import vlm_eval_set  # noqa: E402
+import vlm_io as IO  # noqa: E402
+from tda.core.db import Db  # noqa: E402
+from tda.core.export.vlm import TASKS, export_vlm, manifest_path  # noqa: E402
+from tda.core.export.vlm_check import CAPABILITY_LAYERS, RESPONSE_FORMATS  # noqa: E402
+from tda.core.export.vlm_tasks import TRUTH_SOURCES  # noqa: E402
+from tda.core.model import VIEWS, is_component_view  # noqa: E402
+from tda.core.taxonomy import Taxonomy, load_taxonomy  # noqa: E402
+from tda.core.truth import TruthService  # noqa: E402
+from tda.pipeline import parse_desktops  # noqa: E402
+
+__all__ = ["IMAGE_MODES", "LIVE_DB", "PACK_VERSION", "TOOLS", "VENDORED", "PackError",
+           "build_pack", "main", "readme_text", "refuse_live", "sha256_of", "work_copy"]
+
+#: The annotation tool's live database: never opened here, by name.
+LIVE_DB = "D:/DataSet/annotations/tda.sqlite"
+PACK_VERSION = "1"
+PACK_NAME = "vlmpack"
+DEFAULT_CACHE_DIR = "D:/DataSet/cache"
+DEFAULT_WORK = "D:/DataSet/.cache/tmp/w4a/work"
+IMAGE_MODES = ("all", "eval", "none")
+#: The W3b scripts shipped under ``tools/`` (W4-A's own two included).
+TOOLS = ("vlm_io.py", "vlm_to_chat.py", "vlm_score.py", "vlm_references.py",
+         "vlm_sample.py", "vlm_eval_set.py", "vlm_selfcheck.py")
+#: The ``tda`` modules :mod:`tda.core.export.vlm_check` needs, copied verbatim
+#: under ``tools/tda``: the scorer's whole import closure, nothing of the tool.
+VENDORED = ("tda/__init__.py", "tda/core/__init__.py", "tda/core/taxonomy.py",
+            "tda/core/model.py", "tda/core/states.py", "tda/core/graph_rules.py",
+            "tda/core/graph_infer.py", "tda/core/graph_plan.py",
+            "tda/core/graph_templates.py", "tda/core/graph.py",
+            "tda/core/export/vlm_check.py")
+#: The configuration the vendored taxonomy reads (``tools/configs/``).
+VENDORED_CONFIGS = ("configs/taxonomy.yaml", "configs/taxonomy_map.yaml")
+REQUIREMENTS = """\
+# The pack's tools run on Python >= 3.11 with these two packages; nothing else
+# (no numpy, no OpenCV, no Qt, no `tda` install -- the modules the scorer needs
+# are vendored under tools/tda).
+PyYAML>=6.0
+# Pillow is needed only by vlm_to_chat.py --roi view / --composite / --max-side
+# (crops and composites); the scorer and the self-check do not import it.
+Pillow>=10.0
+"""
+#: One line per task for the data card.
+TASK_MEANINGS = {
+    "V1": "which parts are visible, and where (class + box for every visible part)",
+    "V2": "the state of a named part, or how many screws of a role are still in place",
+    "V3": "what the operator just did between two frames (verb, target, tool)",
+    "V4": "can this action be done to this part right now; if not, what blocks it",
+    "V5": "(not in the default set) every action that is legal now",
+    "V6": "the next action to carry out: open form (headline) and multiple choice (secondary, same frame, `v6_pair`)",
+    "V7": "the remaining plan to take the CPU out, from a frame where that work has started",
+    "V8": "localise a named part (box)",
+    "V10": "which actions have already been carried out; progress bin",
+    "V12": "did the machine's state change between two frames",
+    "V14": "can this view settle the state of a named part; if so, the state",
+    "V15": "two cameras, two pictures: the same moment of the teardown or not",
+    "V16": "is a candidate plan legal from this state; the first step that is not",
+}
+LICENSE_NOTE = """\
+Internal evaluation data -- not for redistribution.
+
+This pack (pictures, questions, answers, tools) is for running and scoring the
+paper's VLM evaluation on another machine. Do not redistribute it, publish it,
+upload it to a public service or use it to train models for release without
+written permission from the dataset owners. The annotations are a work in
+progress and may change.
+"""
+
+
+class PackError(RuntimeError):
+    """The build stops: what the README would promise is not true of the inputs."""
+
+
+# --------------------------------------------------------------------------- #
+# small helpers
+# --------------------------------------------------------------------------- #
+def sha256_of(path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_json(path: Path, obj) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(obj, ensure_ascii=False, indent=1, sort_keys=True) + "\n",
+                    encoding="utf-8", newline="\n")
+
+
+def write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
+def _same_file(a: str, b: str) -> bool:
+    na = os.path.normcase(os.path.abspath(str(a)))
+    nb = os.path.normcase(os.path.abspath(str(b)))
+    if na == nb:
+        return True
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def refuse_live(db_path: str, live: str = LIVE_DB) -> None:
+    """Stop before anything else when ``db_path`` is the annotation tool's database."""
+    if _same_file(db_path, live):
+        raise PackError(f"{db_path} is the live database; pass a copy "
+                        f"(sqlite3 backup API into D:/DataSet/.cache/tmp/w4a/)")
+    if not Path(db_path).is_file():
+        raise PackError(f"{db_path}: no such database file")
+
+
+def work_copy(db_path: str, work: Path) -> Path:
+    """A backup-API copy of the input, made through a read-only connection."""
+    work.mkdir(parents=True, exist_ok=True)
+    dest = work / "vlmpack_work.sqlite"
+    for suffix in ("", "-wal", "-shm"):
+        Path(str(dest) + suffix).unlink(missing_ok=True)
+    uri = Path(db_path).resolve().as_uri() + "?mode=ro"
+    src = sqlite3.connect(uri, uri=True)
+    try:
+        dst = sqlite3.connect(str(dest))
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    return dest
+
+
+#: Written first, removed last: a directory with it is a build that did not finish.
+BUILDING = ".vlmpack_building"
+
+
+def _prepare_out(out: Path, force: bool) -> None:
+    if out.exists() and any(out.iterdir()):
+        marker = out / "manifest.json"
+        is_pack = (marker.is_file() and f'"{PACK_NAME}"' in marker.read_text(
+            encoding="utf-8")[:400]) or (out / BUILDING).is_file()
+        if not force:
+            raise PackError(f"{out} is not empty; pass --force to replace a pack there")
+        if not is_pack:
+            raise PackError(f"{out} is not empty and holds no {PACK_NAME} manifest; "
+                            f"refusing to delete it")
+        shutil.rmtree(out)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / BUILDING).write_text("a build of scripts/export_vlmpack.py is in progress\n",
+                                encoding="utf-8")
+
+
+def _drop_pycache(root: Path) -> None:
+    """No ``__pycache__`` ships: a .pyc carries a timestamp, and the manifest hashes."""
+    for cache in sorted(root.rglob("__pycache__"), reverse=True):
+        if cache.is_dir():
+            shutil.rmtree(cache, ignore_errors=True)
+
+
+def _git_head(repo: Path) -> Optional[str]:
+    try:
+        out = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                             capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return out.stdout.strip() if out.returncode == 0 and out.stdout.strip() else None
+
+
+# --------------------------------------------------------------------------- #
+# 1. the export
+# --------------------------------------------------------------------------- #
+def export_views(db: Db, tax: Taxonomy, desktops: Sequence[int], views: Sequence[str],
+                 data_dir: Path, cache_dir: Optional[str], allow_conflicts: bool,
+                 log=print) -> dict[str, dict]:
+    """``export_vlm`` per view into ``data/``; returns ``view -> summary``."""
+    service = TruthService(db, tax, cache_dir=cache_dir)
+    out: dict[str, dict] = {}
+    for view in views:
+        if is_component_view(view):
+            raise PackError(f"{view} is a components-gallery view: no VLM questions")
+        target = data_dir / f"vlm_{view}.jsonl"
+        log(f"[vlmpack] export {view}: {len(desktops)} desktops ...")
+        stats = export_vlm(db, tax, list(desktops), view, str(target), tasks=TASKS,
+                           only_verified=False, truth=service, allow_conflicts=allow_conflicts,
+                           balance=True, split="all")
+        if not stats.get("records"):
+            raise PackError(f"{view}: the export wrote no record")
+        log(f"[vlmpack] export {view}: {stats['records']} records, {stats['images']} images"
+            + (f", {stats['open_conflicts']} frames with open conflicts (unverified)"
+               if stats.get("open_conflicts") else ""))
+        out[view] = stats
+    return out
+
+
+def _summary_for_manifest(stats: dict) -> dict:
+    keys = ("records", "images", "by_task", "by_source", "by_truth_source", "by_split",
+            "open_conflicts", "illegal_steps", "excluded_desktops", "v10_excluded",
+            "unlabelled_view_desktops", "records_without_confirmed_view", "v12_by_kind",
+            "v15_moment_by_view", "v16_corruptions", "v6_options",
+            "image_undecidable_by_task", "shortcuts", "v6_option_shortcut", "tasks")
+    return {k: stats.get(k) for k in keys if k in stats}
+
+
+# --------------------------------------------------------------------------- #
+# 2. the images
+# --------------------------------------------------------------------------- #
+def manifest_entries(jsonl_paths: Iterable[Path]) -> dict[str, dict]:
+    """``relative path -> {desktop, view, step}`` over several manifests."""
+    out: dict[str, dict] = {}
+    for path in jsonl_paths:
+        for row in IO.load_manifest(path).values():
+            out.setdefault(row["path"], {"desktop": int(row["desktop"]),
+                                         "view": row["view"], "step": int(row["step"])})
+    return out
+
+
+def images_needed(data_dir: Path, views: Sequence[str], mode: str,
+                  eval_dir: Optional[Path]) -> dict[str, dict]:
+    if mode == "none":
+        return {}
+    if mode == "all":
+        return manifest_entries(data_dir / f"vlm_{v}.jsonl" for v in views)
+    if mode == "eval":
+        if eval_dir is None:
+            raise ValueError("--images eval needs the evaluation subset")
+        return manifest_entries(p for p in (eval_dir / f"{v}.jsonl" for v in views)
+                                if p.exists())
+    raise ValueError(f"--images {mode!r}: one of {', '.join(IMAGE_MODES)}")
+
+
+def copy_images(cache_dir: str, needed: dict[str, dict], out: Path, log=print
+                ) -> dict[str, dict]:
+    """Copy every needed frame under ``out/images``; sha256 while writing.
+
+    Checks **all** sources and the free space first: a build that copies 20 GB
+    and then finds the last frame missing has wasted an evening.
+    """
+    root = Path(cache_dir)
+    missing = [rel for rel in sorted(needed) if not (root / rel).is_file()]
+    if missing:
+        shown = ", ".join(missing[:10]) + (" ..." if len(missing) > 10 else "")
+        raise PackError(f"{len(missing)} of {len(needed)} images are not in {cache_dir}: "
+                        f"{shown}. Build the cache for those views first "
+                        f"(python -m tda.cli build-cache --views <view>)")
+    total = sum((root / rel).stat().st_size for rel in needed)
+    dest_root = out / "images"
+    dest_root.mkdir(parents=True, exist_ok=True)
+    free = shutil.disk_usage(dest_root).free
+    if total > free:
+        raise PackError(f"the images need {total / 2**30:.1f} GB but {out} has only "
+                        f"{free / 2**30:.1f} GB free")
+    log(f"[vlmpack] copying {len(needed)} images ({total / 2**30:.2f} GB) from {cache_dir}")
+    files: dict[str, dict] = {}
+    done = 0
+    for rel in sorted(needed):
+        src = root / rel
+        dst = dest_root / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256()
+        size = 0
+        with open(src, "rb") as fh, open(dst, "wb") as oh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+                oh.write(chunk)
+                size += len(chunk)
+        files["images/" + rel] = {"bytes": size, "sha256": digest.hexdigest(),
+                                  **needed[rel]}
+        done += 1
+        if done % 1000 == 0:
+            log(f"[vlmpack]   {done}/{len(needed)} images")
+    return files
+
+
+# --------------------------------------------------------------------------- #
+# 3. the tools
+# --------------------------------------------------------------------------- #
+def vendor_tools(tools: Path, repo: Path = REPO) -> list[str]:
+    """Copy the scripts and the scorer's ``tda`` closure under ``tools/``.
+
+    Two files are generated rather than copied: ``tda/core/export/__init__.py``
+    (the repository's imports the COCO and VLM exporters, which need the
+    database layer) and ``tda/core/export/vlm_tasks.py`` (3 000 lines of
+    generators, of which the references need one dictionary).
+    """
+    written: list[str] = []
+    tools.mkdir(parents=True, exist_ok=True)
+    for name in TOOLS:
+        src = repo / "scripts" / name
+        if not src.is_file():
+            raise PackError(f"tool {src} is missing")
+        shutil.copyfile(src, tools / name)
+        written.append(name)
+    for rel in VENDORED + VENDORED_CONFIGS:
+        src = repo / rel
+        if not src.is_file():
+            raise PackError(f"vendored file {src} is missing")
+        dst = tools / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dst)
+        written.append(rel)
+    write_text(tools / "tda" / "core" / "export" / "__init__.py",
+               '"""The scorer\'s export subset (vendored by scripts/export_vlmpack.py).\n\n'
+               'Only :mod:`tda.core.export.vlm_check` is here; the exporters stay in the\n'
+               'annotation tool.\n"""\n')
+    written.append("tda/core/export/__init__.py")
+    write_text(tools / "tda" / "core" / "export" / "vlm_tasks.py", vlm_tasks_stub())
+    written.append("tda/core/export/vlm_tasks.py")
+    write_text(tools / "requirements.txt", REQUIREMENTS)
+    written.append("requirements.txt")
+    return written
+
+
+def vlm_tasks_stub() -> str:
+    """The few names of :mod:`tda.core.export.vlm_tasks` the scorer side uses.
+
+    The real module is 3 000 lines of generators over the database layer. The
+    scorer needs ``SCREW_PRESENCE`` (the state-oracle reference) and
+    ``class_label`` (V1 grading, imported lazily by ``vlm_check``) with its
+    helper; their **source is read off the live module** at build time, so the
+    stub cannot drift from the tool, and the build's self-check exercises it.
+    """
+    import inspect
+
+    from tda.core.export import vlm_tasks as T
+
+    parts = [
+        '"""The names of tda.core.export.vlm_tasks the scorer side uses (vendored).',
+        "",
+        "Generated by scripts/export_vlmpack.py from the live module's source; the",
+        "generators themselves stay in the annotation tool.",
+        '"""',
+        "from __future__ import annotations",
+        "",
+        "from typing import Optional",
+        "",
+        "from tda.core.taxonomy import Taxonomy",
+        "",
+        f"INITIALISMS = frozenset({json.dumps(sorted(T.INITIALISMS))})",
+        f"SCREW_PRESENCE = {json.dumps(T.SCREW_PRESENCE, sort_keys=True)}",
+        "",
+        "",
+        inspect.getsource(T._words).rstrip("\n"),
+        "",
+        "",
+        inspect.getsource(T.class_label).rstrip("\n"),
+        "",
+    ]
+    return "\n".join(parts)
+
+
+def _isolated_env() -> dict:
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME")}
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONDONTWRITEBYTECODE"] = "1"  # nothing lands in the pack but what is listed
+    return env
+
+
+def smoke_import(tools: Path, python: str = sys.executable) -> None:
+    """Import every tool from the pack alone, in a subprocess with ``-I``."""
+    code = ("import sys, pathlib; tools = pathlib.Path(sys.argv[1]); "
+            "sys.path.insert(0, str(tools)); "
+            "import vlm_io, vlm_to_chat, vlm_score, vlm_references, vlm_sample, "
+            "vlm_eval_set, vlm_selfcheck, tda, tda.core.export.vlm_check as C; "
+            "from tda.core.taxonomy import load_taxonomy; load_taxonomy(); "
+            "where = pathlib.Path(tda.__file__).resolve().parent; "
+            "assert where == (tools / 'tda').resolve(), where; print(where)")
+    proc = subprocess.run([python, "-I", "-B", "-c", code, str(tools)], capture_output=True,
+                          text=True, cwd=str(tools.parent), env=_isolated_env())
+    if proc.returncode != 0:
+        raise PackError(f"the pack's tools do not import on their own:\n{proc.stderr}")
+
+
+def run_selfcheck(out: Path, views: Sequence[str], work: Path,
+                  python: str = sys.executable, log=print) -> dict:
+    """``tools/vlm_selfcheck.py`` on the subset, from the pack, in a subprocess."""
+    truth = [out / vlm_eval_set.EVAL_VERSION / f"{v}.jsonl" for v in views]
+    truth = [p for p in truth if p.exists()]
+    target = work / "selfcheck"
+    cmd = [python, "-I", "-B", str(out / "tools" / "vlm_selfcheck.py"), "--truth",
+           *map(str, truth), "--out", str(target)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(work),
+                          env=_isolated_env())
+    for line in proc.stdout.splitlines():
+        log(line)
+    if proc.returncode != 0:
+        raise PackError(f"the self-check failed (exit {proc.returncode}):\n{proc.stderr}")
+    report = json.loads((target / "selfcheck.json").read_text(encoding="utf-8"))
+    where = Path(report["tda_module"]).resolve()
+    if where != (out / "tools" / "tda").resolve():
+        raise PackError(f"the self-check imported tda from {where}, not from the pack")
+    return {"ok": report["ok"], "files": [
+        {"file": f["file"], "records": f["records"],
+         "tasks": {t: row["strict_mean"] for t, row in f["rows"].items()}}
+        for f in report["files"]]}
+
+
+# --------------------------------------------------------------------------- #
+# 4. composition (for the card)
+# --------------------------------------------------------------------------- #
+def composition(data_dir: Path, views: Sequence[str]) -> dict:
+    """What the card says beyond ``summary.json``: V2 by class, the HP bracket."""
+    v2: Counter = Counter()
+    v2_prior_wrong = 0
+    v2_total = 0
+    bracket_desktops: set[int] = set()
+    desktops: set[int] = set()
+    for view in views:
+        path = data_dir / f"vlm_{view}.jsonl"
+        for rec in IO.read_jsonl(path):
+            if rec["prompt"]["task"] == "V2":
+                v2[vlm_eval_set.v2_class(rec)] += 1
+                v2_total += 1
+                if rec["label"].get("prior_is_correct") is False:
+                    v2_prior_wrong += 1
+        oracle = IO.sidecar(path, "oracle.jsonl")
+        if oracle.exists():
+            for row in IO.read_jsonl(oracle):
+                if row.get("type") != "desktop":
+                    continue
+                desktops.add(int(row["desktop"]))
+                for inst in row.get("instances", {}).values():
+                    if inst.get("class") == "drive_cage" and \
+                            (inst.get("attrs") or {}).get("of") == "optical":
+                        bracket_desktops.add(int(row["desktop"]))
+    return {"v2_by_class": dict(sorted(v2.items(), key=lambda kv: (-kv[1], kv[0]))),
+            "v2_records": v2_total, "v2_prior_wrong": v2_prior_wrong,
+            "optical_bracket_desktops": sorted(bracket_desktops),
+            "desktops": sorted(desktops)}
+
+
+# --------------------------------------------------------------------------- #
+# the build
+# --------------------------------------------------------------------------- #
+def build_pack(db_path: str, out_dir: str, *, cache_dir: Optional[str] = DEFAULT_CACHE_DIR,
+               work_dir: Optional[str] = None, views: Sequence[str] = VIEWS,
+               desktops: Optional[Sequence[int]] = None, seed: int = vlm_eval_set.SEED,
+               images: str = "all", allow_conflicts: bool = False, force: bool = False,
+               selfcheck: bool = True, audit: int = 300, tax: Optional[Taxonomy] = None,
+               repo: Path = REPO, python: str = sys.executable, log=print,
+               live_db: str = LIVE_DB) -> dict:
+    """Build the pack at ``out_dir``; returns the manifest's summary."""
+    if images not in IMAGE_MODES:
+        raise ValueError(f"images={images!r}: one of {', '.join(IMAGE_MODES)}")
+    refuse_live(db_path, live_db)
+    views = [str(v) for v in views]
+    if not views:
+        raise PackError("no view asked for")
+    out = Path(out_dir)
+    work = Path(work_dir) if work_dir else Path(DEFAULT_WORK)
+    _prepare_out(out, force)
+    tax = tax or load_taxonomy()
+    db = Db(str(work_copy(db_path, work)))
+    try:
+        wanted = sorted(int(d) for d in desktops) if desktops else db.desktop_ids()
+        for d in wanted:
+            if db.get_desktop(d) is None:
+                raise PackError(f"desktop {d} is not in {db_path}")
+        if not wanted:
+            raise PackError(f"{db_path} has no desktop")
+        data_dir = out / "data"
+        exports = export_views(db, tax, wanted, views, data_dir, cache_dir, allow_conflicts,
+                               log)
+    finally:
+        db.close()
+
+    # the frozen subset and its audit sample
+    eval_dir = out / vlm_eval_set.EVAL_VERSION
+    log(f"[vlmpack] drawing {vlm_eval_set.EVAL_VERSION} (seed {seed}) ...")
+    eval_result = vlm_eval_set.build([data_dir / f"vlm_{v}.jsonl" for v in views], eval_dir,
+                                     seed=seed, audit=audit)
+    log(f"[vlmpack] {vlm_eval_set.EVAL_VERSION}: {eval_result['records']} records: "
+        + " ".join(f"{r['task']}={r['records']}" for r in eval_result["rows"]))
+
+    # the pictures
+    needed = images_needed(data_dir, views, images, eval_dir)
+    image_files = copy_images(cache_dir or "", needed, out, log) if needed else {}
+
+    # the tools, imported from the pack alone, then the self-check from the pack
+    tools = out / "tools"
+    tool_files = vendor_tools(tools, repo)
+    smoke_import(tools, python)
+    check = run_selfcheck(out, views, work, python, log) if selfcheck else None
+
+    comp = composition(data_dir, views)
+    summary = {
+        "package": PACK_NAME, "pack_version": PACK_VERSION,
+        "eval_version": vlm_eval_set.EVAL_VERSION,
+        "views": views, "desktops": wanted, "tasks": list(TASKS),
+        "image_mode": images, "images": len(image_files),
+        "image_bytes": sum(f["bytes"] for f in image_files.values()),
+        "allow_conflicts": bool(allow_conflicts),
+        "seed": seed,
+        "source_commit": _git_head(repo),
+        "exports": {v: _summary_for_manifest(s) for v, s in exports.items()},
+        "eval": eval_result,
+        "composition": comp,
+        "selfcheck": check,
+        "tools": tool_files,
+    }
+    write_text(out / "LICENSE_NOTE.txt", LICENSE_NOTE)
+    write_text(out / "README.md", readme_text(summary))
+    _drop_pycache(out)
+    (out / BUILDING).unlink(missing_ok=True)
+    files = dict(image_files)
+    for path in sorted(p for p in out.rglob("*") if p.is_file()):
+        rel = path.relative_to(out).as_posix()
+        if rel == "manifest.json" or rel in files:
+            continue
+        files[rel] = {"bytes": path.stat().st_size, "sha256": sha256_of(path)}
+    write_json(out / "manifest.json", dict(summary, files=files))
+    log(f"[vlmpack] {len(files)} files -> {out}")
+    return summary
+
+
+# --------------------------------------------------------------------------- #
+# the data card
+# --------------------------------------------------------------------------- #
+def _task_sort(task: str) -> tuple:
+    digits = "".join(ch for ch in task[1:] if ch.isdigit())
+    return (int(digits or 0), task)
+
+
+def _n(count: int, word: str, plural: Optional[str] = None) -> str:
+    return f"{count} {word if count == 1 else (plural or word + 's')}"
+
+
+def _counts_table(summary: dict) -> str:
+    views = summary["views"]
+    tasks = sorted({t for s in summary["exports"].values() for t in s["by_task"]},
+                   key=_task_sort)
+    head = "| task | layer | " + " | ".join(views) + " | all | what it asks |"
+    sep = "|---|---|" + "---|" * len(views) + "---|---|"
+    lines = [head, sep]
+    for t in tasks:
+        cells = [str(summary["exports"][v]["by_task"].get(t, 0)) for v in views]
+        total = sum(summary["exports"][v]["by_task"].get(t, 0) for v in views)
+        lines.append(f"| {t} | {CAPABILITY_LAYERS.get(t, '-')} | " + " | ".join(cells)
+                     + f" | {total} | {TASK_MEANINGS.get(t, '')} |")
+    totals = [str(summary["exports"][v]["records"]) for v in views]
+    lines.append("| **all** | | " + " | ".join(totals)
+                 + f" | {sum(s['records'] for s in summary['exports'].values())} | |")
+    return "\n".join(lines)
+
+
+def _eval_table(summary: dict) -> str:
+    rows = summary["eval"]["rows"]
+    lines = ["| task | target | units | records | pool (records) | by view | desktops | "
+             "max desktop share |", "|---|---|---|---|---|---|---|---|"]
+    for r in rows:
+        views = ", ".join(f"{v} {n}" for v, n in r["by_view"].items())
+        lines.append(f"| {r['task']} | {r['target']} | {r['units']} | {r['records']} | "
+                     f"{r['pool_records']} | {views} | {r['desktops']} | "
+                     f"{r['max_desktop_share']:.1%} |")
+    return "\n".join(lines)
+
+
+def _shortcut_table(summary: dict) -> str:
+    views = summary["views"]
+    tasks = sorted({t for s in summary["exports"].values()
+                    for t in (s.get("shortcuts") or {})}, key=_task_sort)
+    lines = ["| task | " + " | ".join(views) + " |", "|---|" + "---|" * len(views)]
+    for t in tasks:
+        cells = []
+        for v in views:
+            row = (summary["exports"][v].get("shortcuts") or {}).get(t)
+            if not row:
+                cells.append("-")
+                continue
+            best = max((row.get(k) or 0.0) for k in ("verb", "class", "verb_class",
+                                                    "template", "majority"))
+            cells.append(f"{best:.1%}")
+        lines.append(f"| {t} | " + " | ".join(cells) + " |")
+    mc = []
+    for v in views:
+        opt = summary["exports"][v].get("v6_option_shortcut") or {}
+        if opt.get("records"):
+            mc.append(f"{v} {opt['shortcut']:.1%}")
+    if mc:
+        random = next(opt["random"] for v in views
+                      for opt in [summary["exports"][v].get("v6_option_shortcut") or {}]
+                      if opt.get("records"))
+        lines += ["", f"The V6 multiple choice has its own shortcut, the option's verb alone: "
+                  + ", ".join(mc) + f" (random {random:.1%})."]
+    return "\n".join(lines)
+
+
+def _formats() -> str:
+    return "\n".join(f"* `{key}`: {text}" for key, text in RESPONSE_FORMATS.items()
+                     if not key.startswith("V5"))
+
+
+def _known_issues(summary: dict) -> str:
+    items = []
+    comp = summary["composition"]
+    v2 = comp["v2_by_class"]
+    if comp["v2_records"]:
+        top = next(iter(v2.items()))
+        share = top[1] / comp["v2_records"]
+        items.append(
+            f"**V2 class skew.** After the per-desktop class-prior balancing (no answer above "
+            f"50 % of a class's questions on a desktop; a class whose answer never changes "
+            f"keeps none) the V2 pool is {comp['v2_records']} questions of which "
+            f"`{top[0]}` is {top[1]} ({share:.0%}); classes whose state is the same in "
+            f"every frame of a desktop (CPU, motherboard, RAM modules, expansion cards, "
+            f"most screws) have few or no state questions. `eval_v1` draws V2 **equally "
+            f"over classes** (and half `prior_is_correct = false`), so its V2 is not the "
+            f"pool's mix -- compare models on it, not on the pool's class frequencies. "
+            f"Full pool by class: " + ", ".join(f"{k} {n}" for k, n in list(v2.items())[:12])
+            + (" ..." if len(v2) > 12 else "") + ".")
+    unconfirmed = {v: s.get("records_without_confirmed_view") or {}
+                   for v, s in summary["exports"].items()}
+    parts = [f"{v}: " + ", ".join(f"{t} {n}" for t, n in sorted(d.items(), key=lambda kv:
+                                                                 _task_sort(kv[0])))
+             for v, d in unconfirmed.items() if d]
+    if parts:
+        items.append(
+            "**Unconfirmed views.** On OAK1, OAK2 and RealSense almost no frame has "
+            "confirmed masks (the scanner is the annotated view). Their records say "
+            "`label.view_confirmed: false`: they are asked from the step log and the state "
+            "machine alone, show the picture of that camera, carry no evidence boxes and "
+            "no visibility, and V3 / V12 on them ask only about large parts (PSU, "
+            "motherboard, drive cage, optical drive, cover, CPU cooler, expansion card, RAM "
+            "module), which is why their text-only shortcut bounds are high (table above). "
+            "V1 / V2 / V8 / V14 exist only where a view is confirmed. Records without a "
+            "confirmed view: " + "; ".join(parts) + ".")
+    items.append(
+        "**V15 is the `moment` variant only.** It asks whether two pictures from two cameras "
+        "show the same moment; it needs no masks, so it exists on all four views, but a "
+        "pair whose camera clocks disagree by more than 20 s is not asked (OAK/RealSense; "
+        "the scanner's timestamps are not capture times and are not checked). The `cross` "
+        "variant (the state of a part one view cannot see, read from another) needs both "
+        "views confirmed and is not in this release. Each unordered view pair is written "
+        "once, in the file of the view that comes first (scan < oak1 < oak2 < rs).")
+    bracket = comp["optical_bracket_desktops"]
+    if bracket:
+        items.append(
+            f"**The HP optical-drive bracket.** On {len(bracket)} desktops (D"
+            + ", D".join(f"{d:02d}" for d in bracket) + ") the bracket the optical drive "
+            "sits in is annotated as class `drive_cage` with `attrs.of = \"optical\"` (the "
+            "oracle's `instances[key].attrs.of`). The questions call it **\"Drive cage N\"** "
+            "and the scorer grounds an answer by that wording (or the key); the phrase "
+            "\"optical drive\" names the `optical_drive` part, a different instance, and is "
+            "**not** accepted for the bracket by this pack's scorer. Treat the two as "
+            "distinct parts when reading model errors; a synonym rule, if adopted, will be "
+            "a scorer change, not a data change.")
+    illegal = {v: s.get("illegal_steps") or {} for v, s in summary["exports"].items()}
+    scan_illegal = illegal.get(summary["views"][0]) or {}
+    if scan_illegal:
+        listed = ", ".join(f"D{int(d):02d} {sorted(int(s) for s in steps)}"
+                           for d, steps in sorted(scan_illegal.items(), key=lambda kv:
+                                                  int(kv[0])))
+        items.append(
+            f"**Illegal steps.** On {_n(len(scan_illegal), 'desktop')} the logged action of a "
+            f"step contradicts the constraint graph; V4 / V6 / V16 say nothing about the "
+            f"moment before it (`summary.json` `illegal_steps`): {listed}.")
+    v10 = sorted({int(d) for s in summary["exports"].values()
+                  for d in (s.get("v10_excluded") or {})})
+    if v10:
+        items.append(
+            f"**V10 excluded desktops.** D" + ", D".join(f"{d:02d}" for d in v10)
+            + ": their logs name an action target nobody resolved, and V10 is scored "
+            "exhaustively, so they have no V10 question.")
+    excluded = sorted({int(d) for s in summary["exports"].values()
+                       for d in (s.get("excluded_desktops") or {})})
+    if excluded:
+        items.append("**Excluded desktops (graph tasks).** D"
+                     + ", D".join(f"{d:02d}" for d in excluded)
+                     + ": no usable constraint graph; V4 / V6 / V7 / V16 are not asked.")
+    sources = Counter()
+    for s in summary["exports"].values():
+        sources.update(s.get("by_truth_source") or {})
+    failed = sources.get("failed_attempt", 0)
+    if failed == 0:
+        items.append(
+            "**No `failed_attempt` record.** No V4 question of this export comes from a real "
+            "failed attempt in the log; every infeasible answer is the graph's or the "
+            "state's.")
+    elif failed <= 3:
+        items.append(
+            f"**`failed_attempt` is rare.** {_n(failed, 'V4 record')} "
+            f"{'comes' if failed == 1 else 'come'} from a real failed attempt in the log; "
+            "the other infeasible answers are the graph's or the state's. Report it as a "
+            "case, not a row.")
+    items.append(
+        "**Shortcut bounds are in-sample.** The `summary.json` `shortcuts` table (and the "
+        "scorer's *text-only upper bound* column) is measured on the **full export** of a "
+        "view, not on `eval_v1`; `eval_v1/<view>.summary.json` is a copy of the same file.")
+    items.append(
+        "**Captive screws.** A truth that rests on a captive screw's tightness is marked "
+        "`label.image_undecidable: true` (no 2D view shows it); the scorer reports every "
+        "task also on the decidable records (`extra.<task>.decidable`).")
+    conflicts = {v: s.get("open_conflicts") for v, s in summary["exports"].items()
+                 if s.get("open_conflicts")}
+    if conflicts:
+        items.append("**Open conflicts at export time.** "
+                     + ", ".join(f"{v}: {n} frames" for v, n in conflicts.items())
+                     + " were exported with `verified: false` (`--allow-conflicts`).")
+    return "\n\n".join(f"{i}. {text}" for i, text in enumerate(items, start=1))
+
+
+def readme_text(summary: dict) -> str:
+    views = summary["views"]
+    n_desktops = len(summary["desktops"])
+    n_records = sum(s["records"] for s in summary["exports"].values())
+    ev = summary["eval"]
+    images_line = {
+        "all": (f"`images/` holds every frame the four manifests name ({summary['images']} "
+                f"files, {summary['image_bytes'] / 2**30:.1f} GB)."),
+        "eval": (f"`images/` holds only the frames `eval_v1` names ({summary['images']} "
+                 f"files, {summary['image_bytes'] / 2**30:.1f} GB); the full question set "
+                 f"in `data/` needs the dataset's frame cache for the rest."),
+        "none": ("**This copy carries no images** (built with `--images none`, a dry run); "
+                 "point `--image-root` at the dataset's frame cache."),
+    }[summary["image_mode"]]
+    audit = ev.get("audit") or {}
+    audit_line = (f"`eval_v1/audit/` is the {audit['size']}-item human-audit sample drawn from "
+                  f"inside the subset (`tools/vlm_sample.py --purpose audit`: about 25 per "
+                  f"task, positives and negatives balanced, every desktop represented, "
+                  f"{audit['desktops']} desktops): `audit.ids.txt`, `audit.jsonl` and the "
+                  f"reviewer sheet `audit.sheet.md` (image path, question, answer, an empty "
+                  f"`ok?` column)." if audit else
+                  "No audit sample was drawn (`--audit 0`).")
+    check = summary.get("selfcheck")
+    check_line = ("The build ran it: every task row of every `eval_v1/<view>.jsonl` scored "
+                  "1.0 with the pack's tools alone." if check and check.get("ok") else
+                  "The build did not run it (`--no-selfcheck`).")
+    bracket = summary["composition"]["optical_bracket_desktops"]
+    bracket_line = (f" The optical-drive bracket note above applies to "
+                    f"{_n(len(bracket), 'desktop')}." if bracket else "")
+    text = f"""# VLM evaluation pack ({PACK_NAME} v{summary['pack_version']}, `{ev['version']}`)
+
+Template-generated questions about desktop-PC teardowns, with programmatic
+answers, over {_n(n_desktops, 'desktop')} and {_n(len(views), 'camera view')}
+({', '.join(views)}): **{n_records} records** in `data/`, a frozen **evaluation subset
+of {ev['records']} records** in `eval_v1/`, the frames they show, and the tools that
+turn records into chat requests and grade a model's replies. Everything runs
+without the annotation tool or its database: `tools/` is self-contained (Python
+>= 3.11, PyYAML; Pillow only for crops).
+
+{images_line}
+
+## Layout
+
+```
+README.md                 this file
+LICENSE_NOTE.txt          internal evaluation data, not for redistribution
+manifest.json             build parameters, counts, size + sha256 of every other file
+data/
+  vlm_<view>.jsonl                   one record per line (the whole question set of a view)
+  vlm_<view>.images_manifest.jsonl   opaque image id -> path under images/, desktop, view, step, roi
+  vlm_<view>.oracle.jsonl            label-side world: instances, edges, log per desktop; state table per image
+  vlm_<view>.summary.json            counts, silences, shortcut bounds of that export
+images/<view>/D<nn>/s<nn>.<ext>      the frames, byte for byte the dataset's cached files (the source's extension)
+eval_v1/
+  ids.txt                 the subset's record ids, task order
+  <view>.jsonl            the subset's records of that view, with .images_manifest.jsonl,
+                          .oracle.jsonl (cut to the subset) and .summary.json (the export's) beside it
+  table.md / table.json   the n table: target, drawn, by view, strata, desktops
+  audit/                  the human-audit sample and its reviewer sheet
+tools/
+  vlm_to_chat.py          records -> OpenAI / Qwen-VL / InternVL chat JSONL (images by path or base64)
+  vlm_score.py            {{id, raw_text}} replies -> scores per task / layer / template, 95 % CIs
+  vlm_references.py       the text references: blind, protocol prior (bigram), state oracle
+  vlm_sample.py           stratified seeded samples (audit / repeat)
+  vlm_eval_set.py         the procedure that drew eval_v1 (re-runnable, byte-identical)
+  vlm_selfcheck.py        gold replies must score 1.0 everywhere -- run it first
+  vlm_io.py               shared reading
+  tda/, configs/          the scorer's modules and the taxonomy, vendored
+  requirements.txt
+```
+
+## Tasks
+
+Each record belongs to one task (`prompt.task`). V1 V2 V8 V14 read the compiled
+masks, so they are asked only about frames a human confirmed in that view;
+V3 V4 V6 V7 V10 V12 V16 come from the step log, the state machine and the
+constraint graph, so they exist for every desktop in every view (on a view
+with nothing confirmed, V3 / V12 ask only about large parts); V15 needs no
+mask at all. Counts are records in `data/` per view:
+
+{_counts_table(summary)}
+
+`layer` is the paper's capability layer (`tools/tda/core/export/vlm_check.py`
+`CAPABILITY_LAYERS`): L1 perception, L2 affordance, L3 planning, change
+(V3 V12 V10), cross (V15). V5 (every legal action) is not exported.
+
+## Records
+
+One JSON object per line:
+
+```
+{{"id": "rec_<16 hex>",
+ "prompt": {{"task": "V4", "images": ["img_<16 hex>", ...], "question": "...",
+            "options": [{{"verb", "target_label"}}, ...]      # V6 multiple choice only
+           }},
+ "label":  {{"answer": {{...}}, "answer_check": {{...}}, "evidence": [...], "rationale": {{...}},
+            "desktop", "step", "view", "views", "layer", "template_id", "tier", "verified",
+            "view_confirmed", "graph_version", "model_family", "chassis_type", "split",
+            "truth_source", "negative", "image_undecidable", "readable_id", ...}}}}
+```
+
+**Nothing on the prompt side reveals the answer.** `prompt.images` are opaque
+ids (a salted hash of desktop, view and step); the manifest maps them to files
+and the label side carries desktop, step and view. Show a model `prompt` only.
+
+* `label.answer` -- the structured truth (per task, see *Answer formats*).
+* `label.answer_check` -- how the checker re-derives and grades the answer
+  (type, fields, metric, the eligible set for V6, the plan for V16, ...).
+  `scripts/vlm_score.py` implements it; nothing here is shown to a model.
+* `label.evidence` / `label.rationale` -- boxes of the parts the answer rests
+  on and the reasoning chain (`observe` / `recall_relation` /
+  `check_precondition` / ... steps); label side only.
+* `label.truth_source` (V4, V7, V16) -- where an answer's "yes" or "no" comes
+  from: `{'`, `'.join(TRUTH_SOURCES)}`. `demonstrated`: the operator did it
+  next. `graph_blocked`: a constraint edge forbids it. `graph_blocked_pixels`:
+  forbidden only by an edge that was imported from the pixels / a reviewer's
+  occlusion ruling (the paper writes it as "class rule x overlap in the
+  annotation"). `state_inapplicable`: the part is not in a state the verb
+  starts from (already open, already removed). `failed_attempt`: a real failed
+  attempt in the log.
+* `label.negative` -- the kind of negative half, or absent on a positive: V4 the
+  truth source; V12 `captive_screw_loosened` (the log moves, the picture does
+  not); V14 `unanswerable`; V15 `different_moment`; V16 the corruption
+  (`substitute` / `move` / `swap`).
+* `label.tier` is the **view's** annotation standard (scan and oak1 gold, oak2
+  silver, rs bronze); `label.verified` says whether a human confirmed this
+  frame and every row the answer was read off; `label.view_confirmed` says
+  whether anything of this view was confirmed on this desktop at all.
+* `label.split` -- `test` / `train` as the platform-disjoint split stamped it
+  (12 / 54 desktops); the zero-shot evaluation ignores it and uses all
+  desktops.
+* `label.prior_is_correct` (V2) -- whether the class prior (the part's state
+  at the start of the teardown; for counts the starting number of screws)
+  already gives the answer. The scorer's `V2` row is the `false` subset; `V2-all`
+  is every V2 question.
+* `label.v6_form` / `label.v6_pair` (V6) -- `open` or `mc`; the two forms of
+  one frame share the pair id.
+* `label.image_undecidable` -- the truth rests on a captive screw's tightness.
+* `label.views` (V15) -- the two views of the pair, in `prompt.images` order.
+
+## Answer formats
+
+The chat converter appends the format sentence of the record's task
+(`format_instruction`); the scorer parses the reply **strict** (one JSON object,
+a code fence allowed) and **lenient** (the last well-formed object in the text,
+else the answer words) and reports both parse-failure rates. `{{allowed}}` is the
+class's state vocabulary, filled per record from `answer_check.allowed`.
+
+{_formats()}
+
+## Images, crops, ROI
+
+`images/<view>/D<nn>/s<nn>.<ext>` is the frame of step `<nn>` of desktop `<nn>`
+in that view, byte for byte the dataset's cached frame. Two crops are allowed
+and the converter implements both: none (`--roi none`, the default) or the
+view's **fixed chassis ROI** (`--roi view`: the manifest's `roi` `[x0, y0, x1, y1]`,
+one crop for every record of a desktop and view).
+**Never crop around a record's evidence**: the evidence boxes are label side,
+and a crop built from them puts the answer in the picture (every answerable V14
+item has a box and no unanswerable one does; V8's box is its answer). Box
+answers (V1, V8) are in pixel coordinates of the
+image shown; with `--roi view` or `--max-side` the converter writes the crop
+offset and scale to `meta.transforms` and `vlm_score.py --chat` maps them back.
+A two-image question is two image parts, or one side-by-side picture with
+`--composite` (fixed per model).
+
+## The evaluation subset (`eval_v1`)
+
+Drawn once over all {n_desktops} desktops (zero-shot; the split is not used),
+seed {ev['seed']}, by `tools/vlm_eval_set.py`: per task at least {ev['targets']['binary']}
+records for the yes / no tasks ({', '.join(ev['targets']['binary_tasks'])}) and
+{ev['targets']['other']} for the others; V6 is drawn as pairs (300 pairs = 600 records);
+records are allocated per view in proportion to the export, then equally over
+the task's strata (V4 feasible / infeasible then `truth_source`; V2
+`prior_is_correct` then class; V12 changed / not then kind; V14 answerable /
+not; V15 same / different then view pair; V16 valid / invalid then corruption;
+V3 by verb, V8 by class, V10 by progress bin), desktops take turns inside a
+stratum, and no desktop holds more than {ev['max_desktop_share']:.0%} of a task's
+target (a pool smaller than the target gives everything it has). Two runs are
+byte-identical. Run every model on the same `eval_v1`; closed
+models three times for the standard deviation; intervals by cluster bootstrap
+over desktops (the scorer does this).
+
+{_eval_table(summary)}
+
+The strata counts are in `eval_v1/table.md`. {audit_line}
+
+## Text-only shortcut upper bounds (full export, in-sample)
+
+The best of four prompt-only classifiers (majority, verb, class, verb + class,
+template) per task, from `summary.json`; a model below these has read nothing
+from the picture. On the unconfirmed views V3 / V4 are high because only large
+parts are asked there.
+
+{_shortcut_table(summary)}
+
+## How to run
+
+```
+python -m venv venv                                  # then activate it, and
+pip install -r tools/requirements.txt                # PyYAML (+ Pillow for crops)
+
+# 0. the pack stands alone and the truth is consistent: every gold reply scores 1.0
+python tools/vlm_selfcheck.py --truth eval_v1/scan.jsonl eval_v1/oak1.jsonl \\
+    eval_v1/oak2.jsonl eval_v1/rs.jsonl --out runs/selfcheck
+
+# 1. chat requests for one view's subset (OpenAI-style; also qwen, internvl)
+python tools/vlm_to_chat.py --export eval_v1/scan.jsonl --format openai \\
+    --image-root images --out runs/scan.openai.jsonl            # [--base64] [--roi view --assets runs/crops]
+
+# 2. run your model: one line per request, {{"id": ..., "raw_text": "<the reply>"}}
+
+# 3. score
+python tools/vlm_score.py --truth eval_v1/scan.jsonl --pred runs/<model>.scan.jsonl \\
+    --chat runs/scan.openai.jsonl --out runs/scores --name <model>-scan
+
+# references (text only): blind, protocol prior, state oracle
+python tools/vlm_references.py --export eval_v1/scan.jsonl --out runs/refs/scan
+python tools/vlm_to_chat.py --export eval_v1/scan.jsonl --records runs/refs/scan/blind.jsonl \\
+    --format openai --out runs/scan.blind.jsonl
+python tools/vlm_score.py --truth eval_v1/scan.jsonl --pred runs/refs/scan/protocol_prior.predictions.jsonl \\
+    --out runs/scores --name protocol-prior-scan
+```
+
+`vlm_score.py` writes `<name>.score.json` and `<name>.score.md`: per task, per
+layer and per question template, strict and lenient, 95 % cluster-bootstrap
+intervals over desktops, the text-only upper bound beside each task, V6 open
+(headline) and `V6-mc`, V2 (prior-wrong) and `V2-all`, V7's violation-free /
+required-recall / goal-reached, V4's blockers F1, V10's bin accuracy. Score the
+four views separately (each truth file has its own oracle) and pool in your
+analysis; `eval_v1/ids.txt` is the subset. The model drivers for the HPRC and
+the OpenAI-compatible APIs are a separate deliverable and are added under
+`tools/vlm_run/` when ready; this card documents the data and the scorer.
+
+**Self-check.** {check_line} Re-run it on the receiving machine before anything
+else; it needs no image.
+
+## Known limitations
+
+{_known_issues(summary)}
+
+## Provenance
+
+`manifest.json` lists every file with its size and sha256, the desktops, views,
+seed, image mode and the annotation tool's commit the export ran from
+(`source_commit`). Records are reproducible from the database: the question
+template is chosen by a checksum of the record id, hard negatives are drawn in
+a permutation seeded by desktop and step, and the files are written in a fixed
+order.{bracket_line}
+"""
+    return text
+
+
+# --------------------------------------------------------------------------- #
+def _parse_views(text: str) -> list[str]:
+    views = [v.strip() for v in str(text).split(",") if v.strip()]
+    unknown = [v for v in views if v not in VIEWS]
+    if unknown:
+        raise PackError(f"unknown view(s) {', '.join(unknown)}; one of {', '.join(VIEWS)}")
+    return views
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
+    ap.add_argument("--db", required=True, help="a read-only copy of tda.sqlite (never the live one)")
+    ap.add_argument("--out", default=None,
+                    help=f"pack directory (default D:/DataSet/exports/{PACK_NAME}_<today>)")
+    ap.add_argument("--cache-dir", default=DEFAULT_CACHE_DIR, help="the frame cache (read only)")
+    ap.add_argument("--views", default=",".join(VIEWS))
+    ap.add_argument("--desktops", default=None, help="e.g. 1-66 (default: every desktop)")
+    ap.add_argument("--seed", type=int, default=vlm_eval_set.SEED)
+    ap.add_argument("--images", default="all", choices=IMAGE_MODES,
+                    help="all frames the manifests name, only the subset's, or none (dry run)")
+    ap.add_argument("--audit", type=int, default=300, help="size of the human-audit sample")
+    ap.add_argument("--work", default=DEFAULT_WORK, help="the database copy and scratch files")
+    ap.add_argument("--allow-conflicts", action="store_true",
+                    help="export frames with an open disagreement as unverified")
+    ap.add_argument("--no-selfcheck", action="store_true")
+    ap.add_argument("--force", action="store_true", help="replace a pack at --out")
+    args = ap.parse_args(argv)
+    out = args.out or f"D:/DataSet/exports/{PACK_NAME}_{date.today().isoformat()}"
+    try:
+        views = _parse_views(args.views)
+        wanted = sorted(parse_desktops(args.desktops)) if args.desktops else None
+        build_pack(args.db, out, cache_dir=args.cache_dir, work_dir=args.work, views=views,
+                   desktops=wanted, seed=args.seed, images=args.images,
+                   allow_conflicts=bool(args.allow_conflicts), force=bool(args.force),
+                   selfcheck=not args.no_selfcheck, audit=args.audit)
+    except PackError as exc:
+        print(f"[vlmpack] refused: {exc}")
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
