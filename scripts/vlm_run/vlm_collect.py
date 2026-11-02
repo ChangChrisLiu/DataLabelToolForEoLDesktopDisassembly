@@ -3,9 +3,10 @@
 * ``subset --export <view.jsonl> --out <dir>/<name>.jsonl (--ids <file> | --records <jsonl>)``
   -- the records of an export restricted to some ids, **with the export's
   sidecars copied beside it** (``.images_manifest.jsonl``, ``.oracle.jsonl``,
-  ``.summary.json``) so ``vlm_to_chat.py --export`` and ``vlm_score.py --truth``
-  take the subset as a truth file of its own. The pack's ``eval_v1/<view>.jsonl``
-  and a pilot ids file both go through here.
+  ``.summary.json``, and ``.masks.jsonl`` when the export has one) so
+  ``vlm_to_chat.py --export`` and ``vlm_score.py --truth`` take the subset as
+  a truth file of its own. The pack's ``eval_v1/<view>.jsonl`` and a pilot ids
+  file both go through here.
 * ``blind --records <jsonl> --out <jsonl>`` -- the image-ablated variant of the
   records (``prompt.images = []``, ``label.reference = "blind"``), the same
   rows ``vlm_references.py`` writes as ``blind.jsonl``, for a run directory
@@ -36,6 +37,8 @@ from pathlib import Path
 from typing import Iterable, Iterator, Optional
 
 SIDECARS = ("images_manifest.jsonl", "oracle.jsonl", "summary.json")
+#: Copied when the export has one: the confirmed masks (W4-C's overlay variant).
+OPTIONAL_SIDECARS = ("masks.jsonl",)
 _REPEAT = re.compile(r"^(?P<stem>.+)\.r(?P<k>\d+)$")
 
 
@@ -82,7 +85,7 @@ def subset(export, out, ids_file: Optional[str] = None, records: Optional[str] =
     if out.resolve() == Path(export).resolve():
         raise SystemExit("subset: --out must differ from --export")
     n = write_jsonl(out, rows)
-    for suffix in SIDECARS:
+    for suffix in SIDECARS + OPTIONAL_SIDECARS:
         src = sidecar(export, suffix)
         if src.exists():
             shutil.copyfile(src, sidecar(out, suffix))
