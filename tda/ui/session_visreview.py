@@ -33,6 +33,17 @@ runs too, and the button 「这一段起直到拔掉都被线挡住」
 to the part's next state change (:func:`~tda.ui.session_cable.until_span`,
 across pose segments) as one ``review_visibility`` op: 完全 on every frame, the
 stamp (verdict ``cable``) on the confirmed ones.
+
+W3m (2026-11-01), the mirror from the frame on screen **back**: the buttons
+「第 24 帧起往前都被线挡住」 and 「第 24 帧起往前都可见」
+(:meth:`VisReviewMixin.review_cable_since`) act from the canvas frame over
+:func:`~tda.ui.session_cable.since_span` -- the first 完全 + the ``cable`` stamp
+as above; the second withdraws the hand labels over the span and stamps the
+confirmed frames ``computed`` where the compiler then says plain ``visible``
+(the user's statement and the compiler agree), so the line leaves the queue
+there; where the compiler still hides the part nothing is stamped and the row
+re-enters the queue as an ordinary computed line. The progress follows. One op
+each, one ``Ctrl+Z``.
 """
 from __future__ import annotations
 
@@ -43,10 +54,11 @@ from tda.core.model import (
     OCCLUDER_VIEWPOINT,
     FrameKey,
     FrameOverride,
+    Visibility,
 )
-from tda.core.occluder import FULL, PARTIAL, occluded_override, shape_applies
+from tda.core.occluder import FULL, PARTIAL, frame_label, occluded_override, shape_applies
 from tda.core.truth import VERIFIED
-from tda.core.truth_inputs import InputCache, frame_hw
+from tda.core.truth_inputs import InputCache, annotatable_steps, frame_hw
 from tda.core.vis_review import (
     VERDICT_CABLE,
     VERDICT_COMPUTED,
@@ -66,13 +78,16 @@ from tda.ui.session_cable import (
     CABLE_NEEDS_SHAPE,
     CABLE_ON_BENCH,
     CABLE_REMOVED,
+    CABLE_SINCE_EMPTY,
     CABLE_UNTIL_EMPTY,
+    RULE_SINCE,
     RULE_UNTIL,
     _same,
     _settled,
     _signed,
     _steps_text,
     disputed_before,
+    since_span,
     until_span,
 )
 from tda.ui.session_edit import _mask_without_reason
@@ -177,21 +192,77 @@ class VisReviewMixin:
         ``change``, ``segments`` and ``rule``; ``changed`` is ``False`` (no
         op) when every frame already said exactly that.
         """
+        instance, key, start, cache = self._span_start(instance, from_step)
+        span = until_span(self.db, self.tax, start, instance, cache)
+        if not span.steps:
+            raise SessionRefusal(CABLE_UNTIL_EMPTY)
+        extra = {"rule": RULE_UNTIL, "until": span.until, "segments": span.segments,
+                 "change": list(span.change) if span.change else None}
+        return self._review_label_span(key, instance, list(span.steps), cache, extra)
+
+    # -- 「第 N 帧起往前都被线挡住」 / 「第 N 帧起往前都可见」 (W3m) ------------------------------
+    def review_cable_since(self, instance: str, from_step: Optional[int] = None,
+                           label: Optional[str] = FULL) -> dict:
+        """From ``from_step`` back to the part's previous state change: 完全, or the labels withdrawn.
+
+        The span is :func:`~tda.ui.session_cable.since_span`'s (the mirror of
+        :meth:`review_cable_until`: across pose segments, from the frame after
+        the part's previous own state change -- or the view's first frame --
+        to ``from_step``, the frame on screen by default).
+
+        ``label`` :data:`~tda.core.occluder.FULL` is 「往前都被线挡住」: exactly
+        what :meth:`review_cable_until` does over that span (the label on every
+        frame, the ``cable`` stamp on the confirmed ones, the same refusals, a
+        second click a no-op). ``None`` is 「往前都可见」: every 被线挡住 / 画框外
+        label the part carries on the span is withdrawn (frames without one are
+        left alone, nothing is refused), and each **confirmed** frame of the
+        span whose compiled label is then plain ``visible`` is stamped
+        ``computed`` for it -- the frame counts as reviewed, the line leaves
+        the queue there; a confirmed frame the compiler still hides (another
+        part over it, too small, out of view) gets no stamp and comes back to
+        the queue as an ordinary computed line, for the reviewer. One
+        ``review_visibility`` op, one ``Ctrl+Z`` (the inverse holds the
+        withdrawn rows and the old stamps as they were); the U15 safeguards
+        hold per frame.
+
+        Returns what :meth:`review_cable_until` returns, with ``since`` for
+        ``until``, ``rule`` :data:`~tda.ui.session_cable.RULE_SINCE`, and, for
+        撤回, ``withdrawn`` (the labels taken back) and ``frames`` the frames
+        written (``span`` the whole span); ``changed`` is ``False`` and no op
+        is made when nothing would move and nothing is left to stamp.
+        """
+        instance, key, start, cache = self._span_start(instance, from_step)
+        span = since_span(self.db, self.tax, start, instance, cache)
+        if not span.steps:
+            raise SessionRefusal(CABLE_SINCE_EMPTY)
+        extra = {"rule": RULE_SINCE, "since": span.since, "segments": span.segments,
+                 "change": list(span.change) if span.change else None}
+        if label is None:
+            return self._review_clear_span(key, instance, list(span.steps), extra)
+        return self._review_label_span(key, instance, list(span.steps), cache, extra)
+
+    def _span_start(self, instance: str, from_step: Optional[int]):
+        """``(instance, the open frame, the frame the span starts from, a cache)``; the gates."""
         if not self.is_open:
             raise SessionRefusal("no view is open")
         if self.gallery:
             raise SessionRefusal(T.NOT_IN_GALLERY)
-        instance = str(instance)
         key = self.current()
         start = FrameKey(key.desktop, key.step if from_step is None else int(from_step), key.view)
-        cache = InputCache()
-        span = until_span(self.db, self.tax, start, instance, cache)
-        if not span.steps:
-            raise SessionRefusal(CABLE_UNTIL_EMPTY)
+        return str(instance), key, start, InputCache()
+
+    def _review_label_span(self, key: FrameKey, instance: str, steps: list[int],
+                           cache: InputCache, extra: dict) -> dict:
+        """完全 on every frame of ``steps``, the ``cable`` stamp on the confirmed ones: one op.
+
+        The body :meth:`review_cable_until` and :meth:`review_cable_since`
+        share; ``extra`` (the rule and its bounds) goes into the op's payload
+        (both directions) and the result.
+        """
         shapes = self.db.keyframes(key.desktop, key.view, instance)
         refused: dict[str, list[int]] = {}
         frames, before, stamped = [], [], []
-        for step in span.steps:
+        for step in steps:
             here = FrameKey(key.desktop, step, key.view)
             why = shape_applies(self.db, self.tax, here, instance, cache, shapes)
             if why:
@@ -222,18 +293,15 @@ class VisReviewMixin:
         if refused:
             raise SessionRefusal("；".join(f"第 {_steps_text(found)} 帧：{why}"
                                           for why, found in refused.items()))
-        extra = {"rule": RULE_UNTIL, "until": span.until, "segments": span.segments,
-                 "change": list(span.change) if span.change else None,
-                 "frames": list(span.steps), "stamped": stamped}
+        extra = extra | {"frames": list(steps), "stamped": stamped}
         if not frames:
             return {"op": None, "changed": False, "verdict": VERDICT_CABLE, "label": FULL,
-                    "steps": list(span.steps), "moved": [], "accepted": [], "withheld": [],
+                    "steps": list(steps), "moved": [], "accepted": [], "withheld": [],
                     "conflicts": 0} | extra
         wanted = [f["step"] for f in frames]
         common = {"desktop": key.desktop, "view": key.view, "step": key.step,
                   "instance": instance, "steps": wanted, "verdict": VERDICT_CABLE,
-                  "rule": RULE_UNTIL, "until": span.until, "segments": span.segments,
-                  "change": extra["change"]}
+                  } | {k: v for k, v in extra.items() if k not in ("frames", "stamped")}
         moved = [f["step"] for f in frames if "override" in f]
         if moved:
             common[CABLE_BY] = self.annotator    # re-signed both ways (apply_cable)
@@ -261,6 +329,112 @@ class VisReviewMixin:
         out = _signed(self.db, self.truth, key.desktop, key.view, instance, moved,
                       self.annotator, disputed, out, key.step)
         out.update(verdict=VERDICT_CABLE, steps=wanted, moved=moved, **extra)
+        return self._after_edit(out)
+
+    def _review_clear_span(self, key: FrameKey, instance: str, steps: list[int],
+                           extra: dict) -> dict:
+        """「往前都可见」: the hand labels over ``steps`` withdrawn, the frames seen again stamped ``computed``.
+
+        The override is written first and the moved frames compiled (and, on
+        confirmed frames, re-signed through
+        :func:`~tda.ui.session_cable.accept_own_label`) **before** the stamp is
+        made: a ``computed`` stamp records the label it answers for
+        (:func:`~tda.core.vis_review.stamp_covers`), and that label is the
+        compiler's, known only once the override is gone. The op is logged
+        after, with the flags before and after; its inverse puts the withdrawn
+        rows and the old stamps back as they were.
+        """
+        desktop, view = key.desktop, key.view
+        overrides: dict[int, tuple[dict, dict]] = {}      # step -> (new, old) override state
+        withdrawn: set[str] = set()
+        confirmed_steps: list[int] = []
+        for step in steps:
+            here = FrameKey(desktop, step, view)
+            previous = self.db.frame_overrides(here).get(instance)
+            if ((self.db.get_frame(here) or {}).get("review_status") == VERIFIED
+                    and self.db.compiled_label(here, instance) is not None):
+                confirmed_steps.append(step)
+            label = frame_label(previous)
+            if label is None:
+                continue                         # no label of ours here: left alone
+            after = occluded_override(here, instance, previous, None, (0, 0), OCCLUDER_CABLE)
+            new, old = override_state(after), override_state(previous)
+            if _same(new, old):
+                continue
+            withdrawn.add(str(label))
+            overrides[step] = (new, old)
+        moved = sorted(overrides)
+        out = {"affected": [], "compiled": [], "rechecks": [], "conflicts": 0,
+               "problems": {}, "frame": None, "accepted": [], "withheld": []}
+        if moved:
+            disputed = disputed_before(self.db, self.truth, desktop, view, instance, moved)
+            with self.db.transaction():
+                for step in moved:
+                    _write_override(self.db, FrameKey(desktop, step, view), instance,
+                                    overrides[step][0])
+            affected = annotatable_steps(self.db, desktop, view, moved)
+            stats = settle(self.db, self.truth, desktop, view, affected, key.step)
+            out.update(affected=affected, compiled=stats["compiled"], rechecks=stats["rechecks"],
+                       conflicts=stats["conflicts"], problems=stats["problems"],
+                       frame=stats["frame"])
+            out = _signed(self.db, self.truth, desktop, view, instance, moved, self.annotator,
+                          disputed, out, key.step)
+        # the rows now say what the compiler says: where that is plain visible --
+        # the user's statement and the compiler agree -- stamp the confirmed frame
+        # computed; where the compiler still hides the part (another part over it,
+        # too small, out of view) nothing is stamped and the row comes back to the
+        # queue as an ordinary computed line, for the reviewer to answer
+        stamps: dict[int, tuple[Optional[dict], Optional[dict]]] = {}    # step -> (new, old)
+        for step in confirmed_steps:
+            here = FrameKey(desktop, step, view)
+            visibility = (self.db.compiled_label(here, instance) or {}).get("visibility")
+            held = self.db.frame_overrides(here).get(instance)
+            if visibility != Visibility.VISIBLE.value or (held is not None and held.occluder):
+                continue
+            flags = self.db.instance_flags(here, instance)
+            if (stamp_covers(flags, visibility, None)
+                    and (flags or {}).get("verdict") == VERDICT_COMPUTED):
+                continue                         # answered already: a second click is a no-op
+            stamps[step] = (with_stamp(flags, make_stamp(self.annotator, VERDICT_COMPUTED,
+                                                         visibility, None)), flags)
+        stamped = sorted(stamps)
+        wanted = sorted(set(moved) | set(stamped))
+        extra = extra | {"frames": moved, "span": list(steps), "withdrawn": sorted(withdrawn),
+                         "stamped": stamped}
+        out.update(verdict=VERDICT_COMPUTED, label=None, steps=wanted or list(steps),
+                   moved=moved, **extra)
+        if not wanted:
+            out.update(op=None, changed=False)
+            return out
+        frames, before = [], []
+        for step in wanted:
+            flags = self.db.instance_flags(FrameKey(desktop, step, view), instance)
+            new_flags, old_flags = stamps.get(step, (flags, flags))
+            state = {"step": step, "flags": new_flags}
+            back = {"step": step, "flags": old_flags}
+            if step in overrides:
+                state["override"], back["override"] = overrides[step]
+            frames.append(state)
+            before.append(back)
+        common = {"desktop": desktop, "view": view, "step": key.step, "instance": instance,
+                  "steps": wanted, "verdict": VERDICT_COMPUTED,
+                  } | {k: v for k, v in extra.items()
+                       if k not in ("frames", "stamped", "span", "withdrawn")}
+        if moved:
+            common[CABLE_BY] = self.annotator    # re-signed both ways (apply_cable)
+        op = Op(OP_KIND, common | {"frames": frames}, common | {"frames": before})
+        with self.db.transaction():
+            for step in stamped:
+                self.db.set_instance_flags(FrameKey(desktop, step, view), instance,
+                                           stamps[step][0])
+            self.db.log_op(desktop, view, OP_KIND, op.payload, op.inverse, self.annotator)
+        out.update(op=op, changed=True)
+        if not moved:
+            self.undo_stack.push(op, apply=False)
+            self.review.invalidate()
+            self._refresh_dirty()
+            self._announce()
+            return out
         return self._after_edit(out)
 
     # -- verdicts ------------------------------------------------------------

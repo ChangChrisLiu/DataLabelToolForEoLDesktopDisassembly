@@ -493,13 +493,14 @@ def test_the_dropdown_entry_is_greyed_with_its_reason_and_writes_the_span(window
     assert button.arrow_rect().right() <= button.width()
     assert not button.arrow_rect().contains(button.rect().center())   # the click is still 看不见
     assert "cable_until" not in window.palette.buttons()
-    assert window.palette.dropdown_items("mark_absent") == (("cable_until", "直到拔掉 / 拆下"),)
+    # W3m added the two backwards entries after it: the first is still W3i's
+    assert window.palette.dropdown_items("mark_absent")[0] == ("cable_until", "直到拔掉 / 拆下")
     window.instances.table().setCurrentCell(-1, -1)
     QApplication.processEvents()
     enabled, why = dropdown_state(window)
     assert not enabled and why.startswith(UNTIL_PICK_FIRST)
     menu = window.palette.dropdown_menu("mark_absent")
-    [entry] = menu.actions()
+    [entry] = [a for a in menu.actions() if a.data() == "cable_until"]
     assert entry.text() == "直到拔掉 / 拆下" and why in entry.toolTip()
     entry.trigger()                                  # a greyed entry answers with its reason
     QApplication.processEvents()
@@ -515,6 +516,7 @@ def test_the_dropdown_entry_is_greyed_with_its_reason_and_writes_the_span(window
     QApplication.processEvents()
     assert labels(window.session, FAN_CONNECTOR) == [None] * 6
     menu = window.instances.context_menu_for(CHASSIS)
+    assert menu.actions()[0].text() == CABLE_UNTIL_MENU    # W3m's two entries follow it
     [entry] = [a for a in menu.actions() if a.text() == CABLE_UNTIL_MENU]
     entry.trigger()
     QApplication.processEvents()

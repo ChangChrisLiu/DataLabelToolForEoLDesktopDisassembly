@@ -9,19 +9,22 @@ from __future__ import annotations
 from typing import Iterable, Optional
 
 from tda.core.model import OCCLUDER_CABLE, OCCLUDER_OTHER, OCCLUDER_VIEWPOINT
+from tda.core.occluder import OFF_FRAME
 from tda.core.vis_review import LAYER_PREFIX, plain_visible
 from tda.core.vis_runs import OFF_FRAME_REASON
 from tda.ui.class_names import class_zh, state_zh, visibility_zh
 
 __all__ = [
     "ALL_TIP", "ALL_TOGGLE", "CHANGES", "DONE", "MERGED", "NOT_CONFIRMED", "NOT_IN_GALLERY",
-    "NOTHING_TO_REVIEW", "ORDER_CAPTION", "PICK_A_ROW", "PLACEMENT_ZH", "REASON_ZH",
-    "SPLIT_AT_START", "SPLIT_BUTTON", "SPLIT_DONE", "SPLIT_NOT_IN_RUN", "SYNC_BUTTON",
-    "SYNC_OFFER", "SYNC_REFUSED", "UNTIL_BUTTON", "UNTIL_NOTHING", "UNTIL_TIP", "VERDICT_ZH",
-    "VIEWPOINT_BENCH", "VIEWPOINT_NEEDS_SHAPE", "VIEWPOINT_REMOVED", "VIEW_COLUMNS", "WHOLE",
-    "entry_text", "occluded_by_text", "skipped_text", "steps_text", "suggestion_text",
-    "summary_cell", "sync_note", "sync_nothing", "until_note", "until_where", "verdict_note",
-    "view_cells",
+    "NOTHING_TO_REVIEW", "ORDER_CAPTION", "PICK_A_ROW", "PLACEMENT_WAS_ZH", "PLACEMENT_ZH",
+    "REASON_ZH", "SINCE_BUTTON", "SINCE_NOTHING", "SINCE_TIP", "SINCE_VISIBLE_BUTTON",
+    "SINCE_VISIBLE_NOTHING", "SINCE_VISIBLE_TIP", "SPLIT_AT_START", "SPLIT_BUTTON",
+    "SPLIT_DONE", "SPLIT_NOT_IN_RUN", "SYNC_BUTTON", "SYNC_OFFER", "SYNC_REFUSED",
+    "UNTIL_BUTTON", "UNTIL_NOTHING", "UNTIL_TIP", "VERDICT_ZH", "VIEWPOINT_BENCH",
+    "VIEWPOINT_NEEDS_SHAPE", "VIEWPOINT_REMOVED", "VIEW_COLUMNS", "WHOLE", "entry_text",
+    "occluded_by_text", "since_note", "since_where", "skipped_text", "steps_text",
+    "suggestion_text", "summary_cell", "sync_note", "sync_nothing", "until_note", "until_where",
+    "verdict_note", "view_cells",
 ]
 
 #: The reason a hand label gives, as the queue says it (原因: …). 画框外 (task
@@ -288,6 +291,76 @@ def until_note(label: str, result: dict) -> str:
     count = (f"（{len(frames)} 帧）" if len(frames) > 1 and frames
              and frames[-1] - frames[0] + 1 != len(frames) else "")
     text = f"{label}：第 {where} 步{count}{segs}被线挡住（完全），{until_where(result)}"
+    signed = sorted(set(result.get("accepted") or ()))
+    if signed:
+        text += f"；已确认的 {len(signed)} 帧已代签"
+    stamped = result.get("stamped")
+    if stamped:
+        text += f"；{len(stamped)} 帧记为审过"
+    return text + "（Ctrl+Z 一次撤销）"
+
+
+# --------------------------------------------------------------------------- #
+# W3m: 「往前直到最开始」 -- from the frame on screen back
+# --------------------------------------------------------------------------- #
+#: The two buttons under the list, ``{step}`` the frame on screen: 完全 from
+#: the part's previous state change (or the view's first frame) to this frame,
+#: stamped; and the labels withdrawn over the same span, the confirmed frames
+#: stamped for what the compiler says.
+SINCE_BUTTON = "第 {step} 帧起往前都被线挡住"
+SINCE_VISIBLE_BUTTON = "第 {step} 帧起往前都可见"
+SINCE_TIP = ("从画布上这一帧起**往前**，到这个零件上一次状态变化（装上 / 插上 / 关上 …）后的第一帧"
+             "（没有变过的到这个视角第一帧），每一帧都标被线挡住（完全），跨位姿段；已确认的帧记为审过"
+             "（判定：被线挡住），一次 Ctrl+Z 撤销。翻到别的帧，按钮跟着这一帧。没有快捷键。")
+SINCE_VISIBLE_TIP = ("从画布上这一帧起**往前**到同一处，撤回被线挡住 / 画框外的标签（没标的帧不动），"
+                     "让编译结果说话；已确认的帧编译成 visible 的记为审过（判定：按计算），编译仍判挡住的回到队列；"
+                     "一次 Ctrl+Z 撤销。先「第 24 帧起往前都被线挡住」再「第 9 帧起往前都可见」= 第 10–24 帧挡住、"
+                     "第 1–9 帧可见。没有快捷键。")
+#: Nothing to do, either way.
+SINCE_NOTHING = "{label}：从第 {step} 帧起往前的每一帧本来就标着被线挡住（完全），没有改"
+SINCE_VISIBLE_NOTHING = "{label}：从第 {step} 帧起往前没有一帧标着被线挡住 / 画框外，没有改"
+#: Where the part was before the span began, as the status line says it (W3m).
+PLACEMENT_WAS_ZH: dict[str, str] = {"on_bench": "在台面上", "elsewhere": "被拿走", "in_chassis": "在原位"}
+
+
+def since_where(result: dict) -> str:
+    """「往前直到这个视角第一帧（第 1 步）」 / 「往前直到第 6 步（第 5 步它还是关上）」."""
+    span = [int(s) for s in result.get("span") or result.get("frames") or ()]
+    since = result.get("since")
+    change = result.get("change") or None
+    if since is None:
+        first = f"（第 {min(span)} 步）" if span else ""
+        return f"往前直到这个视角第一帧{first}"
+    was = ""
+    if change and len(change) == 3:
+        attr, then, _now = change
+        was = (f"是{state_zh(str(then))}" if attr == "state"
+               else PLACEMENT_WAS_ZH.get(str(then), str(then)))
+    first = f"第 {min(span)} 步" if span else "这里"
+    note = f"（第 {int(since)} 步它还{was}）" if was else ""
+    return f"往前直到{first}{note}"
+
+
+def since_note(label: str, result: dict, visible: bool = False) -> str:
+    """The status line after 「往前直到最开始都被线挡住」 / 「…都可见」 (both entry points).
+
+    「connector.03：第 1–24 步（跨 2 个位姿段）被线挡住（完全），往前直到这个视角第一帧（第 1 步）；
+    已确认的 7 帧已代签（Ctrl+Z 一次撤销）」; the 撤回 says 「第 1–9 步撤回被线挡住（往前都可见）」
+    over the frames it took a label from.
+    """
+    frames = sorted(int(s) for s in result.get("frames") or ())
+    where = steps_text(frames)
+    segments = int(result.get("segments") or 1)
+    segs = f"（跨 {segments} 个位姿段）" if segments > 1 else ""
+    count = (f"（{len(frames)} 帧）" if len(frames) > 1 and frames
+             and frames[-1] - frames[0] + 1 != len(frames) else "")
+    if visible:
+        took = set(result.get("withdrawn") or ())
+        what = ("画框外" if took == {OFF_FRAME} else
+                "被线挡住 / 画框外" if OFF_FRAME in took else "被线挡住")
+        text = f"{label}：第 {where} 步{count}{segs}撤回{what}（往前都可见），{since_where(result)}"
+    else:
+        text = f"{label}：第 {where} 步{count}{segs}被线挡住（完全），{since_where(result)}"
     signed = sorted(set(result.get("accepted") or ()))
     if signed:
         text += f"；已确认的 {len(signed)} 帧已代签"

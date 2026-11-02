@@ -430,7 +430,7 @@ def test_the_spec_and_the_handoff_say_so():
     entries = [line for line in spec.split("## 14. 修订记录", 1)[1].splitlines()
                if line.startswith("- ")]
     # on top when it landed; whatever lands later goes above it
-    [entry] = [e for e in entries[:8] if e.startswith("- **v1.50（2026-10-31）**")]
+    [entry] = [e for e in entries[:9] if e.startswith("- **v1.50（2026-10-31）**")]
     for needed in ("`screw_hole`", "COCO id 26", "`scripts/migrate_fan_screw_holes.py`",
                    "D07 60、D08 59、D11 60、D14 60、D16 35、D18 55、D19 60", "共 102",
                    "`w3e:hole_under_head`", "`entered`"):

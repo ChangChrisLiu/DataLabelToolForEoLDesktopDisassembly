@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from tda.core.occluder import FULL
 from tda.ui import app_actions as A
 from tda.ui import app_compat as compat
 from tda.ui import app_support as S
@@ -63,6 +64,9 @@ class VisReviewMixin:
         # W3i: the check round's toggle and 「这一段起直到拔掉都被线挡住」
         self.review.sigListVisible.connect(self.on_list_visible)
         self.review.sigCableUntil.connect(self.act_vis_cable_until)
+        # W3m: from the frame on screen back, and its withdrawal
+        self.review.sigCableSince.connect(self.act_vis_cable_since)
+        self.review.sigCableSinceVisible.connect(self.act_vis_cable_since_visible)
         #: ``(desktop, view, part, steps)`` of the run last answered, while a
         #: sync of it to the other views is on offer (task U36).
         self._vis_sync: Optional[tuple] = None
@@ -309,6 +313,77 @@ class VisReviewMixin:
                          {k: result.get(k) for k in ("frames", "until", "segments", "moved",
                                                      "stamped", "accepted", "withheld",
                                                      "conflicts")})
+        self.review.refresh()
+        if not self._walk_on(row):
+            note += f"；{VT.DONE}"
+        self.refresh_overlay()
+        self.timeline.refresh_statuses()
+        self.update_status()
+        self.report(note)
+        self.refresh_guidance()
+
+    # -- W3m: 「第 N 帧起往前都被线挡住」 / 「第 N 帧起往前都可见」 -----------------------------
+    def on_frame_changed_visreview(self, key) -> None:
+        """The frame on screen moved: the backwards buttons name it (:meth:`RunDetail.set_anchor`)."""
+        self.review.set_vis_anchor(int(key.step) if key is not None else None)
+
+    @S.guard
+    def act_vis_cable_since(self) -> None:
+        """「第 N 帧起往前都被线挡住」: the selected line's part, from the frame on screen back.
+
+        完全 to the frame after the part's previous state change (or the view's
+        first frame), across pose segments, the confirmed frames stamped
+        (verdict ``cable``): one op of the session
+        (:meth:`~tda.ui.session_visreview.VisReviewMixin.review_cable_since`),
+        one ``Ctrl+Z``; then the next line, as after any answer.
+        """
+        self._vis_cable_since(FULL)
+
+    @S.guard
+    def act_vis_cable_since_visible(self) -> None:
+        """「第 N 帧起往前都可见」: the labels withdrawn from the frame on screen back (one op).
+
+        The confirmed frames the compiler then calls plain ``visible`` are
+        stamped ``computed``, so the line leaves the queue there; where the
+        compiler still hides the part the row comes back to the queue as an
+        ordinary computed line.
+        """
+        self._vis_cable_since(None)
+
+    def _vis_cable_since(self, label: Optional[str]) -> None:
+        if self.mode != A.MODE_REVIEW or not compat.is_open(self.session):
+            self.report(NOT_IN_REVIEW)
+            return
+        if self.review.current_queue() != api.QUEUE_VISIBILITY:
+            self.report(OTHER_TAB)
+            return
+        entry = self.review.selected_visibility()
+        if entry is None:
+            self.report(VT.PICK_A_ROW)
+            return
+        instance = str(entry["instance"])
+        here = int(self.session.current().step)        # the canvas frame, wherever the user stepped
+        row = self.review.visibility_row()
+        name = self._label_of(instance)[0] or instance_label(instance)
+        try:
+            result = self.session.review_cable_since(instance, here, label)
+        except SessionRefusal as refused:
+            self.report(f"可见性审查：{refused}")
+            return
+        if not result.get("changed", True) and not result.get("op"):
+            self.report((VT.SINCE_VISIBLE_NOTHING if label is None else VT.SINCE_NOTHING)
+                        .format(label=name, step=here))
+            return
+        note = f"可见性审查：{VT.since_note(name, result, visible=label is None)}"
+        withheld = result.get("withheld") or []
+        if withheld:
+            note += WITHHELD.format(steps=VT.steps_text(withheld))
+        elif result.get("conflicts"):
+            note += CONFLICT_LEFT
+        self.logger.info("visibility review since %s from %s (%s): %s", instance, here, label,
+                         {k: result.get(k) for k in ("frames", "since", "segments", "moved",
+                                                     "stamped", "accepted", "withheld",
+                                                     "conflicts", "withdrawn")})
         self.review.refresh()
         if not self._walk_on(row):
             note += f"；{VT.DONE}"

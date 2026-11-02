@@ -71,7 +71,7 @@ def test_the_docs_say_it():
         assert needed in line, needed
     entries = [line for line in spec.split("## 14. 修订记录", 1)[1].splitlines() if line.startswith("- ")]
     # on top when it landed; whatever lands later goes above it
-    [entry] = [e for e in entries[:1] if e.startswith("- **v1.57（2026-11-01）**")]
+    [entry] = [e for e in entries[:2] if e.startswith("- **v1.57（2026-11-01）**")]
     for needed in ("（W3l，", "two_ended", "connector_owner", "sata_power", "drive_cage.01", "tests/test_w3l_two_ended.py"):
         assert needed in entry, needed
     assert spec.index("- **v1.57") < spec.index("- **v1.56") < spec.index("- **v1.55")

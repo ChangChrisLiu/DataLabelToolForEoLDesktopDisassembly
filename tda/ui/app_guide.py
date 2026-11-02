@@ -389,6 +389,11 @@ class GuideMixin:
         # on screen, in the key's words (the span's other frames are the write's)
         until_why = closed or self.cable_until_refusal(dirty=bool(facts.layer_dirty))
         states["cable_until"] = (not until_why, False, until_why)
+        # W3m: the same gates backwards; the withdrawal is never refused for the part
+        since_why = closed or self.cable_since_refusal(dirty=bool(facts.layer_dirty))
+        states["cable_since"] = (not since_why, False, since_why)
+        clear_why = closed or self.cable_since_refusal(dirty=bool(facts.layer_dirty), label=None)
+        states["cable_since_visible"] = (not clear_why, False, clear_why)
         # The Review queue's own keys (round 1, item 3); shown only in Review.
         review = self.mode == A.MODE_REVIEW and image
         not_review = "只在复查模式可用"
