@@ -106,7 +106,7 @@ def run_check(pack: Path, py: Path, out: Path, log=print) -> dict:
         raise CheckFailed("the virtual environment can import tda on its own: not clean")
     log("[cleanvenv] `import tda` fails in the venv, as it must")
     truth = sorted((pack / "eval_v1").glob("*.jsonl"))
-    truth = [p for p in truth if not p.name.endswith((".images_manifest.jsonl", ".oracle.jsonl"))]
+    truth = [p for p in truth if not p.name.endswith((".images_manifest.jsonl", ".oracle.jsonl", ".masks.jsonl"))]
     if not truth:
         raise CheckFailed(f"no eval_v1/<view>.jsonl under {pack}")
     cmd = [str(py), "-I", "-B", str(tools / "vlm_selfcheck.py"), "--truth", *map(str, truth),
