@@ -594,7 +594,7 @@ def render_overlays(out: Path, eval_dir: Path, views: Sequence[str], log=print) 
 # 4. composition (for the card)
 # --------------------------------------------------------------------------- #
 def composition(data_dir: Path, views: Sequence[str]) -> dict:
-    """What the card says beyond ``summary.json``: V2 by class, the HP bracket."""
+    """What the card says beyond ``summary.json``: V2 by class, the optical drive cages."""
     v2: Counter = Counter()
     v2_prior_wrong = 0
     v2_total = 0
@@ -862,15 +862,15 @@ def _known_issues(summary: dict) -> str:
     bracket = comp["optical_bracket_desktops"]
     if bracket:
         items.append(
-            f"**The optical-drive bracket.** On {len(bracket)} desktops (D"
-            + ", D".join(f"{d:02d}" for d in bracket) + ") the bracket the optical drive "
-            "sits in is annotated as class `drive_cage` with `attrs.of = \"optical\"` (the "
-            "oracle's `instances[key].attrs.of`). The questions call it **\"Drive cage N\"** "
-            "and the scorer grounds an answer by that wording (or the key); the phrase "
-            "\"optical drive\" names the `optical_drive` part, a different instance, and is "
-            "**not** accepted for the bracket by this pack's scorer. Treat the two as "
-            "distinct parts when reading model errors; a synonym rule, if adopted, will be "
-            "a scorer change, not a data change.")
+            f"**The optical drive cage.** On {len(bracket)} desktops (D"
+            + ", D".join(f"{d:02d}" for d in bracket) + ") the optical drive is never taken "
+            "out -- installed to the end, or only opened / pushed out -- and it is annotated "
+            "together with the bracket it sits in as class `drive_cage` with "
+            "`attrs.of = \"optical\"` (the oracle's `instances[key].attrs.of`). The questions "
+            "call it **\"Optical drive cage N\"** (an HDD / SSD cage stays \"Drive cage N\"); "
+            "class `optical_drive` is only a drive that is taken out. The scorer grounds an "
+            "answer by that wording (or the key) and does **not** accept \"optical drive\" "
+            "for the cage (owner, 2026-11-03).")
     illegal = {v: s.get("illegal_steps") or {} for v, s in summary["exports"].items()}
     scan_illegal = illegal.get(summary["views"][0]) or {}
     if scan_illegal:
@@ -1030,7 +1030,7 @@ def readme_text(summary: dict) -> str:
                   "1.0 with the pack's tools alone." if check and check.get("ok") else
                   "The build did not run it (`--no-selfcheck`).")
     bracket = summary["composition"]["optical_bracket_desktops"]
-    bracket_line = (f" The optical-drive bracket note above applies to "
+    bracket_line = (f" The optical drive cage note above applies to "
                     f"{_n(len(bracket), 'desktop')}." if bracket else "")
     text = f"""# VLM evaluation pack ({PACK_NAME} v{summary['pack_version']}, `{ev['version']}`)
 
@@ -1147,8 +1147,8 @@ and the label side carries desktop, step and view. Show a model `prompt` only.
   desktops.
 * `label.prior_is_correct` (V2) -- whether the class prior (the part's state
   at the start of the teardown; for counts the starting number of screws)
-  already gives the answer. The scorer's `V2` row is the `false` subset; `V2-all`
-  is every V2 question.
+  already gives the answer. The scorer's `V2` row (the headline) is every V2
+  question; `V2-prior-wrong` is the `false` subset, a shortcut check.
 * `label.v6_form` / `label.v6_pair` (V6) -- `open` or `mc`; the two forms of
   one frame share the pair id.
 * `label.image_undecidable` -- the truth rests on a captive screw's tightness.
@@ -1193,9 +1193,11 @@ not; V15 same / different then view pair; V16 valid / invalid then corruption;
 V3 by verb, V8 by class, V10 by progress bin), desktops take turns inside a
 stratum, and no desktop holds more than {ev['max_desktop_share']:.0%} of a task's
 target (a pool smaller than the target gives everything it has). Two runs are
-byte-identical. Run every model on the same `eval_v1`; closed
-models three times for the standard deviation; intervals by cluster bootstrap
-over desktops (the scorer does this).
+byte-identical. Run every open model on the same `eval_v1`; the closed model
+answers the 300 items of `eval_v1/audit/audit.ids.txt` once (the same items the
+author audits and the human baseline answers; owner, 2026-11-03), and the open
+models are also scored on those ids for the comparison; intervals by cluster
+bootstrap over desktops (the scorer does this).
 
 {_eval_table(summary)}
 
@@ -1230,7 +1232,8 @@ not hand them to a human-baseline participant.
 **Human baseline.** `tools/vlm_human_sheet.py build` writes pages **without answers**
 for a subset of `eval_v1` (default: a stratified draw of 300 by `vlm_sample.draw`,
 `purpose="human"`, about 25 per task, positives and negatives balanced, every desktop
-represented; `--ids` takes any list) -- the frame(s), the question, the options and a
+represented; `--ids` takes any list -- the paper's baseline uses
+`--ids eval_v1/audit/audit.ids.txt`, the closed model's 300) -- the frame(s), the question, the options and a
 plain form per task (yes / no and state buttons, verb list + target box, one action per
 line for plans, a box-drawing tool on the picture for V1 / V8). The page records when an
 item first came into view and when its answer last changed (`started_at`, `answered_at`,
@@ -1305,7 +1308,7 @@ python tools/vlm_score.py --truth eval_v1/scan.jsonl --pred runs/refs/scan/proto
 `vlm_score.py` writes `<name>.score.json` and `<name>.score.md`: per task, per
 layer and per question template, strict and lenient, 95 % cluster-bootstrap
 intervals over desktops, the text-only upper bound beside each task, V6 open
-(headline) and `V6-mc`, V2 (prior-wrong) and `V2-all`, V7's violation-free /
+(headline) and `V6-mc`, V2 (headline: every V2 question) and `V2-prior-wrong`, V7's violation-free /
 required-recall / goal-reached, V4's blockers F1, V10's bin accuracy. Score the
 four views separately (each truth file has its own oracle) and pool in your
 analysis; `eval_v1/ids.txt` is the subset. The model driver (`tools/vlm_run/vlm_run.py`:

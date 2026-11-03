@@ -473,18 +473,23 @@ def _f1(tp: int, n_pred: int, n_true: int) -> float:
     return 2 * p * r / (p + r)
 
 
+#: Longer names a class also goes by: the questions call an optical drive that never leaves its bracket
+#: "Optical drive cage N", which contains "optical drive" -- the longest match must still be the cage.
+CLASS_ALIASES = {"drive_cage": ("optical drive cage",)}
+
+
 def _class_of_text(text: Any, tax: Optional[Taxonomy], classes: Sequence[str]) -> Optional[str]:
     norm = _norm(text)
-    best = None
+    best, best_len = None, -1
     for cls in classes:
         phrase = _norm(cls)
         if tax is not None:
             from tda.core.export.vlm_tasks import class_label
 
             phrase = _norm(class_label(cls, tax))
-        if norm == phrase or norm == _norm(cls) or re.search(rf"\b{re.escape(phrase)}\b", norm):
-            if best is None or len(phrase) > len(_norm(best)):
-                best = cls
+        for p in (phrase, *(_norm(a) for a in CLASS_ALIASES.get(cls, ()))):
+            if (norm == p or norm == _norm(cls) or re.search(rf"\b{re.escape(p)}\b", norm)) and len(p) > best_len:
+                best, best_len = cls, len(p)
     return best
 
 

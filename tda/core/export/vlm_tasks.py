@@ -262,6 +262,10 @@ def instance_label(instance: str, rec: Optional[InstanceRec],
     if rec is None:
         return instance
     disc = rec.attrs.get("role") or rec.attrs.get("kind") or ""
+    if rec.cls == "drive_cage" and rec.attrs.get("of") == "optical":
+        # an optical drive that never leaves its bracket (owner 2026-11-03): "Optical drive cage 1",
+        # not the HDD / SSD cage's "Drive cage 1"
+        disc = "optical"
     words = _words(disc) if disc else []
     words.extend(_words(class_label(str(rec.cls), tax)))
     ordinal = instance.rsplit(".", 1)[-1]

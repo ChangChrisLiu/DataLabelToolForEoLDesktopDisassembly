@@ -44,6 +44,8 @@ CASES = (
     ("screw.motherboard.03", "screw", {"role": "motherboard"}, "Motherboard screw 3"),
     ("expansion_card.01", "expansion_card", {"kind": "gpu"}, "GPU expansion card 1"),
     ("cpu_cooler.fan.02", "cpu_cooler", {"kind": "fan"}, "Fan CPU cooler 2"),
+    ("drive_cage.02", "drive_cage", {"of": "optical"}, "Optical drive cage 2"),
+    ("drive_cage.01", "drive_cage", {"of": "ssd"}, "Drive cage 1"),
 )
 
 
@@ -52,6 +54,18 @@ def test_a_label_reads_the_way_a_person_says_it(key, cls, attrs, want):
     tax = load_taxonomy()
     rec = InstanceRec(key=key, desktop=1, cls=cls, attrs=dict(attrs))
     assert instance_label(key, rec, tax) == want
+
+
+def test_an_optical_drive_cage_answer_is_never_read_as_an_optical_drive():
+    """V1 maps a free-text class by the longest name it contains; "optical drive cage" contains "optical drive"."""
+    from tda.core.export.vlm_check import _class_of_text
+
+    tax = load_taxonomy()
+    both = ["drive_cage", "optical_drive"]
+    assert _class_of_text("Optical drive cage", tax, both) == "drive_cage"
+    assert _class_of_text("optical drive", tax, both) == "optical_drive"
+    assert _class_of_text("drive cage", tax, both) == "drive_cage"
+    assert _class_of_text("optical drive", tax, ["drive_cage"]) is None
 
 
 def test_a_label_without_a_record_is_still_the_key():
