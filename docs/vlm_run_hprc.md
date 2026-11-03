@@ -148,7 +148,7 @@ squeue -u $USER
 
 **闭源：GPT-6.1 Sol，通过 Codex，只做 300 条**（负责人 2026-11-03 定，控制 token 开销）：
 - 题目 = `eval_v1/audit/audit.ids.txt`（每题型 25 条，66 台；scan 175、oak1 48、oak2 41、rs 36），也就是负责人审核、
-  人类基线作答的同一批，三者逐题可比。每个视角用 `vlm_collect.py subset --ids $PACK/eval_v1/audit/audit.ids.txt`
+  人类基线作答的同一批（人类基线去掉画框的 V1、V8，共 250 条），逐题可比。每个视角用 `vlm_collect.py subset --ids $PACK/eval_v1/audit/audit.ids.txt`
   切出 300 条的真值。跑一次 `image`，不重复、不报标准差（Codex 不暴露 temperature）；要不要加一遍 `blind` 先问负责人。
 - **Codex 能读文件、跑命令，每题必须隔离**：在 `$PACK`、`$WORK` 之外新建空目录，只放这道题的图片（按不透明 id 拷贝），
   只读沙箱、除模型外不联网；只给 `vlm_to_chat.py` 为这条记录生成的用户文本（题面、选项、答题格式）加图片；
