@@ -186,6 +186,41 @@ def test_marks_need_somewhere_to_go(tmp_path):
     assert Path(row["meta"]["images"][0]).parent == out.parent / "x.openai_marked"
 
 
+@pytest.mark.parametrize("task", ["V1", "V8", "V14"])
+def test_box_tasks_never_show_marks(tmp_path, task):
+    """A mark on V1 / V8 / V14 would be the answer: none is drawn or named, whatever the record holds."""
+    from PIL import Image
+
+    root = tmp_path / "images"
+    _frame(root, "scan/D01/s003.png", (320, 320))
+    manifest = {"img_a": {"path": "scan/D01/s003.png"}}
+    record = _v2(["img_a"], [{"image": 0, "bbox": [40, 40, 30, 20], "tag": "A"}], task=task,
+                 question="Where is the RAM latch?")
+    record["label"]["answer_check"] = {"type": "exact", "fields": ["bbox"]}
+    images = C.Images(str(root), str(tmp_path / "assets"), None)
+    row = C.convert(record, manifest, images, "openai")
+    assert Path(row["meta"]["images"][0]) == root / "scan/D01/s003.png"  # the frame itself
+    assert _red_box(Image.open(row["meta"]["images"][0])) is None
+    text = row["messages"][1]["content"][0]["text"]
+    assert "Outlined" not in text and C.marks_line(record) == ""
+    assert not (tmp_path / "assets").exists() or not list((tmp_path / "assets").iterdir())
+
+
+def test_mark_style_is_in_the_cache_key(tmp_path, monkeypatch):
+    root = tmp_path / "images"
+    _frame(root, "scan/D01/s003.png", (64, 64))
+    manifest = {"img_a": {"path": "scan/D01/s003.png"}}
+    record = _v2(["img_a"], [{"image": 0, "bbox": [10, 10, 10, 10], "tag": "A"}])
+    images = C.Images(str(root), str(tmp_path / "assets"), None)
+    first = C.convert(record, manifest, images, "openai")["meta"]["images"][0]
+    assert C.convert(record, manifest, images, "openai")["meta"]["images"][0] == first
+    monkeypatch.setattr(C, "MARK_STYLE_VERSION", "mark-test")
+    restyled = C.convert(record, manifest, images, "openai")["meta"]["images"][0]
+    assert restyled != first
+    monkeypatch.setattr(C, "MARK_RGB", (0, 0, 255))
+    assert C.convert(record, manifest, images, "openai")["meta"]["images"][0] not in (first, restyled)
+
+
 # --------------------------------------------------------------------------- #
 # C2 legend and glossary
 # --------------------------------------------------------------------------- #

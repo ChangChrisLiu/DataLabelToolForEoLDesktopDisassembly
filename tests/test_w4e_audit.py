@@ -158,6 +158,17 @@ def test_audit_sheet_draws_marks(tmp_path):
     assert '&quot;kind&quot;:&quot;evidence&quot;' in one and "&quot;mark&quot;" not in one
 
 
+def test_audit_sheet_never_marks_a_box_task(tmp_path):
+    record, manifest = _multi_v3(tmp_path)
+    v8 = dict(record, prompt=dict(record["prompt"], task="V8", images=["img_scan_4"],
+                                  image_legend=None),
+              label=dict(record["label"], view="scan", views=None, image_steps=None,
+                         answer={"instance": "cpu_cooler.01", "bbox": [1, 2, 3, 4]}))
+    article = S.item_html(1, v8, manifest, None, tmp_path / "images", tmp_path / "out", 1)
+    assert "&quot;mark&quot;" not in article and "Outlined in red" not in article
+    assert S.marks_of(v8, 0) == []
+
+
 def test_the_human_form_shows_the_marks_but_no_evidence(tmp_path):
     record, manifest = _multi_v3(tmp_path)
     article = H.item_html(1, record, manifest, tmp_path / "images", tmp_path / "out")

@@ -141,6 +141,19 @@ def legend_line(record: dict) -> str:
             f"cameras ({_names(views)}).")
 
 
+#: Tasks whose answer is a box or a visibility: a mark there would give the answer away
+#: (spec 3.2), so marks are never drawn nor named on them, whatever the record holds.
+UNMARKED_TASKS = ("V1", "V8", "V14")
+
+
+def shown_marks(record: dict) -> list[dict]:
+    """The ``prompt.marks`` the model may see: none on V1 / V8 / V14."""
+    prompt = record["prompt"]
+    if prompt.get("task") in UNMARKED_TASKS:
+        return []
+    return list(prompt.get("marks") or [])
+
+
 def marks_line(record: dict) -> str:
     """"Outlined in red: A (image 1), B." -- the tags of ``prompt.marks``, or ``""``.
 
@@ -148,7 +161,7 @@ def marks_line(record: dict) -> str:
     interchangeable parts; the image is named when the record has more than one.
     """
     prompt = record["prompt"]
-    marks = prompt.get("marks") or []
+    marks = shown_marks(record)
     n_images = len(prompt.get("images") or [])
     if not marks or not n_images:
         return ""
@@ -217,6 +230,15 @@ def user_text(record: dict) -> str:
 MARK_RGB = (0xFF, 0x17, 0x44)  # "#ff1744"
 #: The text on a mark's tag label.
 MARK_TEXT_RGB = (255, 255, 255)
+#: Bumped whenever the way a mark is drawn changes (outline, label, font): it is part of the
+#: cache key of a marked copy, so a new style never reuses a stale picture.
+MARK_STYLE_VERSION = "mark-v1"
+
+
+def mark_style() -> str:
+    """Everything about a mark's look that its cached picture depends on."""
+    return (f"{MARK_STYLE_VERSION}|{MARK_RGB}|{MARK_TEXT_RGB}|"
+            f"w=max(3,round(3*W/1600))|{CHAT_FORMAT_ID}")
 
 
 def mark_width(width: int) -> int:
@@ -334,7 +356,8 @@ class Images:
         if marks:
             img = draw_marks(img.copy(), marks, (x0, y0), scale)
             spec = [(m.get("tag"), [float(v) for v in m["bbox"]]) for m in marks]
-            tag = hashlib.sha256(f"{rel}|{box}|{self.max_side}|{spec}".encode()).hexdigest()[:16]
+            tag = hashlib.sha256(f"{rel}|{box}|{self.max_side}|{spec}|{mark_style()}"
+                                 .encode()).hexdigest()[:16]
             out = self._marks_out() / f"mark_{tag}.png"
         else:
             tag = hashlib.sha256(f"{rel}|{box}|{self.max_side}".encode()).hexdigest()[:16]
@@ -384,7 +407,7 @@ def convert(record: dict, manifest: dict, images: Images, fmt: str, *,
                          f"from a record's evidence would show its answer")
     shown: list[Path] = []
     transforms: list[dict] = []
-    marks = record["prompt"].get("marks") or []
+    marks = shown_marks(record)
     for index, image_id in enumerate(record["prompt"].get("images") or []):
         entry = manifest[image_id]
         box = tuple(entry["roi"]) if roi == "view" and entry.get("roi") else None
