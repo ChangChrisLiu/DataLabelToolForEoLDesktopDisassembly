@@ -13,7 +13,12 @@
   ``<image>`` placeholders (``Image-1: <image>`` for several).
 
 The question is followed by the lettered options (V6) and by the answer format
-of :data:`tda.core.export.vlm_check.RESPONSE_FORMATS`. ``--roi view`` crops
+of :data:`tda.core.export.vlm_check.RESPONSE_FORMATS`. Since ``chat-v2`` a
+multi-view record (``prompt.image_legend`` / ``label.views``) starts with one
+line naming its images ("Images 1–4: the same moment from the top-down
+scanner, then three side cameras (OAK 1, OAK 2, RealSense)."), a record with
+marks names their tags ("Outlined in red: A."), and the prompt ends with the
+glossary of ``prompt.terms`` / ``prompt.state_terms`` (``vlm_glossary.py``). ``--roi view`` crops
 each image to its pose segment's fixed chassis ROI (from the manifest) -- the
 **same crop for every record of a desktop and view**; ``--roi none`` (the
 default) sends the whole frame. The crop offset and any ``--max-side`` scale
