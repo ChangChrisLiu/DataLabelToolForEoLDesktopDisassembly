@@ -53,25 +53,144 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vlm_io as IO  # noqa: E402
+from vlm_glossary import glossary_text  # noqa: E402
 from tda.core.export.vlm_check import LETTERS, format_instruction  # noqa: E402
 
-#: Bumped whenever the wording around the question changes.
-CHAT_FORMAT_ID = "chat-v1"
+#: Bumped whenever the wording around the question changes (chat-v2: marks, image legend,
+#: glossary).
+CHAT_FORMAT_ID = "chat-v2"
 SYSTEM = ("You are shown photographs of a desktop PC being disassembled on a bench. "
           "Answer exactly in the JSON format asked for.")
 #: The crops a run may use: none, or the view's fixed chassis ROI.
 ROI_MODES = ("none", "view")
+#: How the legend names a camera (``prompt.image_legend[*].view`` / ``label.views``).
+VIEW_NAMES = {"scan": "top-down scanner", "oak1": "OAK 1", "oak2": "OAK 2", "rs": "RealSense"}
+_COUNT = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six"}
+_DASH = "–"
+
+
+def image_legend(record: dict) -> list[dict]:
+    """``[{"view", "moment"}]`` per image of a multi-view record, else ``[]``.
+
+    ``prompt.image_legend`` when the record has one; otherwise, for ``label.view == "multi"``,
+    rebuilt from ``label.views`` (moments from ``label.image_steps``: two steps = before /
+    after, one = now).
+    """
+    prompt, label = record["prompt"], record.get("label") or {}
+    n = len(prompt.get("images") or [])
+    legend = prompt.get("image_legend")
+    if legend:
+        return list(legend)[:n] if n else []
+    views = label.get("views") or []
+    if label.get("view") != "multi" or not views or len(views) != n:
+        return []
+    steps = label.get("image_steps") or []
+    if len(steps) == n and len(set(steps)) == 2:
+        first = min(steps)
+        return [{"view": v, "moment": "before" if s == first else "after"}
+                for v, s in zip(views, steps)]
+    return [{"view": v, "moment": "now"} for v in views]
+
+
+def _span(first: int, last: int, word: str = "Images") -> str:
+    if first == last:
+        return f"{word[:-1]} {first}"
+    return f"{word} {first}{_DASH}{last}"
+
+
+def _names(views) -> str:
+    return ", ".join(VIEW_NAMES.get(v, str(v)) for v in views)
+
+
+def legend_line(record: dict) -> str:
+    """The line naming the images of a multi-view record (spec 3.5), or ``""``.
+
+    "Images 1–4: the same moment from the top-down scanner, then three side cameras (OAK 1,
+    OAK 2, RealSense)." / "Images 1–4 before, images 5–8 after the action, each: top-down
+    scanner, OAK 1, OAK 2, RealSense." -- only the views present are named.
+    """
+    legend = image_legend(record)
+    if not legend:
+        return ""
+    views = [e.get("view") for e in legend]
+    before = [e.get("view") for e in legend if e.get("moment") == "before"]
+    after = [e.get("view") for e in legend if e.get("moment") == "after"]
+    if before and after and len(before) + len(after) == len(legend):
+        nb, n = len(before), len(legend)
+        head = _span(1, nb)
+        tail = _span(nb + 1, n, "images")
+        if before == after:
+            each = "each: " + _names(before) if nb > 1 else "from the " + _names(before)
+            return f"{head} before, {tail} after the action, {each}."
+        return (f"{head} before the action ({_names(before)}), "
+                f"{tail} after it ({_names(after)}).")
+    if len(views) == 1:
+        return f"Image 1: the {_names(views)}."
+    if views[0] == "scan":
+        side = views[1:]
+        k = len(side)
+        cams = "side camera" if k == 1 else "side cameras"
+        return (f"{_span(1, len(views))}: the same moment from the top-down scanner, then "
+                f"{_COUNT.get(k, str(k))} {cams} ({_names(side)}).")
+    return (f"{_span(1, len(views))}: the same moment from {_COUNT.get(len(views), len(views))} "
+            f"cameras ({_names(views)}).")
+
+
+def marks_line(record: dict) -> str:
+    """"Outlined in red: A (image 1), B." -- the tags of ``prompt.marks``, or ``""``.
+
+    One entry per tag in order of first appearance; a tag on several outlines is a group of
+    interchangeable parts; the image is named when the record has more than one.
+    """
+    prompt = record["prompt"]
+    marks = prompt.get("marks") or []
+    n_images = len(prompt.get("images") or [])
+    if not marks or not n_images:
+        return ""
+    order: list[str] = []
+    boxes: dict[str, int] = {}
+    where: dict[str, list[int]] = {}
+    for m in marks:
+        tag = str(m.get("tag") or "")
+        if tag not in boxes:
+            order.append(tag)
+            boxes[tag], where[tag] = 0, []
+        boxes[tag] += 1
+        index = int(m.get("image", 0)) + 1
+        if index not in where[tag]:
+            where[tag].append(index)
+    items = []
+    for tag in order:
+        extra = []
+        if boxes[tag] > 1:
+            extra.append(f"{boxes[tag]} outlines: one group of interchangeable parts")
+        if n_images > 1:
+            imgs = sorted(where[tag])
+            extra.append(("image " if len(imgs) == 1 else "images ")
+                         + ", ".join(str(i) for i in imgs))
+        items.append(tag + (f" ({'; '.join(extra)})" if extra else ""))
+    return "Outlined in red: " + ", ".join(items) + "."
 
 
 def user_text(record: dict) -> str:
-    """Question, lettered options, state tables (oracle variant), answer format."""
+    """Image legend, marked tags, state tables (oracle variant), question, lettered options,
+    answer format, glossary."""
     prompt = record["prompt"]
     parts = []
+    if prompt.get("images"):  # a text-only variant (state oracle, blind) shows no image
+        for line in (legend_line(record), marks_line(record)):
+            if line:
+                parts.append(line)
     tables = prompt.get("state_tables")
     if tables:
+        moments = len(tables) == 2 and (record.get("label") or {}).get("view") == "multi"
         for i, table in enumerate(tables, start=1):
-            head = f"State of the machine in image {i}" if len(tables) > 1 else \
-                "State of the machine"
+            if moments:
+                head = "State of the machine " + ("before the action" if i == 1
+                                                  else "after the action")
+            else:
+                head = f"State of the machine in image {i}" if len(tables) > 1 else \
+                    "State of the machine"
             parts.append(f"{head} (instead of the photo):\n{table}")
     if prompt.get("previous_action"):
         pa = prompt["previous_action"]
@@ -83,6 +202,9 @@ def user_text(record: dict) -> str:
         parts.append("\n".join(f"{LETTERS[i]}. {o['verb']} {o['target_label']}"
                                for i, o in enumerate(options)))
     parts.append(format_instruction(record))
+    glossary = glossary_text(prompt.get("terms"), prompt.get("state_terms"))
+    if glossary:
+        parts.append(glossary)
     return "\n\n".join(parts)
 
 
@@ -269,8 +391,12 @@ def convert(record: dict, manifest: dict, images: Images, fmt: str, *,
         shown = [images.composite(shown)]
         transforms = []  # no box task asks about two images
     text = user_text(record)
-    if composite and len(record["prompt"].get("images") or []) > 1:
+    n_images = len(record["prompt"].get("images") or [])
+    if composite and n_images == 2:
         text = "The picture shows the first and the second image side by side, " \
+               "left to right.\n\n" + text
+    elif composite and n_images > 2:
+        text = f"The picture shows images 1 to {n_images} side by side, " \
                "left to right.\n\n" + text
     label = record["label"]
     meta = {"task": record["prompt"]["task"], "template_id": label.get("template_id"),
