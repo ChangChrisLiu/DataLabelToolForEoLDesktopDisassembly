@@ -6,7 +6,10 @@
 Reads one export and its sidecars -- never the database -- and writes:
 
 * ``blind.jsonl`` -- every record with its images taken away: question and
-  options only. What a model scores here is template leakage (the export's
+  options only, the mark wording of the 2026-11-03 redesign removed ("the RAM
+  module outlined in red" -> "the RAM module", :func:`unmark`); a question that
+  names a part by its mark tag alone ("part A") is left out (``mark_tag``, also
+  in the state oracle). What a model scores here is template leakage (the export's
   ``shortcuts`` table is the in-sample upper bound of the same thing).
 * ``protocol_prior.jsonl`` + ``protocol_prior.predictions.jsonl`` -- V6 / V7 /
   V16 answered from **nothing but the previous demonstrated action**, by a
@@ -16,10 +19,12 @@ Reads one export and its sidecars -- never the database -- and writes:
   ``protocol_prior.report.json`` gives its accuracy by task -- the line a text
   model reading the log would start from. Its next-action accuracy over coarse
   ``(verb, class)`` is reported too, the number the 71.8 % probe measured.
-* ``state_oracle.jsonl`` -- every record **except V14** with each image replaced
-  by the structured state table of that moment (instances with state, placement
+* ``state_oracle.jsonl`` -- every record **except V14** with its images replaced
+  by the structured state table of each moment (instances with state, placement
   and, only where that view has confirmed rows, visibility): the "perfect
-  perception" upper bound. A screw is shown as present / removed, never as
+  perception" upper bound. One table per image in a camera unit, **one per
+  moment** in the ``multi`` unit (its cameras of one step share the scanner's
+  table; V3 / V12 have two, before and after -- :func:`moment_images`). A screw is shown as present / removed, never as
   tight or loose -- no picture shows that either. Records whose truth rests on
   a captive screw's tightness keep ``label.image_undecidable = true`` so the
   oracle-vs-VLM gap can leave them out. V14 asks whether *this view* can settle
@@ -29,7 +34,9 @@ Reads one export and its sidecars -- never the database -- and writes:
   every eligible record with its frames replaced by a copy on which the
   confirmed visible masks are painted in class colours (:mod:`vlm_overlay`):
   the "minimal set" perception reference. Eligible: every frame confirmed and
-  carrying masks, task not V8 (the box is the answer). Needs ``--image-root``
+  carrying masks, task not V8 (the box is the answer); in the ``multi`` unit only
+  the scanner frames are painted (and must be confirmed with masks), the side
+  cameras' pictures stay as they are. Needs ``--image-root``
   and the masks -- ``<export>.masks.jsonl`` beside the export, ``--masks``, or
   ``--coco-root`` (the scanner pack's COCO). Without ``--assets`` the variant
   is not written and the summary says so.
@@ -70,11 +77,61 @@ PRIOR_TASKS = ("V6", "V7", "V16")
 # --------------------------------------------------------------------------- #
 # (i) blind
 # --------------------------------------------------------------------------- #
-def blind(record: dict) -> dict:
+#: The mark wording of the redesign of 2026-11-03 ("the RAM module outlined in red"):
+#: meaningless without the picture, so the text-only variants drop it.
+MARK_PHRASE = re.compile(r"\s*\(?\b(?:which (?:is|are) |that (?:is|are) )?outlined in red\b\)?")
+#: A part named by its tag alone ("part A", "parts A and B"): no text can stand in for it.
+MARK_TAG = re.compile(r"\bparts?\s+[A-Z]\b")
+#: Why a text-only variant leaves a record out.
+UNMARK_SKIP = "mark_tag"
+
+
+def unmark(record: dict) -> Optional[dict]:
+    """The record for a variant without pictures (blind, state oracle), or ``None``.
+
+    The converter drops the images and the marks of such a variant, but the question
+    would still say "the RAM module outlined in red": the phrase is removed ("the RAM
+    module" -- the class phrase the mark qualified), in the question and the options,
+    and ``prompt.marks`` / ``prompt.image_legend`` go. A question that names a part by
+    its tag only ("part A") cannot stand without the mark and is left out
+    (:data:`UNMARK_SKIP`). A record without marks is returned as a plain copy.
+    """
     out = copy.deepcopy(record)
+    prompt = out["prompt"]
+    marked = bool(prompt.pop("marks", None))
+    prompt.pop("image_legend", None)
+    texts = [prompt.get("question") or ""] + [str(o.get("target_label") or "")
+                                              for o in prompt.get("options") or []]
+    if marked and any(MARK_TAG.search(t) for t in texts):
+        return None
+    prompt["question"] = MARK_PHRASE.sub("", prompt.get("question") or "")
+    for option in prompt.get("options") or []:
+        if option.get("target_label"):
+            option["target_label"] = MARK_PHRASE.sub("", option["target_label"])
+    return out
+
+
+def blind(record: dict) -> Optional[dict]:
+    """The record without its pictures (and without the mark wording, :func:`unmark`),
+    or ``None`` when its question names a part by its tag only."""
+    out = unmark(record)
+    if out is None:
+        return None
     out["prompt"]["images"] = []
     out["label"]["reference"] = "blind"
     return out
+
+
+def blind_rows(records: list[dict]) -> tuple[list[dict], dict[str, int]]:
+    """``(blind records, left out per reason)``."""
+    rows, skipped = [], Counter()
+    for record in records:
+        row = blind(record)
+        if row is None:
+            skipped[UNMARK_SKIP] += 1
+        else:
+            rows.append(row)
+    return rows, dict(skipped)
 
 
 # --------------------------------------------------------------------------- #
@@ -102,11 +159,48 @@ def state_table_text(frame: Optional[dict], world: Optional[World]) -> str:
     return "\n".join(lines)
 
 
-def state_oracle(record: dict, worlds: dict[int, World], frames: dict[str, dict]) -> dict:
-    out = copy.deepcopy(record)
+#: The export unit whose records show one moment from every camera (the redesign of
+#: 2026-11-03); its state oracle gives one table per moment, not one per picture.
+MULTI_VIEW = "multi"
+
+
+def moment_images(record: dict, frames: dict[str, dict]) -> list[str]:
+    """The image standing for each moment a record shows, in image order.
+
+    A ``multi`` record shows each moment from several cameras (the scanner first), so
+    its moments are its images grouped by step (``label.image_steps``, else the
+    oracle's ``step`` of each image) and each is represented by its first image -- the
+    scanner's, whose table alone carries confirmed visibility. Every other record keeps
+    one table per image: V15 asks whether two pictures are the same moment, and merging
+    their tables would answer it.
+    """
+    images = list(record["prompt"].get("images") or [])
+    if record["label"].get("view") != MULTI_VIEW:
+        return images
+    steps = record["label"].get("image_steps")
+    if not steps or len(steps) != len(images):
+        steps = [(frames.get(image) or {}).get("step") for image in images]
+    out: list[str] = []
+    seen: set = set()
+    for image, step in zip(images, steps):
+        key = image if step is None else step
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(image)
+    return out
+
+
+def state_oracle(record: dict, worlds: dict[int, World], frames: dict[str, dict]
+                 ) -> Optional[dict]:
+    """The record with its pictures replaced by state tables (one per moment), the mark
+    wording removed (:func:`unmark`); ``None`` when its question needs the mark."""
+    out = unmark(record)
+    if out is None:
+        return None
     world = worlds.get(IO.desktop_of(record))
     tables = [state_table_text(frames.get(image), world)
-              for image in record["prompt"]["images"]]
+              for image in moment_images(record, frames)]
     out["prompt"]["images"] = []
     out["prompt"]["state_tables"] = tables
     out["label"]["reference"] = "state_oracle"
@@ -121,14 +215,19 @@ ORACLE_SKIPS = ("V14",)
 
 def state_oracle_rows(records: list[dict], worlds: dict[int, World],
                       frames: dict[str, dict]) -> tuple[list[dict], dict[str, int]]:
-    """``(oracle records, skipped per task)``: every record but V14's."""
+    """``(oracle records, skipped per task)``: every record but V14's (and but those
+    whose question names a part by its mark tag only, counted as ``mark_tag``)."""
     rows, skipped = [], Counter()
     for record in records:
         task = record["prompt"]["task"]
         if task in ORACLE_SKIPS:
             skipped[task] += 1
             continue
-        rows.append(state_oracle(record, worlds, frames))
+        row = state_oracle(record, worlds, frames)
+        if row is None:
+            skipped[UNMARK_SKIP] += 1
+            continue
+        rows.append(row)
     return rows, dict(skipped)
 
 
@@ -356,6 +455,9 @@ def main(argv=None) -> int:
                     help="build the masks from a scanner pack's COCO when there is no sidecar")
     ap.add_argument("--force", action="store_true", help="repaint overlays that already exist")
     args = ap.parse_args(argv)
+    from vlm_eval_set import refuse_old_eval
+
+    refuse_old_eval(args.export, args.out, args.assets)
     from tda.core.taxonomy import load_taxonomy
 
     records = list(IO.read_jsonl(args.export))
@@ -371,7 +473,8 @@ def main(argv=None) -> int:
     if args.assets and not args.image_root:
         print("[vlm-references] refused: --assets needs --image-root (the frames to paint)")
         return 2
-    n_blind = IO.write_jsonl(out / "blind.jsonl", (blind(r) for r in records))
+    blind_records, blind_skipped = blind_rows(records)
+    n_blind = IO.write_jsonl(out / "blind.jsonl", blind_records)
     oracle_rows, oracle_skipped = state_oracle_rows(records, worlds, frames)
     n_oracle = IO.write_jsonl(out / "state_oracle.jsonl", oracle_rows)
     IO.write_jsonl(out / "protocol_prior.jsonl", variant)
@@ -380,10 +483,13 @@ def main(argv=None) -> int:
         json.dumps(report, ensure_ascii=False, indent=1, sort_keys=True) + "\n",
         encoding="utf-8")
     summary = {
-        "blind": {"records": n_blind},
+        "blind": {"records": n_blind, **({"skipped": blind_skipped} if blind_skipped else {})},
         "state_oracle": {"records": n_oracle, "skipped": oracle_skipped,
                          "skipped_why": "V14 asks whether the view can settle the state; "
-                                        "the table's visibility column is that answer"},
+                                        "the table's visibility column is that answer"
+                                        + ("; mark_tag: the question names a part by its "
+                                           "mark only, which no text can stand in for"
+                                           if UNMARK_SKIP in oracle_skipped else "")},
         "protocol_prior": {"records": len(variant), "report": report},
     }
     skipped_text = ", ".join(f"{t} {n} skipped" for t, n in oracle_skipped.items()) or "nothing skipped"

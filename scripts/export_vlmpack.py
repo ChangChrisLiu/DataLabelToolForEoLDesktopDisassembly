@@ -6,7 +6,8 @@
         [--out D:/DataSet/exports/vlmpack_<date>] [--cache-dir D:/DataSet/cache] \
         [--views scan,oak1,oak2,rs] [--desktops 1-66] [--seed 0] \
         [--images all|eval|none] [--work <dir>] [--allow-conflicts] [--force] \
-        [--no-selfcheck] [--coco-root D:/DataSet/exports/scanpack_<date>] [--overlays eval|none]
+        [--no-selfcheck] [--coco-root D:/DataSet/exports/scanpack_<date>] [--overlays eval|none] \
+        [--no-multi]
 
 The models are run elsewhere (another machine, the HPRC), so everything the
 evaluation needs travels in one directory that neither the annotation tool nor
@@ -14,16 +15,19 @@ its database has to be present for::
 
     README.md                 the data card (English): tasks, fields, formats, how to run
     manifest.json             what was built, counts, and size + sha256 of every other file
-    data/vlm_<view>.jsonl     the four-view question set of ``export_vlm`` (all records)
-    data/vlm_<view>.images_manifest.jsonl / .oracle.jsonl / .summary.json
-    data/vlm_<view>.masks.jsonl   (with --coco-root) the confirmed visible masks of every
+    data/vlm_<unit>.jsonl     the five export units of ``export_vlm`` (all records): the
+                              four camera views (scan, oak1, oak2, rs) with single-view
+                              perception and V15, and ``multi`` with the action tasks, each
+                              record one moment seen from every camera (scanner first)
+    data/vlm_<unit>.images_manifest.jsonl / .oracle.jsonl / .summary.json
+    data/vlm_<unit>.masks.jsonl   (with --coco-root) the confirmed visible masks of every
                               confirmed frame, COCO RLE, from the scanner pack's COCO
     images/<view>/D<nn>/s<nn>.<ext>   the frames the manifests name, byte for byte
-    eval_v1/                  the frozen evaluation subset (``scripts/vlm_eval_set.py``):
-                              ids.txt, <view>.jsonl + sidecars (+ .masks.jsonl), table.md,
-                              table.json, audit/ (the 300-item human-audit sample, the fillable HTML
+    eval_v2/                  the frozen evaluation subset (``scripts/vlm_eval_set.py``):
+                              ids.txt, <unit>.jsonl + sidecars (+ .masks.jsonl), table.md,
+                              table.json, audit/ (the author-audit sample, the fillable HTML
                               sheet and its CSV skeleton -- ``scripts/vlm_audit_sheet.py``),
-                              mask_overlay/<view>.jsonl (+ manifest) -- the GT-mask overlay
+                              mask_overlay/<unit>.jsonl (+ manifest) -- the GT-mask overlay
                               variant of the subset (W4-C), painted into overlays/
     overlays/<view>/D<nn>/s<nn>.png   the subset's frames with the confirmed masks painted
     tools/                    the scorer, converters, references, the overlay painter, samplers,
@@ -89,17 +93,25 @@ import vlm_eval_set  # noqa: E402
 import vlm_io as IO  # noqa: E402
 import vlm_overlay  # noqa: E402
 from tda.core.db import Db  # noqa: E402
-from tda.core.export.vlm import TASKS, export_vlm, manifest_path  # noqa: E402
+from tda.core.export.vlm import (  # noqa: E402
+    MULTI_PRIMARY,
+    MULTI_VIEW,
+    export_vlm,
+    manifest_path,
+    unit_tasks,
+)
+from tda.core.export.vlm import siblings as vlm_siblings  # noqa: E402
 from tda.core.export.vlm_check import CAPABILITY_LAYERS, RESPONSE_FORMATS  # noqa: E402
-from tda.core.export.vlm_tasks import TRUTH_SOURCES  # noqa: E402
+from tda.core.export.vlm_tasks import ALL_TASKS, TRUTH_SOURCES  # noqa: E402
 from tda.core.model import VIEWS, is_component_view  # noqa: E402
 from tda.core.taxonomy import Taxonomy, load_taxonomy  # noqa: E402
 from tda.core.truth import TruthService  # noqa: E402
 from tda.pipeline import parse_desktops  # noqa: E402
 
-__all__ = ["IMAGE_MODES", "LIVE_DB", "OVERLAY_MODES", "PACK_VERSION", "TOOLS", "VENDORED",
-           "PackError", "build_pack", "main", "masks_sidecars", "readme_text", "refuse_live",
-           "render_overlays", "sha256_of", "work_copy"]
+__all__ = ["IMAGE_MODES", "LIVE_DB", "OVERLAY_MODES", "PACK_VERSION", "REDESIGN_TOOLS", "TOOLS",
+           "VENDORED", "PackError", "build_pack", "main", "masks_sidecars", "pack_units",
+           "readme_text", "refuse_live", "render_overlays", "require_tools", "sha256_of",
+           "work_copy"]
 
 #: The annotation tool's live database: never opened here, by name.
 LIVE_DB = "D:/DataSet/annotations/tda.sqlite"
@@ -110,11 +122,16 @@ DEFAULT_WORK = "D:/DataSet/.cache/tmp/w4a/work"
 IMAGE_MODES = ("all", "eval", "none")
 #: Which overlays the build paints: the subset's, or none (the sidecar still ships).
 OVERLAY_MODES = ("eval", "none")
-#: The W3b scripts shipped under ``tools/`` (W4-A's own two, W4-C's painter and W4-E's three included).
+#: The W3b scripts shipped under ``tools/`` (W4-A's own two, W4-C's painter, W4-E's three and
+#: the redesign's glossary and audit carry-over included).
 TOOLS = ("vlm_io.py", "vlm_to_chat.py", "vlm_score.py", "vlm_references.py",
          "vlm_overlay.py", "vlm_sample.py", "vlm_eval_set.py", "vlm_selfcheck.py",
-         "vlm_audit_sheet.py", "vlm_audit_summary.py", "vlm_human_sheet.py")
-#: Items per page of the audit sheet the build writes into ``eval_v1/audit/``.
+         "vlm_audit_sheet.py", "vlm_audit_summary.py", "vlm_human_sheet.py",
+         "vlm_glossary.py", "vlm_audit_carry.py")
+#: Tools the redesign of 2026-11-03 added (the converter's glossary, the audit carry-over):
+#: a build without them stops with a message naming them; no pack ships without them.
+REDESIGN_TOOLS = ("vlm_glossary.py", "vlm_audit_carry.py")
+#: Items per page of the audit sheet the build writes into ``eval_v2/audit/``.
 AUDIT_BATCH = 50
 #: The ``tda`` modules :mod:`tda.core.export.vlm_check` needs, copied verbatim
 #: under ``tools/tda``: the scorer's whole import closure, nothing of the tool.
@@ -272,10 +289,24 @@ def _git_head(repo: Path) -> Optional[str]:
 # --------------------------------------------------------------------------- #
 # 1. the export
 # --------------------------------------------------------------------------- #
+def pack_units(views: Sequence[str], multi: bool = True) -> list[str]:
+    """The export units of a pack: the camera views asked for, then ``multi`` (the
+    action tasks, every camera at once) when the scanner -- its primary -- is among them."""
+    units = [str(v) for v in views]
+    if multi and MULTI_PRIMARY in units and MULTI_VIEW not in units:
+        units.append(MULTI_VIEW)
+    return units
+
+
 def export_views(db: Db, tax: Taxonomy, desktops: Sequence[int], views: Sequence[str],
                  data_dir: Path, cache_dir: Optional[str], allow_conflicts: bool,
                  log=print) -> dict[str, dict]:
-    """``export_vlm`` per view into ``data/``; returns ``view -> summary``."""
+    """``export_vlm`` per unit into ``data/``; returns ``unit -> summary``.
+
+    ``views`` are export units (:func:`pack_units`): camera views (single-view
+    perception and V15) and ``multi`` (the action tasks); each writes its own task
+    set (:func:`tda.core.export.vlm.unit_tasks`).
+    """
     service = TruthService(db, tax, cache_dir=cache_dir)
     out: dict[str, dict] = {}
     for view in views:
@@ -283,11 +314,20 @@ def export_views(db: Db, tax: Taxonomy, desktops: Sequence[int], views: Sequence
             raise PackError(f"{view} is a components-gallery view: no VLM questions")
         target = data_dir / f"vlm_{view}.jsonl"
         log(f"[vlmpack] export {view}: {len(desktops)} desktops ...")
-        stats = export_vlm(db, tax, list(desktops), view, str(target), tasks=TASKS,
+        stats = export_vlm(db, tax, list(desktops), view, str(target), tasks=unit_tasks(view),
                            only_verified=False, truth=service, allow_conflicts=allow_conflicts,
                            balance=True, split="all")
         if not stats.get("records"):
-            raise PackError(f"{view}: the export wrote no record")
+            if view == MULTI_VIEW:
+                raise PackError(f"{view}: the export wrote no record")
+            # a camera unit holds only confirmed perception and the V15 pairs it comes
+            # first in: a view nothing of which is confirmed (and the last view, rs) can
+            # be empty. Its pictures still ship through the multi unit.
+            log(f"[vlmpack] export {view}: no record (nothing confirmed in this view); "
+                f"the unit is left out")
+            for path in (target, *vlm_siblings(str(target))):
+                Path(path).unlink(missing_ok=True)
+            continue
         log(f"[vlmpack] export {view}: {stats['records']} records, {stats['images']} images"
             + (f", {stats['open_conflicts']} frames with open conflicts (unverified)"
                if stats.get("open_conflicts") else ""))
@@ -300,7 +340,8 @@ def _summary_for_manifest(stats: dict) -> dict:
             "open_conflicts", "illegal_steps", "excluded_desktops", "v10_excluded",
             "unlabelled_view_desktops", "records_without_confirmed_view", "v12_by_kind",
             "v15_moment_by_view", "v16_corruptions", "v6_options",
-            "image_undecidable_by_task", "shortcuts", "v6_option_shortcut", "tasks")
+            "image_undecidable_by_task", "shortcuts", "v6_option_shortcut", "tasks",
+            "primary_view", "side_views")
     return {k: stats.get(k) for k in keys if k in stats}
 
 
@@ -377,6 +418,21 @@ def copy_images(cache_dir: str, needed: dict[str, dict], out: Path, log=print
 # --------------------------------------------------------------------------- #
 # 3. the tools
 # --------------------------------------------------------------------------- #
+def require_tools(repo: Path = REPO) -> None:
+    """Stop (:class:`PackError`) when a tool the pack ships is not in ``repo/scripts``,
+    naming the redesign's glossary / audit carry-over first: a pack without them would
+    convert records without their glossary and could not carry the audit over."""
+    missing = [name for name in REDESIGN_TOOLS if not (Path(repo) / "scripts" / name).is_file()]
+    if missing:
+        raise PackError(f"the redesign's tools {', '.join(missing)} are missing from "
+                        f"{Path(repo) / 'scripts'}: the converter needs its glossary and the "
+                        f"audit its carry-over; build from a tree that has them")
+    for name in TOOLS:
+        src = Path(repo) / "scripts" / name
+        if not src.is_file():
+            raise PackError(f"tool {src} is missing")
+
+
 def vendor_tools(tools: Path, repo: Path = REPO) -> list[str]:
     """Copy the scripts and the scorer's ``tda`` closure under ``tools/``.
 
@@ -386,6 +442,7 @@ def vendor_tools(tools: Path, repo: Path = REPO) -> list[str]:
     generators, of which the references need one dictionary).
     """
     written: list[str] = []
+    require_tools(repo)
     tools.mkdir(parents=True, exist_ok=True)
     for name in TOOLS:
         src = repo / "scripts" / name
@@ -482,7 +539,8 @@ def smoke_import(tools: Path, python: str = sys.executable) -> None:
             "sys.path.insert(0, str(tools)); "
             "import vlm_io, vlm_to_chat, vlm_score, vlm_references, vlm_overlay, vlm_sample, "
             "vlm_eval_set, vlm_selfcheck, vlm_audit_sheet, vlm_audit_summary, "
-            "vlm_human_sheet, tda, tda.core.export.vlm_check as C; "
+            "vlm_human_sheet, vlm_glossary, vlm_audit_carry, tda, "
+            "tda.core.export.vlm_check as C; "
             "vlm_overlay.taxonomy_classes(); "
             "from tda.core.taxonomy import load_taxonomy; load_taxonomy(); "
             "where = pathlib.Path(tda.__file__).resolve().parent; "
@@ -634,8 +692,14 @@ def build_pack(db_path: str, out_dir: str, *, cache_dir: Optional[str] = DEFAULT
                selfcheck: bool = True, audit: int = 300, tax: Optional[Taxonomy] = None,
                repo: Path = REPO, python: str = sys.executable, log=print,
                live_db: str = LIVE_DB, coco_root: Optional[str] = None,
-               overlays: str = "eval") -> dict:
-    """Build the pack at ``out_dir``; returns the manifest's summary."""
+               overlays: str = "eval", multi: bool = True) -> dict:
+    """Build the pack at ``out_dir``; returns the manifest's summary.
+
+    ``views`` are the camera views exported as single-view units; ``multi`` adds the
+    ``multi`` unit (the action tasks, every camera at once) when the scanner is among
+    them (:func:`pack_units`). Every later step -- the subset, the images, the masks,
+    the overlays, the self-check -- runs over all units.
+    """
     if images not in IMAGE_MODES:
         raise ValueError(f"images={images!r}: one of {', '.join(IMAGE_MODES)}")
     if overlays not in OVERLAY_MODES:
@@ -643,9 +707,11 @@ def build_pack(db_path: str, out_dir: str, *, cache_dir: Optional[str] = DEFAULT
     if coco_root and not Path(coco_root).is_dir():
         raise PackError(f"--coco-root {coco_root}: no such directory")
     refuse_live(db_path, live_db)
+    require_tools(repo)  # before an hour of export, not after it
     views = [str(v) for v in views]
     if not views:
         raise PackError("no view asked for")
+    units = pack_units(views, multi)
     out = Path(out_dir)
     work = Path(work_dir) if work_dir else Path(DEFAULT_WORK)
     _prepare_out(out, force)
@@ -659,15 +725,19 @@ def build_pack(db_path: str, out_dir: str, *, cache_dir: Optional[str] = DEFAULT
         if not wanted:
             raise PackError(f"{db_path} has no desktop")
         data_dir = out / "data"
-        exports = export_views(db, tax, wanted, views, data_dir, cache_dir, allow_conflicts,
+        exports = export_views(db, tax, wanted, units, data_dir, cache_dir, allow_conflicts,
                                log)
     finally:
         db.close()
+    if not exports:
+        raise PackError("no unit wrote a record")
+    empty_units = [u for u in units if u not in exports]
+    units = [u for u in units if u in exports]
 
     # the frozen subset and its audit sample
     eval_dir = out / vlm_eval_set.EVAL_VERSION
     log(f"[vlmpack] drawing {vlm_eval_set.EVAL_VERSION} (seed {seed}) ...")
-    eval_result = vlm_eval_set.build([data_dir / f"vlm_{v}.jsonl" for v in views], eval_dir,
+    eval_result = vlm_eval_set.build([data_dir / f"vlm_{v}.jsonl" for v in units], eval_dir,
                                      seed=seed, audit=audit)
     log(f"[vlmpack] {vlm_eval_set.EVAL_VERSION}: {eval_result['records']} records: "
         + " ".join(f"{r['task']}={r['records']}" for r in eval_result["rows"]))
@@ -679,24 +749,24 @@ def build_pack(db_path: str, out_dir: str, *, cache_dir: Optional[str] = DEFAULT
 
         sheet = vlm_audit_sheet.build(
             list(IO.read_jsonl(audit_dir / "audit.jsonl")),
-            [p for p in (eval_dir / f"{v}.jsonl" for v in views) if p.exists()],
+            [p for p in (eval_dir / f"{v}.jsonl" for v in units) if p.exists()],
             out / "images", audit_dir, batch=AUDIT_BATCH, name="audit")
         eval_result["audit"]["sheet"] = {"files": sheet["files"], "batches": sheet["batches"],
                                          "batch_size": sheet["batch_size"]}
         log(f"[vlmpack] audit sheet: {sheet['items']} items in {sheet['batches']} pages")
 
     # the pictures
-    needed = images_needed(data_dir, views, images, eval_dir)
+    needed = images_needed(data_dir, units, images, eval_dir)
     image_files = copy_images(cache_dir or "", needed, out, log) if needed else {}
 
     # the confirmed masks (from the scanner pack's COCO) and the subset's overlay variant
     references: dict = {"masks": None, "mask_overlay": None, "overlay_mode": overlays}
     if coco_root:
         log(f"[vlmpack] masks from {coco_root} ...")
-        references["masks"] = masks_sidecars(data_dir, eval_dir, views, coco_root, log)
+        references["masks"] = masks_sidecars(data_dir, eval_dir, units, coco_root, log)
         if overlays == "eval" and images != "none":
             log("[vlmpack] painting the subset's mask overlays ...")
-            references["mask_overlay"] = render_overlays(out, eval_dir, views, log)
+            references["mask_overlay"] = render_overlays(out, eval_dir, units, log)
         elif overlays == "eval":
             references["mask_overlay_skipped"] = "no images in this pack (--images none)"
     else:
@@ -706,13 +776,16 @@ def build_pack(db_path: str, out_dir: str, *, cache_dir: Optional[str] = DEFAULT
     tools = out / "tools"
     tool_files = vendor_tools(tools, repo)
     smoke_import(tools, python)
-    check = run_selfcheck(out, views, work, python, log) if selfcheck else None
+    check = run_selfcheck(out, units, work, python, log) if selfcheck else None
 
-    comp = composition(data_dir, views)
+    comp = composition(data_dir, units)
     summary = {
         "package": PACK_NAME, "pack_version": PACK_VERSION,
         "eval_version": vlm_eval_set.EVAL_VERSION,
-        "views": views, "desktops": wanted, "tasks": list(TASKS),
+        "views": views, "units": units, "desktops": wanted,
+        "tasks": [t for t in ALL_TASKS if any(t in unit_tasks(u) for u in units)],
+        "unit_tasks": {u: list(unit_tasks(u)) for u in units},
+        "empty_units": empty_units,
         "image_mode": images, "images": len(image_files),
         "image_bytes": sum(f["bytes"] for f in image_files.values()),
         "allow_conflicts": bool(allow_conflicts),
@@ -752,8 +825,13 @@ def _n(count: int, word: str, plural: Optional[str] = None) -> str:
     return f"{count} {word if count == 1 else (plural or word + 's')}"
 
 
+def _units(summary: dict) -> list[str]:
+    """The export units of a summary (camera views, then multi); old summaries: the views."""
+    return list(summary.get("units") or summary["views"])
+
+
 def _counts_table(summary: dict) -> str:
-    views = summary["views"]
+    views = _units(summary)
     tasks = sorted({t for s in summary["exports"].values() for t in s["by_task"]},
                    key=_task_sort)
     head = "| task | layer | " + " | ".join(views) + " | all | what it asks |"
@@ -783,7 +861,7 @@ def _eval_table(summary: dict) -> str:
 
 
 def _shortcut_table(summary: dict) -> str:
-    views = summary["views"]
+    views = _units(summary)
     tasks = sorted({t for s in summary["exports"].values()
                     for t in (s.get("shortcuts") or {})}, key=_task_sort)
     lines = ["| task | " + " | ".join(views) + " |", "|---|" + "---|" * len(views)]
@@ -830,7 +908,7 @@ def _known_issues(summary: dict) -> str:
             f"keeps none) the V2 pool is {comp['v2_records']} questions of which "
             f"`{top[0]}` is {top[1]} ({share:.0%}); classes whose state is the same in "
             f"every frame of a desktop (CPU, motherboard, RAM modules, expansion cards, "
-            f"most screws) have few or no state questions. `eval_v1` draws V2 **equally "
+            f"most screws) have few or no state questions. `eval_v2` draws V2 **equally "
             f"over classes** (and half `prior_is_correct = false`), so its V2 is not the "
             f"pool's mix -- compare models on it, not on the pool's class frequencies. "
             f"Full pool by class: " + ", ".join(f"{k} {n}" for k, n in list(v2.items())[:12])
@@ -840,17 +918,19 @@ def _known_issues(summary: dict) -> str:
     parts = [f"{v}: " + ", ".join(f"{t} {n}" for t, n in sorted(d.items(), key=lambda kv:
                                                                  _task_sort(kv[0])))
              for v, d in unconfirmed.items() if d]
-    if parts:
+    empty = list(summary.get("empty_units") or [])
+    if parts or empty:
         items.append(
             "**Unconfirmed views.** On OAK1, OAK2 and RealSense almost no frame has "
-            "confirmed masks (the scanner is the annotated view). Their records say "
-            "`label.view_confirmed: false`: they are asked from the step log and the state "
-            "machine alone, show the picture of that camera, carry no evidence boxes and "
-            "no visibility, and V3 / V12 on them ask only about large parts (PSU, "
-            "motherboard, drive cage, optical drive, cover, CPU cooler, expansion card, RAM "
-            "module), which is why their text-only shortcut bounds are high (table above). "
-            "V1 / V2 / V8 / V14 exist only where a view is confirmed. Records without a "
-            "confirmed view: " + "; ".join(parts) + ".")
+            "confirmed masks (the scanner is the annotated view). Their own files hold V15 "
+            "(it needs no mask) and V1 / V2 / V8 / V14 only where a frame is confirmed; such "
+            "records say `label.view_confirmed: false`, carry no evidence boxes and no "
+            "visibility. The action tasks are not asked per side view any more: in "
+            "`vlm_multi.jsonl` the side cameras' pictures are shown beside the scanner's, "
+            "whose confirmed frame carries the truth, the evidence and the marks."
+            + (" Records without a confirmed view: " + "; ".join(parts) + "." if parts else "")
+            + (f" No record at all, so no file of their own: {', '.join(empty)} (their "
+               f"pictures ship through `vlm_{MULTI_VIEW}.jsonl`)." if empty else ""))
     items.append(
         "**V15 is the `moment` variant only.** It asks whether two pictures from two cameras "
         "show the same moment; it needs no masks, so it exists on all four views, but a "
@@ -872,7 +952,7 @@ def _known_issues(summary: dict) -> str:
             "answer by that wording (or the key) and does **not** accept \"optical drive\" "
             "for the cage (owner, 2026-11-03).")
     illegal = {v: s.get("illegal_steps") or {} for v, s in summary["exports"].items()}
-    scan_illegal = illegal.get(summary["views"][0]) or {}
+    scan_illegal = illegal.get(MULTI_VIEW) or illegal.get(summary["views"][0]) or {}
     if scan_illegal:
         listed = ", ".join(f"D{int(d):02d} {sorted(int(s) for s in steps)}"
                            for d, steps in sorted(scan_illegal.items(), key=lambda kv:
@@ -912,7 +992,7 @@ def _known_issues(summary: dict) -> str:
     items.append(
         "**Shortcut bounds are in-sample.** The `summary.json` `shortcuts` table (and the "
         "scorer's *text-only upper bound* column) is measured on the **full export** of a "
-        "view, not on `eval_v1`; `eval_v1/<view>.summary.json` is a copy of the same file.")
+        "unit, not on `eval_v2`; `eval_v2/<unit>.summary.json` is a copy of the same file.")
     items.append(
         "**Captive screws.** A truth that rests on a captive screw's tightness is marked "
         "`label.image_undecidable: true` (no 2D view shows it); the scorer reports every "
@@ -939,19 +1019,25 @@ def _references_text(summary: dict) -> str:
         "file's `train` desktops (`label.split`; for `V6-mc` the most frequent letter) given "
         "as the answer to every record and graded like a model -- the floor a model has to "
         "clear to have read anything at all. **blind** is the record without its picture "
-        "(question and options only): what it scores is template leakage, and the export's "
+        "(question and options only; like the state oracle it drops the mark wording -- "
+        "\"the RAM module outlined in red\" becomes \"the RAM module\" -- and leaves out a "
+        "question that names a part by its mark tag alone): what it scores is template "
+        "leakage, and the export's "
         "*text-only upper bound (in-sample)* is the ceiling of the same thing. "
         "**protocol_prior** answers V6 / V7 / V16 from nothing but the previous demonstrated "
         "action, by a bigram fitted on the other desktops (leave-one-desktop-out): the line a "
-        "text model reading the log starts from. **state_oracle** replaces each picture by "
-        "the structured state table of that moment (perfect perception, screws shown "
-        "present / removed only); it has no V14 items, because V14 asks whether the view can "
+        "text model reading the log starts from. **state_oracle** replaces the pictures by "
+        "the structured state table of each moment (perfect perception, screws shown "
+        "present / removed only): one table per image in a camera view's file, one per "
+        "moment in `multi` (the four cameras of one step share one table, the scanner's; "
+        "V3 / V12 have two); it has no V14 items, because V14 asks whether the view can "
         "settle a part's state and the table's visibility column is that answer. "
         "**mask_overlay** shows the frame with the confirmed visible masks painted in one "
         "fixed colour per class (the order of `configs/taxonomy.yaml`, alpha 0.45, a 2 px "
         "outline, no text, no box, nothing that depends on the record), for every record "
-        "whose frames are all confirmed frames with masks, except V8 (the box is the "
-        "answer): the gap between it and the plain frame is the price of perception. Use "
+        "whose frames are all confirmed frames with masks -- in `multi` the scanner's "
+        "frames, which alone are painted (the side cameras' stay as they are) -- except V8 "
+        "(the box is the answer): the gap between it and the plain frame is the price of perception. Use "
         "the references to place a model -- above chance and frequency, below the oracle "
         "lines -- and to split its error into perception and reasoning. Do **not** report a "
         "reference as a model result, do not compare `mask_overlay` or `state_oracle` "
@@ -979,15 +1065,15 @@ def _references_text(summary: dict) -> str:
                 skipped = ", ".join(f"{k} {n}" for k, n in sorted(s["skipped"].items())) or "none"
                 lines.append(f"{v} {s['records']} of {s['records_in']} records "
                              f"({s['overlays']} overlays; left out: {skipped})")
-            painted_text = ("The subset's overlay variant is pre-painted (`eval_v1/mask_overlay/`, "
+            painted_text = ("The subset's overlay variant is pre-painted (`eval_v2/mask_overlay/`, "
                             "`overlays/`): " + "; ".join(lines) + ".")
         else:
             painted_text = ("The overlays are **not** pre-painted in this copy "
                             f"({refs.get('mask_overlay_skipped') or 'built with --overlays none'}): "
                             "`tools/vlm_overlay.py render` paints them from the sidecar.")
         status = (f"The masks come from the scanner pack `{masks.get('source')}` (confirmed "
-                  f"rows, visibility checked against the oracle) as `data/vlm_<view>.masks.jsonl` "
-                  f"and `eval_v1/<view>.masks.jsonl`; confirmed frames with masks per view: "
+                  f"rows, visibility checked against the oracle) as `data/vlm_<unit>.masks.jsonl` "
+                  f"and `eval_v2/<unit>.masks.jsonl`; confirmed frames with masks per unit: "
                   f"{per_view}" + (f"; {without} confirmed frames have no masks (OAK frames of "
                                    f"V15 pairs -- their records are left out of the variant)."
                                    if without else ".") + " " + painted_text)
@@ -996,14 +1082,16 @@ def _references_text(summary: dict) -> str:
 
 def readme_text(summary: dict) -> str:
     views = summary["views"]
+    units = _units(summary)
+    ev_name = summary.get("eval_version") or vlm_eval_set.EVAL_VERSION
     # D00 is an empty placeholder desktop (no graph, no frames): not counted
     n_desktops = len([d for d in summary["desktops"] if int(d) != 0])
     n_records = sum(s["records"] for s in summary["exports"].values())
     ev = summary["eval"]
     images_line = {
-        "all": (f"`images/` holds every frame the four manifests name ({summary['images']} "
+        "all": (f"`images/` holds every frame the manifests name ({summary['images']} "
                 f"files, {summary['image_bytes'] / 2**30:.1f} GB)."),
-        "eval": (f"`images/` holds only the frames `eval_v1` names ({summary['images']} "
+        "eval": (f"`images/` holds only the frames `{ev_name}` names ({summary['images']} "
                  f"files, {summary['image_bytes'] / 2**30:.1f} GB); the full question set "
                  f"in `data/` needs the dataset's frame cache for the rest."),
         "none": ("**This copy carries no images** (built with `--images none`, a dry run); "
@@ -1017,30 +1105,41 @@ def readme_text(summary: dict) -> str:
                  f"the fillable pages `audit.sheet.b01.html` ... `b{sheet['batches']:02d}` "
                  f"({sheet['batch_size']} items each)")
         pages = (f", {which} and the CSV skeleton `audit.sheet.csv` "
-                 f"(see *Audit and human baseline*)")
-    audit_line = (f"`eval_v1/audit/` is the {audit['size']}-item human-audit sample drawn from "
-                  f"inside the subset (`tools/vlm_sample.py --purpose audit`: about 25 per "
+                 f"(see *Author audit*)")
+    audit_line = (f"`{ev_name}/audit/` is the {audit['size']}-item author-audit sample drawn "
+                  f"from inside the subset (`tools/vlm_sample.py --purpose audit`: about 25 per "
                   f"task, positives and negatives balanced, every desktop represented, "
                   f"{audit['desktops']} desktops): `audit.ids.txt`, `audit.jsonl`, the "
                   f"Markdown sheet `audit.sheet.md` (image path, question, answer, an empty "
                   f"`ok?` column){pages}." if audit else
                   "No audit sample was drawn (`--audit 0`).")
     check = summary.get("selfcheck")
-    check_line = ("The build ran it: every task row of every `eval_v1/<view>.jsonl` scored "
+    check_line = (f"The build ran it: every task row of every `{ev_name}/<unit>.jsonl` scored "
                   "1.0 with the pack's tools alone." if check and check.get("ok") else
                   "The build did not run it (`--no-selfcheck`).")
     bracket = summary["composition"]["optical_bracket_desktops"]
     bracket_line = (f" The optical drive cage note above applies to "
                     f"{_n(len(bracket), 'desktop')}." if bracket else "")
+    multi = MULTI_VIEW in units
+    unit_list = ", ".join(f"`{u}`" for u in units)
+    truth_files = " ".join(f"{ev_name}/{u}.jsonl" for u in units)
+    multi_line = (
+        f"`vlm_{MULTI_VIEW}.jsonl` holds the action tasks "
+        f"({', '.join(summary.get('unit_tasks', {}).get(MULTI_VIEW) or [])}): one record per "
+        f"step and question, whose pictures are that moment seen by every camera."
+        if multi else
+        f"This copy has no `{MULTI_VIEW}` unit (built without the scanner view or with "
+        f"`--no-multi`), so it holds no action task.")
     text = f"""# VLM evaluation pack ({PACK_NAME} v{summary['pack_version']}, `{ev['version']}`)
 
 Template-generated questions about desktop-PC teardowns, with programmatic
 answers, over {_n(n_desktops, 'desktop')} and {_n(len(views), 'camera view')}
-({', '.join(views)}): **{n_records} records** in `data/`, a frozen **evaluation subset
-of {ev['records']} records** in `eval_v1/`, the frames they show, and the tools that
-turn records into chat requests and grade a model's replies. Everything runs
-without the annotation tool or its database: `tools/` is self-contained (Python
->= 3.11, PyYAML; Pillow only for crops).
+({', '.join(views)}), in {_n(len(units), 'export unit')} ({unit_list}):
+**{n_records} records** in `data/`, a frozen **evaluation subset of {ev['records']}
+records** in `{ev_name}/`, the frames they show, and the tools that turn records
+into chat requests and grade a model's replies. Everything runs without the
+annotation tool or its database: `tools/` is self-contained (Python >= 3.11,
+PyYAML; Pillow for crops, scaling and drawing the marks).
 
 {images_line}
 
@@ -1051,35 +1150,39 @@ README.md                 this file
 LICENSE_NOTE.txt          pre-release terms (licence and citation come with the first tagged release)
 manifest.json             build parameters, counts, size + sha256 of every other file
 data/
-  vlm_<view>.jsonl                   one record per line (the whole question set of a view)
-  vlm_<view>.images_manifest.jsonl   opaque image id -> path under images/, desktop, view, step, roi
-  vlm_<view>.oracle.jsonl            label-side world: instances, edges, log per desktop; state table per image
-  vlm_<view>.summary.json            counts, silences, shortcut bounds of that export
-  vlm_<view>.masks.jsonl             (with masks) the confirmed visible masks of every confirmed frame, COCO RLE
+  vlm_<unit>.jsonl                   one record per line (the whole question set of a unit)
+  vlm_<unit>.images_manifest.jsonl   opaque image id -> path under images/, desktop, view, step, roi
+  vlm_<unit>.oracle.jsonl            label-side world: instances, part groups, edges, log per desktop;
+                                     state table per image
+  vlm_<unit>.summary.json            counts, silences, shortcut bounds of that export
+  vlm_<unit>.masks.jsonl             (with masks) the confirmed visible masks of every confirmed frame, COCO RLE
 images/<view>/D<nn>/s<nn>.<ext>      the frames, byte for byte the dataset's cached files (the source's extension)
 overlays/<view>/D<nn>/s<nn>.png      (with masks) the subset's frames with the confirmed masks painted (mask_overlay)
-eval_v1/
+{ev_name}/
   ids.txt                 the subset's record ids, task order
-  <view>.jsonl            the subset's records of that view, with .images_manifest.jsonl,
+  <unit>.jsonl            the subset's records of that unit, with .images_manifest.jsonl,
                           .oracle.jsonl (cut to the subset), .summary.json (the export's) and,
                           with masks, .masks.jsonl (cut to the subset) beside it
-  mask_overlay/<view>.jsonl   (with masks) the subset's GT-mask overlay variant: eligible records,
+  mask_overlay/<unit>.jsonl   (with masks) the subset's GT-mask overlay variant: eligible records,
                           their .images_manifest.jsonl pointing into overlays/, .summary.json (what was left out)
-  table.md / table.json   the n table: target, drawn, by view, strata, desktops
-  audit/                  the human-audit sample: audit.ids.txt, audit.jsonl, audit.sheet.md,
+  table.md / table.json   the n table: target, drawn, by unit, strata, desktops
+  audit/                  the author-audit sample: audit.ids.txt, audit.jsonl, audit.sheet.md,
                           the fillable pages audit.sheet.b01.html ... and the CSV skeleton audit.sheet.csv
 tools/
-  vlm_to_chat.py          records -> OpenAI / Qwen-VL / InternVL chat JSONL (images by path or base64)
+  vlm_to_chat.py          records -> OpenAI / Qwen-VL / InternVL chat JSONL (images by path or base64;
+                          draws the marks, writes the image legend and the glossary)
+  vlm_glossary.py         the class descriptions and state meanings the converter appends
   vlm_score.py            {{id, raw_text}} replies -> scores per task / layer / template, 95 % CIs,
                           with the chance and frequency reference rows beside every task
   vlm_references.py       the references: blind, protocol prior (bigram), state oracle (no V14), mask overlay
   vlm_overlay.py          the confirmed-mask painter (masks sidecar from a scanner pack's COCO; overlays)
   vlm_sample.py           stratified seeded samples (audit / repeat)
-  vlm_eval_set.py         the procedure that drew eval_v1 (re-runnable, byte-identical)
+  vlm_eval_set.py         the procedure that drew {ev_name} (re-runnable, byte-identical)
   vlm_selfcheck.py        gold replies must score 1.0 everywhere -- run it first
-  vlm_audit_sheet.py      the fillable audit pages (gold shown) + CSV skeleton; rebuilds eval_v1/audit/*.html
+  vlm_audit_sheet.py      the fillable audit pages (gold shown, marks drawn) + CSV skeleton
   vlm_audit_summary.py    filled audit CSVs -> error rates with Wilson 95 % intervals, flagged items
-  vlm_human_sheet.py      the human-baseline form (no answers, timed) and its CSV -> prediction converter
+  vlm_audit_carry.py      carries audit verdicts over to a re-drawn subset where the item is unchanged
+  vlm_human_sheet.py      a timed answer form without answers (not part of the evaluation plan)
   vlm_io.py               shared reading
   tda/, configs/          the scorer's modules and the taxonomy, vendored
   requirements.txt
@@ -1087,18 +1190,60 @@ tools/
 
 ## Tasks
 
-Each record belongs to one task (`prompt.task`). V1 V2 V8 V14 read the compiled
-masks, so they are asked only about frames a human confirmed in that view;
-V3 V4 V6 V7 V10 V12 V16 come from the step log, the state machine and the
-constraint graph, so they exist for every desktop in every view (on a view
-with nothing confirmed, V3 / V12 ask only about large parts); V15 needs no
-mask at all. Counts are records in `data/` per view:
+Each record belongs to one task (`prompt.task`) and one unit (`label.view`).
+The four camera units hold **perception**: V1 V2 V8 V14 read the compiled masks,
+so they are asked only about frames a human confirmed in that view, and V15
+(two cameras, same moment or not) needs no mask at all. {multi_line} Its
+truth, rationale and evidence come from the step log, the state machine, the
+constraint graph and the **scanner** frame (the only confirmed view); the side
+cameras are shown, not read. Counts are records in `data/` per unit:
 
 {_counts_table(summary)}
 
-`layer` is the paper's capability layer (`tools/tda/core/export/vlm_check.py`
+`layer` is the capability layer (`tools/tda/core/export/vlm_check.py`
 `CAPABILITY_LAYERS`): L1 perception, L2 affordance, L3 planning, change
 (V3 V12 V10), cross (V15). V5 (every legal action) is not exported.
+
+### Multi-view records
+
+A `{MULTI_VIEW}` record's `prompt.images` are the frames of one step in the fixed
+order scanner, OAK 1, OAK 2, RealSense; a camera without a photo of that step is
+left out, so a record has 1 to 4 images (V3 / V12: the cameras of the step
+before, then those of the step after, up to 8). `label.views` lists the views
+present and `label.image_steps` the step of each image, in image order;
+`prompt.image_legend` (`{{"view", "moment"}}` per image) is what the converter
+turns into the one line naming the images. The question text never names a
+view. `label.view_confirmed` is the scanner frame's.
+
+### Marks, groups, glossary
+
+**Marks.** A question never names a part by an ordinal ("RAM module 3"): every
+part it is about is outlined on the scanner image. `prompt.marks` lists
+`{{"image", "bbox": [x, y, w, h], "tag"}}` (the image's index in
+`prompt.images`, the box in that image's native pixels, the tag `A`, `B`, ...);
+the question says "the RAM module outlined in red" or "part A". The converter
+draws the boxes in red on a copy of the picture (scaled with it), written under
+`--assets` (`tools/vlm_run/run_eval.sh` passes one) or, without it, under
+`<out dir>/<out stem>_marked/` beside the chat file; the files under `images/`
+are never changed. The box is the part's visible-mask box on
+the confirmed scanner frame, or its amodal box when the part is present but
+hidden; a part that cannot be outlined is not asked about. V1, V8 and V14 carry
+no mark (the box would be, or would give away, the answer). V2's screw counts
+are class questions without a mark.
+
+**Groups.** Interchangeable parts -- the screws of one fan, the latches of one
+RAM module, the connectors of one cable, the RAM modules -- are asked about as
+one group, every member still in the asked situation outlined with the same tag
+("the CPU cooler screws outlined in red"). The oracle's desktop line has
+`groups` (`group id -> members, match_class, anchor, label`) and each instance
+its `group`; gold action targets (V4 blockers, V6, V7 / V16 plans, V10's done
+set) are instance keys or group ids, and the scorer grounds a reply's wording
+("the cooler screws", "a CPU cooler screw") to the group.
+
+**Glossary.** `prompt.terms` (classes the question or the options name) and
+`prompt.state_terms` (classes whose state it asks) are turned by the converter
+into a short glossary appended to the prompt: what the class is and, for state
+questions, what each state means (`tools/vlm_glossary.py`).
 
 ## Records
 
@@ -1107,22 +1252,28 @@ One JSON object per line:
 ```
 {{"id": "rec_<16 hex>",
  "prompt": {{"task": "V4", "images": ["img_<16 hex>", ...], "question": "...",
-            "options": [{{"verb", "target_label"}}, ...]      # V6 multiple choice only
+            "options": [{{"verb", "target_label"}}, ...],     # V6 multiple choice only
+            "marks": [{{"image", "bbox", "tag"}}, ...],         # parts outlined in red
+            "image_legend": [{{"view", "moment"}}, ...],        # multi-view records only
+            "terms": [...], "state_terms": [...]               # glossary entries
            }},
  "label":  {{"answer": {{...}}, "answer_check": {{...}}, "evidence": [...], "rationale": {{...}},
-            "desktop", "step", "view", "views", "layer", "template_id", "tier", "verified",
-            "view_confirmed", "graph_version", "model_family", "chassis_type", "split",
-            "truth_source", "negative", "image_undecidable", "readable_id", ...}}}}
+            "desktop", "step", "view", "views", "image_steps", "layer", "template_id", "tier",
+            "verified", "view_confirmed", "graph_version", "model_family", "chassis_type",
+            "split", "truth_source", "negative", "image_undecidable", "readable_id", ...}}}}
 ```
 
 **Nothing on the prompt side reveals the answer.** `prompt.images` are opaque
 ids (a salted hash of desktop, view and step); the manifest maps them to files
-and the label side carries desktop, step and view. Show a model `prompt` only.
+and the label side carries desktop, step and view. Show a model `prompt` only
+(through `tools/vlm_to_chat.py`, which draws the marks and adds the legend and
+the glossary).
 
 * `label.answer` -- the structured truth (per task, see *Answer formats*).
 * `label.answer_check` -- how the checker re-derives and grades the answer
-  (type, fields, metric, the eligible set for V6, the plan for V16, ...).
-  `tools/vlm_score.py` implements it; nothing here is shown to a model.
+  (type, fields, metric, the eligible set for V6, the plan for V16, the
+  accepted targets for V3, ...). `tools/vlm_score.py` implements it; nothing
+  here is shown to a model.
 * `label.evidence` / `label.rationale` -- boxes of the parts the answer rests
   on and the reasoning chain (`observe` / `recall_relation` /
   `check_precondition` / ... steps); label side only.
@@ -1130,18 +1281,19 @@ and the label side carries desktop, step and view. Show a model `prompt` only.
   from: `{'`, `'.join(TRUTH_SOURCES)}`. `demonstrated`: the operator did it
   next. `graph_blocked`: a constraint edge forbids it. `graph_blocked_pixels`:
   forbidden only by an edge that was imported from the pixels / a reviewer's
-  occlusion ruling (the paper writes it as "class rule x overlap in the
-  annotation"). `state_inapplicable`: the part is not in a state the verb
-  starts from (already open, already removed). `failed_attempt`: a real failed
-  attempt in the log.
+  occlusion ruling ("class rule x overlap in the annotation").
+  `state_inapplicable`: the part is not in a state the verb starts from
+  (already open, already removed) -- no longer used for V4's negatives.
+  `failed_attempt`: a real failed attempt in the log.
 * `label.negative` -- the kind of negative half, or absent on a positive: V4 the
   truth source; V12 `captive_screw_loosened` (the log moves, the picture does
   not); V14 `unanswerable`; V15 `different_moment`; V16 the corruption
   (`substitute` / `move` / `swap`).
-* `label.tier` is the **view's** annotation standard (scan and oak1 gold, oak2
-  silver, rs bronze); `label.verified` says whether a human confirmed this
-  frame and every row the answer was read off; `label.view_confirmed` says
-  whether anything of this view was confirmed on this desktop at all.
+* `label.tier` is the annotation standard of the view the truth rests on (scan
+  and oak1 gold, oak2 silver, rs bronze; `{MULTI_VIEW}`: the scanner's);
+  `label.verified` says whether a human confirmed this frame and every row the
+  answer was read off; `label.view_confirmed` says whether anything of this
+  view was confirmed on this desktop at all.
 * `label.split` -- `test` / `train` as the platform-disjoint split stamped it
   (12 / 54 desktops); the zero-shot evaluation ignores it and uses all
   desktops.
@@ -1150,9 +1302,10 @@ and the label side carries desktop, step and view. Show a model `prompt` only.
   already gives the answer. The scorer's `V2` row (the headline) is every V2
   question; `V2-prior-wrong` is the `false` subset, a shortcut check.
 * `label.v6_form` / `label.v6_pair` (V6) -- `open` or `mc`; the two forms of
-  one frame share the pair id.
+  one step share the pair id.
 * `label.image_undecidable` -- the truth rests on a captive screw's tightness.
-* `label.views` (V15) -- the two views of the pair, in `prompt.images` order.
+* `label.views` -- V15: the two views of the pair; `{MULTI_VIEW}`: the views
+  shown, in `prompt.images` order.
 
 ## Answer formats
 
@@ -1174,88 +1327,62 @@ one crop for every record of a desktop and view).
 **Never crop around a record's evidence**: the evidence boxes are label side,
 and a crop built from them puts the answer in the picture (every answerable V14
 item has a box and no unanswerable one does; V8's box is its answer). Box
-answers (V1, V8) are in pixel coordinates of the
-image shown; with `--roi view` or `--max-side` the converter writes the crop
-offset and scale to `meta.transforms` and `vlm_score.py --chat` maps them back.
-A two-image question is two image parts, or one side-by-side picture with
-`--composite` (fixed per model).
+answers (V1, V8) and the marks are in pixel coordinates of the image shown;
+with `--roi view` or `--max-side` the converter scales the marks with the
+picture, writes the crop offset and scale to `meta.transforms`, and
+`vlm_score.py --chat` maps box answers back. A multi-image question is one image
+part per picture, or one side-by-side picture with `--composite` (fixed per
+model).
 
-## The evaluation subset (`eval_v1`)
+## The evaluation subset (`{ev_name}`)
 
 Drawn once over all {n_desktops} desktops (zero-shot; the split is not used),
 seed {ev['seed']}, by `tools/vlm_eval_set.py`: per task at least {ev['targets']['binary']}
 records for the yes / no tasks ({', '.join(ev['targets']['binary_tasks'])}) and
-{ev['targets']['other']} for the others; V6 is drawn as pairs (300 pairs = 600 records);
-records are allocated per view in proportion to the export, then equally over
-the task's strata (V4 feasible / infeasible then `truth_source`; V2
-`prior_is_correct` then class; V12 changed / not then kind; V14 answerable /
-not; V15 same / different then view pair; V16 valid / invalid then corruption;
-V3 by verb, V8 by class, V10 by progress bin), desktops take turns inside a
-stratum, and no desktop holds more than {ev['max_desktop_share']:.0%} of a task's
-target (a pool smaller than the target gives everything it has). Two runs are
-byte-identical. Run every open model on the same `eval_v1`; the closed model
-answers the 300 items of `eval_v1/audit/audit.ids.txt` once (the same items the
-author audits and the human baseline answers; owner, 2026-11-03), and the open
-models are also scored on those ids for the comparison; intervals by cluster
-bootstrap over desktops (the scorer does this).
+{ev['targets']['other']} for the others where the pool allows; V6 is drawn as pairs
+(300 pairs = 600 records). Perception is drawn from the camera units, the action
+tasks from `{MULTI_VIEW}`; a task found in several units is allocated over them in
+proportion to the export, then equally over the task's strata (V4 feasible /
+infeasible then `truth_source`; V2 `prior_is_correct` then class; V12 changed /
+not then kind; V14 answerable / not; V15 same / different then view pair; V16
+valid / invalid then corruption; V3 by verb, V8 by class, V10 by progress bin),
+desktops take turns inside a stratum, and no desktop holds more than
+{ev['max_desktop_share']:.0%} of a task's target (a pool smaller than the target gives
+everything it has). Two runs are byte-identical. `{ev_name}` replaces `eval_v1`
+(the redesign of 2026-11-03: marks, groups, multi-view action tasks); the tools
+refuse an `eval_v1` path. Run every open model on the same `{ev_name}`; the closed
+model answers the items of `{ev_name}/audit/audit.ids.txt` once (the same items
+the author audits), and the open models are also scored on those ids for the
+comparison; intervals by cluster bootstrap over desktops (the scorer does this).
 
 {_eval_table(summary)}
 
-The strata counts are in `eval_v1/table.md`. {audit_line}
+The strata counts are in `{ev_name}/table.md`. {audit_line}
 
-## Audit and human baseline
+## Author audit
 
-Two things people do with this pack, both scored by the same tools as the models.
-
-**Author audit (error rate of the generated truth).** Open
-`eval_v1/audit/audit.sheet.b01.html` (and the following pages) in a browser from the
-pack directory -- plain HTML with inline script, no server, no network; the frames are
-loaded by relative path (`../../images/...`). Every item shows the picture(s), the
-question, the gold answer in words and as JSON, its evidence boxes drawn on the frame
-and the rationale chain; the reviewer marks 正确 / 错误 / 存疑 (correct / wrong /
-doubtful) and may leave a note. Answers stay in the browser until **Export answers**
-downloads a CSV (`id, task, readable_id, desktop, view, step, batch, verdict, note,
-reviewer, answered_at`); `audit.sheet.csv` is the same table empty, for a spreadsheet.
-Then
+The error rate of the generated truth. Open `{ev_name}/audit/audit.sheet.b01.html`
+(and the following pages) in a browser from the pack directory -- plain HTML
+with inline script, no server, no network; the frames are loaded by relative
+path (`../../images/...`). Every item shows the picture(s) with the marks drawn,
+the question, the gold answer in words and as JSON, its evidence boxes drawn on
+the frame and the rationale chain; the reviewer marks 正确 / 错误 / 存疑
+(correct / wrong / doubtful) and may leave a note. Answers stay in the browser
+until **Export answers** downloads a CSV (`id, task, readable_id, desktop, view,
+step, batch, verdict, note, reviewer, answered_at`); `audit.sheet.csv` is the
+same table empty, for a spreadsheet. Then
 
 ```
-python tools/vlm_audit_summary.py --csv runs/audit/*.csv --records eval_v1/audit/audit.jsonl \\
+python tools/vlm_audit_summary.py --csv runs/audit/*.csv --records {ev_name}/audit/audit.jsonl \\
     --out runs/audit                   # audit.summary.md / .json
 ```
 
 reports, per task and overall, the error rate (marked wrong) and the error-or-doubt
 rate with **Wilson 95 % intervals** (0 of 300 -> [0, 1.3 %]), the items marked wrong or
 doubtful with their notes, and the disagreements where several reviewers marked one
-item (an item then takes its worst verdict). The audit pages contain the answers: do
-not hand them to a human-baseline participant.
-
-**Human baseline.** `tools/vlm_human_sheet.py build` writes pages **without answers**
-for a subset of `eval_v1` (default: a stratified draw of 300 by `vlm_sample.draw`,
-`purpose="human"`, about 25 per task, positives and negatives balanced, every desktop
-represented; `--ids` takes any list -- the paper's baseline uses
-`--ids eval_v1/audit/audit.ids.txt`, the closed model's 300) -- the frame(s), the question, the options and a
-plain form per task (yes / no and state buttons, verb list + target box, one action per
-line for plans, a box-drawing tool on the picture for V1 / V8). The page records when an
-item first came into view and when its answer last changed (`started_at`, `answered_at`,
-`seconds`), so participants should work in order without going back. `convert` maps the
-exported fields to the models' JSON formats and cuts the truth files to the answered ids,
-after which `vlm_score.py` scores the person exactly like a model:
-
-```
-python tools/vlm_human_sheet.py build --export eval_v1/scan.jsonl eval_v1/oak1.jsonl \\
-    eval_v1/oak2.jsonl eval_v1/rs.jsonl --image-root images --out runs/human [--size 300 --seed 0]
-# the participant opens runs/human/human.sheet.b01.html ... and exports the CSVs
-python tools/vlm_human_sheet.py convert --csv runs/human/*.csv --out runs/human/scored \\
-    --export eval_v1/scan.jsonl eval_v1/oak1.jsonl eval_v1/oak2.jsonl eval_v1/rs.jsonl
-python tools/vlm_score.py --truth runs/human/scored/human.scan.jsonl \\
-    --pred runs/human/scored/human.pred.jsonl --out runs/human/scored --name human-scan   # per view
-```
-
-Nothing of the label side is in the human pages but the record id and the task; the
-image path does carry the view and the step index (`s021.png`), which the page does not
-show. The human rows are a reference line beside the models in the results table, not a
-training signal and not a relabelling of the data: a disagreement between a person and
-the truth is an item for the audit, not a correction.
+item (an item then takes its worst verdict). `tools/vlm_audit_carry.py` carries the
+verdicts of an earlier audit over to items that survive unchanged in substance. The
+audit pages contain the answers: do not show them to anyone answering the questions.
 
 ## Reference lines
 
@@ -1265,9 +1392,8 @@ the truth is an item for the audit, not a correction.
 
 The best of five prompt-only classifiers (majority, verb, class, verb + class,
 template) per task, from `summary.json`; a model below these has read nothing
-from the picture. On the unconfirmed views V3 / V4 are high because only large
-parts are asked there. The scorer prints it as *text-only upper bound
-(in-sample)*: it is measured on the full export, not on `eval_v1`, and it is a
+from the picture. The scorer prints it as *text-only upper bound
+(in-sample)*: it is measured on the full export, not on `{ev_name}`, and it is a
 ceiling for template leakage, not a model.
 
 {_shortcut_table(summary)}
@@ -1276,30 +1402,30 @@ ceiling for template leakage, not a model.
 
 ```
 python -m venv venv                                  # then activate it, and
-pip install -r tools/requirements.txt                # PyYAML (+ Pillow for crops)
+pip install -r tools/requirements.txt                # PyYAML (+ Pillow for crops and marks)
 
 # 0. the pack stands alone and the truth is consistent: every gold reply scores 1.0
-python tools/vlm_selfcheck.py --truth eval_v1/scan.jsonl eval_v1/oak1.jsonl \\
-    eval_v1/oak2.jsonl eval_v1/rs.jsonl --out runs/selfcheck
+python tools/vlm_selfcheck.py --truth {truth_files} \\
+    --out runs/selfcheck
 
-# 1. chat requests for one view's subset (OpenAI-style; also qwen, internvl)
-python tools/vlm_to_chat.py --export eval_v1/scan.jsonl --format openai \\
-    --image-root images --out runs/scan.openai.jsonl            # [--base64] [--roi view --assets runs/crops]
+# 1. chat requests for one unit's subset (OpenAI-style; also qwen, internvl)
+python tools/vlm_to_chat.py --export {ev_name}/{MULTI_VIEW if multi else views[0]}.jsonl --format openai \\
+    --image-root images --out runs/{MULTI_VIEW if multi else views[0]}.openai.jsonl   # [--base64] [--roi view --assets runs/crops]
 
 # 2. run your model: one line per request, {{"id": ..., "raw_text": "<the reply>"}}
 
 # 3. score
-python tools/vlm_score.py --truth eval_v1/scan.jsonl --pred runs/<model>.scan.jsonl \\
-    --chat runs/scan.openai.jsonl --out runs/scores --name <model>-scan
+python tools/vlm_score.py --truth {ev_name}/{MULTI_VIEW if multi else views[0]}.jsonl --pred runs/<model>.{MULTI_VIEW if multi else views[0]}.jsonl \\
+    --chat runs/{MULTI_VIEW if multi else views[0]}.openai.jsonl --out runs/scores --name <model>-{MULTI_VIEW if multi else views[0]}
 
 # references: blind, protocol prior, state oracle (no V14) and, with --assets, the mask overlay
-python tools/vlm_references.py --export eval_v1/scan.jsonl --out runs/refs/scan \\
-    --assets overlays --image-root images                     # overlays/ is pre-painted for eval_v1
-python tools/vlm_to_chat.py --export eval_v1/scan.jsonl --records runs/refs/scan/blind.jsonl \\
+python tools/vlm_references.py --export {ev_name}/scan.jsonl --out runs/refs/scan \\
+    --assets overlays --image-root images                     # overlays/ is pre-painted for {ev_name}
+python tools/vlm_to_chat.py --export {ev_name}/scan.jsonl --records runs/refs/scan/blind.jsonl \\
     --format openai --out runs/scan.blind.jsonl
 python tools/vlm_to_chat.py --export runs/refs/scan/mask_overlay.jsonl --format openai \\
     --image-root overlays --out runs/scan.overlay.jsonl       # the variant carries its own manifest
-python tools/vlm_score.py --truth eval_v1/scan.jsonl --pred runs/refs/scan/protocol_prior.predictions.jsonl \\
+python tools/vlm_score.py --truth {ev_name}/scan.jsonl --pred runs/refs/scan/protocol_prior.predictions.jsonl \\
     --out runs/scores --name protocol-prior-scan
 # (or, for any subset: python tools/vlm_overlay.py render --export <truth.jsonl> --image-root images \\
 #      --assets <dir> --out <dir>/mask_overlay.jsonl; tools/vlm_run/run_eval.sh VARIANT=overlay does this)
@@ -1310,11 +1436,13 @@ layer and per question template, strict and lenient, 95 % cluster-bootstrap
 intervals over desktops, the text-only upper bound beside each task, V6 open
 (headline) and `V6-mc`, V2 (headline: every V2 question) and `V2-prior-wrong`, V7's violation-free /
 required-recall / goal-reached, V4's blockers F1, V10's bin accuracy. Score the
-four views separately (each truth file has its own oracle) and pool in your
-analysis; `eval_v1/ids.txt` is the subset. The model driver (`tools/vlm_run/vlm_run.py`:
+units separately (each truth file has its own oracle) and pool in your
+analysis; `{ev_name}/ids.txt` is the subset. The model driver (`tools/vlm_run/vlm_run.py`:
 OpenAI-compatible APIs, vLLM, transformers, and a `gold` pseudo backend), its Slurm
-templates and `run_eval.sh` ship in `tools/vlm_run/`; `docs/vlm_run_hprc.md` is the
-step-by-step run guide for TAMU HPRC. This card documents the data and the scorer.
+templates (an array over the units {' '.join(units)}) and `run_eval.sh` ship in
+`tools/vlm_run/`; `docs/vlm_run_hprc.md` is the step-by-step run guide for the
+cluster. A `{MULTI_VIEW}` request carries up to 8 images: give the model that many
+(`--max-images 8` for vLLM). This card documents the data and the scorer.
 
 **Self-check.** {check_line} Re-run it on the receiving machine before anything
 else; it needs no image.
@@ -1326,7 +1454,7 @@ else; it needs no image.
 ## Provenance
 
 `manifest.json` lists every file with its size and sha256, the desktops, views,
-seed, image mode and the annotation tool's commit the export ran from
+units, seed, image mode and the annotation tool's commit the export ran from
 (`source_commit`). Records are reproducible from the database: the question
 template is chosen by a checksum of the record id, hard negatives are drawn in
 a permutation seeded by desktop and step, and the files are written in a fixed
@@ -1350,12 +1478,16 @@ def main(argv=None) -> int:
     ap.add_argument("--out", default=None,
                     help=f"pack directory (default D:/DataSet/exports/{PACK_NAME}_<today>)")
     ap.add_argument("--cache-dir", default=DEFAULT_CACHE_DIR, help="the frame cache (read only)")
-    ap.add_argument("--views", default=",".join(VIEWS))
+    ap.add_argument("--views", default=",".join(VIEWS),
+                    help="the camera views exported as single-view units (the multi unit is added "
+                         "when scan is among them)")
+    ap.add_argument("--no-multi", action="store_true",
+                    help="leave out the multi unit (the action tasks): a perception-only pack")
     ap.add_argument("--desktops", default=None, help="e.g. 1-66 (default: every desktop)")
     ap.add_argument("--seed", type=int, default=vlm_eval_set.SEED)
     ap.add_argument("--images", default="all", choices=IMAGE_MODES,
                     help="all frames the manifests name, only the subset's, or none (dry run)")
-    ap.add_argument("--audit", type=int, default=300, help="size of the human-audit sample")
+    ap.add_argument("--audit", type=int, default=300, help="size of the author-audit sample")
     ap.add_argument("--work", default=DEFAULT_WORK, help="the database copy and scratch files")
     ap.add_argument("--allow-conflicts", action="store_true",
                     help="export frames with an open disagreement as unverified")
@@ -1376,7 +1508,8 @@ def main(argv=None) -> int:
                    desktops=wanted, seed=args.seed, images=args.images,
                    allow_conflicts=bool(args.allow_conflicts), force=bool(args.force),
                    selfcheck=not args.no_selfcheck, audit=args.audit,
-                   coco_root=args.coco_root, overlays=args.overlays)
+                   coco_root=args.coco_root, overlays=args.overlays,
+                   multi=not args.no_multi)
     except PackError as exc:
         print(f"[vlmpack] refused: {exc}")
         return 2

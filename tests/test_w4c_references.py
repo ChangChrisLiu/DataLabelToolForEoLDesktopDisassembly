@@ -32,6 +32,7 @@ for p in (SCRIPTS, SCRIPTS / "vlm_run"):
         sys.path.insert(0, str(p))
 
 import export_vlmpack as P  # noqa: E402
+from test_w4a_vlmpack import pack_repo  # noqa: E402
 import vlm_io as IO  # noqa: E402
 import vlm_overlay as O  # noqa: E402
 import vlm_references  # noqa: E402
@@ -39,6 +40,8 @@ import vlm_score  # noqa: E402
 
 D_SCAN, D_BOTH = W.DESKTOP, W.DESKTOP + 1
 VIEWS = (W.VIEW, W.OTHER)
+#: The export units of those views (the multi unit holds the action tasks).
+UNITS = (*VIEWS, "multi")
 FLAT = {W.VIEW: (40, 90, 160), W.OTHER: (120, 60, 30)}
 
 
@@ -80,7 +83,7 @@ def scene(tmp_path_factory) -> dict:
     root = tmp_path_factory.mktemp("w4c")
     db, tax = _scene_db(root / "scene.sqlite")
     exports = {}
-    for view in VIEWS:
+    for view in UNITS:
         out = root / "export" / f"vlm_{view}.jsonl"
         out.parent.mkdir(parents=True, exist_ok=True)
         export_vlm(db, tax, [D_SCAN, D_BOTH], view, str(out))
@@ -299,21 +302,62 @@ def test_the_overlay_needs_an_image_root_and_masks(scene, tmp_path, capsys):
 # --------------------------------------------------------------------------- #
 # the state oracle without V14
 # --------------------------------------------------------------------------- #
-def test_the_state_oracle_has_no_v14_and_says_so(scene, refs):
+@pytest.fixture(scope="module")
+def refs_multi(scene) -> dict:
+    """``vlm_references.py`` on the multi export (the action tasks: the protocol prior's)."""
+    out = scene["root"] / "refs_multi"
+    code = vlm_references.main(["--export", str(scene["exports"]["multi"]), "--out", str(out),
+                                "--assets", str(out / "overlays"),
+                                "--image-root", str(scene["cache"]),
+                                "--coco-root", str(scene["coco"])])
+    assert code == 0
+    return {"out": out, "assets": out / "overlays",
+            "summary": json.loads((out / "references.summary.json").read_text(encoding="utf-8"))}
+
+
+def _merged(scene, path: Path) -> Path:
+    """The scanner unit and the multi unit as one truth file (records, manifest, oracle):
+    every task of the scene in one place, as the scorer's rule table expects."""
+    records, manifest, desks, frames = [], {}, {}, {}
+    for unit in (W.VIEW, "multi"):
+        export = scene["exports"][unit]
+        records += list(IO.read_jsonl(export))
+        manifest.update(IO.load_manifest(export))
+        for row in IO.read_jsonl(IO.sidecar(export, "oracle.jsonl")):
+            if row.get("type") == "desktop":
+                desks.setdefault(row["desktop"], row)
+            else:
+                frames.setdefault(row["image"], row)
+    IO.write_jsonl(path, records)
+    IO.write_jsonl(IO.sidecar(path, "images_manifest.jsonl"),
+                   [{"type": "header"}] + [manifest[k] for k in sorted(manifest)])
+    IO.write_jsonl(IO.sidecar(path, "oracle.jsonl"),
+                   [desks[k] for k in sorted(desks)] + [frames[k] for k in sorted(frames)])
+    shutil.copyfile(IO.sidecar(scene["exports"][W.VIEW], "summary.json"),
+                    IO.sidecar(path, "summary.json"))
+    return path
+
+
+def test_the_state_oracle_has_no_v14_and_says_so(scene, refs, refs_multi):
     records = list(IO.read_jsonl(scene["exports"][W.VIEW]))
     v14 = [r for r in records if r["prompt"]["task"] == "V14"]
     assert v14  # the scanner is confirmed: V14 exists
     oracle = list(IO.read_jsonl(refs["out"] / "state_oracle.jsonl"))
     assert all(r["prompt"]["task"] != "V14" for r in oracle)
-    assert len(oracle) == len(records) - len(v14)
-    assert refs["summary"]["state_oracle"] == {
-        "records": len(oracle), "skipped": {"V14": len(v14)},
-        "skipped_why": refs["summary"]["state_oracle"]["skipped_why"]}
+    # (records naming a part by its mark tag alone, mark_tag, are left out too)
+    skipped = refs["summary"]["state_oracle"]["skipped"]
+    assert set(skipped) <= {"V14", "mark_tag"} and skipped["V14"] == len(v14)
+    assert len(oracle) == len(records) - sum(skipped.values())
+    assert refs["summary"]["state_oracle"]["records"] == len(oracle)
     assert "visibility" in refs["summary"]["state_oracle"]["skipped_why"]
     # the other two variants are complete, as before
-    assert len(list(IO.read_jsonl(refs["out"] / "blind.jsonl"))) == len(records)
-    assert refs["summary"]["blind"]["records"] == len(records)
-    assert refs["summary"]["protocol_prior"]["records"] > 0
+    blind = refs["summary"]["blind"]
+    n_blind = len(list(IO.read_jsonl(refs["out"] / "blind.jsonl")))
+    assert n_blind == blind["records"] == len(records) - sum((blind.get("skipped") or {}).values())
+    # the protocol prior answers V6 / V7 / V16, which live in the multi unit
+    assert refs_multi["summary"]["protocol_prior"]["records"] > 0
+    assert refs_multi["summary"]["state_oracle"]["records"] == len(
+        list(IO.read_jsonl(scene["exports"]["multi"])))
 
 
 # --------------------------------------------------------------------------- #
@@ -372,7 +416,7 @@ def test_chance_and_frequency_on_a_synthetic_truth_file(tmp_path):
 
 
 def test_chance_follows_the_rule_table_on_the_scene(scene, tmp_path):
-    export = scene["exports"][W.VIEW]
+    export = _merged(scene, tmp_path / "both.jsonl")
     records = list(IO.read_jsonl(export))
     worlds, _ = IO.load_oracle(export)
     tax = load_taxonomy()
@@ -433,7 +477,7 @@ def pack(scene) -> dict:
     summary = P.build_pack(str(scene["db"]), str(out), cache_dir=str(scene["cache"]),
                            work_dir=str(root / "pack_work"), views=VIEWS, seed=0, audit=10,
                            live_db=str(root / "live.sqlite"), log=lambda *_: None,
-                           coco_root=str(scene["coco"]))
+                           coco_root=str(scene["coco"]), repo=pack_repo(root))
     return {"pack": out, "summary": summary,
             "manifest": json.loads((out / "manifest.json").read_text(encoding="utf-8"))}
 
@@ -442,37 +486,39 @@ def test_the_pack_ships_the_masks_the_overlays_and_the_painter(pack):
     out, summary = pack["pack"], pack["summary"]
     refs = summary["references"]
     assert refs["masks"]["source"] == "coco"
-    for view in VIEWS:
+    for view in UNITS:
         assert (out / "data" / f"vlm_{view}.masks.jsonl").is_file()
-        assert (out / "eval_v1" / f"{view}.masks.jsonl").is_file()
+        assert (out / "eval_v2" / f"{view}.masks.jsonl").is_file()
         row = refs["masks"]["views"][view]
         assert row["frames_with_masks"] == row["confirmed_frames"] > 0
         assert row["confirmed_without_masks"] == 0
     assert (out / "tools" / "vlm_overlay.py").read_bytes() == (SCRIPTS / "vlm_overlay.py").read_bytes()
     assert "vlm_overlay.py" in P.TOOLS and "vlm_overlay.py" in summary["tools"]
     painted = refs["mask_overlay"]
-    assert set(painted) == set(VIEWS)
+    assert set(painted) == set(UNITS)
     scan = painted[W.VIEW]
     assert 0 < scan["records"] < scan["records_in"] and scan["skipped"]["V8"] > 0
-    variant = out / "eval_v1" / "mask_overlay" / f"{W.VIEW}.jsonl"
+    variant = out / "eval_v2" / "mask_overlay" / f"{W.VIEW}.jsonl"
     rows = list(IO.read_jsonl(variant))
     assert len(rows) == scan["records"]
-    subset_ids = {r["id"] for r in IO.read_jsonl(out / "eval_v1" / f"{W.VIEW}.jsonl")}
+    subset_ids = {r["id"] for r in IO.read_jsonl(out / "eval_v2" / f"{W.VIEW}.jsonl")}
     assert {r["id"] for r in rows} <= subset_ids
     overlay_manifest = IO.load_manifest(variant)
     assert overlay_manifest and all((out / "overlays" / e["path"]).is_file()
                                     for e in overlay_manifest.values())
     # the subset's masks sidecar is the data one cut to the subset's images
-    used = {i for r in IO.read_jsonl(out / "eval_v1" / f"{W.VIEW}.jsonl")
+    used = {i for r in IO.read_jsonl(out / "eval_v2" / f"{W.VIEW}.jsonl")
             for i in r["prompt"]["images"]}
-    cut = O.load_masks(out / "eval_v1" / f"{W.VIEW}.masks.jsonl")
+    cut = O.load_masks(out / "eval_v2" / f"{W.VIEW}.masks.jsonl")
     full = O.load_masks(out / "data" / f"vlm_{W.VIEW}.masks.jsonl")
     assert set(cut) == {i for i in full if i in used} and all(cut[i] == full[i] for i in cut)
     # every overlay is in the manifest with its hash; the self-check still passes
     files = pack["manifest"]["files"]
     overlays = {k for k in files if k.startswith("overlays/")}
-    assert overlays == {"overlays/" + e["path"] for v in VIEWS
-                        for e in IO.load_manifest(out / "eval_v1" / "mask_overlay" / f"{v}.jsonl").values()}
+    # (a multi record's side cameras are not painted: their entries point at the plain frame)
+    assert overlays == {"overlays/" + e["path"] for v in UNITS
+                        for e in IO.load_manifest(out / "eval_v2" / "mask_overlay" / f"{v}.jsonl").values()
+                        if e.get("painted", True)}
     assert summary["selfcheck"]["ok"] is True
     assert all(abs(m - 1.0) < 1e-9 for f in summary["selfcheck"]["files"] for m in f["tasks"].values())
     P.smoke_import(out / "tools")
@@ -545,6 +591,142 @@ def test_run_eval_overlay_variant_scores_the_gold_replies(pack, tmp_path):
     # answered records all score 1; the records the variant leaves out are the parse failures
     subset = list(IO.read_jsonl(out / "truth" / f"{W.VIEW}.jsonl"))
     assert result["records"] == len(subset) > len(variant)
-    assert result["strict"]["by_task"]["V4"]["mean"] == 1.0
+    assert result["strict"]["by_task"]["V2"]["mean"] == 1.0
     assert result["strict"]["parse_failure_rate"]["V8"] == 1.0
     assert "chance" in result and "frequency" in result
+
+
+# --------------------------------------------------------------------------- #
+# multi-view records (the redesign of 2026-11-03, lane D2)
+# --------------------------------------------------------------------------- #
+def _multi_scene(tmp: Path):
+    """Two moments of one desktop seen by the scanner (confirmed, with a mask) and two
+    side cameras (unconfirmed, no mask): a single-moment multi record, a two-moment one
+    (V3-like), and a camera-unit record whose second picture is unconfirmed."""
+    images, manifest, frames, masks = {}, {}, {}, {}
+    for step in (4, 5):
+        for view in ("scan", "oak1", "rs"):
+            iid = f"img_{view}{step}"
+            rel = f"{view}/D07/s{step:03d}.png"
+            path = tmp / "images" / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (8, 8), FLAT.get(view, (10, 200, 10))).save(path)
+            images[(view, step)] = iid
+            manifest[iid] = {"image": iid, "path": rel, "desktop": 7, "view": view, "step": step}
+            frames[iid] = {"type": "frame", "image": iid, "desktop": 7, "view": view,
+                           "step": step, "confirmed": view == "scan",
+                           "state": {"cpu.01": {"state": "installed" if step == 4 else "removed",
+                                                "placement": "in_chassis"}}}
+            if view == "scan":
+                # the whole 8x8 frame is the CPU's visible mask
+                masks[iid] = {"image": iid, "size": [8, 8], "masks": [
+                    {"instance": "cpu.01", "class": "cpu", "visibility": "visible",
+                     "counts": [0, 64]}]}
+
+    def rec(rid, task, view, imgs, **label):
+        return {"id": rid, "prompt": {"task": task, "images": imgs, "question": "?"},
+                "label": {"desktop": 7, "step": 5, "view": view, "answer": {},
+                          "answer_check": {}, **label}}
+
+    one = [images[("scan", 5)], images[("oak1", 5)], images[("rs", 5)]]
+    two = [images[("scan", 4)], images[("oak1", 4)], images[("rs", 4)], *one]
+    records = [rec("rec_multi_one", "V4", "multi", one, views=["scan", "oak1", "rs"],
+                   image_steps=[5, 5, 5]),
+               rec("rec_multi_two", "V3", "multi", two, image_steps=[4, 4, 4, 5, 5, 5]),
+               rec("rec_v15_pair", "V15", "scan", [images[("scan", 5)], images[("oak1", 5)]],
+                   views=["scan", "oak1"])]
+    return images, manifest, frames, masks, records
+
+
+def test_overlay_paints_scan_image_only(tmp_path):
+    images, manifest, frames, masks, records = _multi_scene(tmp_path)
+    classes = O.taxonomy_classes()
+    variant, rows, summary = O.render(records, manifest, frames, masks, tmp_path / "images",
+                                      tmp_path / "overlays", classes)
+    # the multi records are painted although their side cameras are unconfirmed; the
+    # camera-unit V15 pair is not (its second frame is unconfirmed, as before)
+    assert [r["id"] for r in variant] == ["rec_multi_one", "rec_multi_two"]
+    assert summary["skipped"] == {"unconfirmed": 1}
+    assert O.painted_images(records[0], frames) == [images[("scan", 5)]]
+    assert O.painted_images(records[1], frames) == [images[("scan", 4)], images[("scan", 5)]]
+    by_id = {r["image"]: r for r in rows if r.get("type") != "header"}
+    for (view, step), iid in images.items():
+        entry = by_id[iid]
+        target = (tmp_path / "overlays" / entry["path"]).resolve()
+        assert target.is_file(), entry
+        if view == "scan":
+            # painted: a new PNG under the assets, not the frame
+            assert entry.get("painted", True) and (tmp_path / "overlays") in target.parents
+            assert target.read_bytes() != (tmp_path / "images" / manifest[iid]["path"]).read_bytes()
+        else:
+            # a side camera: the plain frame, reached from the assets by a relative path
+            assert entry["painted"] is False and entry["path"].startswith("../images/")
+            assert target == (tmp_path / "images" / manifest[iid]["path"]).resolve()
+    assert summary["overlays"] == 2 and summary["unpainted_side_images"] == 4
+    assert not (tmp_path / "overlays" / "oak1").exists()
+
+
+def test_state_oracle_one_table_per_moment(tmp_path):
+    images, manifest, frames, masks, records = _multi_scene(tmp_path)
+    one, two, pair = records
+    worlds: dict = {}
+    # a multi record of one moment: one table (the scanner's), not one per camera
+    out = vlm_references.state_oracle(one, worlds, frames)
+    assert out["prompt"]["images"] == [] and len(out["prompt"]["state_tables"]) == 1
+    assert vlm_references.moment_images(one, frames) == [images[("scan", 5)]]
+    assert "removed" in out["prompt"]["state_tables"][0]
+    # V3 / V12: two moments, two tables, before then after
+    out = vlm_references.state_oracle(two, worlds, frames)
+    assert len(out["prompt"]["state_tables"]) == 2
+    assert "installed" in out["prompt"]["state_tables"][0]
+    assert "removed" in out["prompt"]["state_tables"][1]
+    # without label.image_steps the oracle's step of each image groups them the same way
+    bare = json.loads(json.dumps(two))
+    del bare["label"]["image_steps"]
+    assert vlm_references.moment_images(bare, frames) == [images[("scan", 4)], images[("scan", 5)]]
+    # a camera unit keeps one table per picture: V15's two pictures of one step stay two
+    assert len(vlm_references.state_oracle(pair, worlds, frames)["prompt"]["state_tables"]) == 2
+
+
+def test_text_only_variants_drop_the_mark_wording(tmp_path):
+    """Blind and state-oracle records carry no picture, so "outlined in red" is removed
+    (the class phrase it qualified stays) and a question naming a part by its tag alone
+    is left out; the run driver's blind rows are the same."""
+    import vlm_collect
+
+    marks = [{"image": 0, "bbox": [1, 1, 4, 4], "tag": "A"}]
+    named = {"id": "rec_named", "prompt": {
+        "task": "V4", "images": ["img_a"], "marks": marks,
+        "image_legend": [{"view": "scan", "moment": "now"}],
+        "question": "Can the RAM module outlined in red be removed now?"},
+        "label": {"desktop": 7, "view": "multi", "answer": {}, "answer_check": {}}}
+    options = {"id": "rec_opts", "prompt": {
+        "task": "V6", "images": ["img_a"], "marks": marks, "question": "What next?",
+        "options": [{"verb": "unscrew", "target_label": "the CPU cooler screws outlined in red"}]},
+        "label": {"desktop": 7, "view": "multi", "answer": {}, "answer_check": {}}}
+    tagged = {"id": "rec_tag", "prompt": {
+        "task": "V4", "images": ["img_a"], "marks": marks,
+        "question": "Must part A come off before part B?"},
+        "label": {"desktop": 7, "view": "multi", "answer": {}, "answer_check": {}}}
+    plain = {"id": "rec_plain", "prompt": {"task": "V2", "images": ["img_a"],
+                                             "question": "How many motherboard screws?"},
+             "label": {"desktop": 7, "view": "scan", "answer": {}, "answer_check": {}}}
+    rows, skipped = vlm_references.blind_rows([named, options, tagged, plain])
+    assert [r["id"] for r in rows] == ["rec_named", "rec_opts", "rec_plain"]
+    assert skipped == {"mark_tag": 1}
+    assert rows[0]["prompt"]["question"] == "Can the RAM module be removed now?"
+    assert rows[1]["prompt"]["options"][0]["target_label"] == "the CPU cooler screws"
+    assert rows[2]["prompt"]["question"] == plain["prompt"]["question"]
+    for r in rows:
+        assert r["prompt"]["images"] == [] and "marks" not in r["prompt"]
+        assert "image_legend" not in r["prompt"] and r["label"]["reference"] == "blind"
+    assert named["prompt"]["marks"] == marks  # the input is not touched
+    frames = {"img_a": {"image": "img_a", "step": 3, "view": "scan", "state": {}}}
+    oracle, why = vlm_references.state_oracle_rows([named, tagged], {}, frames)
+    assert [r["id"] for r in oracle] == ["rec_named"] and why == {"mark_tag": 1}
+    assert "outlined" not in oracle[0]["prompt"]["question"]
+    # the driver's blind variant writes the same rows
+    src = tmp_path / "in.jsonl"
+    IO.write_jsonl(src, [named, options, tagged, plain])
+    assert vlm_collect.blind(src, tmp_path / "blind.jsonl") == 3
+    assert list(IO.read_jsonl(tmp_path / "blind.jsonl")) == rows
