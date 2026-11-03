@@ -278,14 +278,55 @@ def _norm(text: Any) -> str:
     return " ".join(text.split())
 
 
+def _singular(word: str) -> str:
+    """One word of a part name in the singular: "latches" -> "latch", "screws" -> "screw".
+
+    Applied to both sides of every comparison, so it only has to be
+    consistent, not correct English ("chassis" and "glass" are left alone).
+    """
+    if len(word) <= 3 or word.endswith(("ss", "us", "is")):
+        return word
+    if word.endswith("ies"):
+        return word[:-3] + "y"
+    if word.endswith(("ches", "shes", "xes", "sses")):
+        return word[:-2]
+    if word.endswith("s"):
+        return word[:-1]
+    return word
+
+
+def _gnorm(text: Any) -> str:
+    """:func:`_norm`, every word in the singular: how a part name is compared."""
+    return " ".join(_singular(w) for w in _norm(text).split())
+
+
 @dataclass
 class World:
-    """One desktop's oracle line: instances, active edges, log (W3b sidecar)."""
+    """One desktop's oracle line: instances, active edges, log (W3b sidecar).
+
+    ``groups`` is the redesign's table of interchangeable parts (spec 3.1):
+    ``{gid: {"members": [keys], "match_class", "anchor", "label"}}``, with
+    ``gid = f"{match_class}@{anchor}"``; an old oracle line has none, and then
+    every group lookup answers "none" and grading is what it always was. A
+    group id stands wherever an instance key may (a gold target): it answers
+    :meth:`cls_of` / :meth:`match_class` like its members, and
+    :meth:`members` expands it.
+    """
 
     desktop: int
     instances: dict[str, dict]
     edges: list[Edge]
     log: list[dict] = field(default_factory=list)
+    groups: dict[str, dict] = field(default_factory=dict)
+
+    def __post_init__(self):
+        self._group_of: dict[str, str] = {}
+        for gid, group in self.groups.items():
+            for member in group.get("members") or []:
+                self._group_of.setdefault(member, gid)
+        for key, inst in self.instances.items():
+            if inst.get("group"):
+                self._group_of[key] = inst["group"]
 
     @classmethod
     def from_oracle(cls, line: dict) -> "World":
@@ -294,7 +335,32 @@ class World:
                       source=e.get("source", "rule"), status=e.get("status", "proposed"))
                  for e in line.get("edges", [])]
         return cls(int(line["desktop"]), dict(line.get("instances", {})), edges,
-                   list(line.get("log", [])))
+                   list(line.get("log", [])), dict(line.get("groups") or {}))
+
+    @property
+    def grouped(self) -> bool:
+        """Whether this world carries the redesign's groups (the new record contract)."""
+        return bool(self.groups)
+
+    def is_group(self, target: Optional[str]) -> bool:
+        return target is not None and target in self.groups
+
+    def group_of(self, key: str) -> Optional[str]:
+        """The group id of an instance, or ``None`` (a single part, or an old world)."""
+        return self._group_of.get(key)
+
+    def members(self, target: str) -> list[str]:
+        """A group id's member keys; an instance key is its own one member."""
+        if target in self.groups:
+            return list(self.groups[target].get("members") or [])
+        return [target]
+
+    def label_of(self, target: str) -> str:
+        """How a person names a target: the group's plural phrase, the instance's label."""
+        if target in self.groups:
+            return self.groups[target].get("label") or target
+        inst = self.instances.get(target)
+        return (inst.get("label") or target) if inst else target
 
     def rec(self, key: str) -> Optional[InstanceRec]:
         inst = self.instances.get(key)
@@ -307,23 +373,35 @@ class World:
     def cls_of(self, key: str) -> Optional[str]:
         if key.startswith(CABLE_PREFIX):
             return "cable"
+        if key in self.groups:
+            members = self.members(key)
+            return self.cls_of(members[0]) if members else None
         inst = self.instances.get(key)
         return inst["class"] if inst else None
 
     def match_class(self, key: str) -> Optional[str]:
         if key.startswith(CABLE_PREFIX):
             return "cable"
+        if key in self.groups:
+            given = self.groups[key].get("match_class")
+            if given:
+                return given
+            members = self.members(key)
+            return self.match_class(members[0]) if members else None
         inst = self.instances.get(key)
         return inst.get("match_class") if inst else None
 
 
 class Grounder:
-    """Model wording -> an instance key, or at least a match class.
+    """Model wording -> an instance key or group id, or at least a match class.
 
     An exact instance label ("CPU cooler screw 3") or key names one instance;
-    a class phrase ("a CPU cooler screw") names a match class, and an instance
-    of it is chosen only when the caller says which ones are eligible -- that
-    is the group-equivalent reading of an answer that did not say which screw.
+    a class phrase ("a CPU cooler screw", "the cooler screws") names a match
+    class, and a part or group of it is chosen only when the caller says which
+    ones are eligible -- the group-equivalent reading of an answer that did not
+    say which screw (:meth:`ground_in` for instances, :meth:`ground_group`
+    for the redesign's groups). Words are compared in the singular, so a
+    group's plural label and a member's singular name are the same class.
     """
 
     def __init__(self, world: World):
@@ -331,25 +409,33 @@ class Grounder:
         self.by_label: dict[str, str] = {}
         self.phrases: list[tuple[str, str]] = []  # (phrase, match_class), longest first
         seen: set[tuple[str, str]] = set()
-        for key, inst in sorted(world.instances.items()):
-            label = _norm(inst.get("label") or key)
-            self.by_label.setdefault(label, key)
-            self.by_label.setdefault(_norm(key), key)
+
+        def phrase_of(label: str, mclass: str) -> None:
             phrase = re.sub(r"\s+\d+$", "", label)
-            item = (phrase, inst.get("match_class") or inst["class"])
+            item = (phrase, mclass)
             if phrase and item not in seen:
                 seen.add(item)
                 self.phrases.append(item)
+
+        for key, inst in sorted(world.instances.items()):
+            label = _gnorm(inst.get("label") or key)
+            self.by_label.setdefault(label, key)
+            self.by_label.setdefault(_gnorm(key), key)
+            phrase_of(label, inst.get("match_class") or inst["class"])
+        for gid in sorted(world.groups):
+            mclass = world.match_class(gid)
+            if mclass and world.groups[gid].get("label"):
+                phrase_of(_gnorm(world.groups[gid]["label"]), mclass)
         self.phrases.sort(key=lambda p: (-len(p[0]), p[0]))
 
     def ground(self, text: Any) -> tuple[Optional[str], Optional[str]]:
-        """``(instance key or None, match class or None)``."""
+        """``(instance key or None, match class or None)``; a raw group id is its own key."""
         if text is None:
             return None, None
         raw = str(text).strip()
-        if raw in self.world.instances or raw.startswith(CABLE_PREFIX):
+        if raw in self.world.instances or raw.startswith(CABLE_PREFIX) or raw in self.world.groups:
             return raw, self.world.match_class(raw)
-        norm = _norm(raw)
+        norm = _gnorm(raw)
         if norm in self.by_label:
             key = self.by_label[norm]
             return key, self.world.match_class(key)
@@ -380,6 +466,39 @@ class Grounder:
             if self.world.match_class(candidate) == mclass:
                 return candidate, mclass
         return None, mclass
+
+    def resolve(self, text: Any, eligible: Sequence[str]) -> tuple[Optional[str], Optional[str]]:
+        """``(target, match class)`` -- :meth:`ground_group` with the class kept."""
+        key, mclass = self.ground(text)
+        if key is not None:
+            if key in eligible:
+                return key, mclass
+            gid = self.world.group_of(key)
+            if gid is not None and gid in eligible:
+                # a member named exactly stands for its group where the group is asked
+                return gid, mclass
+            return key, mclass
+        if mclass is None:
+            return None, None
+        for candidate in eligible:
+            if self.world.match_class(candidate) == mclass:
+                return candidate, mclass
+        return None, mclass
+
+    def ground_group(self, text: Any, eligible: Sequence[str] = ()) -> Optional[str]:
+        """Model wording -> a group id or an instance key (spec 3.1, 6.2).
+
+        An exact key, label or group id names itself -- a member of a group
+        that is among ``eligible`` stands for that group. A class phrase, in
+        the singular or the plural, is the **first** eligible target (group id
+        or key) of its match class: answers are grounded to the class + kind,
+        never to an anchor, so where two groups share a class the caller
+        hands the ones still unclaimed and the count of group actions per
+        class is what gets compared. ``None`` when nothing eligible has the
+        class (or the words name no class). On a world without groups this is
+        exactly :meth:`ground_in`'s instance.
+        """
+        return self.resolve(text, eligible)[0]
 
 
 _GROUNDERS: dict[int, tuple[World, Grounder]] = {}
@@ -562,15 +681,24 @@ def _g_v4(record, answer, world, tax, transform) -> Grade:
 
 def _pairs_grounded(items: Any, world: Optional[World], eligible: Sequence[tuple[str, str]]
                     ) -> list[tuple[str, Optional[str], Optional[str]]]:
-    """``[(verb, key, match_class)]`` for a list of ``{verb, target}`` answers.
+    """``[(verb, target, match_class)]`` for a list of ``{verb, target}`` answers.
 
-    A class phrase is resolved to an eligible instance of its class, each
-    eligible one used once -- "unscrew a CPU cooler screw" twice is two screws.
+    A class phrase is resolved to an eligible target of its class (instance
+    key or group id), each eligible one used once -- "unscrew a CPU cooler
+    screw" twice is two screws, "open the RAM latches" twice is the latches of
+    two modules (spec 6.2: the count of group actions per class). A member
+    named exactly stands for its group where the group is eligible.
     """
     out = []
     g = grounder(world) if world else None
     left = list(eligible)
     spare = sorted(world.instances) if world else []
+
+    def spend(target: str) -> None:
+        for member in world.members(target):
+            if member in spare:
+                spare.remove(member)
+
     for item in items or []:
         if not isinstance(item, dict):
             continue
@@ -578,22 +706,24 @@ def _pairs_grounded(items: Any, world: Optional[World], eligible: Sequence[tuple
         if g is None:
             out.append((verb, None, None))
             continue
+        mine = [t for v, t in left if v == verb]
         key, mclass = g.ground(item.get("target"))
+        if key is not None:
+            # an exact name is never spent from the eligible list (the old reading)
+            key = g.resolve(item.get("target"), mine)[0]
+        elif mclass is not None:
+            key = g.ground_group(item.get("target"), mine)
+            if key is not None:
+                left.remove((verb, key))
         if key is None and mclass is not None:
-            for i, (v, t) in enumerate(left):
-                if v == verb and world.match_class(t) == mclass:
-                    key = t
-                    del left[i]
-                    break
-        if key is None and mclass is not None:
-            # a class nothing eligible has: the first part of that class
-            for i, t in enumerate(spare):
+            # a class nothing eligible has: the first part of that class (its
+            # group, where it has one)
+            for t in spare:
                 if world.match_class(t) == mclass:
-                    key = t
-                    del spare[i]
+                    key = world.group_of(t) or t
                     break
-        if key is not None and key in spare:
-            spare.remove(key)
+        if key is not None:
+            spend(key)
         out.append((verb, key, mclass))
     return out
 
