@@ -1,7 +1,7 @@
 # Discussion brief for the Opus 5.5 discussant
 
 You are a discussant, not an implementer. The user (a PhD student building the E3D desktop-PC disassembly dataset for a
-**CVPR dataset-track paper with an evaluation section**, deadline 2026-11-16 AoE, 17 days away) asked for a thorough
+**conference dataset-track paper with an evaluation section**, deadline 2026-11-16 AoE, 17 days away) asked for a thorough
 two-model discussion tonight; they will read it in the morning and decide. Your counterpart is the controller (Fable),
 whose opening position is in `01-fable-position.md`. Argue with it. Agreement without reasons is useless; so is
 disagreement for show. Where you disagree, say what evidence would settle it and, if that evidence is in the files
@@ -34,14 +34,14 @@ it), English only for identifiers. Structure:
 
 1. **逐条回应** §1–§8 of the position: 同意 / 反对 / 部分同意, the reason, your alternative, and what would settle it.
    Numbers you cite must come from the files or your probes; say where.
-2. **你认为控制方漏掉的**: things a CVPR dataset-track reviewer will ask that neither document addresses (e.g. inter-annotator
+2. **你认为控制方漏掉的**: things a dataset-track reviewer will ask that neither document addresses (e.g. inter-annotator
    agreement with a single annotator; label noise from a model-assisted pipeline; dataset size vs. claims; license; ethics
    of hands in frame; comparison table against existing assembly/disassembly/procedural datasets — name the real ones you
    know); things a VLM-evaluation practitioner would flag (contamination between train/test templates, answer-format
    brittleness, how legal-set scoring behaves when the graph is incomplete, closed-model API nondeterminism, the
    text-only baseline being too strong because the log leaks).
 3. **17 天的可行性审计**: go through the schedule in §8 and say what is not credible, with the reason. Propose the
-   minimum paper that is still a real CVPR submission and what to cut first.
+   minimum paper that is still a real conference submission and what to cut first.
 4. **两条全局规则改动**（§5 `mounted_on`、§6 cooler→lever edge）: argue each as a data-quality reviewer. For §5 check the
    class list against the taxonomy (`tda/core/taxonomy.py`) and against what the summary's candidate pairs actually
    contain; for §6 check in the database copy that the claim "no desktop opens the lever before removing the cooler" holds
