@@ -14,9 +14,10 @@ V16 / change V3 V12 V10 / cross V15) and per question template, each with a
 95 % interval from a **cluster bootstrap over desktops** (desktops resampled
 with replacement, ``--resamples`` times, seeded). Beside the primary score:
 
-* V2's headline row ``V2`` is the accuracy on ``prior_is_correct = false`` --
-  the questions the class alone does not answer; ``V2-all`` (every V2
-  question) is the secondary row;
+* V2's headline row ``V2`` is every V2 question -- perceiving the part's
+  current state (owner 2026-11-03; ``eval_v1`` draws V2 equally over classes and
+  half ``prior_is_correct = false``); ``V2-prior-wrong`` (the questions the
+  class alone does not answer) is the secondary row, a shortcut check;
 * V6's headline (``headline.v6_open``, table row ``V6``) is the **open**
   question graded group-equivalently; the multiple choice is the secondary row
   ``V6-mc`` (``headline.v6_mc``), outside the layer and template rows, with
@@ -58,9 +59,9 @@ LAYER_ORDER = ("L1", "L2", "L3", "change", "cross")
 #: V6's secondary record type, the multiple choice (W3b ruling): ``V6`` in the
 #: tables is the open form, the headline.
 V6_MC = "V6-mc"
-#: Every V2 question; the ``V2`` row is the headline subset the class prior
-#: answers wrong (``prior_is_correct = false``).
-V2_ALL = "V2-all"
+#: The V2 questions the class prior answers wrong (``prior_is_correct = false``);
+#: the ``V2`` row, the headline, is every V2 question.
+V2_PRIOR_WRONG = "V2-prior-wrong"
 
 
 #: How the ``chance`` row is computed, per table row (printed under the table).
@@ -68,7 +69,7 @@ CHANCE_RULES = {
     "V1": "0: the set of (class, box) pairs is open; a guess has F1 0",
     "V2": "state form 1/|allowed| (the class's state vocabulary; presence = 2); "
           "count form 1/(n+1), n the desktop's screws of that role",
-    V2_ALL: "as V2, over every V2 question",
+    V2_PRIOR_WRONG: "as V2, over the questions the class prior answers wrong",
     "V3": "0: verb and target are open and the score needs both",
     "V4": "0.5: feasible yes / no (blockers are the extra row blockers_f1)",
     "V6": "0: the next action is open",
@@ -94,13 +95,14 @@ def task_key(record: dict) -> str:
 
 
 def _rows_of(task: str, label: dict) -> list[str]:
-    """The table rows a record counts in: its task; V2 also ``V2-all``.
+    """The table rows a record counts in: its task; V2 also ``V2-prior-wrong``.
 
-    V2's headline row is the questions the class prior gets wrong (review M);
-    every V2 question is the secondary row ``V2-all``.
+    V2's headline row is every V2 question (owner 2026-11-03: V2 measures the
+    perception of the current state); the questions the class prior gets wrong
+    are the secondary row ``V2-prior-wrong`` (review M).
     """
-    if task == "V2":
-        return [V2_ALL] + (["V2"] if label.get("prior_is_correct") is False else [])
+    if task == "V2" and label.get("prior_is_correct") is False:
+        return [task, V2_PRIOR_WRONG]
     return [task]
 
 
@@ -288,10 +290,9 @@ def score(truth_path, pred_path, chat_path=None, *, resamples: int = 1000,
                     failures[key] += 1
             for key in rows_of:
                 per_task[key].append(row)
-            if task not in (V6_MC, "V2") or "V2" in rows_of:
-                # the multiple choice is a secondary record type and V2's
-                # prior-right questions are only in `V2-all`: the layers count
-                # each headline row once
+            if task != V6_MC:
+                # the multiple choice is a secondary record type: the layers
+                # count each headline row once
                 per_layer[CAPABILITY_LAYERS.get(task, "other")].append(row)
             if task != V6_MC:
                 per_template[label.get("template_id", "?")].append(row)
@@ -346,8 +347,8 @@ def score(truth_path, pred_path, chat_path=None, *, resamples: int = 1000,
     # V6's headline is the open form; the multiple choice rides beside it
     out["headline"] = {"v6_open": out["strict"]["by_task"].get("V6"),
                        "v6_mc": out["strict"]["by_task"].get(V6_MC),
-                       "v2_prior_wrong": out["strict"]["by_task"].get("V2"),
-                       "v2_all": out["strict"]["by_task"].get(V2_ALL)}
+                       "v2": out["strict"]["by_task"].get("V2"),
+                       "v2_prior_wrong": out["strict"]["by_task"].get(V2_PRIOR_WRONG)}
     if prior_path:
         report = json.loads(Path(prior_path).read_text(encoding="utf-8"))
         out["protocol_prior"] = {t: row.get("accuracy")
@@ -361,9 +362,8 @@ def _shortcuts(summary: dict) -> dict:
     for task, row in (summary.get("shortcuts") or {}).items():
         best = max((row.get(k) or 0.0) for k in ("verb", "class", "verb_class", "template"))
         # the export measures V2's shortcut on every V2 question: that is the
-        # `V2-all` row (on the headline subset the class prior is 0 by design)
-        table[V2_ALL if task == "V2" else task] = {"majority": row.get("majority"),
-                                                    "best_text_only": _r(best)}
+        # `V2` row (on `V2-prior-wrong` the class prior is 0 by design)
+        table[task] = {"majority": row.get("majority"), "best_text_only": _r(best)}
     option = summary.get("v6_option_shortcut") or {}
     if option.get("records"):
         # the option-verb shortcut is the multiple choice's, not the open form's
@@ -394,9 +394,9 @@ def markdown(result: dict, name: str) -> str:
              f"lenient {l['parse_failure_rate_all']:.1%}. "
              "Intervals: 95 %, cluster bootstrap over desktops. "
              "V6 is the open question, graded group-equivalently (the headline); "
-             f"{V6_MC} is the multiple choice (secondary). V2 is the questions the "
-             f"class prior answers wrong (the headline); {V2_ALL} is every V2 "
-             "question (secondary). Reference columns: *chance* is a uniform guess "
+             f"{V6_MC} is the multiple choice (secondary). V2 is every V2 question "
+             f"(the headline); {V2_PRIOR_WRONG} is the questions the class prior "
+             "answers wrong (secondary). Reference columns: *chance* is a uniform guess "
              "over the answer space (rules below); *frequency* is the most frequent "
              "gold reply over the file's train desktops given to every record "
              "(strict); *text-only upper bound (in-sample)* is the export's best "

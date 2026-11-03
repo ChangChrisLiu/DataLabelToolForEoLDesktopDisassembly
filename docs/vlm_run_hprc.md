@@ -1,7 +1,9 @@
 # 在 HPRC 上跑 VLM 评测：从拷包到分数表
 
 > **2026-11-03**：本文已与英文 `HANDOFF.md` §8 对齐：包保持只读，所有输出进 `$WORK`；处处设 `PYTHONDONTWRITEBYTECODE=1`；`RUNS=$WORK/runs`；
-> `MAX_TOKENS` 默认 2048；overlay 只跑 scan；重复子集生成到 `$WORK/repeat/` 并经 `REPEAT_IDS` 传入。两者不一致时以 `HANDOFF.md` 为准。
+> `MAX_TOKENS` 默认 2048；overlay 只跑 scan。**闭源（负责人 2026-11-03 定）：只用 Codex 跑 GPT-6.1 Sol，只做
+> `eval_v1/audit/audit.ids.txt` 那 300 条，跑一次，不重复**（见 §5）；`submit_matrix.sh` 的 `CLOSED_MODELS` 留空，
+> 不需要重复子集和 `REPEAT_IDS`。V2 的主指标是全部 V2 题。两者不一致时以 `HANDOFF.md` 为准。
 
 这份是**照着做**的流程（W4-B，2026-11）。模型不在本工作站上跑：评测包（W4-A 的 `exports/vlmpack_<date>/`）
 拷到 TAMU HPRC（或任何有 GPU / 有 API 出口的机器），用包里 `tools/` 的脚本完成
@@ -127,43 +129,43 @@ sbatch --array=0 --export=ALL,PACK=$PACK,RUNS=$WORK/runs,MODEL=Qwen/Qwen3-VL-8B-
 
 看三样东西：`score/pilot_qwen3vl8b.score.md` 的 **parse failure**（strict 高、lenient 低 = 模型爱加说明文字，
 提示词或 `--max-tokens` 要调）；`run.log` 的每批耗时（推全量用）；`pred.jsonl` 里 `meta.prompt_tokens` /
-`completion_tokens` 的均值（闭源预算用，见 §7）。回退路线：`BACKEND=transformers`（一条一条生成，慢十倍，
+`completion_tokens` 的均值（粗估闭源开销，见 §7）。回退路线：`BACKEND=transformers`（一条一条生成，慢十倍，
 需要 HF 格式权重，InternVL 用 `*-hf` 仓库；vllm 两种都认）。
 
 ## 5. 全量评测
 
-编辑 `$WORK/slurm/submit_matrix.sh`（包里那份的副本）的两张模型清单，先生成重复子集（见下），然后：
+编辑 `$WORK/slurm/submit_matrix.sh`（包里那份的副本）的开源模型清单（`CLOSED_MODELS` 留空），然后：
 
 ```bash
-cd $WORK && PACK=$PACK RUNS=$WORK/runs REPEAT_IDS=$WORK/repeat/repeat.ids.txt bash $WORK/slurm/submit_matrix.sh
+cd $WORK && PACK=$PACK RUNS=$WORK/runs bash $WORK/slurm/submit_matrix.sh
 squeue -u $USER
 ```
 
 每个作业 = 一个模型 × 一种变体（`image` 原图 / `blind` 去图像，题面与选项不变）× array 四个视角，评测集
-`eval_v1/<view>.jsonl`（所有模型同一子集）。闭源模型另跑 **重复子集**（`$WORK/repeat/repeat.ids.txt`，经 `REPEAT_IDS` 传入，`REPEAT=3`，
-每题问三次写 `raw_text_1..3`）。
+`eval_v1/<view>.jsonl`（所有开源模型同一子集）。
 
-**重复子集不在包里，第一次跑闭源前先生成（确定性，300 条，每题 25 条，覆盖 66 台）**：
-
-```bash
-cd $WORK && cat $PACK/eval_v1/scan.jsonl $PACK/eval_v1/oak1.jsonl $PACK/eval_v1/oak2.jsonl $PACK/eval_v1/rs.jsonl > eval_all.jsonl
-PYTHONDONTWRITEBYTECODE=1 python $PACK/tools/vlm_sample.py --export eval_all.jsonl --out repeat \
-    --purpose repeat --seed 0 --test-desktops 1-66
-# 核对 repeat/repeat.ids.txt：300 行，第一行 rec_68740f3181306b86；LF 行尾的 sha256 = 0801ccab8bddc17d9e2d7e580aadcda61143390a42ebdb78e29e31f760e8b160
-```
+**闭源：GPT-6.1 Sol，通过 Codex，只做 300 条**（负责人 2026-11-03 定，控制 token 开销）：
+- 题目 = `eval_v1/audit/audit.ids.txt`（每题型 25 条，66 台；scan 175、oak1 48、oak2 41、rs 36），也就是负责人审核、
+  人类基线作答的同一批，三者逐题可比。每个视角用 `vlm_collect.py subset --ids $PACK/eval_v1/audit/audit.ids.txt`
+  切出 300 条的真值。跑一次 `image`，不重复、不报标准差（Codex 不暴露 temperature）；要不要加一遍 `blind` 先问负责人。
+- **Codex 能读文件、跑命令，每题必须隔离**：在 `$PACK`、`$WORK` 之外新建空目录，只放这道题的图片（按不透明 id 拷贝），
+  只读沙箱、除模型外不联网；只给 `vlm_to_chat.py` 为这条记录生成的用户文本（题面、选项、答题格式）加图片；
+  取最终回复作 `raw_text`。写 `$WORK/runs/gpt61sol_codex/image/<view>/pred.jsonl`（每行 `{"id", "raw_text", "meta"}`，
+  `meta` 记 Codex 版本、模型名、推理强度、送图尺寸、日期），再用 300 条真值 `vlm_score.py` 评分。驱动脚本放 `$WORK`，不进包。
+- 开源模型的全量 `pred.jsonl` 也用这 300 条真值再评一次，和闭源、人类基线、审核错误率放在一起。
 
 第三种变体 `VARIANT=overlay`（W4-C）：把**已确认的可见掩码**按类别颜色画在原图上（固定透明度、细描边，不写字不画框），
 只对每张图都是已确认帧且有掩码的题出（V8 除外——框就是答案），是论文的"感知参照线"。包里 `overlays/` 已预先画好
 `eval_v1` 的那份；别的子集会从 `<view>.masks.jsonl` sidecar 现画（`OVERLAYS=` 指到可写目录）。它答的题比原图少，
 `run_eval.sh` 仍按完整子集评分（没答的记为 parse failure），看 `truth/mask_overlay.summary.json` 知道少了哪些；
 `vlm_score.py` 的 `score.md` 同时给出 `chance` / `frequency` 两行参照。`submit_matrix.sh` 的清单默认只有
-`image blind`，要跑 overlay 自己加进 `VARIANTS`（闭源模型多一份预算）。**overlay 只对 scan 有意义**（其他视角没有确认的掩码，
+`image blind`，要跑 overlay 自己加进 `VARIANTS`。**overlay 只对 scan 有意义**（其他视角没有确认的掩码，
 可答 0 条）；与原图比较时，两者都按 `truth/mask_overlay.jsonl` 的 id 重新评分。
 
 **中断 / 失败重跑**：同一命令再提交一次即可——`vlm_run.py` 跳过 `pred.jsonl` 里已答的 id，只补 `raw_text = null`
 的行；退出码 3 = 有请求失败（行已写、带 `meta.error`），0 = 全部答完。
 
-**闭源的 key**：`echo 'export OPENAI_API_KEY=...' > ~/.vlm_keys.env && chmod 600 ~/.vlm_keys.env`。
+**闭源的 key**（只在用 API 跑闭源时需要；本项目的闭源走 Codex，见上）：`echo 'export OPENAI_API_KEY=...' > ~/.vlm_keys.env && chmod 600 ~/.vlm_keys.env`。
 `closed_model.sbatch` source 这个文件，`API_KEY_ENV` 只传**变量名**；`vlm_run.py` 不打印、不写入、错误信息里也替换掉。
 别的端点：`BASE_URL=https://.../v1 API_KEY_ENV=MY_KEY`（Gemini / Anthropic 的 OpenAI 兼容层、或集群内 `vllm serve`
 加 `RUN_ARGS=--no-api-key`）。
@@ -180,41 +182,23 @@ cat $WORK/runs/score.md
 ```
 
 `vlm_collect.py table` 把每个 `runs/<model>/<variant>/<view>/score/*.score.json` 变成一行（strict 准确率 +
-按台聚类自助法 95 % 区间），重复跑（`*.r1..rk`）折成 **均值 ± 样本标准差 (k=3)**。单个作业的细表看
+按台聚类自助法 95 % 区间）。单个作业的细表看
 `score/<model_tag>.score.md`：按任务 / 能力层 / 模板，附加指标（V6 blocked_rate、V7 violation_free、
 V16 localised、V4 blockers_f1、V10 bin_accuracy）、文本捷径上界列。
 
 **论文要报的**（§6.2）：
 - parse-failure 率两种（strict / lenient），分母是真值文件的全部记录，没答的算失败；
-- 闭源三次重复的标准差（重复子集），开源 temperature 0 只跑一次；
+- 开源 temperature 0 只跑一次；闭源（Codex）在 300 条上跑一次，和开源在同 300 条上的分数、人类基线（附录）、审核错误率并排；
+- V2 的主行 `V2` 是全部 V2 题（测「现在是什么状态」），`V2-prior-wrong`（类别先验猜错的那一半）是次要的捷径检查；
 - 置信区间 = 按台聚类自助法（簇 = 66 台，1 000 次，`vlm_score.py --resamples 1000 --seed 0`，`run_eval.sh` 用默认值）；
 - 每个任务旁边的文本捷径上界与（V6 / V7 / V16）protocol prior；
 - 七轴：模型快照 `meta.model_snapshot`、送图尺寸 `meta.image_sizes_sent`、`max_tokens`、temperature、
   变体、提示模板 id `meta.prompt_template_id`、`requirements.lock`——全在 `pred.jsonl` 的 `meta` 里。
 
-## 7. 闭源模型预算
+## 7. 闭源的开销
 
-从试点（§4）读 `meta.prompt_tokens` / `completion_tokens` 的均值，再填下表（价格按供应商当天的报价）：
-
-```
-tokens_in  = N_items × ( T_text + n_img × T_img )          # T_img：供应商的图 token 规则；用试点实测均值更准
-tokens_out = N_items × T_out
-cost       = tokens_in × P_in + tokens_out × P_out
-```
-
-| 量 | 值 | 来源 |
-|---|---|---|
-| N_items（image 变体，四视角合计） | ⟨ ⟩ | `eval_v1/table.md` 各任务 n 之和 |
-| N_items（blind 变体） | ⟨同上⟩ | 同一子集，n_img = 0 |
-| n_img 均值 | ⟨ ⟩ | 单图任务 1，V3 / V12 / V15 2 |
-| T_text（文字 token 均值） | ⟨ ⟩ | blind 试点的 `prompt_tokens` |
-| T_img（每图 token，MAX_SIDE=⟨ ⟩） | ⟨ ⟩ | image 试点的 `prompt_tokens` − T_text |
-| T_out | ⟨ ⟩ | 试点 `completion_tokens` 均值（JSON 短答一般 < 60） |
-| 重复子集 | N_rep = 300 × (k−1 = 2) | `$WORK/repeat/repeat.ids.txt` |
-| P_in / P_out（每百万 token） | ⟨ ⟩ / ⟨ ⟩ | 供应商报价 |
-| 总计（每个闭源模型） | ⟨ ⟩ | 上式 ×（image + blind）+ 重复子集 |
-
-试点 100 题 × 一个模型就能把 T_* 全部实测出来，不要靠猜。
+闭源只在 300 条上跑一次（§5），不再做全量预算表。试点（§4）的 `prompt_tokens` / `completion_tokens` 均值乘以 300
+可以粗估 token 数；以 Codex 实际报告的为准，记进 `meta`。
 
 ## 8. 常见问题
 

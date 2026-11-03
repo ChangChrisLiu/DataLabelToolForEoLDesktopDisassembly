@@ -402,7 +402,7 @@ def test_chance_follows_the_rule_table_on_the_scene(scene, tmp_path):
     v2 = by_task["V2"]
     want = [1 / len(r["label"]["answer_check"]["allowed"]) for r in v2
             if "state" in r["label"]["answer"]]
-    assert want and chance["V2-all"]["mean"] == pytest.approx(
+    assert want and chance["V2"]["mean"] == pytest.approx(
         sum(vlm_score.chance_of(r, worlds[IO.desktop_of(r)], tax) for r in v2) / len(v2), abs=1e-4)
     for r in by_task["V14"]:
         p = vlm_score.chance_of(r, worlds[IO.desktop_of(r)], tax)

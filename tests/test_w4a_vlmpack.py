@@ -308,8 +308,8 @@ def test_the_readme_is_a_data_card(built):
     for key, fmt in RESPONSE_FORMATS.items():
         if not key.startswith("V5"):
             assert fmt.split("{allowed}")[0] in text, key
-    # the scene has no HP optical bracket: the card does not pretend it does
-    assert "optical-drive bracket" not in text.split("## Known limitations")[1].split(
+    # the scene has no optical drive cage: the card does not pretend it does
+    assert "optical drive cage" not in text.split("## Known limitations")[1].split(
         "## Provenance")[0]
 
 
@@ -318,5 +318,5 @@ def test_the_card_names_the_optical_bracket_when_a_desktop_has_one(built):
     summary["composition"] = dict(summary["composition"], optical_bracket_desktops=[3, 8])
     text = P.readme_text(summary)
     issues = text.split("## Known limitations")[1]
-    assert "optical-drive bracket" in issues and "D03, D08" in issues
-    assert "\"Drive cage N\"" in issues and "**not** accepted" in issues
+    assert "optical drive cage" in issues and "D03, D08" in issues
+    assert "\"Optical drive cage N\"" in issues and "**not** accept" in issues

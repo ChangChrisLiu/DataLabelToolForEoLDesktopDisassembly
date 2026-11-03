@@ -284,14 +284,18 @@ def test_the_scorer_with_fake_outputs(export, tmp_path):
     mc_row = next(line for line in md.splitlines() if line.startswith("| V6-mc |"))
     assert mc_row.rstrip().endswith("| 79.9% |")
     assert result["headline"]["v6_open"] == strict["by_task"]["V6"]
-    # V2's headline row is the prior-wrong subset, every V2 question secondary
+    # V2's headline row is every V2 question, the prior-wrong subset secondary (owner 2026-11-03)
     v2 = [r for r in records if r["prompt"]["task"] == "V2"]
     wrong = [r for r in v2 if r["label"]["prior_is_correct"] is False]
     assert wrong and len(wrong) < len(v2)
-    assert strict["by_task"]["V2"]["n"] == len(wrong)
-    assert strict["by_task"]["V2-all"]["n"] == len(v2)
-    assert result["headline"]["v2_prior_wrong"] == strict["by_task"]["V2"]
-    assert "| V2-all |" in md
+    assert strict["by_task"]["V2"]["n"] == len(v2)
+    assert strict["by_task"]["V2-prior-wrong"]["n"] == len(wrong)
+    assert result["headline"]["v2"] == strict["by_task"]["V2"]
+    assert result["headline"]["v2_prior_wrong"] == strict["by_task"]["V2-prior-wrong"]
+    assert "| V2-prior-wrong |" in md
+    # every V2 question counts once in its layer
+    assert strict["by_layer"]["L1"]["n"] == sum(
+        1 for r in records if r["prompt"]["task"] in ("V1", "V2", "V8", "V14"))
     # seeded: the same inputs give the same intervals
     again = vlm_score.score(export, preds, resamples=200)
     assert again["strict"]["by_task"] == strict["by_task"]
