@@ -147,14 +147,14 @@ squeue -u $USER
 `eval_v1/<view>.jsonl`（所有开源模型同一子集）。
 
 **闭源：GPT-6.1 Sol，通过 Codex，只做 300 条**（负责人 2026-11-03 定，控制 token 开销）：
-- 题目 = `eval_v1/audit/audit.ids.txt`（每题型 25 条，66 台；scan 175、oak1 48、oak2 41、rs 36），也就是负责人审核、
-  人类基线作答的同一批（人类基线去掉画框的 V1、V8，共 250 条），逐题可比。每个视角用 `vlm_collect.py subset --ids $PACK/eval_v1/audit/audit.ids.txt`
+- 题目 = `eval_v1/audit/audit.ids.txt`（每题型 25 条，66 台；scan 175、oak1 48、oak2 41、rs 36），也就是负责人审核的同一批，
+  逐题可比。每个视角用 `vlm_collect.py subset --ids $PACK/eval_v1/audit/audit.ids.txt`
   切出 300 条的真值。跑一次 `image`，不重复、不报标准差（Codex 不暴露 temperature）；要不要加一遍 `blind` 先问负责人。
 - **Codex 能读文件、跑命令，每题必须隔离**：在 `$PACK`、`$WORK` 之外新建空目录，只放这道题的图片（按不透明 id 拷贝），
   只读沙箱、除模型外不联网；只给 `vlm_to_chat.py` 为这条记录生成的用户文本（题面、选项、答题格式）加图片；
   取最终回复作 `raw_text`。写 `$WORK/runs/gpt61sol_codex/image/<view>/pred.jsonl`（每行 `{"id", "raw_text", "meta"}`，
   `meta` 记 Codex 版本、模型名、推理强度、送图尺寸、日期），再用 300 条真值 `vlm_score.py` 评分。驱动脚本放 `$WORK`，不进包。
-- 开源模型的全量 `pred.jsonl` 也用这 300 条真值再评一次，和闭源、人类基线、审核错误率放在一起。
+- 开源模型的全量 `pred.jsonl` 也用这 300 条真值再评一次，和闭源、审核错误率放在一起。
 
 第三种变体 `VARIANT=overlay`（W4-C）：把**已确认的可见掩码**按类别颜色画在原图上（固定透明度、细描边，不写字不画框），
 只对每张图都是已确认帧且有掩码的题出（V8 除外——框就是答案），是论文的"感知参照线"。包里 `overlays/` 已预先画好
@@ -190,7 +190,7 @@ V16 localised、V4 blockers_f1、V10 bin_accuracy）、文本捷径上界列。
 
 **论文要报的**（§6.2）：
 - parse-failure 率两种（strict / lenient），分母是真值文件的全部记录，没答的算失败；
-- 开源 temperature 0 只跑一次；闭源（Codex）在 300 条上跑一次，和开源在同 300 条上的分数、人类基线（附录）、审核错误率并排；
+- 开源 temperature 0 只跑一次；闭源（Codex）在 300 条上跑一次，和开源在同 300 条上的分数、审核错误率并排；
 - V2 的主行 `V2` 是全部 V2 题（测「现在是什么状态」），`V2-prior-wrong`（类别先验猜错的那一半）是次要的捷径检查；
 - 置信区间 = 按台聚类自助法（簇 = 66 台，1 000 次，`vlm_score.py --resamples 1000 --seed 0`，`run_eval.sh` 用默认值）；
 - 每个任务旁边的文本捷径上界与（V6 / V7 / V16）protocol prior；
