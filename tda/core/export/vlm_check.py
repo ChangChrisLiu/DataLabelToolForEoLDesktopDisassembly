@@ -418,12 +418,15 @@ class Grounder:
     class, and a part or group of it is chosen only when the caller says which
     ones are eligible -- the group-equivalent reading of an answer that did not
     say which screw (:meth:`ground_in` for instances, :meth:`ground_group`
-    for the redesign's groups). Words are compared in the singular, so a
-    group's plural label and a member's singular name are the same class.
+    for the redesign's groups). On a world with groups, words are compared in
+    the singular, so a group's plural label and a member's singular name are
+    the same class; a world without groups keeps the old wording rule
+    (:func:`_norm`), so old records grade exactly as before.
     """
 
     def __init__(self, world: World):
         self.world = world
+        self.norm = _gnorm if world.grouped else _norm
         self.by_label: dict[str, str] = {}
         self.phrases: list[tuple[str, str]] = []  # (phrase, match_class), longest first
         seen: set[tuple[str, str]] = set()
@@ -436,14 +439,14 @@ class Grounder:
                 self.phrases.append(item)
 
         for key, inst in sorted(world.instances.items()):
-            label = _gnorm(inst.get("label") or key)
+            label = self.norm(inst.get("label") or key)
             self.by_label.setdefault(label, key)
-            self.by_label.setdefault(_gnorm(key), key)
+            self.by_label.setdefault(self.norm(key), key)
             phrase_of(label, inst.get("match_class") or inst["class"])
         for gid in sorted(world.groups):
             mclass = world.match_class(gid)
             if mclass and world.groups[gid].get("label"):
-                phrase_of(_gnorm(world.groups[gid]["label"]), mclass)
+                phrase_of(self.norm(world.groups[gid]["label"]), mclass)
         self.phrases.sort(key=lambda p: (-len(p[0]), p[0]))
 
     def ground(self, text: Any) -> tuple[Optional[str], Optional[str]]:
@@ -453,7 +456,7 @@ class Grounder:
         raw = str(text).strip()
         if raw in self.world.instances or raw.startswith(CABLE_PREFIX) or raw in self.world.groups:
             return raw, self.world.match_class(raw)
-        norm = _gnorm(raw)
+        norm = self.norm(raw)
         if norm in self.by_label:
             key = self.by_label[norm]
             return key, self.world.match_class(key)

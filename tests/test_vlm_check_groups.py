@@ -154,7 +154,28 @@ def test_instance_key_still_grounds(world):
     old = grounder(World.from_oracle(oracle_line(groups=False)))
     assert old.ground_group("a CPU cooler screw", list(SCREWS[2:])) == SCREWS[2]
     assert old.ground_group("CPU cooler screw 2", list(SCREWS[2:])) == SCREWS[1]
-    assert old.ground_group("the CPU cooler screws", list(SCREWS)) == SCREWS[0]
+    assert old.ground_group("the CPU cooler screws", list(SCREWS)) is None  # base: class cpu
+
+
+def test_old_world_keeps_the_old_plural_reading():
+    """No groups in the oracle: words are not put in the singular, so a plural
+    wording grounds as it always did (review fix, lane B round 1)."""
+    old = grounder(World.from_oracle(oracle_line(groups=False)))
+    assert old.ground("the CPU cooler screws") == (None, "cpu")
+    for text in ("the RAM latches", "RAM modules", "covers", "the fan connectors",
+                 "socket levers"):
+        assert old.ground(text) == (None, None), text
+    # the singular wording is unchanged too
+    assert old.ground("a RAM latch") == (None, "ram_latch")
+    assert old.ground("CPU cooler screw 2") == (SCREWS[1], "screw.cpu_cooler")
+    # and graded the old way: a plural blocker names nothing on an old world
+    keyed = _v4("remove", RAMS[0], list(LATCHES[RAMS[0]]))
+    g = grade(keyed, _reply(feasible=False, blockers=["the RAM latches"]),
+              World.from_oracle(oracle_line(groups=False)))
+    assert g.metrics["blockers_f1"] == 0.0
+    # the same words on a world with groups are the latch group
+    assert grounder(World.from_oracle(oracle_line())).ground("the RAM latches") == \
+        (None, "ram_latch")
 
 
 def test_two_groups_one_class_graded_by_count(world):
