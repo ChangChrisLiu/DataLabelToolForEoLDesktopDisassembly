@@ -47,7 +47,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vlm_io as IO  # noqa: E402
 from vlm_glossary import glossary_text  # noqa: E402
-from vlm_to_chat import VIEW_NAMES, image_legend, legend_line, marks_line  # noqa: E402
+from vlm_to_chat import (VIEW_NAMES, image_legend, legend_line, marks_line,  # noqa: E402
+                         shown_marks)
 from tda.core.export.vlm_check import LETTERS, World, format_key  # noqa: E402
 
 __all__ = ["CSV_COLUMNS", "VERDICTS", "boxes_of", "build", "csv_skeleton", "frames_html",
@@ -288,10 +289,10 @@ def boxes_of(record: dict, world: Optional[World] = None) -> list[dict]:
 
 def marks_of(record: dict, index: int) -> list[dict]:
     """The ``prompt.marks`` of image ``index`` as boxes (``kind = "mark"``, the tag as label):
-    what the model sees drawn in red on that image."""
+    what the model sees drawn in red on that image (none on V1 / V8 / V14)."""
     return [{"label": str(m.get("tag") or ""), "bbox": [float(v) for v in m["bbox"]],
              "kind": "mark"}
-            for m in record["prompt"].get("marks") or []
+            for m in shown_marks(record)
             if int(m.get("image", 0)) == index and m.get("bbox") and len(m["bbox"]) == 4]
 
 
