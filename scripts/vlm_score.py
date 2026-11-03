@@ -25,6 +25,11 @@ with replacement, ``--resamples`` times, seeded). Beside the primary score:
   ``blocked_rate`` is over the frames with ``blocked_rate_defined`` only, and
   the exact-instance match rides along;
 * V7 adds violation-free rate, required-action recall and goal-reached rate;
+* V10 adds the progress-bin accuracy and, on records that carry
+  ``answer.started`` (groups partly done, spec 6.1), ``started_f1`` -- the set
+  of group actions begun but not finished, graded apart from the done set;
+* action targets may be group ids (the redesign's ``groups`` in the oracle):
+  :mod:`tda.core.export.vlm_check` grounds the model's words to them;
 * records whose truth rests on a captive screw's tightness
   (``image_undecidable``) are also scored without;
 * two reference rows stand beside every task (W4-C): **chance** -- the
@@ -75,7 +80,7 @@ CHANCE_RULES = {
     "V6": "0: the next action is open",
     V6_MC: "1/|options| per record",
     "V7": "0: the plan is open",
-    "V8": "0: a box with IoU >= 0.5 by chance",
+    "V8": "0: a box with IoU >= 0.5 by chance (the components form: a box set, F1 0)",
     "V10": "0: the set F1 over the done actions is open; the progress bin alone is "
            "1/|bins| (the extra row bin_accuracy)",
     "V12": "0.5: changed yes / no",
@@ -313,6 +318,8 @@ def score(truth_path, pred_path, chat_path=None, *, resamples: int = 1000,
                 extras[task]["blockers_f1"].append((desk, float(m["blockers_f1"])))
             if task == "V10" and "bin_correct" in m:
                 extras[task]["bin_accuracy"].append((desk, float(m["bin_correct"])))
+            if task == "V10" and "started_f1" in m:
+                extras[task]["started_f1"].append((desk, float(m["started_f1"])))
         out[mode] = {
             "parse_failure_rate": {t: _r(failures[t] / len(rows))
                                    for t, rows in sorted(per_task.items())},
