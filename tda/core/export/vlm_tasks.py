@@ -66,6 +66,20 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Optional, Sequence
 
 from tda.core.export import vlm_reasoning as R
+from tda.core.export.vlm_groups import (
+    INITIALISMS,
+    Namer,
+    PartGroup,
+    _words,
+    class_label,
+    class_phrase,
+    mark_box,
+    match_class,
+    part_groups,
+    present,
+    target_class,
+    to_do,
+)
 from tda.core.export.coco import (
     ANSWERABLE,
     VERIFIED,
@@ -232,14 +246,6 @@ UNGRADED_TOOLS = frozenset({None, "", "unknown"})
 # --------------------------------------------------------------------------- #
 # wording
 # --------------------------------------------------------------------------- #
-#: Class-id and attribute words that are initialisms rather than words. A
-#: question reading "what state is the psu 1 in?" is a question about a typo;
-#: ``str.title()`` would make it "Psu", which is worse.
-INITIALISMS = frozenset({
-    "psu", "cpu", "gpu", "ram", "ssd", "hdd", "io", "atx", "sata", "usb",
-    "wlan", "pc", "pcb", "24pin", "ph1", "ph2", "ph3",
-})
-
 #: The present participle of every verb of spec 6.3, so a template can say
 #: "Would removing the PSU work?" instead of "would remove the PSU work".
 GERUNDS = {
@@ -247,21 +253,6 @@ GERUNDS = {
     "release": "releasing", "remove": "removing", "displace": "displacing",
     "reorient": "reorienting",
 }
-
-
-def _words(text: str) -> list[str]:
-    """``"cpu_cooler"`` -> ``["CPU", "cooler"]``: initialisms up, rest as written."""
-    return [
-        word.upper() if word.lower() in INITIALISMS else word
-        for word in str(text).replace("_", " ").split()
-    ]
-
-
-def class_label(cls: str, tax: Optional[Taxonomy] = None) -> str:
-    """How a person says a taxonomy class: ``ram_module`` -> "RAM module"."""
-    defn = (tax.classes.get(cls) if tax is not None else None) or {}
-    given = defn.get("label") or defn.get("name")
-    return " ".join(_words(given if isinstance(given, str) and given else cls))
 
 
 def instance_label(instance: str, rec: Optional[InstanceRec],
@@ -379,7 +370,19 @@ def slim_row(row: dict) -> dict:
         "status": row.get("status"),
         "geom_type": row.get("geom_type"),
         "box": row_bbox_xywh(row),
+        # visible pixels (V3_MIN_PX, the redesign's V3 rule): the mask's area, or a bench box's
+        "area": _row_area(row),
     }
+
+
+def _row_area(row: dict) -> Optional[int]:
+    rle = row.get("visible_rle")
+    if rle:
+        from tda.core.masks import rle_area
+
+        return rle_area(rle)
+    box = row_bbox_xywh(row)
+    return None if box is None else int(round(float(box[2]) * float(box[3])))
 
 
 def pointable_rows(ctx: DesktopCtx, rows: dict[str, dict],
@@ -764,13 +767,6 @@ def captive_only_step(tc: "TaskCtx", step: int) -> bool:
     return bool(moved) and all(is_captive_screw(tc.ctx, k) for k in moved)
 
 
-def target_class(ctx: DesktopCtx, target: str) -> Optional[str]:
-    """Class of an action target: ``cable`` for a virtual node, else the taxonomy's."""
-    if target.startswith(CABLE_PREFIX):
-        return CABLE_CLASS
-    return ctx.cls_of(target)
-
-
 def graded_tool(tool: Optional[str]) -> Optional[str]:
     """The tool if it is a fact, else ``None`` -- ``unknown`` is never graded (I3)."""
     return None if tool in UNGRADED_TOOLS else tool
@@ -852,28 +848,6 @@ def graph_kind(edges: Sequence[Edge]) -> str:
     if edges and all(is_pixel_edge(e) for e in edges):
         return GRAPH_BLOCKED_PIXELS
     return GRAPH_BLOCKED
-
-
-def match_class(ctx: DesktopCtx, target: str) -> Optional[str]:
-    """The class two actions must share to count as interchangeable (V6, W3b).
-
-    The taxonomy class, refined where the class alone would pair parts nobody
-    would swap: a screw by its ``role`` (a PSU screw is not a cooler screw), a
-    ``cpu_cooler`` by its ``kind`` (the fan is not the heatsink) and a
-    connector by its ``kind`` (the front-panel loom is not the ATX plug). Four
-    unordered cooler screws all answer ``screw.cpu_cooler``.
-    """
-    cls = target_class(ctx, target)
-    if cls is None:
-        return None
-    rec = ctx.instances.get(target)
-    if rec is None:
-        return cls
-    if cls == "screw" and rec.attrs.get("role"):
-        return f"screw.{rec.attrs['role']}"
-    if cls in ("cpu_cooler", "connector") and rec.attrs.get("kind"):
-        return f"{cls}.{rec.attrs['kind']}"
-    return cls
 
 
 def unordered_group(ctx: DesktopCtx, target: str) -> Optional[str]:
