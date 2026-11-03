@@ -141,6 +141,13 @@ ALL_TASKS = ("V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V10", "V12", "V14"
 #: asked from frames where the CPU sub-plan is under way) joins the set.
 TASKS = tuple(t for t in ALL_TASKS if t != "V5")
 
+#: The redesign of 2026-11-03 (owner): the action tasks show one moment from all four views and live in the
+#: `multi` export unit; the per-view units keep single-view perception and V15.
+ACTION_TASKS = ("V3", "V4", "V6", "V7", "V10", "V12", "V16")
+PERCEPTION_TASKS_SINGLE = ("V1", "V2", "V8", "V14", "V15")
+#: The export unit whose records show every view of a moment.
+MULTI_VIEW = "multi"
+
 #: Tasks whose answer is read off the compiled truth table of one view.
 PERCEPTION_TASKS = frozenset({"V1", "V2", "V8", "V12", "V14", "V15"})
 #: Tasks whose answer is the step log, the state machine and the graph.
@@ -438,6 +445,9 @@ class TaskCtx:
     steps: list[int]
     #: view -> {step -> FrameData}; only filled when V15 is wanted.
     others: dict[str, dict[int, FrameData]] = field(default_factory=dict)
+    #: side view -> {step -> FrameData} for the ``multi`` unit: the frames shown beside the scanner's (oak1, oak2,
+    #: rs). Empty in a per-view unit.
+    side_frames: dict[str, dict[int, FrameData]] = field(default_factory=dict)
     #: step -> the edges a logged action of that step broke (spec 7.4).
     illegal: dict[int, list[str]] = field(default_factory=dict)
     #: why this desktop's graph-derived tasks are refused, or ``None`` (C2).
@@ -455,6 +465,17 @@ class TaskCtx:
     _first_app: Optional[dict] = field(default=None, repr=False)
     _verbs: Optional[frozenset] = field(default=None, repr=False)
     _v7_plan0: dict = field(default_factory=dict, repr=False)
+
+    def moment(self, step: int) -> list[FrameData]:
+        """The frames of one step to show together: this unit's own frame first, then the side views' frames
+        in VIEWS order, each only where that camera has a picture of the step."""
+        own = self.frames.get(step)
+        out = [own] if own is not None else []
+        for view in VIEWS:
+            frame = (self.side_frames.get(view) or {}).get(step)
+            if frame is not None:
+                out.append(frame)
+        return out
 
     # -- shorthand ---------------------------------------------------------- #
     @property
