@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Submit every model x variant of the full evaluation (each an array over the four views).
-#   PACK=$SCRATCH/vlmpack_2026-11-05 bash submit_matrix.sh
+#   PACK=$SCRATCH/vlmpack_2026-11-02 bash submit_matrix.sh
 # Edit the two lists; MODEL_TAG defaults to the model id with / -> _.
 set -euo pipefail
 : "${PACK:?set PACK}"
@@ -15,7 +15,12 @@ CLOSED_MODELS=(
   # "<api model name 1>"
   # "<api model name 2>"
 )
-VARIANTS=(image blind)
+VARIANTS=(image blind)          # overlay is meaningful for the scan view only (HANDOFF.md section 8.5)
+# the closed models' repeat subset is not shipped: draw it first (HANDOFF.md section 8.5) and point REPEAT_IDS at it
+REPEAT_IDS="${REPEAT_IDS:-$PACK/eval_v1/repeat.ids.txt}"
+if [[ ${#CLOSED_MODELS[@]} -gt 0 && ! -f "$REPEAT_IDS" ]]; then
+  echo "no repeat subset at $REPEAT_IDS: draw it first (HANDOFF.md section 8.5), then REPEAT_IDS=<file>" >&2; exit 2
+fi
 
 for v in "${VARIANTS[@]}"; do
   for m in "${OPEN_MODELS[@]}"; do
@@ -27,6 +32,6 @@ for v in "${VARIANTS[@]}"; do
 done
 # the closed models' repeat subset, image variant only
 for m in "${CLOSED_MODELS[@]}"; do
-  sbatch --export=ALL,PACK="$PACK",MODEL="$m",VARIANT=image,REPEAT=3,SUBSET="$PACK/eval_v1/repeat.ids.txt",MODEL_TAG="${m//\//_}_repeat" \
+  sbatch --export=ALL,PACK="$PACK",MODEL="$m",VARIANT=image,REPEAT=3,SUBSET="$REPEAT_IDS",MODEL_TAG="${m//\//_}_repeat" \
     "$HERE/closed_model.sbatch"
 done

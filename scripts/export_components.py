@@ -56,7 +56,6 @@ for p in (REPO, REPO / "scripts"):
 import numpy as np  # noqa: E402
 
 from export_scanpack import (  # noqa: E402
-    CLASS_EN,
     LICENSE_NOTE,
     PackError,
     _class_line,
@@ -275,7 +274,7 @@ def readme_text(s: dict) -> str:
     classes = Counter()
     for k, n in s["annotations_by_class"].items():
         classes[k.split(":", 1)[1]] += n
-    cls_line = ", ".join(f"{CLASS_EN.get(c, c)} {n}" for c, n in classes.most_common())
+    cls_line = ", ".join(f"`{c}` {n}" for c, n in classes.most_common())
     return f"""\
 # E3D components gallery (pre-release)
 

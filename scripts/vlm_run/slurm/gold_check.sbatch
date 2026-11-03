@@ -1,6 +1,6 @@
 #!/bin/bash
 # Gold self-check of the pack on the cluster: no model, no GPU; every task must score 1.000.
-#   sbatch --export=ALL,PACK=$SCRATCH/vlmpack_2026-11-05 gold_check.sbatch
+#   sbatch --export=ALL,PACK=$SCRATCH/vlmpack_2026-11-02 gold_check.sbatch
 #SBATCH --job-name=vlm_gold
 #SBATCH --time=00:30:00
 #SBATCH --ntasks=1

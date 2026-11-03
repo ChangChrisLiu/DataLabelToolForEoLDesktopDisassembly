@@ -2,7 +2,7 @@
 
 ``python vlm_run.py --backend openai|vllm|transformers|gold --chat <chat.jsonl>
 --out <pred.jsonl> [--model <id>] [--image-root <dir>] [--max-side N]
-[--max-tokens 512] [--repeat k] [--limit n] [--ids <file>] [--dry-run] ...``
+[--max-tokens 2048] [--repeat k] [--limit n] [--ids <file>] [--dry-run] ...``
 
 Input: the chat JSONL of ``vlm_to_chat.py`` in any of its three formats
 (``openai`` / ``qwen`` messages, ``internvl`` conversations); the images it
@@ -68,7 +68,7 @@ HERE = Path(__file__).resolve().parent
 _SEARCH = [HERE, HERE.parent, HERE.parent.parent]
 
 BACKENDS = ("openai", "vllm", "transformers", "gold")
-DEFAULT_MAX_TOKENS = 512
+DEFAULT_MAX_TOKENS = 2048  # V1 lists every visible part: 512 cut correct answers short
 RETRY_STATUS = (408, 409, 425, 429, 500, 502, 503, 504)
 REDACTED = "***"
 

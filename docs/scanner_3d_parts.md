@@ -15,7 +15,7 @@ script that does the selection.
    - `clean`（2 801 个）：在 `best_frame` 这一帧上它完全没被挡，掩码下的点就是扫描仪看到的它的全部表面——**直接用**；
    - `diff`（270 个）：它从没完全露出来过（散热器在风扇下面、主板在所有东西下面……），就用拆卸顺序：它在第 r 步离开，
      取第 r−1 帧重建里有、第 r 帧里没有（或移动了）、且落在它第 r−1 帧完整轮廓（amodal）里的点；
-   - `visible`（110 个）：既没露全、也没有同位姿的离开前后两帧（机箱本身从不离开、换过相机位姿的台），只能取可见部分；
+   - `visible`（110 个）：既没露全、也没有同位姿的离开前后两帧（机箱本身从不离开 58 个、一直半挡着的接头 40 个、离开时换过相机位姿的零件等），只能取可见部分；
    - `none`（34 个）：每一帧都被完全挡住（全是看不见的接头），没有点。
 3. **脚本** `tools/parts3d.py`（只要 numpy + Pillow）：`plan` 生成计划表，`where` 给出原图路径（可下载），
    `extract` 按标签图从有组织点云取点并输出每个零件一个 PLY，`diff` 按拆卸顺序做差。
@@ -86,7 +86,7 @@ shape 1600 × 1600 × 3 (or × 6), NaN where there is no point — i.e. the poin
 |---|---|---|
 | **clean** | 2 801 | On `best_frame` nothing covers the part (`clean: true`: visible mask = whole outline, label `visible`, inside the ROI, no shared pixels). Its points there are all of it the scanner saw. `best_frame` is the clean frame with the most pixels. |
 | **diff** | 270 | Never fully uncovered — heatsinks under fans (71), motherboards under everything (60), drive cages, covers, RAM under shrouds, screws under covers. Take the points that disappear when it leaves: present on `before_frame` inside its amodal outline there, gone (or moved by more than a tolerance) on `after_frame`. Needs `same_pose_segment = true`. |
-| **visible** | 110 | Never uncovered and no same-pose leaving pair: the chassis (58 — it never leaves), parts on D48 / D63 / D64 whose leaving crosses a camera-pose change, connectors that stay hidden. Take the visible pixels of `best_frame` (the frame where most of it shows): a partial surface. |
+| **visible** | 110 | Never uncovered and no same-pose leaving pair: the chassis (58 — it never leaves), connectors that stay partly hidden (40), and a few motherboards, cable clips, covers and a RAM latch whose leaving crosses a camera-pose change or is never seen uncovered (12). Take the visible pixels of `best_frame` (the frame where most of it shows): a partial surface. |
 | **none** | 34 | Covered on every frame (connectors behind the drive cage or under cables). No points from this view. |
 
 Per class (all 66 desktops):
@@ -134,8 +134,8 @@ pts = pts[np.isfinite(pts).all(axis=1)]                         # the part's poi
 ```
 
 The label map gives every pixel to at most one part; it equals the union of the confirmed visible masks
-(`segmentation` in `annotations.json`) everywhere except 3 frames of D02 that keep a small hand-drawn overlap (the label
-map then gives the pixel to the part higher in the layer order).
+(`segmentation` in `annotations.json`) everywhere except 3 frames (2 of D02, 1 of D17; 58 517 px in all) where masks corrected on that frame only overlap
+(the label map then gives the pixel to the part higher in the layer order).
 
 ## 5. Route 2 / diff: the points that disappear when the part leaves
 
@@ -170,7 +170,7 @@ keeps the pixels that have a point on `before_frame` and on `after_frame` either
 - **Fully covered on a frame** (`iscrowd: 1`, empty `segmentation`, `area` 0): present but invisible; no points there.
 - **Unplugged connectors are not drawn** — from the step a connector is unplugged it has no mask. A connector hidden by
   cables carries `visibility = occluded_full` with `attributes.occluder = "cable"`.
-- **Optical drives that never leave their bracket** (HP SFF D22–D33, Dell D38–D41) are one instance `drive_cage` with
+- **Optical drives that never leave their bracket** (24 desktops: D22–D33, D38–D41, D54–D57, D59–D61, D65) are one instance `drive_cage` with
   `attrs.of = "optical"` — the drive and its bracket together; `optical_drive` is used where the drive is removed on its
   own. The two drive-end plugs on D23–D27 (`connector.sata_data.01`, `connector.sata_power.01`) ride on that bracket.
 - **`screw_hole`** (35 parts, 7 desktops) is the hole a removed fan screw leaves — a detection class, not a part; skip it

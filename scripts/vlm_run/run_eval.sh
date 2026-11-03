@@ -4,7 +4,7 @@
 # Everything is an environment variable so the same file serves the Slurm
 # templates, an interactive node and a laptop:
 #
-#   PACK        the vlmpack copy (required)              e.g. $SCRATCH/vlmpack_2026-11-05
+#   PACK        the vlmpack copy (required)              e.g. $SCRATCH/vlmpack_2026-11-02
 #   VIEW        scan | oak1 | oak2 | rs (required)
 #   BACKEND     gold | openai | vllm | transformers      (default vllm)
 #   MODEL       model id: HF id / local path / API name  (required unless gold)
@@ -22,7 +22,7 @@
 #   CHAT_FORMAT openai | qwen | internvl                 (default openai -- vlm_run reads all three)
 #   ROI         none | view                              (default none)
 #   MAX_SIDE    longest image side sent, pixels          (default: unchanged)
-#   MAX_TOKENS  completion budget                        (default 512)
+#   MAX_TOKENS  completion budget                        (default 2048: V1 answers run to ~1k tokens)
 #   REPEAT      k answers per question                   (default 1; 3 for the closed-model repeat subset)
 #   API_KEY_ENV / BASE_URL   openai backend: the NAME of the key variable, and the endpoint
 #   RUN_ARGS    anything else for vlm_run.py             (e.g. "--tensor-parallel 2 --dtype bf16")
@@ -46,7 +46,7 @@ TOOLS="${TOOLS:-$PACK/tools}"
 IMAGE_ROOT="${IMAGE_ROOT:-$PACK/images}"
 CHAT_FORMAT="${CHAT_FORMAT:-openai}"
 ROI="${ROI:-none}"
-MAX_TOKENS="${MAX_TOKENS:-512}"
+MAX_TOKENS="${MAX_TOKENS:-2048}"
 REPEAT="${REPEAT:-1}"
 PYTHON="${PYTHON:-python}"
 RUN_ARGS="${RUN_ARGS:-}"

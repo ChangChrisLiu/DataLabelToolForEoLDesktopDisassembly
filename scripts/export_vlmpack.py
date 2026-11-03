@@ -862,7 +862,7 @@ def _known_issues(summary: dict) -> str:
     bracket = comp["optical_bracket_desktops"]
     if bracket:
         items.append(
-            f"**The HP optical-drive bracket.** On {len(bracket)} desktops (D"
+            f"**The optical-drive bracket.** On {len(bracket)} desktops (D"
             + ", D".join(f"{d:02d}" for d in bracket) + ") the bracket the optical drive "
             "sits in is annotated as class `drive_cage` with `attrs.of = \"optical\"` (the "
             "oracle's `instances[key].attrs.of`). The questions call it **\"Drive cage N\"** "
@@ -996,7 +996,8 @@ def _references_text(summary: dict) -> str:
 
 def readme_text(summary: dict) -> str:
     views = summary["views"]
-    n_desktops = len(summary["desktops"])
+    # D00 is an empty placeholder desktop (no graph, no frames): not counted
+    n_desktops = len([d for d in summary["desktops"] if int(d) != 0])
     n_records = sum(s["records"] for s in summary["exports"].values())
     ev = summary["eval"]
     images_line = {
@@ -1121,7 +1122,7 @@ and the label side carries desktop, step and view. Show a model `prompt` only.
 * `label.answer` -- the structured truth (per task, see *Answer formats*).
 * `label.answer_check` -- how the checker re-derives and grades the answer
   (type, fields, metric, the eligible set for V6, the plan for V16, ...).
-  `scripts/vlm_score.py` implements it; nothing here is shown to a model.
+  `tools/vlm_score.py` implements it; nothing here is shown to a model.
 * `label.evidence` / `label.rationale` -- boxes of the parts the answer rests
   on and the reasoning chain (`observe` / `recall_relation` /
   `check_precondition` / ... steps); label side only.
@@ -1259,7 +1260,7 @@ the truth is an item for the audit, not a correction.
 
 ### Text-only shortcut upper bounds (full export, in-sample)
 
-The best of four prompt-only classifiers (majority, verb, class, verb + class,
+The best of five prompt-only classifiers (majority, verb, class, verb + class,
 template) per task, from `summary.json`; a model below these has read nothing
 from the picture. On the unconfirmed views V3 / V4 are high because only large
 parts are asked there. The scorer prints it as *text-only upper bound
