@@ -14,7 +14,7 @@
 | 文件 | 作用 |
 |---|---|
 | `vlm_run.py` | 调模型：`openai`（任何 OpenAI 兼容端点）/ `vllm`（离线）/ `transformers`（回退）/ `gold`（伪模型，从标签作答） |
-| `vlm_collect.py` | `subset`（按 id 取子集并带上 sidecar）/ `blind`（去图像变体）/ `split`（拆 `--repeat` 文件）/ `table`（汇总分数表） |
+| `vlm_collect.py` | `subset`（按 id 取子集并带上 sidecar）/ `blind`（去图像变体）/ `split`（拆 `--repeat` 文件，本项目不用）/ `table`（汇总分数表） |
 | `run_eval.sh` | 一个作业：子集 → 变体 → `vlm_to_chat` → `vlm_run` → `vlm_score`，全靠环境变量 |
 | `collect_scores.sh` | 把 `runs/` 下所有 `*.score.json` 汇成 `runs/score.md` |
 | `slurm/gold_check.sbatch` | 集群上的 gold 自检（CPU，array 四个视角） |
@@ -24,11 +24,13 @@
 | `requirements.txt` / `requirements-vllm.txt` | 环境（见 §2） |
 
 输出目录固定为 `runs/<model_tag>/<variant>/<view>/`：`truth/`（本次跑的记录 + sidecar）、`chat.jsonl`、`pred.jsonl`、
-`run.log`、`score/<model_tag>.score.{json,md}`（重复跑另有 `pred.r1..rk.jsonl` 与 `<model_tag>.r1..rk.score.*`）。
+`run.log`、`score/<model_tag>.score.{json,md}`（重复跑另有 `pred.r1..rk.jsonl` 与 `<model_tag>.r1..rk.score.*`；本项目不做重复跑）。
 
 ---
 
 ## 1. 拷包
+
+推荐照 `HANDOFF.md` §8.1 从 HF 下载（`$PACK=$SCRATCH/e3d/vlm/vlmpack_2026-11-02`）；从工作站直接拷也行：
 
 ```bash
 # 工作站 → HPRC（Grace 用 grace.hprc.tamu.edu；大包走数据传输节点或 Globus）
