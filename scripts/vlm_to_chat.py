@@ -33,6 +33,13 @@ in the text; a ``blind`` or ``protocol_prior`` one has no image at all.
 
 Crops and composites are written under ``--assets`` (required for them); the
 source images are only read.
+
+**Marks** (spec 3.5): every ``prompt.marks`` box ``{"image", "bbox", "tag"}`` is
+drawn on its image -- red ``#ff1744``, ``max(3, round(3 * w / 1600))`` px just
+outside the box, the tag in a filled label at its top-left -- on an in-memory
+copy, after the same crop and scale as the picture (the pack's frame is never
+drawn on). The marked copy goes to ``--assets``, or without it to
+``<out dir>/<out stem>_marked/``.
 """
 from __future__ import annotations
 
@@ -79,13 +86,80 @@ def user_text(record: dict) -> str:
     return "\n\n".join(parts)
 
 
-class Images:
-    """Reads, crops, scales and composites frames; writes what it made to ``assets``."""
+#: The colour of a mark (``prompt.marks``) on the image a model is shown.
+MARK_RGB = (0xFF, 0x17, 0x44)  # "#ff1744"
+#: The text on a mark's tag label.
+MARK_TEXT_RGB = (255, 255, 255)
 
-    def __init__(self, root: Optional[str], assets: Optional[str], max_side: Optional[int]):
+
+def mark_width(width: int) -> int:
+    """Outline width of a mark on an image ``width`` px wide (3 px at 1600 px, never thinner)."""
+    return max(3, round(3 * width / 1600))
+
+
+def _font(size: int):
+    from PIL import ImageFont
+
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:  # Pillow < 10.1: the fixed bitmap font
+        return ImageFont.load_default()
+
+
+def draw_marks(img, marks, crop=(0, 0), scale: float = 1.0):
+    """Draw ``marks`` (native ``[x, y, w, h]`` boxes) on ``img`` -- already cropped by ``crop``
+    and scaled by ``scale``, so each box gets the same transform as the picture. ``img`` is
+    changed in place (the caller passes its in-memory copy, never the pack's file).
+
+    The outline runs just **outside** the box (the part itself is not painted over); the tag
+    sits in a filled label at the box's top-left, above the box where there is room.
+    """
+    from PIL import ImageDraw
+
+    if not marks:
+        return img
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    W, H = img.size
+    lw = mark_width(W)
+    font = _font(max(14, round(24 * W / 1600)))
+    draw = ImageDraw.Draw(img)
+    for m in marks:
+        x, y, w, h = (float(v) for v in m["bbox"])
+        x0, y0 = (x - crop[0]) * scale, (y - crop[1]) * scale
+        x1, y1 = (x + w - crop[0]) * scale, (y + h - crop[1]) * scale
+        if x1 <= 0 or y1 <= 0 or x0 >= W or y0 >= H:
+            continue  # outside the crop: nothing of it is shown
+        ox0, oy0 = round(x0) - lw, round(y0) - lw
+        ox1, oy1 = round(x1) + lw - 1, round(y1) + lw - 1
+        draw.rectangle((max(0, ox0), max(0, oy0), min(W - 1, ox1), min(H - 1, oy1)),
+                       outline=MARK_RGB, width=lw)
+        tag = str(m.get("tag") or "")
+        if not tag:
+            continue
+        left, top, right, bottom = draw.textbbox((0, 0), tag, font=font)
+        pad = max(2, lw)
+        tw, th = right - left + 2 * pad, bottom - top + 2 * pad
+        lx = min(max(0, ox0), max(0, W - tw))
+        ly = oy0 - th if oy0 - th >= 0 else max(0, oy0)
+        draw.rectangle((lx, ly, lx + tw - 1, ly + th - 1), fill=MARK_RGB)
+        draw.text((lx + pad - left, ly + pad - top), tag, fill=MARK_TEXT_RGB, font=font)
+    return img
+
+
+class Images:
+    """Reads, crops, scales, marks and composites frames; writes what it made to ``assets``.
+
+    ``marked_dir`` is where marked copies go when no ``assets`` directory was given (the CLI
+    puts them beside its output); the pack's frames are only ever read.
+    """
+
+    def __init__(self, root: Optional[str], assets: Optional[str], max_side: Optional[int],
+                 marked_dir: Optional[str] = None):
         self.root = Path(root) if root else None
         self.assets = Path(assets) if assets else None
         self.max_side = max_side
+        self.marked_dir = Path(marked_dir) if marked_dir else None
 
     def source(self, rel: str) -> Path:
         return (self.root / rel) if self.root else Path(rel)
@@ -96,9 +170,21 @@ class Images:
         self.assets.mkdir(parents=True, exist_ok=True)
         return self.assets
 
-    def prepare(self, rel: str, box) -> tuple[Path, dict]:
-        """The file to show, and ``{"crop": [x0, y0], "scale": s}``."""
-        if box is None and not self.max_side:
+    def _marks_out(self) -> Path:
+        out = self.assets or self.marked_dir
+        if out is None:
+            raise SystemExit("a record with prompt.marks needs --assets (where its marked copy "
+                             "goes; the pack's frame is never drawn on)")
+        out.mkdir(parents=True, exist_ok=True)
+        return out
+
+    def prepare(self, rel: str, box, marks=None) -> tuple[Path, dict]:
+        """The file to show, and ``{"crop": [x0, y0], "scale": s}``.
+
+        ``marks`` (``[{"bbox", "tag"}]`` of this image) are drawn on the in-memory copy after
+        the crop and the scale, with the same offset and factor as the picture.
+        """
+        if box is None and not self.max_side and not marks:
             return self.source(rel), {"crop": [0, 0], "scale": 1.0}
         from PIL import Image
 
@@ -118,8 +204,14 @@ class Images:
             scale = self.max_side / max(img.size)
             img = img.resize((max(1, round(img.size[0] * scale)),
                               max(1, round(img.size[1] * scale))))
-        tag = hashlib.sha256(f"{rel}|{box}|{self.max_side}".encode()).hexdigest()[:16]
-        out = self._need_assets() / f"crop_{tag}.png"
+        if marks:
+            img = draw_marks(img.copy(), marks, (x0, y0), scale)
+            spec = [(m.get("tag"), [float(v) for v in m["bbox"]]) for m in marks]
+            tag = hashlib.sha256(f"{rel}|{box}|{self.max_side}|{spec}".encode()).hexdigest()[:16]
+            out = self._marks_out() / f"mark_{tag}.png"
+        else:
+            tag = hashlib.sha256(f"{rel}|{box}|{self.max_side}".encode()).hexdigest()[:16]
+            out = self._need_assets() / f"crop_{tag}.png"
         if not out.exists():
             img.save(out)
         return out, {"crop": [x0, y0], "scale": scale}
@@ -165,10 +257,12 @@ def convert(record: dict, manifest: dict, images: Images, fmt: str, *,
                          f"from a record's evidence would show its answer")
     shown: list[Path] = []
     transforms: list[dict] = []
-    for image_id in record["prompt"].get("images") or []:
+    marks = record["prompt"].get("marks") or []
+    for index, image_id in enumerate(record["prompt"].get("images") or []):
         entry = manifest[image_id]
         box = tuple(entry["roi"]) if roi == "view" and entry.get("roi") else None
-        path, transform = images.prepare(entry["path"], box)
+        mine = [m for m in marks if int(m.get("image", 0)) == index]
+        path, transform = images.prepare(entry["path"], box, mine)
         shown.append(path)
         transforms.append(transform)
     if composite and len(shown) > 1:
@@ -238,7 +332,9 @@ def main(argv=None) -> int:
     if args.ids:
         keep = {line.strip() for line in Path(args.ids).read_text(encoding="utf-8").splitlines()
                 if line.strip()}
-    images = Images(args.image_root, args.assets, args.max_side)
+    out = Path(args.out)
+    images = Images(args.image_root, args.assets, args.max_side,
+                    marked_dir=str(out.parent / f"{out.stem}_marked"))
     rows = (convert(r, manifest, images, args.format, roi=args.roi,
                     composite=args.composite, inline=args.base64)
             for r in records if keep is None or r["id"] in keep)
