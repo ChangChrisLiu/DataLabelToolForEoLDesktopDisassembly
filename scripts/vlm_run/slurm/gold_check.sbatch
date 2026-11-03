@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
-#SBATCH --array=0-3
+#SBATCH --array=0-4
 #SBATCH --output=logs/%x_%A_%a.out
 # TODO(hprc): the cluster's CPU partition if the default is not it, e.g.
 ##SBATCH --partition=cpu
@@ -17,7 +17,9 @@ set -euo pipefail
 # module load GCCcore/13.3.0 Python/3.12.3
 source "${VENV:-$SCRATCH/venvs/vlmpack}/bin/activate"
 
-VIEWS=(scan oak1 oak2 rs)
+# the five export units: the camera views (perception) and multi (the action tasks);
+# submit_matrix.sh passes VIEW_LIST (and a matching --array) to run a subset of them
+read -r -a VIEWS <<< "${VIEW_LIST:-scan oak1 oak2 rs multi}"
 export PACK="${PACK:?set PACK}"
 export VIEW="${VIEWS[$SLURM_ARRAY_TASK_ID]}"
 export BACKEND=gold
