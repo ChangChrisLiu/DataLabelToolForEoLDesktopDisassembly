@@ -177,6 +177,63 @@ def test_a_plan_through_the_lever_or_without_the_cooler_is_wrong(scene):
     assert g.score == 1.0
 
 
+GROUP = f"screw.cpu_cooler@{W.COOLER}"
+
+
+def _grouped(world: World, record: dict) -> tuple[World, dict]:
+    """The scene in the redesign's contract: the four cooler screws are one
+    group, and the plan unscrews them in one group action (spec 3.1)."""
+    import copy
+
+    instances = {k: dict(v, group=GROUP if k in W.SCREWS else None)
+                 for k, v in world.instances.items()}
+    groups = {GROUP: {"members": list(W.SCREWS), "match_class": "screw.cpu_cooler",
+                      "anchor": W.COOLER, "label": "CPU cooler screws"}}
+    out = copy.deepcopy(record)
+
+    def collapse(items):
+        rows = []
+        for item in items:
+            item = dict(item, target=GROUP if item["target"] in W.SCREWS else item["target"])
+            if not rows or rows[-1] != item:
+                rows.append(item)
+        return rows
+
+    check = out["label"]["answer_check"]
+    for name in ("reference_shortest", "demonstrated_remainder"):
+        check[name] = collapse(check[name])
+    out["label"]["answer"]["plan"] = collapse(out["label"]["answer"]["plan"])
+    check["required_actions"] = [r for r in check["required_actions"]
+                                 if r["target"] not in W.SCREWS] + [
+        {"target": GROUP, "states": ["loosened", "removed"], "via": [], "pixel_only": False}]
+    return World(world.desktop, instances, world.edges, world.log, groups), out
+
+
+def test_v7_group_plan_on_the_scene(scene):
+    db, tax, tmp = scene
+    _, records, out = _export(db, tax, tmp)
+    world = _world(out)
+    for step in (2, 5):
+        grouped, r = _grouped(world, next(r for r in _v7(records) if r["label"]["step"] == step))
+        assert sum(a["target"] == GROUP for a in r["label"]["answer"]["plan"]) == 1
+        g = grade(r, gold_reply(r, grouped), grouped, tax)
+        assert g.score == 1.0 and g.metrics["violation_free"], (step, g.metrics)
+        assert "CPU cooler screws" in gold_reply(r, grouped)
+        # in words, the screws once: every remaining member is unscrewed
+        plan = [{"verb": "unscrew", "target": "the cooler screws"},
+                {"verb": "remove", "target": "the optical drive"},
+                {"verb": "remove", "target": "the CPU cooler"},
+                {"verb": "open", "target": "the CPU socket lever"},
+                {"verb": "remove", "target": "the CPU"}]
+        if step == 2:
+            plan.insert(0, {"verb": "disconnect", "target": "the fan connector"})
+        g = grade(r, json.dumps({"plan": plan}), grouped, tax)
+        assert g.score == 1.0 and g.metrics["noop_steps"] == 0, (step, g.metrics)
+        # the cooler before its screws: a violation
+        g = grade(r, json.dumps({"plan": plan[-3:]}), grouped, tax)
+        assert g.metrics["violations"] >= 1 and g.score == 0.0
+
+
 def test_unnamed_screws_ground_to_the_screws_still_in(scene):
     """"Unscrew a CPU cooler screw" four times is four screws, group-equivalently."""
     db, tax, tmp = scene

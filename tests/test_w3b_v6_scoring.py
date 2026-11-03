@@ -166,3 +166,24 @@ def test_the_scorer_leaves_undefined_frames_out_of_the_blocked_rate(exported, tm
     assert result["headline"]["v6_mc"]["n"] == len(_v6(records, form="mc"))
     assert result["strict"]["by_layer"]["L3"]["n"] == sum(
         1 for r in records if r["prompt"]["task"] in ("V7", "V16")) + len(v6)
+
+
+def test_a_world_with_groups_grades_the_group_and_its_members(exported):
+    """The redesign's contract (spec 3.1, 6.1): the screws are one group in the
+    oracle; a group answer, a remaining member and the class are all the same
+    answer, and a blocked action needs no ordinal to count as blocked."""
+    db, tax, records, out, _ = exported
+    plain = _world(out)
+    gid = f"screw.cpu_cooler@{W.COOLER}"
+    world = World(plain.desktop, {k: dict(v, group=gid if k in W.SCREWS else None)
+                                  for k, v in plain.instances.items()}, plain.edges, plain.log,
+                  {gid: {"members": list(W.SCREWS), "match_class": "screw.cpu_cooler",
+                         "anchor": W.COOLER, "label": "CPU cooler screws"}})
+    [r] = _v6(records, step=3)
+    for name in ("the CPU cooler screws", "a cooler screw", "CPU cooler screw 3"):
+        g = grade(r, json.dumps({"verb": "unscrew", "target": name}), world, tax)
+        assert g.score == 1.0 and g.metrics["group_match"], name
+    g = grade(r, json.dumps({"verb": "remove", "target": "the CPU"}), world, tax)
+    assert g.score == 0.0 and g.metrics["blocked"] is True
+    for r in _v6(records, form=None):
+        assert grade(r, gold_reply(r, world), world, tax).score == 1.0

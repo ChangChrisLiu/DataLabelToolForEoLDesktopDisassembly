@@ -177,3 +177,298 @@ def test_two_groups_one_class_graded_by_count(world):
     # a third names no third group of the class: a repeat, not a new action
     assert thrice.score == 1.0
     assert twice.metrics["bin_correct"] is True
+
+
+# --------------------------------------------------------------------------- #
+# B2: the task grades
+# --------------------------------------------------------------------------- #
+def _v4(verb, target, blockers) -> dict:
+    return _record("V4", {"feasible": not blockers, "blockers": list(blockers),
+                          "reason": "violates_edge" if blockers else None},
+                   {"type": "feasibility", "verb": verb, "target": target,
+                    "metric": "per_verb_accuracy_macro"},
+                   truth_source="graph_blocked" if blockers else "demonstrated",
+                   **({"negative": "graph_blocked"} if blockers else {}))
+
+
+def _blockers(record, world, *names, feasible=False):
+    g = grade(record, _reply(feasible=feasible, blockers=list(names)), world)
+    return g.metrics.get("blockers_f1"), g.score
+
+
+def test_v4_group_blockers_f1(world):
+    fan = _v4("remove", COOLER, [G_SCREWS, FAN])
+    assert _blockers(fan, world, "the CPU cooler screws", "the fan connector") == (1.0, 1.0)
+    assert _blockers(fan, world, "fan connector", "a cooler screw") == (1.0, 1.0)
+    # a member named exactly is its group's requirement
+    assert _blockers(fan, world, "CPU cooler screw 2", "Fan connector 1") == (1.0, 1.0)
+    assert _blockers(fan, world, "the cooler screws")[0] == pytest.approx(2 / 3)
+    # a part that is no blocker costs precision, whether named by class or exactly
+    assert _blockers(fan, world, "the cooler screws", "the fan connector",
+                     "the CPU")[0] == pytest.approx(0.8)
+    assert _blockers(fan, world, "the cooler screws", "the fan connector",
+                     "CPU 1")[0] == pytest.approx(0.8)
+    # words that name no part are no credit and no cost
+    assert _blockers(fan, world, "the cooler screws", "the fan connector",
+                     "the flux capacitor")[0] == 1.0
+    assert _blockers(fan, world, feasible=True) == (0.0, 0.0)
+    # two latch groups of one class: the count is what is compared
+    rams = _v4("remove", G_RAMS, list(G_LATCH.values()))
+    assert _blockers(rams, world, "the RAM latches")[0] == pytest.approx(2 / 3)
+    assert _blockers(rams, world, "the RAM latches", "the RAM latches")[0] == 1.0
+    # the old shape grades as it always did: one screw of four named
+    old = World.from_oracle(oracle_line(groups=False))
+    keyed = _v4("remove", COOLER, [*SCREWS, FAN])
+    assert _blockers(keyed, old, "a CPU cooler screw", "a CPU cooler screw")[0] == \
+        pytest.approx(2 * 0.2 / 1.2)
+    assert _blockers(keyed, old, "the CPU", *[f"CPU cooler screw {i}" for i in range(1, 5)],
+                     "fan connector")[0] == 1.0
+
+
+def _start_state(world, tax) -> dict:
+    return {k: tax.default_state(inst["class"]) for k, inst in world.instances.items()}
+
+
+PLAN = [("disconnect", FAN), ("unscrew", G_SCREWS), ("remove", COOLER), ("open", LEVER),
+        ("remove", CPU)]
+
+
+def _v7(world, tax) -> dict:
+    plan = [{"verb": v, "target": t} for v, t in PLAN]
+    return _record("V7", {"plan": plan, "goal": CPU},
+                   {"type": "goal_plan", "goal": CPU, "goal_state": "removed",
+                    "start_state": _start_state(world, tax), "plan_length": len(plan),
+                    "reference_shortest": plan, "demonstrated_remainder": plan,
+                    "required_actions": [
+                        {"target": CPU, "states": ["removed"]},
+                        {"target": COOLER, "states": ["displaced", "open", "removed", "unplugged"]},
+                        {"target": LEVER, "states": ["open"]},
+                        {"target": G_SCREWS, "states": ["loosened", "removed"]}],
+                    "metric": "violation_free+required_recall+goal_reached",
+                    "any_legal_plan_scores": True, "redundancy_penalty": False})
+
+
+def _plan(*steps) -> str:
+    return _reply(plan=[{"verb": v, "target": t} for v, t in steps])
+
+
+def test_v7_group_plan_violation_free(world, tax):
+    r = _v7(world, tax)
+    words = [("disconnect", "the fan connector"), ("unscrew", "the CPU cooler screws"),
+             ("remove", "the CPU cooler"), ("open", "the CPU socket lever"), ("remove", "the CPU")]
+    g = grade(r, _plan(*words), world, tax)
+    assert g.score == 1.0 and g.metrics["violation_free"] and g.metrics["required_recall"] == 1.0
+    # one group action unscrews every member, however it is worded
+    for name in ("a CPU cooler screw", "cooler screws", "CPU cooler screw 4"):
+        steps = list(words)
+        steps[1] = ("unscrew", name)
+        assert grade(r, _plan(*steps), world, tax).score == 1.0, name
+    # said again, the group action changes nothing: a no-op, no penalty
+    g = grade(r, _plan(words[0], words[1], words[1], *words[2:]), world, tax)
+    assert g.score == 1.0 and g.metrics["noop_steps"] == 1
+    # without the screws the cooler cannot come off: a violation at step 2
+    g = grade(r, _plan(words[0], *words[2:]), world, tax)
+    assert g.score == 0.0 and g.metrics["violations"] == 1
+    assert g.metrics["first_violation"] == 1 and g.metrics["goal_reached"]
+    # a required group is met only when every member is
+    g = grade(r, _plan(*words[:2]), world, tax)
+    assert g.metrics["required_recall"] == pytest.approx(0.25)
+    assert not g.metrics["goal_reached"] and g.score == 0.0
+
+
+def test_v10_started_set(world):
+    r = _v10([("open", G_LATCH[RAMS[0]]), ("disconnect", FAN)],
+             started=[("unscrew", G_SCREWS)])
+    done = [{"verb": "open", "target": "the RAM latches"},
+            {"verb": "disconnect", "target": "the fan connector"}]
+    started = [{"verb": "unscrew", "target": "the CPU cooler screws"}]
+    g = grade(r, _reply(done=done, started=started, progress="0-25"), world)
+    assert g.score == 1.0 and g.metrics["started_f1"] == 1.0
+    # a group only begun is not done: in the done list it is a false positive
+    g = grade(r, _reply(done=done + started, started=[], progress="0-25"), world)
+    assert g.score == pytest.approx(0.8) and g.metrics["started_f1"] == 0.0
+    # started is its own set: a wrong one leaves the done score alone
+    g = grade(r, _reply(done=done, started=[{"verb": "open", "target": "the RAM latches"}],
+                        progress="0-25"), world)
+    assert g.score == 1.0 and g.metrics["started_f1"] == 0.0
+    # nothing started, nothing said: right
+    none = _v10([("disconnect", FAN)])
+    g = grade(none, _reply(done=done[1:], started=[], progress="0-25"), world)
+    assert g.score == 1.0 and g.metrics["started_f1"] == 1.0
+    # an old record (no `started`) has no started metric
+    old = _v10([("disconnect", FAN)])
+    del old["label"]["answer"]["started"]
+    assert "started_f1" not in grade(old, _reply(done=done[1:], progress="0-25"),
+                                     world).metrics
+
+
+def _v3(verb, target, cls, accept=None) -> dict:
+    check = {"type": "exact", "derive": "action_slots",
+             "fields": ["verb", "target_class", "target_instance", "tool"], "visible_only": True}
+    if accept is not None:
+        check["accept_targets"] = list(accept)
+    return _record("V3", {"verb": verb, "target_class": cls, "target_instance": target,
+                          "tool": None}, check)
+
+
+def test_v3_accept_targets(world):
+    r = _v3("remove", COOLER, "cpu_cooler", accept=[COOLER, SHROUD])
+    for name in ("the CPU cooler", "the cover", "Cover 1", SHROUD):
+        g = grade(r, _reply(verb="remove", target=name), world)
+        assert g.score == 1.0 and g.metrics["target_instance"], name
+    assert grade(r, _reply(verb="remove", target="the CPU"), world).score == 0.0
+    assert grade(r, _reply(verb="open", target="the cover"), world).score == 0.0
+    # without accept_targets the attached part is not the answer (the old reading)
+    plain = _v3("remove", COOLER, "cpu_cooler")
+    assert grade(plain, _reply(verb="remove", target="the cover"), world).score == 0.0
+    assert grade(plain, _reply(verb="remove", target="the CPU cooler"), world).score == 1.0
+    # a group target, named in words
+    screws = _v3("unscrew", G_SCREWS, "screw", accept=[G_SCREWS])
+    for name in ("the CPU cooler screws", "a cooler screw", "CPU cooler screw 1"):
+        g = grade(screws, _reply(verb="unscrew", target=name), world)
+        assert g.score == 1.0 and g.metrics["target_instance"], name
+
+
+SCREW_BOXES = [[10, 10, 4, 4], [30, 10, 4, 4], [10, 30, 4, 4], [30, 30, 4, 4]]
+
+
+def _v8_components() -> dict:
+    return _record("V8", {"components": [
+        {"class": "screw", "instance": s, "bbox": b} for s, b in zip(SCREWS, SCREW_BOXES)]},
+        {"type": "components", "class_filter": "screw.cpu_cooler", "field": "components",
+         "box_field": "bbox", "iou_threshold": 0.5, "metric": "set_f1+box_iou",
+         "geometry": "visible_mask_bbox"})
+
+
+def test_v8_components_grade(world):
+    from tda.core.export.vlm_check import format_instruction, format_key
+
+    r = _v8_components()
+    assert format_key(r) == "V8.components"
+    assert '"components"' in format_instruction(r)
+
+    def boxes(*bs, cls=None):
+        return _reply(components=[dict({"bbox": b}, **({"class": cls} if cls else {}))
+                                  for b in bs])
+
+    g = grade(r, boxes(*SCREW_BOXES), world)
+    assert g.score == 1.0 and g.metrics["tp"] == 4
+    # the question names the class: a class word in the answer is not needed, nor read
+    assert grade(r, boxes(*SCREW_BOXES, cls="screw"), world).score == 1.0
+    assert grade(r, boxes(*SCREW_BOXES[:2]), world).score == pytest.approx(2 / 3)
+    assert grade(r, boxes(*SCREW_BOXES, [50, 50, 8, 8]), world).score == pytest.approx(8 / 9)
+    assert grade(r, boxes(), world).score == 0.0
+    # a box answered on a resized image is mapped back
+    half = [[x / 2, y / 2, w / 2, h / 2] for x, y, w, h in SCREW_BOXES]
+    assert grade(r, boxes(*half), world, transform={"scale": 0.5}).score == 1.0
+    # truth outside the class filter is not asked for
+    extra = _v8_components()
+    extra["label"]["answer"]["components"].append(
+        {"class": "connector", "instance": FAN, "bbox": [40, 4, 6, 6]})
+    assert grade(extra, boxes(*SCREW_BOXES), world).score == 1.0
+    # the single-box V8 is unchanged
+    single = _record("V8", {"instance": FAN, "bbox": [40, 4, 6, 6]},
+                     {"type": "boxes", "iou_threshold": 0.5, "metric": "box_iou"})
+    assert format_key(single) == "V8"
+    assert grade(single, _reply(bbox=[40, 4, 6, 6]), world).score == 1.0
+
+
+def test_v6_group_target(world):
+    r = _record("V6", {"verb": "unscrew", "target": G_SCREWS, "target_class": "screw"},
+                {"type": "next_action", "reference": ["unscrew", G_SCREWS],
+                 "equivalent_actions": [{"verb": "unscrew", "target": G_SCREWS}],
+                 "match_class": ["unscrew", "screw.cpu_cooler"],
+                 "blocked_actions": [{"verb": "remove", "target": CPU},
+                                     {"verb": "remove", "target": COOLER}],
+                 "blocked_rate_defined": True}, v6_form="open")
+    for name in ("the CPU cooler screws", "a cooler screw", "CPU cooler screw 3"):
+        g = grade(r, _reply(verb="unscrew", target=name), world)
+        assert g.score == 1.0 and g.metrics["group_match"] and g.metrics["exact_match"], name
+    # the words of a blocked action are blocked, without an ordinal
+    g = grade(r, _reply(verb="remove", target="the CPU"), world)
+    assert g.score == 0.0 and g.metrics["blocked"] is True
+    g = grade(r, _reply(verb="disconnect", target="the fan connector"), world)
+    assert g.score == 0.0 and g.metrics["blocked"] is False
+    # equivalent members, no group id in the gold: any remaining member, or the group
+    members = _record("V6", {"verb": "unscrew", "target": SCREWS[1]},
+                      {"type": "next_action", "reference": ["unscrew", SCREWS[1]],
+                       "equivalent_actions": [{"verb": "unscrew", "target": s}
+                                              for s in SCREWS[1:]],
+                       "match_class": ["unscrew", "screw.cpu_cooler"],
+                       "blocked_rate_defined": False}, v6_form="open")
+    for name in ("the CPU cooler screws", "CPU cooler screw 4", "a cooler screw"):
+        assert grade(members, _reply(verb="unscrew", target=name), world).score == 1.0, name
+
+
+def _fixture_records(world, tax) -> list[dict]:
+    v6_mc = _record("V6", {"verb": "unscrew", "target": G_SCREWS},
+                    {"type": "next_action", "reference": ["unscrew", G_SCREWS],
+                     "equivalent_actions": [{"verb": "unscrew", "target": G_SCREWS}],
+                     "match_class": ["unscrew", "screw.cpu_cooler"],
+                     "blocked_rate_defined": True},
+                    v6_form="mc", options=[
+                        {"verb": "remove", "target": CPU, "kind": "graph_blocked"},
+                        {"verb": "unscrew", "target": G_SCREWS, "kind": "demonstrated"}])
+    v6_mc["prompt"]["options"] = [{"verb": o["verb"], "target_label": world.label_of(o["target"])}
+                                  for o in v6_mc["label"]["options"]]
+    v16 = _record("V16", {"valid": False, "first_error_index": 1, "violated_edges": [],
+                          "reason": "violates_edge"},
+                  {"type": "plan", "plan": [{"verb": "unscrew", "target": G_SCREWS},
+                                            {"verb": "remove", "target": CPU}]})
+    v16_ok = _record("V16", {"valid": True, "first_error_index": None},
+                     {"type": "plan", "plan": [{"verb": "open", "target": G_LATCH[RAMS[1]]}]})
+    records = [
+        _v3("remove", COOLER, "cpu_cooler", accept=[COOLER, SHROUD]),
+        _v3("unscrew", G_SCREWS, "screw", accept=[G_SCREWS]),
+        _v4("remove", COOLER, [G_SCREWS, FAN]),
+        _v4("remove", G_RAMS, list(G_LATCH.values())),
+        _v4("disconnect", FAN, []),
+        _record("V6", {"verb": "unscrew", "target": G_SCREWS},
+                {"type": "next_action", "reference": ["unscrew", G_SCREWS],
+                 "equivalent_actions": [{"verb": "unscrew", "target": G_SCREWS}],
+                 "match_class": ["unscrew", "screw.cpu_cooler"], "blocked_rate_defined": True},
+                v6_form="open"),
+        v6_mc,
+        _v7(world, tax),
+        _v8_components(),
+        _v10([("open", G_LATCH[RAMS[0]]), ("disconnect", FAN)], started=[("unscrew", G_SCREWS)]),
+        _v10([("open", G_LATCH[RAMS[0]]), ("open", G_LATCH[RAMS[1]])], progress="25-50"),
+        v16, v16_ok,
+    ]
+    for i, r in enumerate(records):
+        r["id"] = f"rec_{i:02d}_{r['prompt']['task']}"
+    return records
+
+
+def test_gold_scores_one(world, tax):
+    for r in _fixture_records(world, tax):
+        for mode in ("strict", "lenient"):
+            g = grade(r, gold_reply(r, world), world, tax, mode=mode)
+            assert g.score == 1.0, (r["id"], mode, g.metrics)
+            for key in ("blockers_f1", "started_f1", "required_recall"):
+                assert g.metrics.get(key, 1.0) == 1.0, (r["id"], key, g.metrics)
+        # the gold reply names parts in words: no key, no group id
+        text = gold_reply(r, world)
+        assert "@" not in text and "screw.cpu_cooler." not in text, text
+
+
+def test_the_scorer_on_group_records(world, tax, tmp_path):
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import vlm_io as IO
+    import vlm_score
+
+    records = _fixture_records(world, tax)
+    truth = tmp_path / "vlm_multi.jsonl"
+    IO.write_jsonl(truth, records)
+    IO.write_jsonl(IO.sidecar(truth, "oracle.jsonl"), [oracle_line()])
+    preds = tmp_path / "gold.jsonl"
+    IO.write_jsonl(preds, [{"id": r["id"], "raw_text": gold_reply(r, world)} for r in records])
+    result = vlm_score.score(truth, preds, resamples=20)
+    for task, cell in result["strict"]["by_task"].items():
+        assert cell["mean"] == 1.0, task
+    assert result["strict"]["extra"]["V10"]["started_f1"]["mean"] == 1.0
+    assert result["strict"]["extra"]["V10"]["started_f1"]["n"] == 2
+    assert result["strict"]["extra"]["V4"]["blockers_f1"]["mean"] == 1.0
