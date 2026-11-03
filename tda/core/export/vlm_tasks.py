@@ -96,6 +96,7 @@ from tda.core.model import (
     ActionRec,
     FrameKey,
     InstanceRec,
+    VIEWS,
     StepType,
 )
 from tda.core.model import is_provisional
