@@ -46,11 +46,13 @@ from typing import Iterable, Optional, Sequence
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vlm_io as IO  # noqa: E402
+from vlm_glossary import glossary_text  # noqa: E402
+from vlm_to_chat import VIEW_NAMES, image_legend, legend_line, marks_line  # noqa: E402
 from tda.core.export.vlm_check import LETTERS, World, format_key  # noqa: E402
 
-__all__ = ["CSV_COLUMNS", "VERDICTS", "boxes_of", "build", "csv_skeleton", "gold_lines",
-           "item_html", "load_context", "main", "name_of", "page", "rationale_lines",
-           "rel_image"]
+__all__ = ["CSV_COLUMNS", "VERDICTS", "boxes_of", "build", "csv_skeleton", "frames_html",
+           "gold_lines", "item_html", "load_context", "main", "marks_of", "name_of", "page",
+           "rationale_lines", "rel_image"]
 
 #: Columns of the skeleton and of the page's export, in this order.
 CSV_COLUMNS = ("id", "task", "readable_id", "desktop", "view", "step", "batch", "verdict",
@@ -90,6 +92,9 @@ def name_of(key: Optional[str], world: Optional[World]) -> str:
         inst = world.instances.get(str(key))
         if inst and inst.get("label"):
             return str(inst["label"])
+        group = (getattr(world, "groups", None) or {}).get(str(key))  # a group id (class@anchor)
+        if group and group.get("label"):
+            return f"{group['label']} ({len(group.get('members') or [])})"
     return str(key)
 
 
@@ -135,6 +140,9 @@ def gold_lines(record: dict, world: Optional[World] = None) -> list[tuple[str, s
         out.append(("action", f"{answer.get('verb')} {name_of(answer.get('target_instance'), world)}"))
         out.append(("class", str(answer.get("target_class"))))
         out.append(("tool", str(answer.get("tool"))))
+        also = [t for t in check.get("accept_targets") or [] if t != answer.get("target_instance")]
+        if also:
+            out.append(("also accepted", "; ".join(name_of(t, world) for t in also)))
     elif task == "V4":
         out.append(("feasible", _yes(answer.get("feasible"))))
         out.append(("action", f"{check.get('verb')} {name_of(check.get('target'), world)}"))
@@ -170,6 +178,12 @@ def gold_lines(record: dict, world: Optional[World] = None) -> list[tuple[str, s
             out.append(("required", "; ".join(
                 f"{name_of(r.get('target'), world)} -> {'/'.join(r.get('states') or [])}"
                 for r in check["required_actions"])))
+    elif task == "V8" and "components" in answer:  # every visible part of one class / group
+        comps = answer.get("components") or []
+        out.append(("visible parts", f"{len(comps)} ({check.get('class_filter', '?')})"))
+        for c in comps:
+            out.append((c.get("class", "?"),
+                        f"{name_of(c.get('instance'), world)} box {c.get('bbox')}"))
     elif task == "V8":
         out.append(("part", name_of(answer.get("instance"), world)))
         out.append(("box", str(answer.get("bbox"))))
@@ -179,6 +193,8 @@ def gold_lines(record: dict, world: Optional[World] = None) -> list[tuple[str, s
                                 f"({check.get('done_actions', len(done))} of {check.get('total_actions', '?')} actions done)"))
         for i, a in enumerate(done, start=1):
             out.append((f"done {i}", _action(a, world)))
+        for i, a in enumerate(answer.get("started") or [], start=1):
+            out.append((f"started {i}", _action(a, world)))
     elif task == "V12":
         out.append(("changed", _yes(answer.get("changed"))))
         for ev in answer.get("events") or []:
@@ -261,11 +277,80 @@ def boxes_of(record: dict, world: Optional[World] = None) -> list[dict]:
         for c in label["answer"].get("components") or []:
             add(name_of(c.get("instance"), world), c.get("bbox"), "answer")
     if record["prompt"]["task"] == "V8":
+        for c in label["answer"].get("components") or []:
+            add(name_of(c.get("instance"), world), c.get("bbox"), "answer")
         add(name_of(label["answer"].get("instance"), world), label["answer"].get("bbox"), "answer")
     ev = label.get("evidence") or {}
     for key, bbox in (ev.get("bboxes") or {}).items():
         add(name_of(key, world), bbox, "evidence")
     return out
+
+
+def marks_of(record: dict, index: int) -> list[dict]:
+    """The ``prompt.marks`` of image ``index`` as boxes (``kind = "mark"``, the tag as label):
+    what the model sees drawn in red on that image."""
+    return [{"label": str(m.get("tag") or ""), "bbox": [float(v) for v in m["bbox"]],
+             "kind": "mark"}
+            for m in record["prompt"].get("marks") or []
+            if int(m.get("image", 0)) == index and m.get("bbox") and len(m["bbox"]) == 4]
+
+
+def _image_views(record: dict, manifest: dict) -> list[Optional[str]]:
+    images = record["prompt"].get("images") or []
+    legend = image_legend(record)
+    if len(legend) == len(images):
+        return [e.get("view") for e in legend]
+    return [(manifest.get(i) or {}).get("view") for i in images]
+
+
+def frames_html(record: dict, manifest: dict, image_root, out_dir, *, evidence: list[dict],
+                marks: bool = True, where: bool = True) -> str:
+    """The record's images: one row, or a before row and an after row (V3 / V12 multi-view).
+
+    Each figure carries its own marks (red, tagged; only on its image index) and, where the
+    picture shows it, the ``evidence`` boxes: every image of a single-view record, the scanner
+    images of a multi-view one (the evidence is read off the scanner frame). ``where=False``
+    keeps the step and the desktop out of the captions (the human form).
+    """
+    label = record["label"]
+    images = record["prompt"].get("images") or []
+    legend = image_legend(record)
+    views = _image_views(record, manifest)
+    multi = bool(legend)
+    figs: list[tuple[str, str]] = []
+    for i, image_id in enumerate(images):
+        entry = manifest.get(image_id) or {}
+        moment = legend[i].get("moment") if multi else None
+        place = f" (step {entry.get('step', '?')}, " \
+                f"D{int(entry.get('desktop', label.get('desktop', 0))):02d})" if where else ""
+        if multi:
+            name = VIEW_NAMES.get(views[i], views[i] or "?")
+            cap = f"image {i + 1} of {len(images)}: {name}" \
+                  + (f", {moment}" if moment in ("before", "after") else "") + place
+        elif not where:
+            cap = f"image {i + 1} of {len(images)}" if len(images) > 1 else ""
+        else:
+            cap = (f"image {i + 1} of {len(images)}: " if len(images) > 1 else "") + \
+                  f"{entry.get('view', label.get('view', '?'))} step {entry.get('step', '?')} " \
+                  f"(D{int(entry.get('desktop', label.get('desktop', 0))):02d})"
+        boxes = list(evidence) if (not multi or views[i] == "scan") else []
+        if marks:
+            boxes += marks_of(record, i)
+        figs.append((moment or "", figure_html(image_id, manifest, image_root, out_dir, boxes, cap,
+                                               index=i)))
+    if not multi:
+        return f'<div class="frames single">{"".join(f for _, f in figs)}</div><!--/frames-->'
+    rows: list[tuple[str, list[str]]] = []
+    for moment, fig in figs:
+        if not rows or rows[-1][0] != moment:
+            rows.append((moment, []))
+        rows[-1][1].append(fig)
+    out = []
+    for moment, row in rows:
+        head = f'<span class="rowlabel">{esc(moment)}</span>' if moment in ("before", "after") else ""
+        cls = f"multi {moment}" if moment in ("before", "after") else "multi"
+        out.append(f'<div class="frames {cls}">{head}{"".join(row)}</div><!--/frames-->')
+    return "".join(out)
 
 
 # --------------------------------------------------------------------------- #
@@ -309,13 +394,18 @@ figure.frame .imgbox { position: relative; display: block; border: 1px solid var
 figure.frame img { display: block; width: 100%; height: auto; background: #eee; }
 figure.frame svg.boxes { position: absolute; left: 0; top: 0; width: 100%; height: 100%;
                          pointer-events: none; }
-body.no-boxes svg.boxes rect, body.no-boxes svg.boxes text { display: none; }
+.frames.multi figure.frame { flex: 1 1 300px; }
+.frames .rowlabel { flex: 0 0 100%; font-size: 13px; color: var(--muted); font-weight: bold; }
+body.no-boxes svg.boxes rect:not(.mark), body.no-boxes svg.boxes text:not(.mark) { display: none; }
 svg.boxes rect { fill: none; stroke-width: 3; vector-effect: non-scaling-stroke; }
 svg.boxes rect.answer { stroke: #ffeb3b; }
 svg.boxes rect.evidence { stroke: #00e5ff; }
+svg.boxes rect.mark { stroke: #ff1744; }
 svg.boxes rect.draft { stroke: #ff4081; stroke-dasharray: 6 4; }
 svg.boxes text { fill: #fff; paint-order: stroke; stroke: #000; stroke-width: 3px;
                  font-weight: bold; }
+svg.boxes text.mark { stroke: #ff1744; stroke-width: 4px; }
+.prompt-line { color: var(--muted); margin: 4px 0; white-space: pre-wrap; }
 figure.frame figcaption { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .question { font-size: 16px; margin: 6px 0; white-space: pre-wrap; }
 ol.options { margin: 4px 0 8px 20px; padding: 0; }
@@ -383,7 +473,7 @@ function drawBoxes(fig) {
     r.setAttribute('class', 'gold-box ' + b.kind); svg.appendChild(r);
     const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
     t.setAttribute('x', b.bbox[0] + 4); t.setAttribute('y', Math.max(fs, b.bbox[1] - 4));
-    t.setAttribute('font-size', fs); t.setAttribute('class', 'gold-box');
+    t.setAttribute('font-size', fs); t.setAttribute('class', 'gold-box ' + b.kind);
     t.textContent = b.label; svg.appendChild(t);
   });
 }
@@ -472,7 +562,12 @@ def figure_html(image_id: str, manifest: dict, image_root, out_dir, boxes: list[
 def question_html(record: dict, *, gold_letter: Optional[str] = None) -> str:
     """The question and, for a multiple choice, the lettered options (gold in bold if given)."""
     prompt = record["prompt"]
-    parts = [f'<p class="question">{esc(prompt["question"])}</p>']
+    parts = []
+    if prompt.get("images"):  # the lines the converter puts before the question (chat-v2)
+        for line in (legend_line(record), marks_line(record)):
+            if line:
+                parts.append(f'<p class="prompt-line">{esc(line)}</p>')
+    parts.append(f'<p class="question">{esc(prompt["question"])}</p>')
     options = prompt.get("options") or []
     if options:
         items = []
@@ -481,6 +576,10 @@ def question_html(record: dict, *, gold_letter: Optional[str] = None) -> str:
             items.append(f'<li{cls}>{LETTERS[i]}. {esc(o.get("verb", ""))} '
                          f'{esc(o.get("target_label", ""))}</li>')
         parts.append('<ol class="options" type="none">' + "".join(items) + "</ol>")
+    glossary = glossary_text(prompt.get("terms"), prompt.get("state_terms"))
+    if glossary:
+        parts.append(f'<details><summary>glossary the model reads</summary>'
+                     f'<p class="prompt-line">{esc(glossary)}</p></details>')
     return "".join(parts)
 
 
@@ -508,15 +607,7 @@ def item_html(index: int, record: dict, manifest: dict, world: Optional[World], 
     """One audit item: frames, question, gold, evidence, rationale, verdict."""
     label = record["label"]
     task = record["prompt"]["task"]
-    boxes = boxes_of(record, world)
-    images = record["prompt"].get("images") or []
-    figs = []
-    for i, image_id in enumerate(images):
-        entry = manifest.get(image_id) or {}
-        cap = (f"image {i + 1} of {len(images)}: " if len(images) > 1 else "") + \
-              f"{entry.get('view', label.get('view', '?'))} step {entry.get('step', '?')} " \
-              f"(D{int(entry.get('desktop', label.get('desktop', 0))):02d})"
-        figs.append(figure_html(image_id, manifest, image_root, out_dir, boxes, cap, index=i))
+    frames = frames_html(record, manifest, image_root, out_dir, evidence=boxes_of(record, world))
     gold = gold_lines(record, world)
     gold_rows = "".join(f'<tr><td class="k">{esc(k)}</td><td>{esc(v)}</td></tr>' for k, v in gold)
     raw = json.dumps(label["answer"], ensure_ascii=False, indent=1)
@@ -543,7 +634,7 @@ def item_html(index: int, record: dict, manifest: dict, world: Optional[World], 
 <article class="item" id="{esc(record["id"])}" data-id="{esc(record["id"])}" data-row="{row}">
 <h2><span>#{index}</span><span class="task">{esc(task)}</span>
 <span class="meta">{esc(label.get("readable_id", ""))} &middot; {esc(record["id"])} &middot; {esc("; ".join(flags))}</span></h2>
-<div class="frames">{"".join(figs)}</div>
+{frames}
 {question_html(record, gold_letter=_gold_letter(record))}
 <div class="gold"><b>Gold answer</b><table>{gold_rows}</table>
 <details><summary>raw JSON</summary><pre>{esc(raw)}</pre></details></div>

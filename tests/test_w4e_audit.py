@@ -92,6 +92,90 @@ def test_the_box_overlay_covers_the_picture_only(tmp_path):
     assert ".imgbox { position: relative;" in S.CSS if hasattr(S, "CSS") else True
 
 
+def _multi_v3(tmp_path) -> tuple[dict, dict]:
+    """A hand-made multi-view V3 record (the shared contract): 4 views before, 4 after; part A marked on the scan."""
+    views = ("scan", "oak1", "oak2", "rs")
+    manifest, images, legend = {}, [], []
+    for moment, step in (("before", 4), ("after", 5)):
+        for v in views:
+            image_id = f"img_{v}_{step}"
+            manifest[image_id] = {"path": f"{v}/D07/s{step:03d}.png", "view": v, "desktop": 7,
+                                  "step": step}
+            images.append(image_id)
+            legend.append({"view": v, "moment": moment})
+    record = {"id": "rec_multi_v3", "prompt": {
+        "task": "V3", "images": images, "image_legend": legend,
+        "question": "Which action was carried out between the two moments?",
+        "marks": [{"image": 0, "bbox": [120, 80, 40, 30], "tag": "A"},
+                  {"image": 0, "bbox": [300, 80, 40, 30], "tag": "A"}],
+        "terms": ["cpu_cooler"]},
+        "label": {"readable_id": "V3-D07-multi-s005", "template_id": "V3.1", "desktop": 7,
+                  "step": 5, "view": "multi", "views": list(views) * 2,
+                  "image_steps": [4] * 4 + [5] * 4,
+                  "answer": {"verb": "remove", "target_instance": "cpu_cooler.01",
+                             "target_class": "cpu_cooler", "tool": "hand"},
+                  "answer_check": {"type": "exact", "accept_targets": ["cpu_cooler.01", "cover.01"]},
+                  "evidence": {"instances": ["cpu_cooler.01"],
+                               "bboxes": {"cpu_cooler.01": [100, 60, 260, 120]}}}}
+    return record, manifest
+
+
+def test_audit_sheet_draws_marks(tmp_path):
+    """Marks are red, tagged, on their own image only; a two-moment record shows a before row and an after row."""
+    record, manifest = _multi_v3(tmp_path)
+    article = S.item_html(1, record, manifest, None, tmp_path / "images", tmp_path / "out", 1)
+    rows = re.findall(r'<div class="frames ([a-z ]+)">(.*?)</div><!--/frames-->', article, re.S)
+    assert [r[0] for r in rows] == ["multi before", "multi after"]
+    assert [len(re.findall(r"<figure ", r[1])) for r in rows] == [4, 4]
+    figs = re.findall(r'<figure class="frame" data-index="(\d)">.*?data-boxes="([^"]*)"', article, re.S)
+    assert [int(i) for i, _ in figs] == list(range(8))
+    boxes = [json.loads(html_unescape(b)) for _, b in figs]
+    marks = [[b for b in bs if b["kind"] == "mark"] for bs in boxes]
+    assert [len(m) for m in marks] == [2, 0, 0, 0, 0, 0, 0, 0]
+    assert {m["label"] for m in marks[0]} == {"A"}
+    assert marks[0][0]["bbox"] == [120.0, 80.0, 40.0, 30.0]
+    # the evidence is a scanner-frame box: drawn on the two scanner images, not on the side views
+    evidence = [[b for b in bs if b["kind"] == "evidence"] for bs in boxes]
+    assert [bool(e) for e in evidence] == [True, False, False, False, True, False, False, False]
+    # the overlay fix holds for every figure; marks are red; the boxes switch does not hide them
+    assert article.count('<span class="imgbox"><img ') == 8
+    assert "svg.boxes rect.mark { stroke: #ff1744;" in S.CSS
+    assert "rect:not(.mark)" in S.CSS
+    # captions name the camera and the moment; the prompt lines the model reads are shown
+    assert "image 1 of 8: top-down scanner, before (step 4" in article
+    assert "image 8 of 8: RealSense, after (step 5" in article
+    assert "Images 1–4 before, images 5–8 after the action" in article
+    assert "Outlined in red: A (2 outlines: one group of interchangeable parts; image 1)." in article
+    assert "Glossary:" in article and "CPU cooler" in article
+    # V3's accepted alternatives are part of the gold
+    assert ("also accepted", "cover.01") in S.gold_lines(record, None)
+    # a single-view record keeps one row and its evidence on every image
+    single = dict(record, prompt=dict(record["prompt"], images=["img_scan_4"], marks=[],
+                                      image_legend=None),
+                  label=dict(record["label"], view="scan", views=None, image_steps=None))
+    one = S.item_html(2, single, manifest, None, tmp_path / "images", tmp_path / "out", 1)
+    assert re.findall(r'<div class="frames ([a-z ]*)">', one) == ["single"]
+    assert '&quot;kind&quot;:&quot;evidence&quot;' in one and "&quot;mark&quot;" not in one
+
+
+def test_the_human_form_shows_the_marks_but_no_evidence(tmp_path):
+    record, manifest = _multi_v3(tmp_path)
+    article = H.item_html(1, record, manifest, tmp_path / "images", tmp_path / "out")
+    boxes = [json.loads(html_unescape(b)) for b in re.findall(r'data-boxes="([^"]*)"', article)]
+    assert [[b["kind"] for b in bs] for bs in boxes] == [["mark", "mark"]] + [[]] * 7
+    shown = re.sub(r'(src|alt)="[^"]*"', "", article)  # the image path carries view and step (by design)
+    assert "cpu_cooler.01" not in shown and "step 4" not in shown and "D07" not in shown, \
+        [m.start() for m in re.finditer("step 4|D07|cpu_cooler.01", shown)]
+    assert "image 1 of 8: top-down scanner, before" in article
+    assert "Outlined in red: A" in article
+
+
+def html_unescape(text: str) -> str:
+    import html
+
+    return html.unescape(text)
+
+
 def test_the_sheet_has_one_item_per_record_in_batches(scene, audit_sheet):
     records = scene["audit"]
     result = audit_sheet["result"]

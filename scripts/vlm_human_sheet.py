@@ -207,22 +207,19 @@ def fields_html(record: dict) -> str:
 
 
 def item_html(index: int, record: dict, manifest: dict, image_root, out_dir) -> str:
-    """One item of the form: frames (no boxes), question, options, the form. No answer."""
+    """One item of the form: frames (only the red marks the model sees, no evidence), question,
+    options, the form. No answer."""
     key = format_key(record)
-    images = record["prompt"].get("images") or []
-    figs = []
-    for i, image_id in enumerate(images):
-        cap = f"image {i + 1} of {len(images)}" if len(images) > 1 else ""
-        fig = S.figure_html(image_id, manifest, image_root, out_dir, [], cap, index=i)
-        if key in ("V1", "V8"):
-            fig = fig.replace('<figure class="frame"', '<figure class="frame drawable"', 1)
-        figs.append(fig)
+    frames = S.frames_html(record, manifest, image_root, out_dir, evidence=[], marks=True,
+                           where=False)
+    if key in ("V1", "V8"):
+        frames = frames.replace('<figure class="frame"', '<figure class="frame drawable"')
     row = S.esc(json.dumps({"id": record["id"], "task": record["prompt"]["task"],
                             "format_key": key}, separators=(",", ":")))
     return f"""
 <article class="item" id="{S.esc(record["id"])}" data-id="{S.esc(record["id"])}" data-fk="{S.esc(key)}" data-row="{row}">
 <h2><span>#{index}</span><span class="task">{S.esc(record["prompt"]["task"])}</span></h2>
-<div class="frames">{"".join(figs)}</div>
+{frames}
 {S.question_html(record)}
 {fields_html(record)}
 </article>"""
@@ -230,10 +227,12 @@ def item_html(index: int, record: dict, manifest: dict, image_root, out_dir) -> 
 
 HUMAN_GUIDE = """
 <b>What to do.</b> Answer every question from the picture(s) alone, the way you would on the
-bench; there is no answer key in this page. Name parts the way the questions do ("Motherboard
-screw 2", "PSU 1", "Fan connector 1"); verbs are the seven in the lists. For a plan write one
-action per line, in order. For the box tasks drag a rectangle on the picture (V1: one box per
-visible part, then pick its class; V8: one box).<br>
+bench; there is no answer key in this page. The parts a question is about are outlined in red
+on the picture (several outlines under one letter are one group of identical parts); name parts
+in plain words ("the CPU cooler screws", "the PSU", "the fan connector"); verbs are the seven in
+the lists. For a plan write one action per line, in order. For the box tasks drag a rectangle on
+the picture (V1: one box per visible part, then pick its class; V8: one box per part asked
+for).<br>
 <b>Timing.</b> The page notes when an item first comes into view and when you last changed its
 answer; please work through the items in order, one at a time, without going back, so the times
 mean something. Your answers are kept in this browser; press <b>Export answers</b> when the page
