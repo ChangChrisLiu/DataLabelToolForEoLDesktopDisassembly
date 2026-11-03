@@ -184,3 +184,114 @@ def test_marks_need_somewhere_to_go(tmp_path):
                    "--out", str(out)]) == 0
     row = json.loads(out.read_text(encoding="utf-8").splitlines()[0])
     assert Path(row["meta"]["images"][0]).parent == out.parent / "x.openai_marked"
+
+
+# --------------------------------------------------------------------------- #
+# C2 legend and glossary
+# --------------------------------------------------------------------------- #
+def _multi(views_before, views_after=None, task="V4") -> dict:
+    legend = [{"view": v, "moment": "now" if views_after is None else "before"} for v in views_before]
+    legend += [{"view": v, "moment": "after"} for v in views_after or []]
+    images = [f"img_{e['moment']}_{e['view']}" for e in legend]
+    record = _v2(images, [{"image": 0, "bbox": [10, 10, 5, 5], "tag": "A"}], task=task,
+                 image_legend=legend,
+                 question="Can the RAM module outlined in red be removed now?")
+    record["label"].update(view="multi", views=[e["view"] for e in legend],
+                           answer_check={"type": "exact", "fields": ["feasible"]})
+    return record
+
+
+def test_multiview_legend_lists_present_views():
+    four = C.user_text(_multi(VIEWS))
+    assert four.startswith("Images 1–4: the same moment from the top-down scanner, then three side "
+                           "cameras (OAK 1, OAK 2, RealSense).")
+    eight = C.user_text(_multi(VIEWS, VIEWS, task="V3"))
+    assert eight.startswith("Images 1–4 before, images 5–8 after the action, each: top-down "
+                            "scanner, OAK 1, OAK 2, RealSense.")
+    # a view without a photo of that step is left out of the images and of the legend
+    three = C.user_text(_multi(("scan", "oak1", "rs")))
+    assert three.startswith("Images 1–3: the same moment from the top-down scanner, then two side "
+                            "cameras (OAK 1, RealSense).")
+    assert "OAK 2" not in three.split("\n")[0]
+    two = C.user_text(_multi(("scan", "oak2")))
+    assert two.startswith("Images 1–2: the same moment from the top-down scanner, then one side "
+                          "camera (OAK 2).")
+    assert C.user_text(_multi(("scan",))).startswith("Image 1: the top-down scanner.")
+    six = C.user_text(_multi(("scan", "oak1", "rs"), ("scan", "oak1", "rs"), task="V12"))
+    assert six.startswith("Images 1–3 before, images 4–6 after the action, each: top-down "
+                          "scanner, OAK 1, RealSense.")
+    uneven = C.user_text(_multi(("scan", "rs"), ("scan", "oak1", "rs"), task="V12"))
+    assert uneven.startswith("Images 1–2 before the action (top-down scanner, RealSense), "
+                             "images 3–5 after it (top-down scanner, OAK 1, RealSense).")
+    # the marked part's tag is named, the question follows, the answer format after it
+    assert "Outlined in red: A (image 1)." in four
+    assert four.index("Outlined in red") < four.index("Can the RAM module") \
+        < four.index("Answer with JSON only")
+    # without image_legend the views come from label.views (moments from label.image_steps)
+    record = _multi(VIEWS, VIEWS, task="V3")
+    del record["prompt"]["image_legend"]
+    record["label"]["image_steps"] = [4] * 4 + [5] * 4
+    assert C.user_text(record).startswith("Images 1–4 before, images 5–8 after the action")
+    # single-view records have no legend
+    single = C.user_text(_v2(["img_a"], [{"image": 0, "bbox": [1, 1, 2, 2], "tag": "A"}]))
+    assert not single.startswith("Image") and single.startswith("Outlined in red: A.")
+    # a group: several outlines under one tag; two parts: two tags
+    group = _v2(["img_a"], [{"image": 0, "bbox": [1, 1, 2, 2], "tag": "A"},
+                            {"image": 0, "bbox": [9, 9, 2, 2], "tag": "A"},
+                            {"image": 0, "bbox": [20, 20, 2, 2], "tag": "B"}])
+    text = C.user_text(group)
+    assert "Outlined in red: A (2 outlines: one group of interchangeable parts), B." in text
+    # a text-only variant (state oracle, blind) has no images: no legend, no marks line
+    blind = _multi(VIEWS)
+    blind["prompt"]["images"] = []
+    assert "Image" not in C.user_text(blind).split("\n")[0] and "Outlined" not in C.user_text(blind)
+    assert C.CHAT_FORMAT_ID == "chat-v2"
+
+
+def test_glossary_has_class_and_states():
+    import vlm_glossary as G
+
+    text = G.glossary_text(["ram_module", "cable_clip"], ["cable_clip"])
+    lines = text.split("\n")
+    assert lines[0] == "Glossary:"
+    assert lines[1] == "- RAM module: A memory (RAM) stick."
+    assert lines[2].startswith("- cable clip: A clip holding a cable. States: ")
+    for state in ("closed", "open", "removed"):
+        assert f"{state} = {G.STATE_MEANINGS['cable_clip'][state]}" in lines[2]
+    assert "States:" not in lines[1]  # not a state question about RAM modules
+    # a refined match class is glossed by its class; unknown / empty -> nothing
+    assert G.glossary_text(["screw.cpu_cooler"]) == "Glossary:\n- screw: " + G.class_text("screw")
+    assert G.glossary_text([], []) == "" and G.glossary_text(["no_such_class"]) == ""
+    # a state class not among the terms is glossed too
+    assert "- RAM latch: " in G.glossary_text(["ram_module"], ["ram_latch"])
+    # no annotation jargon reaches the model
+    every = G.glossary_text(list(G.CLASS_TEXT), list(G.STATE_MEANINGS))
+    assert "attrs." not in every
+    # the prompt ends with the glossary, after the answer format
+    record = _v2(["img_a"], [{"image": 0, "bbox": [1, 1, 2, 2], "tag": "A"}],
+                 terms=["ram_latch"], state_terms=["ram_latch"])
+    prompt = C.user_text(record)
+    assert prompt.endswith(G.glossary_text(["ram_latch"], ["ram_latch"]))
+    assert prompt.index("Answer with JSON only") < prompt.index("Glossary:")
+    assert "Glossary:" not in C.user_text(_v2(["img_a"], []))
+
+
+def test_glossary_tables_follow_the_scanner_pack_and_the_taxonomy():
+    """``vlm_glossary`` is self-contained (it ships without ``tda`` and the taxonomy); these keep it honest."""
+    import yaml
+
+    import export_scanpack
+    import vlm_glossary as G
+
+    assert G.CLASS_TEXT == dict(export_scanpack.CLASS_EN)
+    tax = yaml.safe_load((Path(__file__).resolve().parents[1] / "configs" / "taxonomy.yaml")
+                         .read_text(encoding="utf-8"))
+    multi = {c: list(d["states"]) for c, d in tax["classes"].items()
+             if len(d.get("states") or []) >= 2}
+    assert {c: list(m) for c, m in G.STATE_MEANINGS.items()} == multi
+    assert all(m.strip() for table in G.STATE_MEANINGS.values() for m in table.values())
+    assert set(G.MODEL_TEXT) >= {c for c, t in G.CLASS_TEXT.items() if "attrs." in t}
+    assert set(G.CLASS_NAME) == set(G.CLASS_TEXT)
+    # the glossary module imports nothing of the repository nor PyYAML
+    src = (SCRIPTS / "vlm_glossary.py").read_text(encoding="utf-8")
+    assert "import tda" not in src and "from tda" not in src and "import yaml" not in src
