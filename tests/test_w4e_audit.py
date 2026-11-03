@@ -398,6 +398,102 @@ def test_zero_errors_in_the_paper_sample_reads_as_one_point_three_percent():
 
 
 # --------------------------------------------------------------------------- #
+# carrying the first audit's V2 verdicts over (spec 6.7)
+# --------------------------------------------------------------------------- #
+def _v2_rec(rid, readable, desktop, step, check, answer, *, view="scan", task="V2", evidence=None):
+    return {"id": rid, "prompt": {"task": task, "images": ["img_x"], "question": "?"},
+            "label": {"readable_id": readable, "desktop": desktop, "step": step, "view": view,
+                      "answer": answer, "answer_check": check,
+                      "evidence": {"instances": evidence or []}}}
+
+
+def _state(instance, **extra):
+    return dict({"type": "exact", "derive": "instance_state", "instance": instance,
+                 "class": instance.split(".")[0], "fields": ["state"]}, **extra)
+
+
+def _count(role):
+    return {"type": "exact", "derive": "screw_count", "role": role, "state": "present",
+            "fields": ["count"]}
+
+
+def test_carry_v2_by_desktop_step_part(tmp_path):
+    import vlm_audit_carry as K
+
+    old = [
+        _v2_rec("rec_o1", "V2-D24-scan-s002-state-cable_clip.01", 24, 2, _state("cable_clip.01"),
+                {"state": "open"}),
+        _v2_rec("rec_o2", "V2-D46-scan-s033-count-motherboard", 46, 33, _count("motherboard"),
+                {"count": 2}),
+        _v2_rec("rec_o3", "V2-D41-scan-s024-state-cpu_socket_lever.01", 41, 24,
+                _state("cpu_socket_lever.01"), {"state": "open"}),
+        _v2_rec("rec_o4", "V2-D57-scan-s008-state-ram_latch.02", 57, 8, _state("ram_latch.02"),
+                {"state": "closed"}),
+        _v2_rec("rec_o5", "V2-D10-scan-s004-state-psu_latch.01", 10, 4, _state("psu_latch.01"),
+                {"state": "closed"}),
+        _v2_rec("rec_o6", "V3-D10-scan-s005", 10, 5, {"type": "exact"}, {"verb": "remove"},
+                task="V3"),
+    ]
+    old_jsonl = tmp_path / "old_audit.jsonl"
+    IO.write_jsonl(old_jsonl, old)
+    # two exported pages, one re-exported with a later answer, one verdict in Chinese, one blank
+    _filled_csv(old[:3], {"rec_o1": "correct", "rec_o2": "doubtful", "rec_o3": "correct"}, "c1",
+                tmp_path / "b01.csv", notes={"rec_o2": "two screws hidden?"})
+    _filled_csv(old[3:], {"rec_o4": "正确", "rec_o6": "correct"}, "c1", tmp_path / "b02.csv")
+    new = [
+        # the asked latch is now one member of a group with the same state: carried
+        _v2_rec("rec_n1", "V2-D24-scan-s002-state-cable_clip@cover.01", 24, 2,
+                _state("cable_clip@cover.01", members=["cable_clip.01", "cable_clip.02"]),
+                {"state": "open"}),
+        # the count, unchanged: carried (with its note)
+        _v2_rec("rec_n2", "V2-D46-scan-s033-count-motherboard", 46, 33, _count("motherboard"),
+                {"count": 2}),
+        # same part, another answer: not carried
+        _v2_rec("rec_n3", "V2-D41-scan-s024-state-cpu_socket_lever.01", 41, 24,
+                _state("cpu_socket_lever.01"), {"state": "closed"}),
+        # same part and answer on another step / another view: not carried
+        _v2_rec("rec_n4", "V2-D57-scan-s009-state-ram_latch.02", 57, 9, _state("ram_latch.02"),
+                {"state": "closed"}),
+        _v2_rec("rec_n5", "V2-D57-oak1-s008-state-ram_latch.02", 57, 8, _state("ram_latch.02"),
+                {"state": "closed"}, view="oak1"),
+        # a group known only through its evidence (no members field): carried
+        _v2_rec("rec_n6", "V2-D57-scan-s008-state-ram_latch@ram_module.01", 57, 8,
+                _state("ram_latch@ram_module.01"), {"state": "closed"},
+                evidence=["ram_latch.01", "ram_latch.02"]),
+        # a V3 is audited afresh, whatever its old verdict
+        _v2_rec("rec_n7", "V3-D10-multi-s005", 10, 5, {"type": "exact"}, {"verb": "remove"},
+                task="V3", view="multi"),
+    ]
+    new_jsonl = tmp_path / "new_audit.jsonl"
+    IO.write_jsonl(new_jsonl, new)
+    out = tmp_path / "carried.csv"
+    assert K.main(["--old-csv", str(tmp_path / "b01.csv"), str(tmp_path / "b02.csv"),
+                   "--old-records", str(old_jsonl), "--new-records", str(new_jsonl),
+                   "--out", str(out), "--batch", "4"]) == 0
+    rows = list(csv.DictReader(io.StringIO(out.read_text(encoding="utf-8-sig"))))
+    assert list(rows[0]) == list(S.CSV_COLUMNS) == list(K.CSV_COLUMNS)
+    assert [r["id"] for r in rows] == [r["id"] for r in new]
+    got = {r["id"]: r for r in rows}
+    assert got["rec_n1"]["verdict"] == "correct" and "V2-D24-scan-s002-state-cable_clip.01" in \
+        got["rec_n1"]["note"]
+    assert got["rec_n2"]["verdict"] == "doubtful" and "two screws hidden?" in got["rec_n2"]["note"]
+    assert got["rec_n2"]["reviewer"] == "c1" and got["rec_n2"]["answered_at"]
+    assert got["rec_n6"]["verdict"] == "correct"  # 正确, normalised
+    for rid in ("rec_n3", "rec_n4", "rec_n5", "rec_n7"):
+        assert got[rid]["verdict"] == "" and got[rid]["note"] == "" and got[rid]["reviewer"] == ""
+    assert [r["batch"] for r in rows] == ["1"] * 4 + ["2"] * 3
+    assert got["rec_n1"]["readable_id"] == "V2-D24-scan-s002-state-cable_clip@cover.01"
+    # the carried file reads back through the summary like any exported page
+    summary = A.summarise(A.read_verdicts([out]), new)
+    assert summary["overall"]["reviewed"] == 3
+    # the old CSVs are only read
+    assert "rec_o1" in (tmp_path / "b01.csv").read_text(encoding="utf-8-sig")
+    # an old verdict whose record is not in --old-records is reported, not guessed
+    report = K.carry(A.read_verdicts([tmp_path / "b01.csv"]), old[1:], new)
+    assert report["unknown_old_ids"] == ["rec_o1"]
+
+
+# --------------------------------------------------------------------------- #
 # the human-baseline form
 # --------------------------------------------------------------------------- #
 LEAKS = ("rationale", "readable_id", "evidence", "truth_source", "demonstrated",
