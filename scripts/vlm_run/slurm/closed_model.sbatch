@@ -1,6 +1,6 @@
 #!/bin/bash
 # One closed model (OpenAI-compatible endpoint) x one input variant, an array over the views; CPU only.
-#   sbatch --export=ALL,PACK=$SCRATCH/vlmpack_2026-11-05,MODEL=<api model name>,VARIANT=image closed_model.sbatch
+#   sbatch --export=ALL,PACK=$SCRATCH/vlmpack_2026-11-02,MODEL=<api model name>,VARIANT=image closed_model.sbatch
 # The repeat subset (3 answers per question):
 #   sbatch --export=ALL,PACK=...,MODEL=...,SUBSET=$PACK/eval_v1/repeat.ids.txt,REPEAT=3,MODEL_TAG=<model>_repeat closed_model.sbatch
 #
@@ -34,6 +34,6 @@ export VARIANT="${VARIANT:-image}"
 export SUBSET="${SUBSET:-eval}"
 export REPEAT="${REPEAT:-1}"
 export MAX_SIDE="${MAX_SIDE:-1568}"
-export MAX_TOKENS="${MAX_TOKENS:-512}"
+export MAX_TOKENS="${MAX_TOKENS:-2048}"
 export RUN_ARGS="${RUN_ARGS:---workers 4 --max-retries 6 --backoff 2}"
 bash "$PACK/tools/vlm_run/run_eval.sh"

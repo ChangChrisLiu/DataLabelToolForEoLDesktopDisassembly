@@ -1,6 +1,6 @@
 #!/bin/bash
 # One open model x one input variant, an array over the four views; vllm offline on one GPU.
-#   sbatch --export=ALL,PACK=$SCRATCH/vlmpack_2026-11-05,MODEL=Qwen/Qwen3-VL-8B-Instruct,VARIANT=image open_model.sbatch
+#   sbatch --export=ALL,PACK=$SCRATCH/vlmpack_2026-11-02,MODEL=Qwen/Qwen3-VL-8B-Instruct,VARIANT=image open_model.sbatch
 #   sbatch --export=ALL,PACK=...,MODEL=OpenGVLab/InternVL3_5-8B,VARIANT=blind open_model.sbatch
 # Pilot (100 items, one view): add SUBSET=$PACK/pilot_ids.txt and --array=0.
 #SBATCH --job-name=vlm_open
@@ -36,6 +36,6 @@ export VARIANT="${VARIANT:-image}"
 export SUBSET="${SUBSET:-eval}"
 export CHAT_FORMAT="${CHAT_FORMAT:-openai}"
 export MAX_SIDE="${MAX_SIDE:-1568}"
-export MAX_TOKENS="${MAX_TOKENS:-512}"
+export MAX_TOKENS="${MAX_TOKENS:-2048}"
 export RUN_ARGS="${RUN_ARGS:---dtype bf16 --batch-size 16 --max-images 2 --gpu-mem 0.90}"
 bash "$PACK/tools/vlm_run/run_eval.sh"
