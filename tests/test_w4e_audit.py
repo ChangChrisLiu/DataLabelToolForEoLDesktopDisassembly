@@ -80,6 +80,18 @@ def audit_sheet(scene) -> dict:
                       if f.endswith(".html")]}
 
 
+def test_the_box_overlay_covers_the_picture_only(tmp_path):
+    """The SVG overlay sits with the <img> in its own box; spanning the caption too, it was stretched vertically and
+    every box was drawn too low (owner, 2026-11-03, audit item 53)."""
+    manifest = {"img_1": {"path": "scan/D57/s019.png"}}
+    html = S.figure_html("img_1", manifest, tmp_path / "images", tmp_path, [
+        {"label": "Front panel connector 2", "bbox": [679, 827, 38, 16], "kind": "evidence"}], "image 1 of 1")
+    box = re.search(r'<span class="imgbox">(.*?)</span>', html, re.S)
+    assert box and "<img " in box.group(1) and '<svg class="boxes"' in box.group(1)
+    assert "<figcaption>" not in box.group(1) and html.index("</span>") < html.index("<figcaption>")
+    assert ".imgbox { position: relative;" in S.CSS if hasattr(S, "CSS") else True
+
+
 def test_the_sheet_has_one_item_per_record_in_batches(scene, audit_sheet):
     records = scene["audit"]
     result = audit_sheet["result"]

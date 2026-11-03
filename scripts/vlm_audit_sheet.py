@@ -305,8 +305,8 @@ article.item h2 .meta { color: var(--muted); font-size: 13px; font-weight: norma
 .frames { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
 figure.frame { margin: 0; position: relative; display: inline-block; max-width: 100%;
                flex: 1 1 420px; }
-figure.frame img { display: block; width: 100%; height: auto; border: 1px solid var(--line);
-                   background: #eee; }
+figure.frame .imgbox { position: relative; display: block; border: 1px solid var(--line); }
+figure.frame img { display: block; width: 100%; height: auto; background: #eee; }
 figure.frame svg.boxes { position: absolute; left: 0; top: 0; width: 100%; height: 100%;
                          pointer-events: none; }
 body.no-boxes svg.boxes rect, body.no-boxes svg.boxes text { display: none; }
@@ -462,9 +462,11 @@ def figure_html(image_id: str, manifest: dict, image_root, out_dir, boxes: list[
     rel = entry.get("path", image_id)
     src = rel_image(image_root, rel, out_dir)
     data = esc(json.dumps(boxes, ensure_ascii=False, separators=(",", ":")))
-    return (f'<figure class="frame" data-index="{index}"><img src="{esc(src)}" alt="{esc(rel)}" '
-            f'loading="lazy" data-boxes="{data}"><svg class="boxes" viewBox="0 0 1 1"></svg>'
-            f'<figcaption>{esc(caption)}</figcaption></figure>')
+    # the overlay shares a box with the picture alone: spanning the caption too, it was stretched
+    # vertically and every box was drawn too low (owner, 2026-11-03)
+    return (f'<figure class="frame" data-index="{index}"><span class="imgbox"><img src="{esc(src)}" '
+            f'alt="{esc(rel)}" loading="lazy" data-boxes="{data}"><svg class="boxes" viewBox="0 0 1 1">'
+            f'</svg></span><figcaption>{esc(caption)}</figcaption></figure>')
 
 
 def question_html(record: dict, *, gold_letter: Optional[str] = None) -> str:
