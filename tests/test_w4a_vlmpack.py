@@ -24,6 +24,38 @@ import export_vlmpack as P  # noqa: E402
 import vlm_io as IO  # noqa: E402
 
 VIEWS = (W.VIEW, W.OTHER)
+#: The pack's export units for those views: the camera views, then the multi unit -- less
+#: OAK1, which has nothing confirmed and no V15 pair of its own, so its unit is empty and
+#: left out (its pictures ship through the multi unit).
+UNITS = (W.VIEW, "multi")
+EMPTY_UNITS = (W.OTHER,)
+REPO = SCRIPTS.parent
+#: Stand-ins for the redesign's two new tools while the tree under test predates them
+#: (they come from another work stream); a pack built from the real tree ships the real ones.
+STAND_INS = {
+    "vlm_glossary.py": '"""Stand-in (test tree only)."""\nCLASS_TEXT = {}\nSTATE_MEANINGS = {}\n\n\n'
+                       'def glossary_text(terms, state_terms):\n    return ""\n',
+    "vlm_audit_carry.py": '"""Stand-in (test tree only)."""\n\n\ndef main(argv=None):\n    return 0\n',
+}
+
+
+def pack_repo(root: Path) -> Path:
+    """The tree ``build_pack`` vendors its tools from: the repository itself once it has
+    the redesign's glossary and audit carry-over, else a copy of the parts the build reads
+    with stand-ins for those two (the build refuses a tree without them)."""
+    if all((SCRIPTS / name).is_file() for name in P.REDESIGN_TOOLS):
+        return REPO
+    tree = Path(root) / "repo"
+    if tree.is_dir():
+        return tree
+    shutil.copytree(SCRIPTS, tree / "scripts", ignore=shutil.ignore_patterns("__pycache__"))
+    for rel in (*P.VENDORED, *P.VENDORED_CONFIGS, "docs/vlm_run_hprc.md"):
+        (tree / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(REPO / rel, tree / rel)
+    for name, text in STAND_INS.items():
+        if not (tree / "scripts" / name).is_file():
+            (tree / "scripts" / name).write_text(text, encoding="utf-8", newline="\n")
+    return tree
 
 
 def _sha(path) -> str:
@@ -48,6 +80,7 @@ def _scene(root: Path) -> tuple[Path, Path]:
 
 
 def _build(root: Path, db_path: Path, cache: Path, name: str, **kw) -> dict:
+    kw.setdefault("repo", pack_repo(root))
     return P.build_pack(str(db_path), str(root / name), cache_dir=str(cache),
                         work_dir=str(root / f"{name}_work"), views=VIEWS, seed=0,
                         audit=20, live_db=str(root / "live.sqlite"), log=lambda *_: None,
@@ -160,17 +193,18 @@ def test_multi_unit_shows_each_moment_from_every_camera_that_has_it(tmp_path, mo
 # --------------------------------------------------------------------------- #
 def test_the_pack_has_the_promised_layout(built):
     pack = built["pack"]
-    for rel in ("README.md", "LICENSE_NOTE.txt", "manifest.json", "eval_v1/ids.txt",
-                "eval_v1/table.md", "eval_v1/table.json", "eval_v1/audit/audit.sheet.md",
+    for rel in ("README.md", "LICENSE_NOTE.txt", "manifest.json", "eval_v2/ids.txt",
+                "eval_v2/table.md", "eval_v2/table.json", "eval_v2/audit/audit.sheet.md",
                 "tools/vlm_score.py", "tools/vlm_to_chat.py", "tools/vlm_references.py",
                 "tools/vlm_selfcheck.py", "tools/vlm_eval_set.py", "tools/requirements.txt",
                 "tools/tda/core/export/vlm_check.py", "tools/tda/core/export/vlm_tasks.py",
                 "tools/configs/taxonomy.yaml"):
         assert (pack / rel).is_file(), rel
-    for view in VIEWS:
+    for view in UNITS:
         for suffix in ("jsonl", "images_manifest.jsonl", "oracle.jsonl", "summary.json"):
             assert (pack / "data" / f"vlm_{view}.{suffix}").is_file()
-            assert (pack / "eval_v1" / f"{view}.{suffix}").is_file()
+            assert (pack / "eval_v2" / f"{view}.{suffix}").is_file()
+    assert not (pack / "eval_v1").exists()
     assert (pack / "images" / W.VIEW / f"D{W.DESKTOP:02d}" / "s001.png").is_file()
     assert not list(pack.rglob("__pycache__"))
     assert not (pack / P.BUILDING).exists()
@@ -187,17 +221,19 @@ def test_the_manifest_lists_every_file_with_its_sha256(built):
     image = next(k for k in files if k.startswith("images/"))
     assert files[image]["view"] in VIEWS and files[image]["desktop"] == W.DESKTOP
     m = built["manifest"]
-    assert m["package"] == "vlmpack" and m["eval_version"] == "eval_v1"
+    assert m["package"] == "vlmpack" and m["eval_version"] == "eval_v2"
     assert m["views"] == list(VIEWS) and m["desktops"] == [W.DESKTOP]
+    assert m["units"] == list(UNITS)
     assert m["selfcheck"]["ok"] is True
-    assert set(m["exports"]) == set(VIEWS)
-    assert m["exports"][W.VIEW]["by_task"]["V4"] > 0
+    assert set(m["exports"]) == set(UNITS)
+    assert m["exports"]["multi"]["by_task"]["V4"] > 0
+    assert "V4" not in m["exports"][W.VIEW]["by_task"]
 
 
 def test_every_manifest_image_is_in_the_pack_and_nothing_else(built):
     pack, files = built["pack"], built["manifest"]["files"]
     named = set()
-    for view in VIEWS:
+    for view in UNITS:
         for entry in IO.load_manifest(pack / "data" / f"vlm_{view}.jsonl").values():
             named.add("images/" + entry["path"])
     shipped = {k for k in files if k.startswith("images/")}
@@ -226,7 +262,7 @@ def test_two_builds_are_byte_identical(built):
 def test_no_machine_path_or_clock_in_the_shipped_text(built):
     pack = built["pack"]
     root = str(built["root"])
-    for rel in ("README.md", "manifest.json", "eval_v1/table.md", "eval_v1/table.json"):
+    for rel in ("README.md", "manifest.json", "eval_v2/table.md", "eval_v2/table.json"):
         text = (pack / rel).read_text(encoding="utf-8")
         assert root not in text and root.replace("\\", "/") not in text, rel
         assert "D:/DataSet" not in text and "D:\\DataSet" not in text, rel
@@ -250,11 +286,11 @@ def test_the_live_database_is_refused_by_name(tmp_path):
 
 def test_a_missing_image_stops_the_build_before_anything_is_copied(tmp_path):
     db_path, cache = _scene(tmp_path)
-    gone = cache / W.OTHER / f"D{W.DESKTOP:02d}" / "s005.png"
+    gone = cache / W.VIEW / f"D{W.DESKTOP:02d}" / "s005.png"
     gone.unlink()
     with pytest.raises(P.PackError) as err:
         _build(tmp_path, db_path, cache, "pack")
-    assert "1 of" in str(err.value) and f"{W.OTHER}/D{W.DESKTOP:02d}/s005.png" in str(err.value)
+    assert "1 of" in str(err.value) and f"{W.VIEW}/D{W.DESKTOP:02d}/s005.png" in str(err.value)
     assert not (tmp_path / "pack" / "images").exists()
     # the half-built directory is recognised and replaced with --force
     assert (tmp_path / "pack" / P.BUILDING).is_file()
@@ -280,11 +316,11 @@ def test_a_directory_that_is_not_a_pack_is_never_deleted(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_the_subset_files_agree_with_ids_and_carry_their_sidecars(built):
     pack = built["pack"]
-    ids = [l for l in (pack / "eval_v1" / "ids.txt").read_text(encoding="utf-8").splitlines() if l]
+    ids = [l for l in (pack / "eval_v2" / "ids.txt").read_text(encoding="utf-8").splitlines() if l]
     assert len(ids) == len(set(ids)) == built["summary"]["eval"]["records"]
     seen: list[str] = []
-    for view in VIEWS:
-        truth = pack / "eval_v1" / f"{view}.jsonl"
+    for view in UNITS:
+        truth = pack / "eval_v2" / f"{view}.jsonl"
         records = list(IO.read_jsonl(truth))
         full = {r["id"]: r for r in IO.read_jsonl(pack / "data" / f"vlm_{view}.jsonl")}
         assert all(r == full[r["id"]] for r in records)
@@ -307,11 +343,11 @@ def test_the_subset_files_agree_with_ids_and_carry_their_sidecars(built):
 
 def test_the_audit_sample_is_drawn_from_inside_the_subset(built):
     pack = built["pack"]
-    ids = set((pack / "eval_v1" / "ids.txt").read_text(encoding="utf-8").split())
-    audit = [l for l in (pack / "eval_v1" / "audit" / "audit.ids.txt")
+    ids = set((pack / "eval_v2" / "ids.txt").read_text(encoding="utf-8").split())
+    audit = [l for l in (pack / "eval_v2" / "audit" / "audit.ids.txt")
              .read_text(encoding="utf-8").splitlines() if l]
     assert audit and set(audit) <= ids
-    sheet = (pack / "eval_v1" / "audit" / "audit.sheet.md").read_text(encoding="utf-8")
+    sheet = (pack / "eval_v2" / "audit" / "audit.sheet.md").read_text(encoding="utf-8")
     assert sheet.count("\n|") >= len(audit) + 1 and "ok?" in sheet
 
 
@@ -320,13 +356,13 @@ def test_images_eval_ships_only_what_the_subset_names(tmp_path):
     summary = _build(tmp_path, db_path, cache, "pack", images="eval")
     pack = tmp_path / "pack"
     named = set()
-    for view in VIEWS:
+    for view in UNITS:
         named |= {"images/" + e["path"]
-                  for e in IO.load_manifest(pack / "eval_v1" / f"{view}.jsonl").values()}
+                  for e in IO.load_manifest(pack / "eval_v2" / f"{view}.jsonl").values()}
     files = json.loads((pack / "manifest.json").read_text(encoding="utf-8"))["files"]
     assert {k for k in files if k.startswith("images/")} == named
     assert summary["images"] == len(named)
-    assert "holds only the frames `eval_v1` names" in (pack / "README.md").read_text(
+    assert "holds only the frames `eval_v2` names" in (pack / "README.md").read_text(
         encoding="utf-8")
 
 
@@ -339,8 +375,10 @@ def test_the_vendored_tools_stand_alone(built):
     assert "def class_label" in stub and "SCREW_PRESENCE" in stub and "INITIALISMS" in stub
     init = (pack / "tools" / "tda" / "core" / "export" / "__init__.py").read_text(encoding="utf-8")
     assert "import" not in init  # no exporter, no database layer
+    source = pack_repo(built["root"]) / "scripts"
     for name in P.TOOLS:
-        assert (pack / "tools" / name).read_bytes() == (SCRIPTS / name).read_bytes()
+        assert (pack / "tools" / name).read_bytes() == (source / name).read_bytes()
+    assert {"vlm_glossary.py", "vlm_audit_carry.py"} <= set(P.TOOLS)
     # W4-B's driver, Slurm templates and requirements travel with the pack byte for byte, the run guide beside the card
     driver = SCRIPTS / "vlm_run"
     shipped = sorted(p for p in driver.rglob("*") if p.is_file() and "__pycache__" not in p.parts)
@@ -351,7 +389,7 @@ def test_the_vendored_tools_stand_alone(built):
     # the build already imported them with -I and ran the self-check from the pack
     P.smoke_import(pack / "tools")
     check = built["summary"]["selfcheck"]
-    assert check["ok"] and {f["file"] for f in check["files"]} == {f"{v}.jsonl" for v in VIEWS}
+    assert check["ok"] and {f["file"] for f in check["files"]} == {f"{v}.jsonl" for v in UNITS}
     assert all(abs(m - 1.0) < 1e-9 for f in check["files"] for m in f["tasks"].values())
 
 
@@ -359,7 +397,7 @@ def test_the_self_check_catches_a_wrong_oracle(built, tmp_path):
     import vlm_selfcheck
 
     pack = built["pack"]
-    truth = pack / "eval_v1" / f"{W.VIEW}.jsonl"
+    truth = pack / "eval_v2" / f"{W.VIEW}.jsonl"
     assert vlm_selfcheck.main(["--truth", str(truth), "--out", str(tmp_path / "ok")]) == 0
     # a truth file whose oracle has lost the desktop's world (parts, edges, log)
     # cannot ground a model's wording: the check says so, even though the gold
@@ -410,3 +448,77 @@ def test_the_card_names_the_optical_bracket_when_a_desktop_has_one(built):
     issues = text.split("## Known limitations")[1]
     assert "optical drive cage" in issues and "D03, D08" in issues
     assert "\"Optical drive cage N\"" in issues and "**not** accept" in issues
+
+
+# --------------------------------------------------------------------------- #
+# the redesign's layout (lane D2): five units, eval_v2, the new tools
+# --------------------------------------------------------------------------- #
+def test_pack_has_multi_and_eval_v2(built):
+    import re
+
+    from tda.core.export.vlm_tasks import ACTION_TASKS, PERCEPTION_TASKS_SINGLE
+
+    pack, m = built["pack"], built["manifest"]
+    assert m["eval_version"] == "eval_v2" and m["units"] == list(UNITS)
+    assert m["empty_units"] == list(EMPTY_UNITS)
+    assert not (pack / "data" / f"vlm_{W.OTHER}.jsonl").exists()
+    assert m["unit_tasks"]["multi"] == list(ACTION_TASKS)
+    assert m["unit_tasks"][W.VIEW] == list(PERCEPTION_TASKS_SINGLE)
+    # the action tasks live in multi only, perception in the camera units only
+    for unit in UNITS:
+        tasks = {r["prompt"]["task"] for r in IO.read_jsonl(pack / "data" / f"vlm_{unit}.jsonl")}
+        allowed = ACTION_TASKS if unit == "multi" else PERCEPTION_TASKS_SINGLE
+        assert tasks and tasks <= set(allowed), (unit, tasks)
+    assert m["exports"]["multi"]["primary_view"] == W.VIEW
+    assert m["exports"]["multi"]["side_views"] == [W.OTHER]
+    # eval_v2 draws every action task from multi, every perception task from a camera unit
+    for row in m["eval"]["rows"]:
+        units = set(row["by_view"])
+        if row["task"] in ACTION_TASKS:
+            assert units == {"multi"}, row
+        else:
+            assert "multi" not in units, row
+    assert {r["task"] for r in m["eval"]["rows"]} >= {"V3", "V4", "V6", "V1", "V2"}
+    multi = list(IO.read_jsonl(pack / "eval_v2" / "multi.jsonl"))
+    assert multi and all(r["label"]["view"] == "multi" for r in multi)
+    # every picture a multi record shows ships with the pack, whichever camera took it
+    for entry in IO.load_manifest(pack / "data" / "vlm_multi.jsonl").values():
+        assert "images/" + entry["path"] in m["files"]
+    # the redesign's tools ship and are listed
+    for name in ("vlm_glossary.py", "vlm_audit_carry.py"):
+        assert (pack / "tools" / name).is_file() and name in m["tools"]
+    text = (pack / "README.md").read_text(encoding="utf-8")
+    for needle in ("`eval_v2`", "eval_v2/multi.jsonl", "vlm_multi.jsonl", "### Multi-view records",
+                   "### Marks, groups, glossary", "outlined in red", "prompt.marks",
+                   "image_legend", "label.image_steps", "groups", "vlm_glossary.py",
+                   "vlm_audit_carry.py", "refuse an `eval_v1` path", "--max-images 8"):
+        assert needle in text, needle
+    assert "eval_v1/" not in text
+    venues = r"\b(CVPR|ICCV|ECCV|NeurIPS|ICLR|ICML|ICRA|IROS|CoRL|RSS|AAAI|WACV|BMVC)\b"
+    for rel in ("README.md", "eval_v2/table.md", "tools/vlm_eval_set.py",
+                "tools/vlm_selfcheck.py", "tools/vlm_references.py", "tools/vlm_run/run_eval.sh"):
+        assert not re.search(venues, (pack / rel).read_text(encoding="utf-8")), rel
+
+
+def test_selfcheck_multi_gold_one(tmp_path):
+    """The gold reply of every multi record scores 1.0 with the sidecars the export
+    writes (whatever images the generator gives each record)."""
+    import vlm_selfcheck
+
+    summary, records = _unit(tmp_path, "multi", views=("scan", "oak1", "oak2", "rs"))
+    truth = tmp_path / "vlm_multi.jsonl"
+    assert records and summary["side_views"] == ["oak1", "oak2", "rs"]
+    result = vlm_selfcheck.check(truth, tmp_path / "check")
+    assert result["ok"], result
+    assert set(result["rows"]) >= {"V3", "V4", "V12"}
+    assert all(abs(row["strict_mean"] - 1.0) < 1e-9 for row in result["rows"].values())
+    assert vlm_selfcheck.main(["--truth", str(truth), "--out", str(tmp_path / "cli")]) == 0
+
+
+def test_a_tree_without_the_redesign_tools_is_refused_before_the_export(tmp_path):
+    tree = tmp_path / "old_tree"
+    (tree / "scripts").mkdir(parents=True)
+    db_path, cache = _scene(tmp_path)
+    with pytest.raises(P.PackError, match="vlm_glossary.py, vlm_audit_carry.py"):
+        _build(tmp_path, db_path, cache, "pack", repo=tree)
+    assert not (tmp_path / "pack").exists()  # refused before anything was written

@@ -5,8 +5,9 @@
   sidecars copied beside it** (``.images_manifest.jsonl``, ``.oracle.jsonl``,
   ``.summary.json``, and ``.masks.jsonl`` when the export has one) so
   ``vlm_to_chat.py --export`` and ``vlm_score.py --truth`` take the subset as
-  a truth file of its own. The pack's ``eval_v1/<view>.jsonl`` and a pilot ids
-  file both go through here.
+  a truth file of its own. The pack's ``eval_v2/<unit>.jsonl`` and a pilot ids
+  file both go through here; a path under ``eval_v1/`` (the subset before the
+  2026-11-03 redesign) is refused with a message naming ``eval_v2``.
 * ``blind --records <jsonl> --out <jsonl>`` -- the image-ablated variant of the
   records (``prompt.images = []``, ``label.reference = "blind"``), the same
   rows ``vlm_references.py`` writes as ``blind.jsonl``, for a run directory
@@ -40,6 +41,26 @@ SIDECARS = ("images_manifest.jsonl", "oracle.jsonl", "summary.json")
 #: Copied when the export has one: the confirmed masks (W4-C's overlay variant).
 OPTIONAL_SIDECARS = ("masks.jsonl",)
 _REPEAT = re.compile(r"^(?P<stem>.+)\.r(?P<k>\d+)$")
+#: The mark wording and the bare mark tag (vlm_references.MARK_PHRASE / MARK_TAG).
+_MARK_PHRASE = re.compile(r"\s*\(?\b(?:which (?:is|are) |that (?:is|are) )?outlined in red\b\)?")
+_MARK_TAG = re.compile(r"\bparts?\s+[A-Z]\b")
+#: The current evaluation subset, and the ones its records replaced.
+EVAL_VERSION = "eval_v2"
+OLD_EVAL_VERSIONS = ("eval_v1",)
+
+
+def refuse_old_eval(*paths) -> None:
+    """``SystemExit`` naming the current subset when a path goes through an old one
+    (the same rule as the pack's ``vlm_eval_set.refuse_old_eval``; no import, this
+    file runs without the pack's other tools)."""
+    for path in paths:
+        if path is None:
+            continue
+        for part in Path(str(path)).parts:
+            if any(part == v or part.startswith(v + ".") for v in OLD_EVAL_VERSIONS):
+                raise SystemExit(f"[vlm-collect] refused: {path} is under {part}, the subset "
+                                 f"before the question redesign of 2026-11-03; use "
+                                 f"{EVAL_VERSION}/ (with a multi unit for the action tasks)")
 
 
 def read_jsonl(path) -> Iterator[dict]:
@@ -93,14 +114,29 @@ def subset(export, out, ids_file: Optional[str] = None, records: Optional[str] =
 
 
 def blind(records, out) -> int:
-    """Every record with its images taken away; question, options and label unchanged."""
-    def strip(r: dict) -> dict:
+    """Every record with its images taken away; label unchanged. The mark wording
+    ("the RAM module outlined in red") is removed from the question and the options and
+    ``prompt.marks`` / ``prompt.image_legend`` go; a record whose question names a part by
+    its mark tag alone ("part A") is left out -- the same rows as ``vlm_references.blind``."""
+    def strip(r: dict) -> Optional[dict]:
         r = json.loads(json.dumps(r))
-        r["prompt"]["images"] = []
+        prompt = r["prompt"]
+        marked = bool(prompt.pop("marks", None))
+        prompt.pop("image_legend", None)
+        texts = [prompt.get("question") or ""] + [str(o.get("target_label") or "")
+                                                  for o in prompt.get("options") or []]
+        if marked and any(_MARK_TAG.search(t) for t in texts):
+            return None
+        prompt["question"] = _MARK_PHRASE.sub("", prompt.get("question") or "")
+        for option in prompt.get("options") or []:
+            if option.get("target_label"):
+                option["target_label"] = _MARK_PHRASE.sub("", option["target_label"])
+        prompt["images"] = []
         r["label"]["reference"] = "blind"
         return r
 
-    return write_jsonl(out, (strip(r) for r in read_jsonl(records)))
+    rows = (strip(r) for r in read_jsonl(records))
+    return write_jsonl(out, (r for r in rows if r is not None))
 
 
 def split(pred, out_dir: Optional[str] = None) -> list[Path]:
@@ -237,6 +273,7 @@ def main(argv=None) -> int:
     t.add_argument("--json", default=None, help="the same as JSON")
     args = ap.parse_args(argv)
     if args.cmd == "subset":
+        refuse_old_eval(args.export, args.out, args.ids, args.records)
         n = subset(args.export, args.out, args.ids, args.records)
         print(f"[vlm-collect] subset: {n} records -> {args.out}")
     elif args.cmd == "blind":

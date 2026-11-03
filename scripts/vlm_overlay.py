@@ -24,6 +24,12 @@ does not know what to do with them.
   not V8 (the box *is* the answer: a painted box would be the answer). V15's two
   pictures are both painted when both frames are confirmed (the scanner is the
   only confirmed view on most desktops, so almost no V15 pair qualifies).
+* A ``multi`` record (``label.view == "multi"``: one moment from every camera,
+  the redesign of 2026-11-03) has **only its scanner frames painted** -- image 0,
+  and for V3 / V12 also the scanner frame of the second moment (:func:`painted_images`);
+  those must be confirmed with masks, the side cameras' pictures are shown as they
+  are. The variant's manifest points those at the plain frame, relative to
+  ``--assets`` (``../images/...`` in the pack), with ``"painted": false``.
 * The masks are the rows the export itself read: the instances the oracle's
   frame table lists with a ``visibility`` (confirmed rows, no screw hole, no
   框外零件). Their visible RLE comes from a ``<export>.masks.jsonl`` sidecar
@@ -57,7 +63,7 @@ from typing import Iterable, Iterator, Optional
 
 __all__ = ["ALPHA", "OUTLINE_PX", "PALETTE", "OverlayError", "class_colour",
            "decode_counts", "eligibility", "load_masks", "mask_image", "masks_from_coco",
-           "paint", "render", "render_export", "taxonomy_classes", "write_masks"]
+           "paint", "painted_images", "render", "render_export", "taxonomy_classes", "write_masks"]
 
 #: Painted colour weight, 0..255 (0.45): the picture stays readable under it.
 ALPHA = 115
@@ -75,6 +81,11 @@ PALETTE = (
     (75, 0, 130),
 )
 REFERENCE = "mask_overlay"
+#: The export unit whose records show one moment from every camera; only its scanner
+#: frames are painted.
+MULTI_VIEW = "multi"
+#: The view a multi record's truth, evidence and marks rest on.
+MULTI_PRIMARY = "scan"
 MASKS_SUFFIX = "masks.jsonl"
 #: Sidecars copied beside the variant so it is a truth file of its own.
 COPIED_SIDECARS = ("oracle.jsonl", "summary.json")
@@ -361,11 +372,25 @@ def paint(image, masks: list[dict], size: list, classes: list[str], *, alpha: in
     return out, painted
 
 
+def painted_images(record: dict, frames: dict[str, dict]) -> list[str]:
+    """The images of a record the overlay paints: all of them, except in a ``multi``
+    record, where only the scanner frames are (image 0, and the scanner frame of the
+    second moment of V3 / V12); a side camera's picture is shown as it is."""
+    images = list(record["prompt"].get("images") or [])
+    if record["label"].get("view") != MULTI_VIEW:
+        return images
+    views = record["label"].get("views")
+    if isinstance(views, list) and len(views) == len(images):
+        return [i for i, v in zip(images, views) if v == MULTI_PRIMARY]
+    picked = [i for i in images if (frames.get(i) or {}).get("view") == MULTI_PRIMARY]
+    return picked or images[:1]
+
+
 def eligibility(record: dict, frames: dict[str, dict], masks: dict[str, dict]) -> Optional[str]:
     """``None`` when the record is eligible, else why not."""
     if record["prompt"]["task"] == "V8":
         return "V8"
-    images = record["prompt"].get("images") or []
+    images = painted_images(record, frames)
     if not images:
         return "no_image"
     for image_id in images:
@@ -376,6 +401,16 @@ def eligibility(record: dict, frames: dict[str, dict], masks: dict[str, dict]) -
         if image_id not in masks:
             return "no_masks"
     return None
+
+
+def _relative_to(src: Path, assets: Path) -> str:
+    """``src`` as a POSIX path relative to ``assets`` (``../images/...`` in the pack)."""
+    import os
+
+    try:
+        return Path(os.path.relpath(Path(src).resolve(), Path(assets).resolve())).as_posix()
+    except ValueError:  # another drive: no relative path exists
+        return Path(src).resolve().as_posix()
 
 
 def overlay_path(entry: dict) -> str:
@@ -395,7 +430,7 @@ def render(records: Iterable[dict], manifest: dict[str, dict], frames: dict[str,
     out_manifest: dict[str, dict] = {}
     skipped: Counter = Counter()
     painted_classes: Counter = Counter()
-    written = reused = 0
+    written = reused = unpainted = 0
     done: dict[str, str] = {}
     n_in = 0
     for record in records:
@@ -404,12 +439,23 @@ def render(records: Iterable[dict], manifest: dict[str, dict], frames: dict[str,
         if why:
             skipped[why] += 1
             continue
+        paint_these = set(painted_images(record, frames))
         for image_id in record["prompt"]["images"]:
             if image_id in done:
                 continue
             entry = manifest.get(image_id)
             if entry is None:
                 raise OverlayError(f"image {image_id} is not in the manifest")
+            if image_id not in paint_these:
+                # a side camera of a multi record: the plain frame, by a path relative to
+                # the assets (the variant's manifest is read with --image-root <assets>)
+                src = (root / entry["path"]) if root else Path(entry["path"])
+                rel = _relative_to(src, assets)
+                done[image_id] = rel
+                out_manifest[image_id] = ({k: v for k, v in entry.items() if k != "path"}
+                                          | {"path": rel, "painted": False})
+                unpainted += 1
+                continue
             rel = overlay_path(entry)
             target = assets / rel
             if target.exists() and not force:
@@ -438,14 +484,16 @@ def render(records: Iterable[dict], manifest: dict[str, dict], frames: dict[str,
     manifest_rows += [out_manifest[k] for k in sorted(out_manifest)]
     summary = {"reference": REFERENCE, "records_in": n_in, "records": len(out_records),
                "skipped": dict(sorted(skipped.items())),
-               "overlays": len(done), "overlays_written": written, "overlays_reused": reused,
+               "overlays": len(done) - unpainted, "overlays_written": written,
+               "overlays_reused": reused, "unpainted_side_images": unpainted,
                "alpha": round(ALPHA / 255, 3), "outline_px": OUTLINE_PX,
                "palette": palette_table(classes),
                "masks_painted_by_class": dict(sorted(painted_classes.items())),
                "excluded": {"V8": "the box is the answer",
                             "unconfirmed": "a frame of the record is not a confirmed frame",
                             "no_masks": "a confirmed frame without masks in the source",
-                            "no_image": "the record shows no picture"}}
+                            "no_image": "the record shows no picture"},
+               "multi_rule": "only the scanner frames of a multi record are painted"}
     return out_records, manifest_rows, summary
 
 
