@@ -1,6 +1,6 @@
 # How to take each part's 3D points out of the scanner reconstructions
 
-For the 3D collaborators. Release round 3 (2026-11-02): all **66 desktops**, 2 800 scanner frames, 3 209 parts — the
+For the 3D collaborators. Sealed release (2026-11-02): all **66 desktops**, 2 800 scanner frames, 3 215 parts — the
 same recipe as the 10-desktop test package of 2026-10-26, now for every desktop, with a ready-made plan per part and a
 script that does the selection.
 
@@ -11,12 +11,12 @@ script that does the selection.
    `raw/scanner/<source_folder 去掉开头的 "UGA DATA/">/<file_name>`（`frames.json` 里逐帧写着；一般是 `P_0.png`，
    少数帧因为 `P_0` 太暗用了别的曝光，见 `burst_choice`；同一次拍摄的其他曝光 `P_0…P_9` 也在那个文件夹里）。你们的三维重建只要能做到「每个 3D 点 ↔ 这张图上的一个像素」
    （有组织点云，或与这张 RGB 配准的深度图），零件的点就是 `labels/S<nn>.png == instance_id` 的像素下的那些点。
-2. **先看计划表** `parts_3d_plan.csv`：66 台、3 209 个零件，每个零件一行，告诉你用哪条路、用哪一帧：
-   - `clean`（2 832 个）：在 `best_frame` 这一帧上它完全没被挡，掩码下的点就是扫描仪看到的它的全部表面——**直接用**；
-   - `diff`（259 个）：它从没完全露出来过（散热器在风扇下面、主板在所有东西下面……），就用拆卸顺序：它在第 r 步离开，
+2. **先看计划表** `parts_3d_plan.csv`：66 台、3 215 个零件，每个零件一行，告诉你用哪条路、用哪一帧：
+   - `clean`（2 801 个）：在 `best_frame` 这一帧上它完全没被挡，掩码下的点就是扫描仪看到的它的全部表面——**直接用**；
+   - `diff`（270 个）：它从没完全露出来过（散热器在风扇下面、主板在所有东西下面……），就用拆卸顺序：它在第 r 步离开，
      取第 r−1 帧重建里有、第 r 帧里没有（或移动了）、且落在它第 r−1 帧完整轮廓（amodal）里的点；
-   - `visible`（99 个）：既没露全、也没有同位姿的离开前后两帧（机箱本身从不离开、换过相机位姿的台），只能取可见部分；
-   - `none`（19 个）：每一帧都被完全挡住（全是看不见的接头），没有点。
+   - `visible`（110 个）：既没露全、也没有同位姿的离开前后两帧（机箱本身从不离开、换过相机位姿的台），只能取可见部分；
+   - `none`（34 个）：每一帧都被完全挡住（全是看不见的接头），没有点。
 3. **脚本** `tools/parts3d.py`（只要 numpy + Pillow）：`plan` 生成计划表，`where` 给出原图路径（可下载），
    `extract` 按标签图从有组织点云取点并输出每个零件一个 PLY，`diff` 按拆卸顺序做差。
 4. **注意**：一起离开的零件（`left_with`，825 个，比如卡扣随主板、线夹随导风罩）用 `diff` 会一起被取出，需要再按
@@ -84,33 +84,33 @@ shape 1600 × 1600 × 3 (or × 6), NaN where there is no point — i.e. the poin
 
 | route | parts | how |
 |---|---|---|
-| **clean** | 2 832 | On `best_frame` nothing covers the part (`clean: true`: visible mask = whole outline, label `visible`, inside the ROI, no shared pixels). Its points there are all of it the scanner saw. `best_frame` is the clean frame with the most pixels. |
-| **diff** | 259 | Never fully uncovered — heatsinks under fans (71), motherboards under everything (60), drive cages, covers, RAM under shrouds, screws under covers. Take the points that disappear when it leaves: present on `before_frame` inside its amodal outline there, gone (or moved by more than a tolerance) on `after_frame`. Needs `same_pose_segment = true`. |
-| **visible** | 99 | Never uncovered and no same-pose leaving pair: the chassis (57 — it never leaves), parts on D48 / D63 / D64 whose leaving crosses a camera-pose change, connectors that stay hidden. Take the visible pixels of `best_frame` (the frame where most of it shows): a partial surface. |
-| **none** | 19 | Covered on every frame (connectors behind the drive cage or under cables). No points from this view. |
+| **clean** | 2 801 | On `best_frame` nothing covers the part (`clean: true`: visible mask = whole outline, label `visible`, inside the ROI, no shared pixels). Its points there are all of it the scanner saw. `best_frame` is the clean frame with the most pixels. |
+| **diff** | 270 | Never fully uncovered — heatsinks under fans (71), motherboards under everything (60), drive cages, covers, RAM under shrouds, screws under covers. Take the points that disappear when it leaves: present on `before_frame` inside its amodal outline there, gone (or moved by more than a tolerance) on `after_frame`. Needs `same_pose_segment = true`. |
+| **visible** | 110 | Never uncovered and no same-pose leaving pair: the chassis (58 — it never leaves), parts on D48 / D63 / D64 whose leaving crosses a camera-pose change, connectors that stay hidden. Take the visible pixels of `best_frame` (the frame where most of it shows): a partial surface. |
+| **none** | 34 | Covered on every frame (connectors behind the drive cage or under cables). No points from this view. |
 
 Per class (all 66 desktops):
 
 | class | parts | clean | diff | visible | none |
 |---|---|---|---|---|---|
-| connector | 1 015 | 965 | 0 | 31 | 19 |
-| screw | 791 | 769 | 22 | 0 | 0 |
+| connector | 1 015 | 941 | 0 | 40 | 34 |
+| screw | 791 | 767 | 24 | 0 | 0 |
 | ram_latch | 494 | 492 | 1 | 1 | 0 |
 | ram_module | 127 | 105 | 22 | 0 | 0 |
 | cpu_cooler | 75 | 4 | 71 | 0 | 0 |
-| chassis | 66 | 9 | 0 | 57 | 0 |
+| chassis | 66 | 8 | 0 | 58 | 0 |
 | motherboard | 66 | 1 | 60 | 5 | 0 |
 | cpu | 65 | 59 | 6 | 0 | 0 |
 | cpu_socket_lever | 65 | 65 | 0 | 0 | 0 |
 | psu | 65 | 61 | 4 | 0 | 0 |
 | storage_drive | 65 | 64 | 1 | 0 | 0 |
 | cover | 63 | 41 | 20 | 2 | 0 |
-| optical_drive | 39 | 39 | 0 | 0 | 0 |
-| drive_cage | 38 | 16 | 22 | 0 | 0 |
-| expansion_card | 36 | 31 | 5 | 0 | 0 |
+| drive_cage | 46 | 24 | 22 | 0 | 0 |
+| optical_drive | 37 | 37 | 0 | 0 | 0 |
+| expansion_card | 36 | 23 | 13 | 0 | 0 |
 | screw_hole | 35 | 14 | 21 | 0 | 0 |
-| cable_clip | 35 | 32 | 0 | 3 | 0 |
-| others (latches, case fans, brackets, misc) | 69 | 65 | 4 | 0 | 0 |
+| cable_clip | 35 | 31 | 0 | 4 | 0 |
+| others (latches, case fans, brackets, misc) | 69 | 64 | 5 | 0 | 0 |
 
 ## 4. Route 1 / clean: the points under the label map
 
