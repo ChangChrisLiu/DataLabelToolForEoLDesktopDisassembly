@@ -5,20 +5,22 @@
 # templates, an interactive node and a laptop:
 #
 #   PACK        the vlmpack copy (required)              e.g. $SCRATCH/vlmpack_2026-11-02
-#   VIEW        scan | oak1 | oak2 | rs (required)
+#   VIEW        scan | oak1 | oak2 | rs | multi (required; multi = the action tasks, every
+#               camera of a moment in one request, up to 8 images)
 #   BACKEND     gold | openai | vllm | transformers      (default vllm)
 #   MODEL       model id: HF id / local path / API name  (required unless gold)
 #   MODEL_TAG   directory name for the model             (default: MODEL with / -> _)
 #   VARIANT     image | blind | overlay                  (default image; blind = image-ablated;
 #                                                         overlay = GT masks painted on the frame, W4-C)
-#   OVERLAYS    where the painted frames live / go       (default $PACK/overlays; the pack ships eval_v1's,
+#   OVERLAYS    where the painted frames live / go       (default $PACK/overlays; the pack ships eval_v2's,
 #                                                         missing ones are painted from the .masks.jsonl sidecar)
 #   MASKS       a masks sidecar to paint from            (default: <truth>.masks.jsonl beside the subset)
-#   SUBSET      eval | all | <ids file>                  (default eval: $PACK/eval_v1/$VIEW.jsonl)
+#   SUBSET      eval | all | <ids file>                  (default eval: $PACK/eval_v2/$VIEW.jsonl;
+#                                                         a path under eval_v1/ is refused)
 #   RUNS        where runs go                            (default $PACK/runs)
 #   TOOLS       the pack's tools directory               (default $PACK/tools)
 #   IMAGE_ROOT  what the manifest paths are relative to  (default $PACK/images; see the pack README)
-#   TRUTH       the view's full export with sidecars     (default: $PACK/$VIEW.jsonl or $PACK/vlm_$VIEW.jsonl)
+#   TRUTH       the unit's full export with sidecars     (default: $PACK/$VIEW.jsonl or $PACK/vlm_$VIEW.jsonl)
 #   CHAT_FORMAT openai | qwen | internvl                 (default openai -- vlm_run reads all three)
 #   ROI         none | view                              (default none)
 #   MAX_SIDE    longest image side sent, pixels          (default: unchanged)
@@ -28,12 +30,24 @@
 #   RUN_ARGS    anything else for vlm_run.py             (e.g. "--tensor-parallel 2 --dtype bf16")
 #   PYTHON      interpreter                              (default python)
 #
-# Output: $RUNS/$MODEL_TAG/$VARIANT/$VIEW/{truth/,chat.jsonl,pred.jsonl,run.log,score/}
+# Output: $RUNS/$MODEL_TAG/$VARIANT/$VIEW/{truth/,chat.jsonl,chat_assets/,pred.jsonl,run.log,score/}
+# (chat_assets/ holds the converter's copies: crops, scaled pictures, the marks drawn in red).
 # Re-running resumes: vlm_run.py skips the ids already in pred.jsonl.
 set -euo pipefail
 
 : "${PACK:?set PACK to the vlmpack directory}"
-: "${VIEW:?set VIEW to scan | oak1 | oak2 | rs}"
+: "${VIEW:?set VIEW to scan | oak1 | oak2 | rs | multi}"
+case "$VIEW" in
+  scan|oak1|oak2|rs|multi) ;;
+  *) echo "VIEW must be scan, oak1, oak2, rs or multi (got $VIEW)" >&2; exit 2 ;;
+esac
+EVAL_VERSION=eval_v2
+# the subset before the 2026-11-03 question redesign: its records are the old questions
+for p in "${SUBSET:-}" "${TRUTH:-}"; do
+  case "/$p/" in
+    */eval_v1/*) echo "[run_eval] refused: $p is under eval_v1, the subset before the question redesign; use $EVAL_VERSION/" >&2; exit 2 ;;
+  esac
+done
 BACKEND="${BACKEND:-vllm}"
 MODEL="${MODEL:-}"
 if [[ "$BACKEND" != "gold" && -z "$MODEL" ]]; then echo "set MODEL" >&2; exit 2; fi
@@ -50,6 +64,10 @@ MAX_TOKENS="${MAX_TOKENS:-2048}"
 REPEAT="${REPEAT:-1}"
 PYTHON="${PYTHON:-python}"
 RUN_ARGS="${RUN_ARGS:-}"
+# a multi request carries every camera of a moment (V3 / V12: of two moments): up to 8 images
+if [[ "$VIEW" == "multi" && "$BACKEND" == "vllm" && "$RUN_ARGS" != *--max-images* ]]; then
+  RUN_ARGS="$RUN_ARGS --max-images 8"
+fi
 
 # the view's full export (records + .images_manifest.jsonl + .oracle.jsonl + .summary.json)
 if [[ -z "${TRUTH:-}" ]]; then
@@ -68,7 +86,7 @@ echo "[run_eval] $BACKEND ${MODEL:-gold} / $VARIANT / $VIEW -> $OUT"
 SUB="$OUT/truth/$VIEW.jsonl"
 case "$SUBSET" in
   eval) "$PYTHON" "$RUN/vlm_collect.py" subset --export "$TRUTH" --out "$SUB" \
-          --records "$PACK/eval_v1/$VIEW.jsonl" ;;
+          --records "$PACK/$EVAL_VERSION/$VIEW.jsonl" ;;
   all)  "$PYTHON" "$RUN/vlm_collect.py" subset --export "$TRUTH" --out "$SUB" --records "$TRUTH" ;;
   *)    "$PYTHON" "$RUN/vlm_collect.py" subset --export "$TRUTH" --out "$SUB" --ids "$SUBSET" ;;
 esac

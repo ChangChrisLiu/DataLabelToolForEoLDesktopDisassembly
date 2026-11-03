@@ -1,5 +1,5 @@
 #!/bin/bash
-# One open model x one input variant, an array over the four views; vllm offline on one GPU.
+# One open model x one input variant, an array over the five units; vllm offline on one GPU.
 #   sbatch --export=ALL,PACK=$SCRATCH/vlmpack_2026-11-02,MODEL=Qwen/Qwen3-VL-8B-Instruct,VARIANT=image open_model.sbatch
 #   sbatch --export=ALL,PACK=...,MODEL=OpenGVLab/InternVL3_5-8B,VARIANT=blind open_model.sbatch
 # Pilot (100 items, one view): add SUBSET=$PACK/pilot_ids.txt and --array=0.
@@ -9,7 +9,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:a100:1
-#SBATCH --array=0-3
+#SBATCH --array=0-4
 #SBATCH --output=logs/%x_%A_%a.out
 # TODO(hprc): the GPU partition / account of the cluster you are on, e.g.
 ##SBATCH --partition=gpu
@@ -27,7 +27,9 @@ export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"       # pre-fetch with `hf download
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 export PYTHONUNBUFFERED=1
 
-VIEWS=(scan oak1 oak2 rs)
+# the five export units: the camera views (perception) and multi (the action tasks);
+# submit_matrix.sh passes VIEW_LIST (and a matching --array) to run a subset of them
+read -r -a VIEWS <<< "${VIEW_LIST:-scan oak1 oak2 rs multi}"
 export PACK="${PACK:?set PACK}"
 export MODEL="${MODEL:?set MODEL to the HF id or local path}"
 export VIEW="${VIEWS[$SLURM_ARRAY_TASK_ID]}"
@@ -37,5 +39,7 @@ export SUBSET="${SUBSET:-eval}"
 export CHAT_FORMAT="${CHAT_FORMAT:-openai}"
 export MAX_SIDE="${MAX_SIDE:-1568}"
 export MAX_TOKENS="${MAX_TOKENS:-2048}"
-export RUN_ARGS="${RUN_ARGS:---dtype bf16 --batch-size 16 --max-images 2 --gpu-mem 0.90}"
+# a multi request shows every camera of a moment (V3 / V12: two moments): up to 8 images
+if [[ "$VIEW" == "multi" ]]; then MAX_IMAGES="${MAX_IMAGES:-8}"; else MAX_IMAGES="${MAX_IMAGES:-2}"; fi
+export RUN_ARGS="${RUN_ARGS:---dtype bf16 --batch-size 16 --max-images $MAX_IMAGES --gpu-mem 0.90}"
 bash "$PACK/tools/vlm_run/run_eval.sh"
