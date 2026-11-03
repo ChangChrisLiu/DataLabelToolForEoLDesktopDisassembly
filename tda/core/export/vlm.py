@@ -250,8 +250,13 @@ def _read_view(db: Db, ctx: DesktopCtx, desktop: int, view: str,
     at all: whatever the propagation drew there nobody looked at, so neither a
     box nor a visibility of it reaches a record (:attr:`FrameData.confirmed`).
     """
+    from tda.core.export.vlm_groups import HIDDEN_IN_PLACE
+    from tda.core.truth_inputs import InputCache
+    from tda.core.vis_review import amodal_box
+
     frames: dict[int, FrameData] = {}
     order: list[int] = []
+    amodal_cache = InputCache()
     for row in db.frames_for(desktop, view):
         step = int(row["step"])
         if not ctx.exportable(step):
@@ -274,6 +279,20 @@ def _read_view(db: Db, ctx: DesktopCtx, desktop: int, view: str,
         for inst, fo in db.frame_overrides(key).items():
             if fo.occluder and inst in slim:
                 slim[inst]["occluder"] = fo.occluder
+        # the redesign (2026-11-03): a part present and wholly hidden is outlined on the
+        # image by its amodal box, so "can the CPU come off?" under the cooler can be asked
+        hidden = [inst for inst, r in slim.items() if r.get("visibility") in HIDDEN_IN_PLACE]
+        if hidden:
+            hw = (row.get("aux") or {}).get("hw") or next(
+                (r["visible_rle"]["size"] for r in compiled.values()
+                 if (r.get("visible_rle") or {}).get("size")), None)
+            if hw:
+                for inst in hidden:
+                    box = amodal_box(db, key, inst, str(slim[inst].get("placement") or ""),
+                                     (int(hw[0]), int(hw[1])), amodal_cache)
+                    if box is not None:
+                        x0, y0, x1, y1 = box
+                        slim[inst]["amodal_box"] = [x0, y0, x1 - x0, y1 - y0]
         frames[step] = FrameData(
             step=step, image=frame_file_name(row, key),
             image_id=opaque_image_id(desktop, view, step), verified=verified,
