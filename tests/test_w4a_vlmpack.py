@@ -66,6 +66,96 @@ def built(tmp_path_factory) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# the export units (redesign of 2026-11-03, lane D1)
+# --------------------------------------------------------------------------- #
+def _unit(tmp: Path, unit: str, **kw) -> tuple[dict, list[dict]]:
+    from tda.core.export.vlm import export_vlm
+
+    db = Db(str(tmp / f"{unit}.sqlite"))
+    tax = W.build(db, **kw)
+    out = tmp / f"vlm_{unit}.jsonl"
+    summary = export_vlm(db, tax, [W.DESKTOP], unit, str(out))
+    db.close()
+    return summary, list(IO.read_jsonl(out))
+
+
+def test_multi_unit_has_only_action_tasks(tmp_path):
+    from tda.core.export.vlm import MULTI_VIEW, export_vlm
+    from tda.core.export.vlm_tasks import ACTION_TASKS
+
+    summary, records = _unit(tmp_path, MULTI_VIEW)
+    tasks = {r["prompt"]["task"] for r in records}
+    assert tasks and tasks <= set(ACTION_TASKS)
+    assert {"V3", "V4", "V6", "V12"} <= tasks
+    assert summary["tasks"] == list(ACTION_TASKS)
+    assert summary["view"] == MULTI_VIEW and summary["primary_view"] == W.VIEW
+    assert summary["side_views"] == [W.OTHER]
+    assert all(r["label"]["view"] == MULTI_VIEW for r in records)
+    assert all(f"-{MULTI_VIEW}-" in r["label"]["readable_id"] for r in records)
+    # the truth is the scanner's (gold tier, confirmed)
+    assert all(r["label"]["tier"] == "gold" for r in records)
+    # every image a record shows is in the manifest and has a state table
+    out = tmp_path / f"vlm_{MULTI_VIEW}.jsonl"
+    manifest = IO.load_manifest(out)
+    _, frames = IO.load_oracle(out)
+    used = {img for r in records for img in r["prompt"]["images"]}
+    assert used and set(manifest) == used and used <= set(frames)
+    assert {e["view"] for e in manifest.values()} <= {W.VIEW, W.OTHER}
+    # a non-action task is refused, not silently dropped
+    db = Db(str(tmp_path / "refuse.sqlite"))
+    tax = W.build(db)
+    with pytest.raises(ValueError, match="action tasks"):
+        export_vlm(db, tax, [W.DESKTOP], MULTI_VIEW, str(tmp_path / "x.jsonl"), tasks=["V1"])
+    db.close()
+
+
+def test_view_units_have_only_perception_tasks(tmp_path):
+    from tda.core.export.vlm_tasks import PERCEPTION_TASKS_SINGLE
+
+    found: dict[str, set[str]] = {}
+    for view in VIEWS:
+        summary, records = _unit(tmp_path, view)
+        found[view] = {r["prompt"]["task"] for r in records}
+        assert found[view] <= set(PERCEPTION_TASKS_SINGLE), (view, found[view])
+        assert summary["tasks"] == list(PERCEPTION_TASKS_SINGLE)
+        assert summary["primary_view"] == view and summary["side_views"] == []
+        assert all(r["label"]["view"] == view for r in records)
+    assert {"V1", "V2", "V15"} <= found[W.VIEW]
+
+
+def test_multi_unit_shows_each_moment_from_every_camera_that_has_it(tmp_path, monkeypatch):
+    """The side views land in ``TaskCtx.side_frames``: ``moment(step)`` is the scanner
+    frame first, then oak1 / oak2 / rs where that camera has the step (one photo missing
+    -> a shorter moment)."""
+    from tda.core.export import vlm as V
+
+    db = Db(str(tmp_path / "four.sqlite"))
+    tax = W.build(db, views=("scan", "oak1", "oak2", "rs"))
+    db.conn.execute("UPDATE frame SET missing=1 WHERE desktop=? AND view='oak2' AND step=3",
+                    (W.DESKTOP,))
+    db.conn.commit()
+    seen: dict[int, list[tuple[str, int]]] = {}
+
+    def probe(tc, step):
+        assert tc.view == V.MULTI_VIEW
+        seen[step] = [(f.image_id, f.step) for f in tc.moment(step)]
+        return []
+
+    monkeypatch.setitem(V.GENERATORS, "V4", probe)
+    summary = V.export_vlm(db, tax, [W.DESKTOP], V.MULTI_VIEW, str(tmp_path / "m.jsonl"),
+                           tasks=["V4"])
+    db.close()
+    assert summary["side_views"] == ["oak1", "oak2", "rs"]
+    from tda.core.export.vlm_tasks import opaque_image_id
+
+    def ids(step, views):
+        return [(opaque_image_id(W.DESKTOP, v, step), step) for v in views]
+
+    assert seen[2] == ids(2, ("scan", "oak1", "oak2", "rs"))
+    assert seen[3] == ids(3, ("scan", "oak1", "rs"))
+
+
+# --------------------------------------------------------------------------- #
 # the layout and the manifest
 # --------------------------------------------------------------------------- #
 def test_the_pack_has_the_promised_layout(built):
