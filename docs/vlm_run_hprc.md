@@ -1,5 +1,7 @@
 # 在 HPRC 上跑 VLM 评测：从拷包到分数表
 
+> **2026-11-03 注**：英文 `HANDOFF.md` §8 的命令优先于本文（包保持只读、`RUNS=$WORK/runs`、`MAX_TOKENS ≥ 2048`、overlay 只跑 scan、重复子集放工作目录）。本文从 `$PACK` 目录运行的示例命令，请改为在 `$WORK` 里运行并显式写 `$PACK/tools/...`。
+
 这份是**照着做**的流程（W4-B，2026-11）。模型不在本工作站上跑：评测包（W4-A 的 `exports/vlmpack_<date>/`）
 拷到 TAMU HPRC（或任何有 GPU / 有 API 出口的机器），用包里 `tools/` 的脚本完成
 导出子集 → 输入变体 → 对话请求 → 模型 → 评分 → 汇总 一条链，全程不需要 `tda` 包，也不碰数据库。
@@ -27,14 +29,14 @@
 
 ```bash
 # 工作站 → HPRC（Grace 用 grace.hprc.tamu.edu；大包走数据传输节点或 Globus）
-rsync -avP exports/vlmpack_2026-11-05/ USER@grace.hprc.tamu.edu:/scratch/user/USER/vlmpack_2026-11-05/
+rsync -avP exports/vlmpack_2026-11-02/ USER@grace.hprc.tamu.edu:/scratch/user/USER/vlmpack_2026-11-02/
 ```
 
 到了集群先核对包的 `manifest.json`（sha256，见包内 README），再：
 
 ```bash
-export PACK=$SCRATCH/vlmpack_2026-11-05
-ls $PACK            # <view>.jsonl + .images_manifest.jsonl + .oracle.jsonl + .summary.json, eval_v1/, images/, tools/
+export PACK=$SCRATCH/vlmpack_2026-11-02
+ls $PACK            # data/（vlm_<view>.jsonl + sidecar）、eval_v1/、images/、overlays/、tools/、manifest.json
 ```
 
 `run_eval.sh` 默认按 `$PACK/<view>.jsonl` 或 `$PACK/vlm_<view>.jsonl` 找全量导出，图像根目录默认 `$PACK/images`；
@@ -51,7 +53,7 @@ python -m venv $SCRATCH/venvs/vlmpack && source $SCRATCH/venvs/vlmpack/bin/activ
 pip install -U pip
 pip install -r $PACK/tools/vlm_run/requirements.txt                 # 转换器 + 评分器 + gold + openai 后端
 pip install -r $PACK/tools/vlm_run/requirements-vllm.txt            # 开源模型（GPU 节点才需要）
-pip freeze > $PACK/tools/vlm_run/requirements.lock                   # 装成功后锁一份，写进论文附录
+pip freeze > $WORK/requirements.lock                                 # 装成功后锁一份，写进论文附录（写到工作目录，不写进包）
 ```
 
 权重放 scratch，不放 `$HOME`（配额小）。登录节点有网，先下好，计算节点离线跑：
@@ -106,7 +108,7 @@ EOF
 
 ```bash
 VIEW=scan; OUT=runs/pilot_qwen3vl8b/image/$VIEW
-python tools/vlm_run/vlm_collect.py subset --export $PACK/$VIEW.jsonl --out $OUT/truth/$VIEW.jsonl --ids pilot_ids.txt
+python tools/vlm_run/vlm_collect.py subset --export $PACK/data/vlm_$VIEW.jsonl --out $OUT/truth/$VIEW.jsonl --ids pilot_ids.txt
 python tools/vlm_to_chat.py --export $OUT/truth/$VIEW.jsonl --format openai --image-root $PACK/images --out $OUT/chat.jsonl
 python tools/vlm_run/vlm_run.py --backend vllm --model Qwen/Qwen3-VL-8B-Instruct --chat $OUT/chat.jsonl \
   --out $OUT/pred.jsonl --image-root $PACK/images --max-side 1568 --dry-run
@@ -136,6 +138,15 @@ squeue -u $USER
 每个作业 = 一个模型 × 一种变体（`image` 原图 / `blind` 去图像，题面与选项不变）× array 四个视角，评测集
 `eval_v1/<view>.jsonl`（所有模型同一子集）。闭源模型另跑 **重复子集**（`eval_v1/repeat.ids.txt`，`REPEAT=3`，
 每题问三次写 `raw_text_1..3`）。
+
+**重复子集不在包里，第一次跑闭源前先生成（确定性，300 条，每题 25 条，覆盖 66 台）**：
+
+```bash
+cd $PACK && mkdir -p runs
+cat eval_v1/scan.jsonl eval_v1/oak1.jsonl eval_v1/oak2.jsonl eval_v1/rs.jsonl > runs/eval_all.jsonl
+PYTHONDONTWRITEBYTECODE=1 python tools/vlm_sample.py --export runs/eval_all.jsonl --out runs/repeat \n    --purpose repeat --seed 0 --test-desktops 1-66
+cp runs/repeat/repeat.ids.txt eval_v1/repeat.ids.txt     # 300 行，第一行 rec_68740f3181306b86
+```
 
 第三种变体 `VARIANT=overlay`（W4-C）：把**已确认的可见掩码**按类别颜色画在原图上（固定透明度、细描边，不写字不画框），
 只对每张图都是已确认帧且有掩码的题出（V8 除外——框就是答案），是论文的"感知参照线"。包里 `overlays/` 已预先画好
