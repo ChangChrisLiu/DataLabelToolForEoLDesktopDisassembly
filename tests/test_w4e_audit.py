@@ -1,4 +1,5 @@
-"""W4-E: the fillable audit sheet, the audit summary (Wilson) and the human-baseline form.
+"""W4-E: the fillable audit sheet, the audit summary (Wilson) and the timed answer form
+(the human baseline is out of the plan since 2026-11-03; the form stays a tool).
 
 All on the :mod:`tests.w3b_scene` export (scanner confirmed, OAK1 frames only)
 with a tiny fake frame cache; the pack test builds ``scripts/export_vlmpack.py``
@@ -34,10 +35,19 @@ import vlm_score  # noqa: E402
 VIEWS = (W.VIEW, W.OTHER)
 
 
+#: The pack's export units of the scene (the redesign of 2026-11-03): the scanner's
+#: perception unit and the multi unit of the action tasks (OAK1's unit is empty: nothing
+#: confirmed, no V15 pair of its own; its pictures ship in the multi unit).
+UNITS = (W.VIEW, "multi")
+
+
 @pytest.fixture(scope="module")
 def scene(tmp_path_factory) -> dict:
-    """The two-view export, a fake ``images/`` tree and ``eval_v1`` with a 20-item audit."""
+    """The two-view export (every task per view), the pack's units, a fake ``images/`` tree and
+    ``eval_v2`` drawn from the units with a 20-item audit."""
     from PIL import Image
+
+    from tda.core.export.vlm import unit_tasks
 
     tmp = tmp_path_factory.mktemp("w4e")
     db = Db(str(tmp / "s.sqlite"))
@@ -46,16 +56,23 @@ def scene(tmp_path_factory) -> dict:
     data.mkdir()
     for view in VIEWS:
         export_vlm(db, tax, [W.DESKTOP], view, str(data / f"vlm_{view}.jsonl"))
+    units = tmp / "units"
+    units.mkdir()
+    for unit in UNITS:
+        export_vlm(db, tax, [W.DESKTOP], unit, str(units / f"vlm_{unit}.jsonl"),
+                   tasks=unit_tasks(unit))
     db.close()
     images = tmp / "images"
-    for view in VIEWS:
-        for entry in IO.load_manifest(data / f"vlm_{view}.jsonl").values():
+    manifests = [data / f"vlm_{v}.jsonl" for v in VIEWS] + [units / f"vlm_{u}.jsonl" for u in UNITS]
+    for export in manifests:
+        for entry in IO.load_manifest(export).values():
             path = images / entry["path"]
             path.parent.mkdir(parents=True, exist_ok=True)
-            Image.new("RGB", W.HW, (entry["step"] * 20 % 255, 80, 120)).save(path)
-    eval_dir = tmp / "eval_v1"
-    E.build([data / f"vlm_{v}.jsonl" for v in VIEWS], eval_dir, seed=0, audit=20)
-    exports = [eval_dir / f"{v}.jsonl" for v in VIEWS]
+            if not path.is_file():
+                Image.new("RGB", W.HW, (entry["step"] * 20 % 255, 80, 120)).save(path)
+    eval_dir = tmp / "eval_v2"
+    E.build([units / f"vlm_{u}.jsonl" for u in UNITS], eval_dir, seed=0, audit=20)
+    exports = [eval_dir / f"{u}.jsonl" for u in UNITS]
     return {"tmp": tmp, "data": data, "images": images, "eval": eval_dir, "exports": exports,
             "audit": list(IO.read_jsonl(eval_dir / "audit" / "audit.jsonl"))}
 
@@ -541,8 +558,12 @@ def test_the_human_form_has_no_answer_in_it(scene, human):
         assert f"D{W.DESKTOP:02d}" not in article.split("<img")[0]  # no desktop / step in the header
         # the gold option of a multiple choice is not marked
         assert 'class="gold"' not in article
-        # no boxes shipped with the frame
-        assert 'data-boxes="[]"' in article
+        # no evidence boxes shipped with the frame: only the red outlines the model sees
+        # (redesign 2026-11-03), each on its own image
+        shipped = [json.loads(html_unescape(b)) for b in re.findall(r'data-boxes="([^"]*)"', article)]
+        assert len(shipped) == len(r["prompt"]["images"])
+        assert all(b["kind"] == "mark" for bs in shipped for b in bs)
+        assert [len(bs) for bs in shipped] == [len(S.marks_of(r, i)) for i in range(len(shipped))]
     for page in human["pages"]:
         assert "<script src" not in page and "answered_at" in page and "started_at" in page
         assert 'data-classes="' in page and "IntersectionObserver" in page
@@ -732,7 +753,7 @@ def test_the_pack_ships_the_sheet_and_the_tools(pack):
     import export_vlmpack as P
 
     root = pack["pack"]
-    audit = root / "eval_v1" / "audit"
+    audit = root / "eval_v2" / "audit"
     assert (audit / "audit.sheet.b01.html").is_file() and (audit / "audit.sheet.csv").is_file()
     page = (audit / "audit.sheet.b01.html").read_text(encoding="utf-8")
     srcs = set(re.findall(r'<img src="([^"]+)"', page))
@@ -746,18 +767,25 @@ def test_the_pack_ships_the_sheet_and_the_tools(pack):
     sheet = pack["summary"]["eval"]["audit"]["sheet"]
     assert sheet["batches"] == 1 and sheet["files"] == ["audit.sheet.b01.html", "audit.sheet.csv"]
     files = pack["manifest"]["files"]
-    assert "eval_v1/audit/audit.sheet.b01.html" in files and "eval_v1/audit/audit.sheet.csv" in files
-    assert files["eval_v1/audit/audit.sheet.csv"]["sha256"] == _sha(audit / "audit.sheet.csv")
+    assert "eval_v2/audit/audit.sheet.b01.html" in files and "eval_v2/audit/audit.sheet.csv" in files
+    assert files["eval_v2/audit/audit.sheet.csv"]["sha256"] == _sha(audit / "audit.sheet.csv")
     # the vendored tools import from the pack alone (the build already did this with -I)
     P.smoke_import(root / "tools")
 
 
-def test_the_card_has_the_audit_and_human_baseline_paragraph(pack):
+def test_the_card_has_the_author_audit_paragraph(pack):
+    # (redesign 2026-11-03: the human baseline is out of the plan -- spec section 2 --
+    # so the card keeps the author audit only; the answer form ships as a tool, outside
+    # the evaluation plan)
     text = (pack["pack"] / "README.md").read_text(encoding="utf-8")
-    assert "## Audit and human baseline" in text
-    for needle in ("audit.sheet.b01.html", "audit.sheet.csv", "vlm_audit_summary.py",
-                   "Wilson 95 % intervals", "vlm_human_sheet.py build", "vlm_human_sheet.py convert",
-                   "without answers", "not hand them to a human-baseline participant",
-                   "training signal", "started_at", "0 of 300 -> [0, 1.3 %]"):
+    assert "## Author audit" in text and "## Audit and human baseline" not in text
+    for needle in ("eval_v2/audit/audit.sheet.b01.html", "audit.sheet.csv",
+                   "vlm_audit_summary.py", "--records eval_v2/audit/audit.jsonl",
+                   "Wilson 95 % intervals", "0 of 300 -> [0, 1.3 %]", "vlm_audit_carry.py",
+                   "with the marks drawn", "do not show them to anyone answering the questions"):
         assert needle in text, needle
+    for gone in ("vlm_human_sheet.py build", "vlm_human_sheet.py convert",
+                 "human-baseline participant", "eval_v1/"):
+        assert gone not in text, gone
+    assert "vlm_human_sheet.py" in text and "not part of the evaluation plan" in text
     assert "D:/DataSet" not in text
