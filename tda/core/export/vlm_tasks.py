@@ -76,6 +76,7 @@ from tda.core.export.vlm_groups import (
     mark_box,
     match_class,
     part_groups,
+    plural,
     present,
     target_class,
     to_do,
@@ -1034,6 +1035,221 @@ def unmet_for(tc: TaskCtx, verb: str, target: str, state: FrameState) -> list[Ed
                  state, "required")
 
 
+# --------------------------------------------------------------------------- #
+# reasons in what the picture shows (owner 2026-11-04)
+# --------------------------------------------------------------------------- #
+#: How an edge's blocker stands to its target, as a plain verb (``answer.why``): the model never
+#: sees the graph, so no reason a person or a model reads says ``locked_by`` or ``violates_edge``.
+RELATION_WORDS = {"fastened_by": "fastens", "connected_to": "is plugged into",
+                  "locked_by": "locks", "covered_by": "covers", "blocked_by": "is in the way of"}
+#: ... and a ``blocked_by`` edge by its mode.
+BLOCKED_RELATION_WORDS = {"physical_path": "is in the way of", "mounted": "is mounted on",
+                          "contained": "sits in", "tool_access": "blocks access to",
+                          "cable_tension": "holds back by its cable"}
+#: What a blocker looks like once it no longer holds the part.
+MET_WORDS = {REMOVED: "out", "open": "open", "loosened": "undone", "unplugged": "unplugged",
+             "displaced": "moved aside", "released": "released"}
+#: "the CPU can be <taken out>".
+PARTICIPLES = {"remove": "taken out", "displace": "moved aside", "open": "opened",
+               "unscrew": "unscrewed", "disconnect": "unplugged", "release": "released",
+               "reorient": "turned"}
+#: The order the clauses of one reason are told in: what is over it, in it, holding it, on it.
+_CLAUSE_ORDER = ("covered_by", "blocked_by", "locked_by", "fastened_by", "connected_to")
+
+
+def relation_word(edge: Edge) -> str:
+    """The plain verb of ``edge`` (:data:`RELATION_WORDS`): "locks", "is mounted on"."""
+    if edge.type == "blocked_by":
+        return BLOCKED_RELATION_WORDS.get(edge.mode or "", RELATION_WORDS["blocked_by"])
+    return RELATION_WORDS.get(edge.type, "holds")
+
+
+def _met_word(edge: Edge, current: str) -> str:
+    if edge.type == "covered_by" and current == REMOVED:
+        return "off"
+    if edge.type == "connected_to" and current == REMOVED:
+        return "unplugged"
+    return MET_WORDS.get(current, current)
+
+
+def _blocker_words(tc: "TaskCtx", key: str, many: bool) -> str:
+    if key.startswith(CABLE_PREFIX):
+        words = cable_words(key)[len("the "):]
+        return plural(words) if many else words
+    return class_phrase(tc.ctx, key, many=many)
+
+
+def _anchored(tc: "TaskCtx", blocker: str, targets: Sequence[str]) -> bool:
+    """Does ``blocker`` belong to one of ``targets`` (its latch, its screw, its plug)?"""
+    rec = tc.ctx.instances.get(blocker)
+    if rec is None:
+        return False
+    owners = {rec.attrs.get("of"), rec.fastens, rec.socket_host, rec.parent}
+    return bool(owners & set(targets))
+
+
+def _and(items: Sequence[str]) -> str:
+    items = [i for i in items if i]
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def asked_words(tc: "TaskCtx", ident: str) -> tuple[str, bool]:
+    """``("the CPU", False)`` / ``("the RAM modules", True)``: the part a reason is about."""
+    group = tc.group_by_id(ident)
+    if group is not None:
+        return f"the {group.label}", True
+    if ident.startswith(CABLE_PREFIX):
+        return cable_words(ident), False
+    return f"the {class_phrase(tc.ctx, ident)}", False
+
+
+def reason_clauses(tc: "TaskCtx", edges: Sequence[Edge], state: FrameState, *, met: bool,
+                   asked: Optional[tuple[str, Sequence[str]]] = None,
+                   every: Optional[Sequence[Edge]] = None) -> list[str]:
+    """One clause per kind of thing that still holds the part (``met = False``: "the CPU socket
+    lever still locks the CPU") or that no longer does (``met = True``: "both its RAM latches
+    are open"), in words of what the picture shows -- classes and counts, never an ordinal,
+    never an edge type.
+
+    ``asked`` is ``(ident, members)``: edges on its members speak of "it" / "them"; ``every``
+    is all the edges of that kind (met and unmet), so a count says "2 of its 4 PSU screws".
+    """
+    ident, members = asked if asked is not None else (None, ())
+    members = list(members)
+    own_words, own_many = asked_words(tc, ident) if ident is not None else ("", False)
+    every = list(every if every is not None else edges)
+
+    def target_key(edge: Edge) -> str:
+        return "asked" if edge.target in members else edge.target
+
+    def blocker_key(edge: Edge) -> str:
+        return _blocker_words(tc, edge.blocker, False)
+
+    totals: dict[tuple, set] = {}
+    for edge in every:
+        totals.setdefault((target_key(edge), edge.type, edge.mode or "", blocker_key(edge)),
+                          set()).add(edge.blocker)
+    groups: dict[tuple, dict[str, set]] = {}
+    for edge in edges:
+        current = blocker_state(state, edge.blocker)
+        if current is None:
+            continue
+        word = _met_word(edge, current) if met else ""
+        head = (target_key(edge), edge.type, edge.mode or "", word)
+        groups.setdefault(head, {}).setdefault(blocker_key(edge), set()).add(edge.blocker)
+
+    def order(head):
+        kind = _CLAUSE_ORDER.index(head[1]) if head[1] in _CLAUSE_ORDER else len(_CLAUSE_ORDER)
+        return (head[0] != "asked", head[0], kind, head[2], head[3])
+
+    out: list[str] = []
+    for head in sorted(groups, key=order):
+        tkey, etype, mode, word = head
+        if tkey == "asked":
+            targets, tgt = members, (f"all {own_words}" if own_many else own_words)
+            pron, poss = ("them", "their") if own_many else ("it", "its")
+        else:
+            targets, tgt = [tkey], asked_words(tc, tkey)[0]
+            pron, poss = tgt, f"{tgt}'s"
+        subjects, count = [], 0
+        for words, blockers in sorted(groups[head].items()):
+            n = len(blockers)
+            total = len(totals.get((tkey, etype, mode, words), blockers))
+            count += n
+            first = sorted(blockers)[0]
+            mine = _anchored(tc, first, targets)
+            phrase = _blocker_words(tc, first, n > 1)
+            many = _blocker_words(tc, first, True)
+            who = f"{poss} " if mine and tkey == "asked" else "the "
+            if n == 1 and total == 1:
+                subjects.append(f"the {phrase}")
+            elif n == total == 2:
+                subjects.append(f"both {who}{phrase}")
+            elif n == total:
+                subjects.append(f"all {n} of {who}{phrase}" if who != "the "
+                                else f"all {n} {phrase}")
+            else:
+                subjects.append(f"{n} of {who}{total} {many}")
+        subject = _and(subjects)
+        plural_subject = count > 1
+        be = "are" if plural_subject else "is"
+        s = "" if plural_subject else "s"
+        if met:
+            where = {"covered_by": f" over {pron}",
+                     "blocked_by": {"mounted": f" mounted on {pron}", "contained": f" in {pron}",
+                                    "cable_tension": ""}.get(mode, f" in {poss} way")}.get(etype, "")
+            out.append(f"{subject}{where} {be} {word}")
+            continue
+        if etype == "fastened_by":
+            out.append(f"{subject} {be} still in" + ("" if tkey == "asked" else f", holding {tgt}"))
+        elif etype == "connected_to":
+            out.append(f"{subject} {be} still plugged in" + ("" if tkey == "asked" else f" to {tgt}"))
+        elif etype == "locked_by":
+            out.append(f"{subject} still lock{s} {tgt}")
+        elif etype == "covered_by":
+            out.append(f"{subject} still cover{s} {tgt}")
+        elif mode == "mounted":
+            out.append(f"{subject} {be} still mounted on {tgt}")
+        elif mode == "contained":
+            out.append(f"{subject} {be} still in {tgt}")
+        elif mode == "tool_access":
+            out.append(f"{subject} still block{s} access to {tgt}")
+        elif mode == "cable_tension":
+            out.append(f"{subject} still hold{s} {tgt} back by its cable")
+        else:
+            out.append(f"{subject} {be} still in the way of {tgt}")
+    return out
+
+
+def gated_edges(tc: "TaskCtx", verb: str, members: Sequence[str]) -> list[Edge]:
+    """The required edges that gate ``verb`` on any of ``members`` (met or not)."""
+    out = []
+    for m in members:
+        out.extend(e for e in applicable_preconditions(tc.by_target.get(m, []), (verb, m))
+                   if e.necessity == "required")
+    return sorted(set(out), key=lambda e: (e.type, e.target, e.blocker))
+
+
+def why_list(tc: "TaskCtx", edges: Sequence[Edge], state: FrameState) -> list[dict]:
+    """``answer.why``: per blocker, its plain name, its state as a picture shows it, and how it
+    stands to the part (a plain verb) -- the machine-readable twin of the reason text."""
+    out, seen = [], set()
+    for edge in sorted(edges, key=lambda e: (e.blocker, e.type, e.target)):
+        current = blocker_state(state, edge.blocker)
+        if current is None or (edge.blocker, relation_word(edge)) in seen:
+            continue
+        seen.add((edge.blocker, relation_word(edge)))
+        out.append({"part": plain_name(tc, edge.blocker),
+                    "state": visible_state(tc.ctx, edge.blocker, current),
+                    "relation": relation_word(edge)})
+    return out
+
+
+def feasibility_reason(tc: "TaskCtx", verb: str, ident: str, members: Sequence[str],
+                       state: FrameState, bad: Sequence[Edge]) -> tuple[str, list[dict]]:
+    """``(reason text, why list)`` of "can <verb> <ident> be done now?" (owner 2026-11-04).
+
+    Feasible (no unmet edge): the prerequisites now met -- "both its RAM latches are open, so
+    the RAM module can be taken out"; infeasible: what still holds it -- "the CPU socket lever
+    still locks the CPU". Words of what the picture shows, never the graph's.
+    """
+    every = gated_edges(tc, verb, members)
+    asked = (ident, list(members))
+    if bad:
+        clauses = reason_clauses(tc, bad, state, met=False, asked=asked, every=every)
+        return _and(clauses) or f"something still holds {asked_words(tc, ident)[0]}", \
+            why_list(tc, bad, state)
+    met = [e for e in every if e not in set(bad) and blocker_state(state, e.blocker) is not None]
+    words, many = asked_words(tc, ident)
+    done = f"{words} can be {PARTICIPLES.get(verb, verb + 'ed')}"
+    clauses = reason_clauses(tc, met, state, met=True, asked=asked, every=every)
+    if not clauses:
+        return f"nothing is in the way, so {done}", []
+    return f"{_and(clauses)}, so {done}", why_list(tc, met, state)
+
+
 def _copy_state(state: FrameState) -> FrameState:
     return {key: InstState(state=inst.state, placement=inst.placement)
             for key, inst in state.items()}
@@ -1936,9 +2152,11 @@ def _v4_record(tc: TaskCtx, frame: FrameData, verb: str, target: str,
                                           required_states(edge.type, edge.mode),
                                           current, False))
     feasible = truth_source == DEMONSTRATED
-    # one field, one meaning: why this answer is what it is. An edge said no, or
-    # nothing did and the operator went on to do it.
-    reason = None if feasible else (reason or "violates_edge")
+    # why this answer is what it is, in what the picture shows (owner 2026-11-04): the
+    # prerequisites now met, or what still holds it -- never the graph's words. The internal
+    # code (an edge said no, or nothing did) stays in answer_check.reason_code
+    reason_code = None if feasible else (reason or "violates_edge")
+    reason, why = feasibility_reason(tc, verb, ident, members, state, bad)
     raw_blockers = sorted({e.blocker for e in bad})
     bboxes = {k: frame.pointable[k][1]
               for k in [*members, *raw_blockers] if k in frame.pointable}
@@ -1946,6 +2164,7 @@ def _v4_record(tc: TaskCtx, frame: FrameData, verb: str, target: str,
              "target_class": tc.ctx.cls_of(target),
              "match_class": match_class(tc.ctx, target),
              "state_after": frame.step, "truth_source": truth_source,
+             "reason_code": reason_code,
              "metric": "per_verb_accuracy_macro", "secondary_metric": "accuracy",
              "edges": [{"type": e.type, "target": e.target, "blocker": e.blocker,
                         "necessity": e.necessity, "mode": e.mode,
@@ -1962,8 +2181,9 @@ def _v4_record(tc: TaskCtx, frame: FrameData, verb: str, target: str,
         tc, "V4", rec_id, frame.step, tc.moment(frame.step, marked=True),
         template.format(phrase=verb_phrase(verb, label),
                         gerund=verb_gerund(verb, label)), index,
-        {"feasible": feasible, "blockers": blockers, "reason": reason},
-        check, evidence(bboxes, tc), R.rationale(chain),
+        {"feasible": feasible, "blockers": blockers, "reason": reason, "why": why},
+        check, evidence(bboxes, tc),
+        dict(R.rationale(chain), text=("Yes: " if feasible else "No: ") + reason + "."),
         row_verified([frame.pointable[k][0] for k in bboxes], frame.verified),
         negative=None if feasible else truth_source,
         truth_source=truth_source, view_confirmed=frame.confirmed,
@@ -2323,6 +2543,11 @@ def gen_v6(tc: TaskCtx, step: int) -> Iterator[dict]:
              "previous_action": previous_action(tc, step)}
     evid = evidence({action.target: frame.pointable[action.target][1]}
                     if action.target in frame.pointable else {}, tc)
+    # the reason in what the picture shows (owner 2026-11-04): why the next action can be done
+    why_now, _ = feasibility_reason(tc, action.verb, shown_id, shown_members, state, [])
+    rationale = dict(R.rationale(chain), text=(
+        f"Next the operator does: {verb_phrase(action.verb, asked_words(tc, shown_id)[0])}"
+        f" -- {why_now}."))
     pair = opaque_record_id(stem)
     forms: list[tuple[str, str, Optional[list[dict]]]] = [("open", stem, None)]
     if options is not None:
@@ -2336,7 +2561,7 @@ def gen_v6(tc: TaskCtx, step: int) -> Iterator[dict]:
         yield record(
             tc, "V6", rec_id, step, tc.moment(step, marked=mc), question, index, answer,
             dict(check, options_kind="listed" if mc else "open", form=form),
-            evid, R.rationale(chain), frame.verified, options=listed_options,
+            evid, rationale, frame.verified, options=listed_options,
             extra={"v6_form": form, "v6_pair": pair}, view_confirmed=frame.confirmed,
             marks=namer.marks() if mc else None,
             mark_names=namer.names() if mc else None,
@@ -3268,6 +3493,31 @@ def cable_words(node: str) -> str:
     return f"the {' '.join(_words(owner))} cable" if owner else "the cable"
 
 
+def plan_reason(tc: TaskCtx, step: int, plan: Sequence[tuple[str, str]], words: Sequence[str],
+                first_bad: Optional[int], edges: Sequence[Edge],
+                code: Optional[str]) -> Optional[str]:
+    """Why a V16 plan breaks, in what the picture shows (owner 2026-11-04), or ``None``.
+
+    "step 3 (remove part B) cannot be done yet: the CPU socket lever still locks the CPU";
+    a step on a part that has gone or is already where the verb would take it says so.
+    """
+    if first_bad is None:
+        return None
+    verb, target = plan[first_bad]
+    head = f"step {first_bad + 1} ({verb_phrase(verb, words[first_bad])})"
+    sim = _state_before(tc, step, plan, first_bad)
+    if edges:
+        members = list(_group_members(tc, target) or [target])
+        clauses = reason_clauses(tc, edges, sim, met=False, asked=(target, members),
+                                 every=gated_edges(tc, verb, members))
+        return f"{head} cannot be done yet: {_and(clauses)}"
+    what, many = asked_words(tc, target)
+    be = "are" if many else "is"
+    if code and code.startswith("already_"):
+        return f"{head} cannot be done: {what} {be} already {code[len('already_'):]}"
+    return f"{head} cannot be done: {what} {be} no longer there"
+
+
 def _plan_record(tc: TaskCtx, frame: FrameData, plan: Sequence[tuple[str, str]],
                  first_bad: Optional[int], edges: Sequence[Edge], tag: str,
                  family: Optional[str] = None,
@@ -3299,8 +3549,11 @@ def _plan_record(tc: TaskCtx, frame: FrameData, plan: Sequence[tuple[str, str]],
     labels = [e.label() for e in edges]
     source = (DEMONSTRATED if first_bad is None
               else graph_kind(edges) if edges else STATE_INAPPLICABLE)
+    # the reason in what the picture shows (owner 2026-11-04); the code stays label side
+    text = plan_reason(tc, step, plan, words, first_bad, edges, reason)
     check = {"type": "plan", "plan": listed, "metric": "accuracy+localisation",
-             "truth_source": source, "groups": plan_groups(tc, plan)}
+             "truth_source": source, "groups": plan_groups(tc, plan),
+             "reason_code": reason}
     if family is not None:
         check["corruption"] = family
         check["corruption_tag"] = tag
@@ -3312,11 +3565,14 @@ def _plan_record(tc: TaskCtx, frame: FrameData, plan: Sequence[tuple[str, str]],
         index,
         {"valid": first_bad is None, "first_error_index": first_bad,
          "violated_edge": labels[0] if labels else None,
-         "violated_edges": labels, "reason": reason},
+         "violated_edges": labels, "reason": text},
         check,
         evidence({t: frame.pointable[t][1] for t in shown if t in frame.pointable},
                  tc, plan_length=len(listed)),
-        R.rationale(chain), frame.verified,
+        dict(R.rationale(chain),
+             text=(f"No: {text}." if text else
+                   "Yes: every step can be carried out in this order (the operator did so).")),
+        frame.verified,
         negative=None if first_bad is None else family,
         truth_source=source, view_confirmed=frame.confirmed, marks=namer.marks(), mark_names=namer.names(),
         terms=[target_class(tc.ctx, (_group_members(tc, t) or [t])[0]) for _, t in plan],
@@ -3607,6 +3863,18 @@ def _v7_record(tc: TaskCtx, frame: FrameData, goal: str,
         chain.append(R.check_precondition(req.target, sorted(req.states), current,
                                           False))
     pixel = any(r.pixel_only for r in required)
+    # the reason in what the picture shows (owner 2026-11-04): what still holds the CPU, and
+    # what holds those -- captive screws as their group while the part they hold is in (6.6)
+    pending = {g.gid: g for g in pending_captive(tc, state)}
+    held_by_captive = {tc.ctx.instances[g.members[0]].fastens: g for g in pending.values()}
+    via = [r.via[-1] for r in required if r.via and not is_captive_screw(tc.ctx, r.target)]
+    clauses = reason_clauses(tc, via, state, met=False, asked=(goal, [goal]))
+    for held, group in sorted(held_by_captive.items(), key=lambda kv: str(kv[0])):
+        if any(r.target == held for r in required):
+            clauses.append(f"the {group.label} still hold {asked_words(tc, held)[0]}")
+    goal_words = asked_words(tc, goal)[0]
+    text = (f"To take {goal_words} out: {_and(clauses)}." if clauses
+            else f"To take {goal_words} out: nothing else holds it.")
     shortest = _actions_seq(plan)
     shown = _actions_seq(demonstrated)
     # the answer is the demonstrated remainder told in group actions (spec 3.1): one
@@ -3638,7 +3906,7 @@ def _v7_record(tc: TaskCtx, frame: FrameData, goal: str,
          "previous_action": previous_action(tc, step)},
         evidence({r.target: frame.pointable[r.target][1] for r in required
                   if r.target in frame.pointable}, tc, plan_length=len(grouped)),
-        R.rationale(chain), frame.verified,
+        dict(R.rationale(chain), text=text), frame.verified,
         truth_source=GRAPH_BLOCKED_PIXELS if pixel else GRAPH_BLOCKED,
         view_confirmed=frame.confirmed, marks=namer.marks(), mark_names=namer.names(), terms=[V7_GOAL_CLASS],
         moment=tc.legend((step, "now"), marked=True),
