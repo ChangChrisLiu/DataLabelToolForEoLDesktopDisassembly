@@ -357,8 +357,11 @@ def test_the_state_oracle_has_no_v14_and_says_so(scene, refs, refs_multi):
     assert n_blind == blind["records"] == len(records) - sum((blind.get("skipped") or {}).values())
     # the protocol prior answers V6 / V7 / V16, which live in the multi unit
     assert refs_multi["summary"]["protocol_prior"]["records"] > 0
+    # (the multi unit has no V14; only its mark_tag records are left out)
+    multi_skipped = refs_multi["summary"]["state_oracle"]["skipped"]
+    assert set(multi_skipped) <= {"mark_tag"}
     assert refs_multi["summary"]["state_oracle"]["records"] == len(
-        list(IO.read_jsonl(scene["exports"]["multi"])))
+        list(IO.read_jsonl(scene["exports"]["multi"]))) - sum(multi_skipped.values())
 
 
 # --------------------------------------------------------------------------- #
@@ -584,7 +587,17 @@ def test_run_eval_overlay_variant_scores_the_gold_replies(pack, tmp_path):
     chat = list(IO.read_jsonl(out / "chat.jsonl"))
     assert [c["id"] for c in chat] == [r["id"] for r in variant]
     shown = [Path(p) for c in chat for p in c["meta"]["images"]]
-    assert shown and all(p.is_file() and (tmp_path / "overlays") in p.parents for p in shown)
+    assert shown and all(p.is_file() for p in shown)
+    # the painted copies; a record that outlines a part (redesign 2026-11-03) is shown
+    # its marked copy of the painted picture, made under the run's chat assets
+    import vlm_to_chat
+
+    marked = {r["id"] for r in variant if vlm_to_chat.shown_marks(r)}
+    for c in chat:
+        for p in map(Path, c["meta"]["images"]):
+            if (tmp_path / "overlays") in p.parents:
+                continue
+            assert c["id"] in marked and (out / "chat_assets") in p.parents, p
     preds = list(IO.read_jsonl(out / "pred.jsonl"))
     assert len(preds) == len(variant) and all(p["raw_text"] for p in preds)
     result = json.loads((out / "score" / "gold.score.json").read_text(encoding="utf-8"))
