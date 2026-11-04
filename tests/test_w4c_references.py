@@ -22,7 +22,7 @@ from PIL import Image
 import w3b_scene as W
 from tda.core.db import Db
 from tda.core.export.coco import export_coco
-from tda.core.export.vlm import export_vlm
+from tda.core.export.vlm import export_vlm, unit_tasks
 from tda.core.export.vlm_check import gold_reply, grade
 from tda.core.taxonomy import load_taxonomy
 
@@ -86,7 +86,8 @@ def scene(tmp_path_factory) -> dict:
     for view in UNITS:
         out = root / "export" / f"vlm_{view}.jsonl"
         out.parent.mkdir(parents=True, exist_ok=True)
-        export_vlm(db, tax, [D_SCAN, D_BOTH], view, str(out))
+        # each unit with its own task set, as the pack exports it
+        export_vlm(db, tax, [D_SCAN, D_BOTH], view, str(out), tasks=unit_tasks(view))
         exports[view] = out
     # the "scanner pack": one COCO per view under the root (D<nn>/annotations.json layout
     # is what the real pack has; the painter globs **/annotations.json)
