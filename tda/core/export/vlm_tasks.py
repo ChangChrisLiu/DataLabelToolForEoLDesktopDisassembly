@@ -1594,7 +1594,10 @@ def _v2_counts(tc: TaskCtx, frame: FrameData) -> Iterator[dict]:
             {"count": len(fastened)},
             {"type": "exact", "derive": "screw_count", "role": role,
              "state": "present", "state_space": "presence", "captive": False,
-             "fields": ["count"]},
+             "fields": ["count"],
+             # owner 2026-11-04: exact 1.0, off by one 0.8, else 0 (vlm_check.COUNT_SCORES);
+             # the exact match is the scorer's extra row
+             "credit": {"exact": 1.0, "off_by_one": 0.8}},
             evidence(bboxes, tc),
             R.rationale([observed(k, "present", tc, frame.pointable) for k in fastened]),
             row_verified([frame.pointable[k][0] for k in fastened
