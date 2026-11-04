@@ -196,7 +196,7 @@ V9 螺丝头型、V13 失败尝试解释、V17 合照一致性、V18 操作方�
 2. 用 `gold` 伪后端走一遍完整链路（至少 scan 和 multi 各一次）。
 3. Qwen/Qwen3-VL-8B-Instruct（vLLM）先跑试点（scan 45 条感知题，multi 63 条动作题）。
 4. 完整的 `eval_v2`，四个单元都跑：2 个开源模型，每个跑原图和只给题两种输入，scan 和 multi 再加掩码叠加图；multi 一条请求最多 8 张图。
-   闭源只用 Codex 跑 GPT-6.1 Sol，只做你审核的那 300 条（`eval_v2/audit/audit.ids.txt`），跑一次。人类基线已从计划里拿掉（暂缓）。
+   闭源用 GPT-6、思考强度 Medium（网页版临时对话 + Unpersonalized，或 Codex），只做你审核的那 300 条（`eval_v2/audit/audit.ids.txt`），跑一次；11-04 已答 112 条，接力包在 HF `vlm/closed_model_run_2026-11-04/`。人类基线已从计划里拿掉（暂缓）。
 5. 评分器按题型、能力层、问法模板出分，带按台聚类自助的 95 % 区间和每题的捷径上界；V2 主行是全部 V2 题，`V2-prior-wrong` 是次要行。
 
 读结果的方式：模型应该在 chance 和 frequency 之上、state oracle 之下。它和 mask overlay 的差距算感知错误，
@@ -262,7 +262,7 @@ OAK / RealSense 还没标，现在无法确认 X 在另一个视角里确实看�
   1. 评分不接受「optical drive」作同义词；改为统一命名：拆下来的叫光驱，拆不下来的叫光驱支架（「Optical drive cage N」）。
      改了 8 台、D53 新增支架、D64 电源与光驱对调，重新封装并重建三个包。
   2. V2 不加题，主指标改为全部 V2 题。
-  3. 闭源：Codex 跑 GPT-6.1 Sol，只做审核那 300 条。
+  3. 闭源：Codex 跑 GPT-6.1 Sol，只做审核那 300 条（11-03 晚改为 GPT-6 + Medium，网页版或 Codex；选单里没有 GPT-6.1 Sol）。
   4. 人类基线：从计划里拿掉，放进暂缓清单。
   5. 第 8 节的扩展：暂缓，写进暂缓清单（`HANDOFF.md` §12）。
   6. 题目重设计（按你的审核意见）：五个单元、红框代替序号、可互换零件按组问、每条提示带术语表、V3 只问看得见的动作、

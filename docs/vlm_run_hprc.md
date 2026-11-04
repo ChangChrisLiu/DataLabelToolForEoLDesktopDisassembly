@@ -1,7 +1,7 @@
 # 在 HPRC 上跑 VLM 评测：从拷包到分数表
 
 > **2026-11-03**：本文已与英文 `HANDOFF.md` §8 对齐：包保持只读，所有输出进 `$WORK`；处处设 `PYTHONDONTWRITEBYTECODE=1`；`RUNS=$WORK/runs`；
-> `MAX_TOKENS` 默认 2048；overlay 只跑 scan 和 multi（只有扫描仪帧有确认的掩码）。**闭源（负责人 2026-11-03 定）：只用 Codex 跑 GPT-6.1 Sol，只做
+> `MAX_TOKENS` 默认 2048；overlay 只跑 scan 和 multi（只有扫描仪帧有确认的掩码）。**闭源（负责人 2026-11-03 晚定）：GPT-6、思考强度 Medium（网页版 ChatGPT 临时对话 + Unpersonalized，或 Codex），只做
 > `eval_v2/audit/audit.ids.txt` 那 300 条，跑一次，不重复**（见 §5）；`submit_matrix.sh` 的 `CLOSED_MODELS` 留空，
 > 不需要重复子集和 `REPEAT_IDS`。V2 的主指标是全部 V2 题。两者不一致时以 `HANDOFF.md` 为准。
 >
@@ -154,13 +154,15 @@ squeue -u $USER
 每个作业 = 一个模型 × 一种变体（`image` 原图 / `blind` 去图像，题面与选项只去掉标记措辞）× array 包里的各单元，评测集
 `eval_v2/<unit>.jsonl`（所有开源模型同一子集）。`multi` 的请求最多 8 张图（`open_model.sbatch` 对 multi 设 `--max-images 8`）。
 
-**闭源：GPT-6.1 Sol，通过 Codex，只做 300 条**（负责人 2026-11-03 定，控制 token 开销）：
+**闭源：GPT-6、思考强度 Medium，只做 300 条**（负责人 2026-11-03 晚定，控制 token 开销；网页版 ChatGPT 用临时对话 + Unpersonalized，每题一个新对话，或用 Codex）。
+2026-11-04 已答 112 条，接力包（题面原文、图片、打分脚本）在 HF `vlm/closed_model_run_2026-11-04/`，先读它的 README。
+V1 / V8 按 IoU 打分（主指标 IoU ≥ 0.5，另报 COCO 式 0.50:0.05:0.95 平均）；闭源的框在原图坐标和它内部缩小坐标（×1.25）各算一次取高：
 - 题目 = `eval_v2/audit/audit.ids.txt`（每题型约 25 条，从 `eval_v2` 内部抽；各单元的条数见 `$PACK/eval_v2/table.json`
   的 `audit`），也就是作者审核的同一批，逐题可比。作者审核只核对**生成的答案**（V1 / V8 不审）。每个单元用
   `vlm_collect.py subset --ids $PACK/eval_v2/audit/audit.ids.txt` 切出它那部分真值（合起来 300 条）。跑一次 `image`，不重复、不报标准差（Codex 不暴露 temperature）；要不要加一遍 `blind` 先问负责人。
 - **Codex 能读文件、跑命令，每题必须隔离**：在 `$PACK`、`$WORK` 之外新建空目录，只放这道题的图片（按不透明 id 拷贝），
   只读沙箱、除模型外不联网；只给 `vlm_to_chat.py` 为这条记录生成的用户文本（题面、选项、答题格式）加图片；
-  取最终回复作 `raw_text`。写 `$WORK/runs/gpt61sol_codex/image/<unit>/pred.jsonl`（每行 `{"id", "raw_text", "meta"}`，
+  取最终回复作 `raw_text`。写 `$WORK/runs/gpt6_medium/image/<unit>/pred.jsonl`（每行 `{"id", "raw_text", "meta"}`，
   `meta` 记 Codex 版本、模型名、推理强度、送图尺寸、日期），再用 300 条真值 `vlm_score.py` 评分。驱动脚本放 `$WORK`，不进包。
 - 开源模型的全量 `pred.jsonl` 也用这 300 条真值再评一次，和闭源、作者审核的错误率放在一起。
 
