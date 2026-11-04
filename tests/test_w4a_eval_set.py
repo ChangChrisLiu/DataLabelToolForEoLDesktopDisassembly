@@ -93,11 +93,13 @@ def test_proportional_allocation_follows_the_pool():
 
 def test_strata_paths():
     r = _rec("V4", 1, 1, "scan", negative="graph_blocked", truth_source="graph_blocked",
-             answer_check={"match_class": "screw.motherboard", "target_class": "screw"})
-    assert E.strata(r) == ("class=screw.motherboard", "feasible=no", "source=graph_blocked")
-    assert E.strata(_rec("V4", 2, 1, "scan", answer_check={"target_class": "psu"})) == \
-        ("class=psu", "feasible=yes")
-    assert E.strata(_rec("V4", 2, 1, "scan")) == ("class=?", "feasible=yes")
+             answer_check={"match_class": "screw.motherboard", "target_class": "screw",
+                           "verb": "unscrew"})
+    assert E.strata(r) == ("class=screw.motherboard", "verb=unscrew", "feasible=no",
+                           "source=graph_blocked")
+    psu = _rec("V4", 2, 1, "scan", answer_check={"target_class": "psu", "verb": "remove"})
+    assert E.strata(psu) == ("class=psu", "verb=remove", "feasible=yes")
+    assert E.strata(_rec("V4", 2, 1, "scan")) == ("class=?", "verb=?", "feasible=yes")
     v2 = _rec("V2", 3, 1, "scan", prior_is_correct=False,
               answer_check={"derive": "screw_count", "role": "motherboard"})
     assert E.strata(v2) == ("prior_correct=no", "screw:motherboard")
@@ -183,8 +185,8 @@ def test_the_top_up_fills_a_task_whose_strata_ran_dry(units):
     assert 0 < negatives < 200
 
 
-def _v4(n, desktop, mclass, feasible, group=False):
-    check = {"match_class": mclass, "target_class": mclass.split(".")[0]}
+def _v4(n, desktop, mclass, feasible, group=False, verb="remove"):
+    check = {"match_class": mclass, "target_class": mclass.split(".")[0], "verb": verb}
     if group:
         check["members"] = ["a", "b"]
     return _rec("V4", n, desktop, "multi", answer_check=check,
@@ -219,6 +221,19 @@ def test_v4_is_balanced_within_each_class():
     for cls, counts in per_class.items():
         assert max(counts.values()) / sum(counts.values()) <= E.V4_MAX_MAJORITY + 1e-9, cls
     assert "psu" not in per_class
+    # a verb + class cell is balanced on its own: "remove the motherboard" may not lean
+    # even where "displace the motherboard" makes the class look even
+    recs = [_v4(i, 1 + i % 30, "motherboard", feasible=i % 4 == 0, verb="remove")
+            for i in range(120)]
+    recs += [_v4(1000 + i, 1 + i % 30, "motherboard", feasible=i % 4 != 0, verb="displace")
+             for i in range(120)]
+    chosen = E.draw(E.units_of(recs, "multi"), seed=0)["V4"]
+    cells: dict = {}
+    for u in chosen:
+        check = u.records[0]["label"]["answer_check"]
+        cells.setdefault(check["verb"], Counter())[not u.records[0]["label"].get("negative")] += 1
+    for verb, counts in cells.items():
+        assert max(counts.values()) / sum(counts.values()) <= E.V4_MAX_MAJORITY + 1e-9, verb
 
 
 # --------------------------------------------------------------------------- #
