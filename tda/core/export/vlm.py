@@ -124,6 +124,7 @@ from tda.core.export.vlm_tasks import (
     instance_label,
     match_class,
     opaque_image_id,
+    plain_name,
     pointable_rows,
     row_verified,
     slim_row,
@@ -425,6 +426,9 @@ def _desktop_world(tc: TaskCtx) -> dict:
         group = part_groups.get(key)
         instances[key] = {
             "class": rec.cls, "label": instance_label(key, rec, ctx.tax),
+            # how a person reads it, no ordinal (owner 2026-11-04): the audit sheet's wording;
+            # `label` stays the grader's (it grounds a reply's "CPU cooler screw 3")
+            "name": plain_name(tc, key),
             "match_class": match_class(ctx, key),
             "attrs": {k: rec.attrs[k] for k in ("role", "kind", "captive", "of")
                       if k in rec.attrs},
