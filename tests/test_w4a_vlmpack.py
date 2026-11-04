@@ -548,3 +548,10 @@ def test_the_card_runs_the_references_on_multi_and_states_the_review_notes(built
     assert "eval_v1/" not in guide and "四个视角" not in guide
     for venue in ("CVPR", "ECCV", "ICCV", "NeurIPS"):
         assert venue not in guide and venue not in text
+
+
+def test_the_card_describes_the_blind_variant_and_v6_exact_as_they_are(built):
+    text = (built["pack"] / "README.md").read_text(encoding="utf-8")
+    assert "leaves out a question that names a part by its mark tag alone" not in text
+    assert "part A (a RAM module)" in text
+    assert "on a group\nstep, any member still to do" in text

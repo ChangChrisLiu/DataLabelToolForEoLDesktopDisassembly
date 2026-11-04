@@ -23,7 +23,8 @@ with replacement, ``--resamples`` times, seeded). Beside the primary score:
   ``V6-mc`` (``headline.v6_mc``), outside the layer and template rows, with
   ``--prior``'s protocol-prior accuracy beside it (79.9 % on the day-1 copy);
   ``blocked_rate`` is over the frames with ``blocked_rate_defined`` only, and
-  the exact-instance match rides along;
+  the exact-instance match rides along ("exact" on a group step = any member of
+  the group still to do; a member already done matches nothing);
 * V7 adds violation-free rate, required-action recall and goal-reached rate;
 * V10 adds the progress-bin accuracy and, on records that carry
   ``answer.started`` (groups partly done, spec 6.1), ``started_f1`` -- the set
