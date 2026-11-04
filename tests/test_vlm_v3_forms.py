@@ -183,7 +183,7 @@ def test_the_converter_draws_the_hint_in_yellow(multi, tmp_path):
         px = img.load()
         hit = any(yellow(px[x, y]) for x in range(img.size[0]) for y in range(img.size[1]))
         assert hit == (i in {h["image"] for h in r["prompt"]["hint_regions"]}), i
-    assert C.CHAT_FORMAT_ID == "chat-v4"
+    assert C.CHAT_FORMAT_ID == "chat-v5"
 
 
 def test_the_eval_subset_keeps_v3_ids_and_takes_the_partner(multi, tmp_path):
@@ -201,11 +201,11 @@ def test_the_eval_subset_keeps_v3_ids_and_takes_the_partner(multi, tmp_path):
     assert [u.key for u in with_roi["V3"]] == [u.key for u in without["V3"]]
     for task in with_roi:
         assert [u.key for u in with_roi[task]] == [u.key for u in without[task]], task
-    out = E.build([multi["out"]], tmp_path / "eval_v2", seed=0, audit=12)
-    chosen = list(IO.read_jsonl(tmp_path / "eval_v2" / "multi.jsonl"))
+    out = E.build([multi["out"]], tmp_path / "eval_v3", seed=0, audit=12)
+    chosen = list(IO.read_jsonl(tmp_path / "eval_v3" / "multi.jsonl"))
     free = {r["id"] for r in chosen if r["label"].get("v3_form") == "free"}
     roi = [r for r in chosen if r["label"].get("v3_form") == "roi"]
     assert roi and all(r["label"]["v3_pair"] in free for r in roi)
-    audit = list(IO.read_jsonl(tmp_path / "eval_v2" / "audit" / "audit.jsonl"))
+    audit = list(IO.read_jsonl(tmp_path / "eval_v3" / "audit" / "audit.jsonl"))
     assert not [r for r in audit if r["label"].get("v3_form") == "roi"]
     assert out["rows"][[r["task"] for r in out["rows"]].index("V3")]["unit"] == "pair"

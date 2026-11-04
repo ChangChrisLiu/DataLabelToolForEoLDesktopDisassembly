@@ -47,9 +47,10 @@ def test_an_unlabelled_view_reads_nothing_of_its_own_annotation(scene):
     summary = export_vlm(db, tax, [W.DESKTOP], W.OTHER, str(out))
     records = _read(out)
     tasks = {r["prompt"]["task"] for r in records}
-    assert {"V6", "V10"} <= tasks
-    # V4 / V16 name their parts by a mark on a confirmed frame (redesign 2026-11-03)
-    assert not tasks & {"V1", "V2", "V8", "V14", "V4", "V16"}
+    assert {"V10"} <= tasks
+    # V4 / V16 name their parts by a mark on a confirmed frame (redesign 2026-11-03), and V6's
+    # frontier is what a confirmed frame can point at (owner 2026-11-04)
+    assert not tasks & {"V1", "V2", "V8", "V4", "V16", "V6"}
     assert summary["unlabelled_view_desktops"] == [W.DESKTOP]
     for r in records:
         assert r["label"]["view_confirmed"] is False
@@ -97,7 +98,7 @@ def test_v6_v10_v16_take_the_image_from_any_view(scene):
                 r["label"]["answer"] for r in _of(_read(path), task)}
 
     # V16 names its parts by marks, which only a confirmed frame carries (redesign)
-    for task in ("V6", "V10"):
+    for task in ("V10",):
         here, there = keyed(a, task), keyed(b, task)
         common = set(here) & set(there)
         assert common
@@ -124,14 +125,15 @@ def test_captive_screws_rules(scene):
         assert r["label"]["answer_check"]["reason"] == "captive_screw_loosened"
         assert {e["target"] for e in r["label"]["answer_check"]["hidden_events"]} <= set(W.SCREWS)
     assert summary["v12_by_kind"]["captive_screw_loosened"] == 4
-    # V2 / V14 never ask a captive screw anything
-    for r in _of(records, "V2") + _of(records, "V14"):
+    # V2 never asks a captive screw anything
+    for r in _of(records, "V2"):
         assert not set(r["label"]["evidence"]["instances"]) & set(W.SCREWS)
     # the motherboard screw is asked present / removed, never fastened
     screw = [r for r in _of(records, "V2")
              if r["label"]["answer_check"].get("instance") == W.BOARD_SCREW]
     assert screw and all(r["label"]["answer"]["state"] == "present" for r in screw)
-    assert all(r["label"]["answer_check"]["allowed"] == ["present", "removed"] for r in screw)
+    assert all(r["label"]["answer_check"]["allowed"] == ["present", "removed", "cannot_tell"]
+               for r in screw)
     assert Checker(db, tax, W.DESKTOP).check_all(records) == len(records)
 
 

@@ -78,11 +78,14 @@ def test_the_answer_is_the_remaining_legal_plan_and_its_requirements(scene):
     plan = [(a["verb"], a["target"]) for a in check["reference_shortest"]]
     assert plan[-1] == ("remove", W.CPU)
     assert check["plan_length"] == len(plan)
-    # the answer is the demonstrated remainder; any legal plan scores
-    # ... told in group actions (redesign 2026-11-03): one "unscrew the CPU cooler screws"
+    # the answer is the rules' shortest plan (owner 2026-11-04: the required steps are the
+    # rules', not the demonstrated sequence), told in group actions -- one "unscrew the CPU
+    # cooler screws"; any legal plan scores
     gid = f"screw.cpu_cooler@{W.COOLER}"
-    assert [(a["verb"], a["target"]) for a in first["label"]["answer"]["plan"]] == [
-        W.LOG[3], ("unscrew", gid), *(W.LOG[s] for s in range(8, 12))]
+    answer = [(a["verb"], a["target"]) for a in first["label"]["answer"]["plan"]]
+    assert ("unscrew", gid) in answer and answer[-1] == ("remove", W.CPU)
+    assert ("remove", W.COOLER) in answer and ("open", W.LEVER) in answer
+    assert check["validity"] == "simulated"
     assert check["plan_groups"] == {gid: list(W.SCREWS)}
     assert check["any_legal_plan_scores"] is True
     required = {r["target"]: r for r in check["required_actions"]}

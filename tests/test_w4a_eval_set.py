@@ -195,7 +195,7 @@ def _v4(n, desktop, mclass, feasible, group=False, verb="remove"):
 
 
 def test_v4_is_balanced_within_each_class():
-    """Final review I1: eval_v2's V4 leaned per class (motherboard 51 of 56 "no"), so
+    """Final review I1: eval_v3's V4 leaned per class (motherboard 51 of 56 "no"), so
     the class name answered it. Each class is cut to at most 60 % of one answer before
     the draw, a one-answer class is left out, and the draw splits each class equally."""
     recs, n = [], 0
@@ -269,10 +269,10 @@ def _hashes(root: Path) -> dict[str, str]:
 
 def test_build_writes_the_subset_its_sidecars_and_the_table_byte_identically(tmp_path):
     exports = _exports(tmp_path / "exp")
-    a = E.build(exports, tmp_path / "a" / "eval_v2", seed=0, audit=300)
-    b = E.build(exports, tmp_path / "b" / "eval_v2", seed=0, audit=300)
+    a = E.build(exports, tmp_path / "a" / "eval_v3", seed=0, audit=300)
+    b = E.build(exports, tmp_path / "b" / "eval_v3", seed=0, audit=300)
     assert _hashes(tmp_path / "a") == _hashes(tmp_path / "b")
-    out = tmp_path / "a" / "eval_v2"
+    out = tmp_path / "a" / "eval_v3"
     ids = out.joinpath("ids.txt").read_text(encoding="utf-8").split()
     assert len(ids) == a["records"] == sum(a["by_view"].values())
     for view in ("scan", "oak1"):
@@ -286,7 +286,7 @@ def test_build_writes_the_subset_its_sidecars_and_the_table_byte_identically(tmp
         assert set(worlds) == {IO.desktop_of(r) for r in records}
         assert IO.load_summary(truth)["view"] == view
     table = json.loads((out / "table.json").read_text(encoding="utf-8"))
-    assert table["version"] == "eval_v2" and table["seed"] == 0
+    assert table["version"] == "eval_v3" and table["seed"] == 0
     assert {r["task"] for r in table["rows"]} == {"V1", "V2", "V4", "V6", "V12", "V15"}
     v6 = next(r for r in table["rows"] if r["task"] == "V6")
     assert v6["units"] == 300 and v6["records"] == 600 and v6["unit"] == "pair"
@@ -302,7 +302,7 @@ def test_build_writes_the_subset_its_sidecars_and_the_table_byte_identically(tmp
 
 def test_the_cli_runs(tmp_path, capsys):
     exports = _exports(tmp_path / "exp")
-    assert E.main(["--export", *map(str, exports), "--out", str(tmp_path / "eval_v2"),
+    assert E.main(["--export", *map(str, exports), "--out", str(tmp_path / "eval_v3"),
                    "--target-binary", "40", "--target-other", "30", "--audit", "60"]) == 0
     out = capsys.readouterr().out
     assert "V4=40" in out and "V6=60" in out and "audit sample: " in out
@@ -312,7 +312,7 @@ def test_the_cli_runs(tmp_path, capsys):
 
 def test_eval_v1_path_refused(tmp_path, capsys):
     """eval_v1 is the subset before the 2026-11-03 redesign: every tool that takes a
-    subset path refuses one under eval_v1, with a message naming eval_v2."""
+    subset path refuses one under eval_v1, with a message naming eval_v3."""
     import vlm_references
     import vlm_sample
     import vlm_selfcheck
@@ -321,7 +321,7 @@ def test_eval_v1_path_refused(tmp_path, capsys):
     old = tmp_path / "pack" / "eval_v1"
     calls = [
         lambda: E.main(["--export", *map(str, exports), "--out", str(old)]),
-        lambda: E.main(["--export", str(old / "scan.jsonl"), "--out", str(tmp_path / "eval_v2")]),
+        lambda: E.main(["--export", str(old / "scan.jsonl"), "--out", str(tmp_path / "eval_v3")]),
         lambda: vlm_selfcheck.main(["--truth", str(old / "scan.jsonl"), "--out", str(tmp_path / "c")]),
         lambda: vlm_references.main(["--export", str(old / "multi.jsonl"), "--out", str(tmp_path / "r")]),
         lambda: vlm_sample.main(["--export", str(old / "audit" / "audit.jsonl"),
@@ -330,14 +330,14 @@ def test_eval_v1_path_refused(tmp_path, capsys):
     for call in calls:
         with pytest.raises(SystemExit) as err:
             call()
-        assert "eval_v2" in str(err.value.code) and "eval_v1" in str(err.value.code)
+        assert "eval_v3" in str(err.value.code) and "eval_v1" in str(err.value.code)
     assert not old.exists() and not (tmp_path / "c").exists()
-    # a file merely named like it is not a subset directory; eval_v2 passes
-    E.refuse_old_eval(tmp_path / "eval_v2" / "scan.jsonl", tmp_path / "eval_v10_notes.txt", None)
+    # a file merely named like it is not a subset directory; eval_v3 passes
+    E.refuse_old_eval(tmp_path / "eval_v3" / "scan.jsonl", tmp_path / "eval_v10_notes.txt", None)
     sys.path.insert(0, str(SCRIPTS / "vlm_run"))
     import vlm_collect
 
     with pytest.raises(SystemExit) as err:
         vlm_collect.main(["subset", "--export", str(exports[0]), "--out", str(tmp_path / "x.jsonl"),
                           "--records", str(old / "scan.jsonl")])
-    assert "eval_v2" in str(err.value.code)
+    assert "eval_v3" in str(err.value.code)

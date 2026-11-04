@@ -540,7 +540,7 @@ def test_the_shell_templates_are_lf_and_parse():
 
 
 def _multi_pack(root: Path) -> Path:
-    """A minimal pack: the scene's multi unit (four cameras), its eval_v2 cut, the frames."""
+    """A minimal pack: the scene's multi unit (four cameras), its eval_v3 cut, the frames."""
     from PIL import Image
 
     import vlm_eval_set
@@ -555,12 +555,12 @@ def _multi_pack(root: Path) -> Path:
         path = root / "pack" / "images" / entry["path"]
         path.parent.mkdir(parents=True, exist_ok=True)
         Image.new("RGB", (64, 64), (entry["step"] * 20 % 255, 80, 120)).save(path)
-    vlm_eval_set.build([data / "vlm_multi.jsonl"], root / "pack" / "eval_v2", seed=0)
+    vlm_eval_set.build([data / "vlm_multi.jsonl"], root / "pack" / "eval_v3", seed=0)
     return root / "pack"
 
 
 def test_run_eval_accepts_multi(tmp_path):
-    """``run_eval.sh VIEW=multi`` runs the multi unit's eval_v2 cut end to end (gold
+    """``run_eval.sh VIEW=multi`` runs the multi unit's eval_v3 cut end to end (gold
     backend: every task 1.0); the Slurm arrays and the matrix cover the five units; a
     bogus view and an eval_v1 subset are refused."""
     for name in ("open_model.sbatch", "closed_model.sbatch", "gold_check.sbatch"):
@@ -588,7 +588,7 @@ def test_run_eval_accepts_multi(tmp_path):
     out = runs / "gold" / "image" / "multi"
     subset = list(IO.read_jsonl(out / "truth" / "multi.jsonl"))
     assert subset and {r["id"] for r in subset} == {
-        r["id"] for r in IO.read_jsonl(pack / "eval_v2" / "multi.jsonl")}
+        r["id"] for r in IO.read_jsonl(pack / "eval_v3" / "multi.jsonl")}
     assert all(r["label"]["view"] == "multi" for r in subset)
     result = json.loads((out / "score" / "gold.score.json").read_text(encoding="utf-8"))
     assert result["predicted"] == len(subset)
@@ -602,7 +602,7 @@ def test_run_eval_accepts_multi(tmp_path):
     old = subprocess.run([bash, script], capture_output=True, text=True,
                          env=dict(env, SUBSET=(pack / "eval_v1" / "audit" / "audit.ids.txt").as_posix()),
                          cwd=str(tmp_path), timeout=120)
-    assert old.returncode == 2 and "eval_v2" in old.stderr
+    assert old.returncode == 2 and "eval_v3" in old.stderr
 
 
 def test_a_unit_missing_from_the_pack_is_skipped_and_the_matrix_lists_the_manifest_units(tmp_path):

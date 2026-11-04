@@ -5,9 +5,9 @@
   sidecars copied beside it** (``.images_manifest.jsonl``, ``.oracle.jsonl``,
   ``.summary.json``, and ``.masks.jsonl`` when the export has one) so
   ``vlm_to_chat.py --export`` and ``vlm_score.py --truth`` take the subset as
-  a truth file of its own. The pack's ``eval_v2/<unit>.jsonl`` and a pilot ids
+  a truth file of its own. The pack's ``eval_v3/<unit>.jsonl`` and a pilot ids
   file both go through here; a path under ``eval_v1/`` (the subset before the
-  2026-11-03 redesign) is refused with a message naming ``eval_v2``.
+  2026-11-03 redesign) or ``eval_v2/`` (before the 2026-11-04 final round) is refused with a message naming ``eval_v3``.
 * ``blind --records <jsonl> --out <jsonl>`` -- the image-ablated variant of the
   records (``prompt.images = []``, ``label.reference = "blind"``), the same
   rows ``vlm_references.py`` writes as ``blind.jsonl``, for a run directory
@@ -61,8 +61,8 @@ def _name_tags(text: str, names: dict) -> Optional[str]:
     out = _MARK_TAG.sub(sub, text)
     return None if missing else out
 #: The current evaluation subset, and the ones its records replaced.
-EVAL_VERSION = "eval_v2"
-OLD_EVAL_VERSIONS = ("eval_v1",)
+EVAL_VERSION = "eval_v3"
+OLD_EVAL_VERSIONS = ("eval_v1", "eval_v2")
 
 
 def refuse_old_eval(*paths) -> None:
@@ -75,8 +75,8 @@ def refuse_old_eval(*paths) -> None:
         for part in Path(str(path)).parts:
             if any(part == v or part.startswith(v + ".") for v in OLD_EVAL_VERSIONS):
                 raise SystemExit(f"[vlm-collect] refused: {path} is under {part}, the subset "
-                                 f"before the question redesign of 2026-11-03; use "
-                                 f"{EVAL_VERSION}/ (with a multi unit for the action tasks)")
+                                 f"before the final round of 2026-11-04; use "
+                                 f"{EVAL_VERSION}/ (the same layout)")
 
 
 def read_jsonl(path) -> Iterator[dict]:

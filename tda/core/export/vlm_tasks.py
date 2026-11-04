@@ -1,5 +1,13 @@
 """One generator per VLM task of spec 8.2, P0 set (task B6).
 
+**The final round (owner decisions of 2026-11-04).** V4 V6 V7 V16 are asked under the rules
+of the moment -- the stored graph plus dynamic occlusion of the scanner frame and loose parts
+first (:class:`Moment`, :func:`tda.core.graph.moment_edges`) -- and not at all on a desktop
+that is not stepwise (D66). V6's gold is the frontier, every action possible now, grouped
+(open / mc / constrained); V7 plans under the rules (free / constrained, the plug count);
+V16's validity is a replay; V14 is merged into V2 (``cannot_tell``); every record carries
+``rationale.text``, its reasoning in words. The text below keeps the history.
+
 ``V1 V2 V3 V4 V5 V6 V7 V8 V10 V12 V14 V15 V16`` -- thirteen questions, each
 with a structured answer and an ``answer_check`` block saying how a checker
 re-derives it. **A question whose answer cannot be checked by program is not
@@ -4446,7 +4454,8 @@ def _v7_goal_ok(tc: TaskCtx, goal: str) -> Optional[str]:
     """Why ``goal`` cannot be a V7 goal on this desktop, or ``None``."""
     if not tc.askable(goal):
         return "goal_not_askable"
-    covered = [e for e in tc.by_target.get(goal, ())
+    # the stored graph's word, never a moment's occlusion edge
+    covered = [e for e in active_edges(tc.edges) if e.target == goal
                if e.type == "covered_by"
                and tc.ctx.cls_of(e.blocker) == V7_COOLER_CLASS]
     if not covered:
@@ -4595,6 +4604,33 @@ def v7_constraints(tc: TaskCtx, step: int, goal: str,
     return out
 
 
+def rules_plan(tc: TaskCtx, state: FrameState, goal: str) -> Optional[list[tuple[str, str]]]:
+    """The rules' shortest plan to take ``goal`` out (the active moment's edges, loose parts
+    first), where no part is swung aside that this machine's log never swings (R14: only a
+    hinged part is): such a step is replaced by taking the part out, its own way out first,
+    and the rest re-planned from there. ``None`` when there is no such plan."""
+    sim = _copy_state(state)
+    out: list[tuple[str, str]] = []
+    for _ in range(12):
+        plan = remaining_plan(tc.ctx.instances, tc.cur_edges, sim, goal, tc.tax)
+        if plan is None:
+            return None
+        bad = next((i for i, (v, t) in enumerate(plan)
+                    if v == "displace" and t not in tc.displaced_in_log), None)
+        if bad is None:
+            return out + list(plan)
+        head = list(plan[:bad])
+        for verb, target in head:
+            _apply_effect(tc.tax, tc.ctx.instances, sim, target, verb)
+        sub = remaining_plan(tc.ctx.instances, tc.cur_edges, sim, plan[bad][1], tc.tax)
+        if not sub or any(v == "displace" and t not in tc.displaced_in_log for v, t in sub):
+            return None
+        for verb, target in sub:
+            _apply_effect(tc.tax, tc.ctx.instances, sim, target, verb)
+        out += head + [a for a in sub if a not in head]
+    return None
+
+
 def plan_words(tc: TaskCtx, state: FrameState, plan: Sequence[tuple[str, str]]) -> list[str]:
     """Each step of a plan said in words, no ordinal: "unplug the connectors"."""
     sim = _copy_state(state)
@@ -4620,7 +4656,7 @@ def _v7_form(tc: TaskCtx, frame: FrameData, goal: str,
     """One V7 record (free when ``rule`` is ``None``), under the active moment's rules."""
     step = frame.step
     state = tc.state(step)
-    plan = remaining_plan(tc.ctx.instances, tc.cur_edges, state, goal, tc.tax)
+    plan = rules_plan(tc, state, goal)
     if not plan:
         tc.skip("V7", "no_plan")
         return None

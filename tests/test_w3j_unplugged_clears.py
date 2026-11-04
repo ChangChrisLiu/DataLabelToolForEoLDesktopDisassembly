@@ -79,7 +79,9 @@ def test_unplugged_frees_a_covered_by_and_nothing_else():
         assert "unplugged" not in REQUIRED_STATES[kind], kind
     assert REQUIRED_STATES["connected_to"] == {"unplugged", "removed"}      # as it always was
     # the blocked_by modes are untouched: a drive in the cage still has to be removed
-    assert BLOCKED_REQUIRED == {"mounted": {"removed"}, "contained": {"removed"}}
+    # (and the moment mode `loose`, owner 2026-11-04: a loose part has to be out)
+    assert BLOCKED_REQUIRED == {"mounted": {"removed"}, "contained": {"removed"},
+                                "loose": {"removed"}}
     assert required_states("blocked_by", "contained") == {"removed"}
     assert required_states("covered_by", "contained") == required_states("covered_by")
     # only a connector has the state, so no other class changes meaning

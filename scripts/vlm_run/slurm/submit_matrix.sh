@@ -24,7 +24,7 @@ ARRAY="--array=0-$(( ${#VIEWS[@]} - 1 ))"
 export VIEW_LIST="${VIEWS[*]}"
 VARIANTS=(image blind)          # overlay is meaningful for the scan view only (HANDOFF.md section 8.5)
 # the closed models' repeat subset is not shipped: draw it first (HANDOFF.md section 8.5) and point REPEAT_IDS at it
-REPEAT_IDS="${REPEAT_IDS:-$PACK/eval_v2/repeat.ids.txt}"
+REPEAT_IDS="${REPEAT_IDS:-$PACK/eval_v3/repeat.ids.txt}"
 if [[ ${#CLOSED_MODELS[@]} -gt 0 && ! -f "$REPEAT_IDS" ]]; then
   echo "no repeat subset at $REPEAT_IDS: draw it first (HANDOFF.md section 8.5), then REPEAT_IDS=<file>" >&2; exit 2
 fi
