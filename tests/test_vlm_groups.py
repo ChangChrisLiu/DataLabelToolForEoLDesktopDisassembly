@@ -320,9 +320,10 @@ def _gen(tc, task):
     return [r for step in tc.steps for r in GENERATORS[task](tc, step)]
 
 
-def test_action_record_has_four_images_scan_first(four):
+def test_action_record_images_marked_scan_alone(four):
     """An unmarked action record shows every camera, the scanner first; a marked one (owner
-    2026-11-03: V4, V6 multiple choice, V7, V16) the scanner image its marks are drawn on."""
+    2026-11-03: V4, V6 multiple choice, V7, V16) the scanner image its marks are drawn on,
+    and its question speaks of one picture."""
     db, tax, tc = four
     for task in ("V4", "V6", "V7", "V16"):
         records = [r for r in _gen(tc, task) if task != "V6" or r["prompt"].get("options")]
@@ -333,6 +334,8 @@ def test_action_record_has_four_images_scan_first(four):
             assert r["prompt"]["image_legend"] == [{"view": "scan", "moment": "now"}]
             assert r["label"]["views"] == ["scan"] and r["label"]["image_steps"] == [step]
             assert r["prompt"]["marks"] and {m["image"] for m in r["prompt"]["marks"]} == {0}
+            assert not re.search(r"\b(pictures|images|views|cameras)\b",
+                                 r["prompt"]["question"]), (task, r["prompt"]["question"])
     for task in ("V6", "V10"):
         records = [r for r in _gen(tc, task) if not r["prompt"].get("options")]
         assert records, task
@@ -345,7 +348,6 @@ def test_action_record_has_four_images_scan_first(four):
                                                    for v in ALL_VIEWS]
             assert r["label"]["views"] == list(ALL_VIEWS)
             assert r["label"]["image_steps"] == [step] * 4
-            assert {m["image"] for m in r["prompt"].get("marks") or []} <= {0}
     for task in ("V3", "V12"):
         for r in _gen(tc, task):
             step = r["label"]["step"]
