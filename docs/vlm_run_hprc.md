@@ -1,9 +1,14 @@
 # 在 HPRC 上跑 VLM 评测：从拷包到分数表
 
 > **2026-11-03**：本文已与英文 `HANDOFF.md` §8 对齐：包保持只读，所有输出进 `$WORK`；处处设 `PYTHONDONTWRITEBYTECODE=1`；`RUNS=$WORK/runs`；
-> `MAX_TOKENS` 默认 2048；overlay 只跑 scan。**闭源（负责人 2026-11-03 定）：只用 Codex 跑 GPT-6.1 Sol，只做
-> `eval_v1/audit/audit.ids.txt` 那 300 条，跑一次，不重复**（见 §5）；`submit_matrix.sh` 的 `CLOSED_MODELS` 留空，
+> `MAX_TOKENS` 默认 2048；overlay 只跑 scan 和 multi（只有扫描仪帧有确认的掩码）。**闭源（负责人 2026-11-03 定）：只用 Codex 跑 GPT-6.1 Sol，只做
+> `eval_v2/audit/audit.ids.txt` 那 300 条，跑一次，不重复**（见 §5）；`submit_matrix.sh` 的 `CLOSED_MODELS` 留空，
 > 不需要重复子集和 `REPEAT_IDS`。V2 的主指标是全部 V2 题。两者不一致时以 `HANDOFF.md` 为准。
+>
+> **题目重设计（2026-11-03）之后**：评测子集是 `eval_v2`（`eval_v1` 已作废，`run_eval.sh` 拒绝它）；包按**五个单元**组织——
+> 四个相机单元 `scan` / `oak1` / `oak2` / `rs` 只放感知题（V1 V2 V8 V14 V15），动作题（V3 V4 V6 V7 V10 V12 V16）只在
+> `multi` 单元里（一个时刻的所有相机画面，最多 4 张图，V3 / V12 前后两个时刻最多 8 张）。没有记录的单元不进包
+> （`rs` 可能缺席），作业 array 读 `tools/vlm_run/pack_units.sh` 列出的单元，不假定五个都在。
 
 这份是**照着做**的流程（W4-B，2026-11）。模型不在本工作站上跑：评测包（W4-A 的 `exports/vlmpack_<date>/`）
 拷到 TAMU HPRC（或任何有 GPU / 有 API 出口的机器），用包里 `tools/` 的脚本完成
@@ -17,13 +22,14 @@
 | `vlm_collect.py` | `subset`（按 id 取子集并带上 sidecar）/ `blind`（去图像变体）/ `split`（拆 `--repeat` 文件，本项目不用）/ `table`（汇总分数表） |
 | `run_eval.sh` | 一个作业：子集 → 变体 → `vlm_to_chat` → `vlm_run` → `vlm_score`，全靠环境变量 |
 | `collect_scores.sh` | 把 `runs/` 下所有 `*.score.json` 汇成 `runs/score.md` |
-| `slurm/gold_check.sbatch` | 集群上的 gold 自检（CPU，array 四个视角） |
-| `slurm/open_model.sbatch` | 开源模型 × 一种输入变体，array 四个视角，一张 GPU |
+| `slurm/gold_check.sbatch` | 集群上的 gold 自检（CPU，array 包里的各单元） |
+| `slurm/open_model.sbatch` | 开源模型 × 一种输入变体，array 包里的各单元，一张 GPU |
+| `pack_units.sh` | 打印包里实际有的单元（`manifest.json` 的 `units`；缺 `python` 时用 `python3`） |
 | `slurm/closed_model.sbatch` | 闭源模型（API），CPU，key 只从环境变量来 |
 | `slurm/submit_matrix.sh` | 模型 × 变体全部提交 |
 | `requirements.txt` / `requirements-vllm.txt` | 环境（见 §2） |
 
-输出目录固定为 `runs/<model_tag>/<variant>/<view>/`：`truth/`（本次跑的记录 + sidecar）、`chat.jsonl`、`pred.jsonl`、
+输出目录固定为 `runs/<model_tag>/<variant>/<unit>/`：`truth/`（本次跑的记录 + sidecar）、`chat.jsonl`、`pred.jsonl`、
 `run.log`、`score/<model_tag>.score.{json,md}`（重复跑另有 `pred.r1..rk.jsonl` 与 `<model_tag>.r1..rk.score.*`；本项目不做重复跑）。
 
 ---
@@ -41,10 +47,11 @@ rsync -avP exports/vlmpack_2026-11-02/ USER@grace.hprc.tamu.edu:/scratch/user/US
 
 ```bash
 export PACK=$SCRATCH/vlmpack_2026-11-02
-ls $PACK            # data/（vlm_<view>.jsonl + sidecar）、eval_v1/、images/、overlays/、tools/、manifest.json
+ls $PACK            # data/（vlm_<unit>.jsonl + sidecar）、eval_v2/、images/、overlays/、tools/、manifest.json
+bash $PACK/tools/vlm_run/pack_units.sh $PACK   # 例如 scan oak1 oak2 rs multi（rs 可能没有）
 ```
 
-`run_eval.sh` 依次在 `$PACK/data/vlm_<view>.jsonl`、`$PACK/<view>.jsonl`、`$PACK/vlm_<view>.jsonl` 找全量导出，图像根目录默认
+`run_eval.sh` 依次在 `$PACK/data/vlm_<unit>.jsonl`、`$PACK/<unit>.jsonl`、`$PACK/vlm_<unit>.jsonl` 找全量导出，图像根目录默认
 `$PACK/images`；别的路径用 `TRUTH=` / `IMAGE_ROOT=` 覆盖。包里的 `.sh` / `.sbatch` 已经是 LF，**不要在包上跑 `dos2unix`**
 （会改变 sha256）。工作目录：`export WORK=$SCRATCH/e3d_eval; mkdir -p $WORK/logs; export PYTHONDONTWRITEBYTECODE=1`，
 把 `$PACK/tools/vlm_run/slurm` 拷到 `$WORK/slurm` 再改；所有输出都进 `$WORK`，包保持只读。
@@ -74,7 +81,7 @@ hf download OpenGVLab/InternVL3_5-8B
 
 ## 3. gold 自检（不用模型，必须每项 1.000）
 
-先在登录节点跑一个视角，几十秒：
+先在登录节点跑一个单元，几十秒（动作题都在 `multi`，再跑一次 `VIEW=multi`）：
 
 ```bash
 cd $WORK
@@ -84,15 +91,16 @@ cat $WORK/runs/gold/image/scan/score/gold.score.md
 
 期望：`parse failures: strict 0.0%, lenient 0.0%`，每个任务、层、模板、附加指标行 strict = lenient = `1.000 [1.000, 1.000]`；
 `blocked_rate` 0.000 也是对的（越低越好），chance / frequency 列是参照线，不是这次的结果。
-不是 1.000 说明包、转换器或评分器三者之一在这台机器上不一致——先修这个，再花 GPU 时。四个视角一起：
+不是 1.000 说明包、转换器或评分器三者之一在这台机器上不一致——先修这个，再花 GPU 时。所有单元一起：
 
 ```bash
 cd $WORK && sbatch --export=ALL,PACK=$PACK,RUNS=$WORK/runs $WORK/slurm/gold_check.sbatch
 ```
 
-去图像变体的 gold 也应是 1.000（gold 从标签作答，不看图）：`VARIANT=blind`。
+去图像变体的 gold 也应是 1.000（gold 从标签作答，不看图）：`VARIANT=blind`。去图像变体把题面里的
+"outlined in red" 去掉，按标记字母点名的零件写成 "part A (a RAM module)"，不丢题。
 
-## 4. 100 题试点（一个开源模型，一个视角）
+## 4. 100 题试点（一个开源模型，一个单元）
 
 试点只在 **train 台**上做（论文 §6.2），从评测集里按任务分层抽 100 条：
 
@@ -100,7 +108,7 @@ cd $WORK && sbatch --export=ALL,PACK=$PACK,RUNS=$WORK/runs $WORK/slurm/gold_chec
 cd $WORK                     # pilot_ids.txt 写在工作目录
 python - <<'EOF'
 import hashlib, json, collections
-rows = [json.loads(l) for l in open(f"{__import__('os').environ['PACK']}/eval_v1/scan.jsonl", encoding="utf-8")]
+rows = [json.loads(l) for l in open(f"{__import__('os').environ['PACK']}/eval_v2/scan.jsonl", encoding="utf-8")]
 rows = [r for r in rows if r["label"].get("split") == "train"]
 rows.sort(key=lambda r: hashlib.sha256(("pilot0|" + r["id"]).encode()).hexdigest())
 per = collections.Counter(); keep = []
@@ -122,7 +130,7 @@ python $PACK/tools/vlm_run/vlm_run.py --backend vllm --model Qwen/Qwen3-VL-8B-In
   --out $OUT/pred.jsonl --image-root $PACK/images --max-side 1568 --dry-run
 ```
 
-然后提交（`--array=0` 只跑 scan）：
+然后提交（`--array=0` 只跑 `pack_units.sh` 列出的第一个单元，即 scan；动作题的试点把 `scan` 换成 `multi`，并用 `VIEW_LIST=multi`）：
 
 ```bash
 sbatch --array=0 --export=ALL,PACK=$PACK,RUNS=$WORK/runs,MODEL=Qwen/Qwen3-VL-8B-Instruct,SUBSET=$WORK/pilot_ids.txt,MODEL_TAG=pilot_qwen3vl8b \
@@ -143,25 +151,25 @@ cd $WORK && PACK=$PACK RUNS=$WORK/runs bash $WORK/slurm/submit_matrix.sh
 squeue -u $USER
 ```
 
-每个作业 = 一个模型 × 一种变体（`image` 原图 / `blind` 去图像，题面与选项不变）× array 四个视角，评测集
-`eval_v1/<view>.jsonl`（所有开源模型同一子集）。
+每个作业 = 一个模型 × 一种变体（`image` 原图 / `blind` 去图像，题面与选项只去掉标记措辞）× array 包里的各单元，评测集
+`eval_v2/<unit>.jsonl`（所有开源模型同一子集）。`multi` 的请求最多 8 张图（`open_model.sbatch` 对 multi 设 `--max-images 8`）。
 
 **闭源：GPT-6.1 Sol，通过 Codex，只做 300 条**（负责人 2026-11-03 定，控制 token 开销）：
-- 题目 = `eval_v1/audit/audit.ids.txt`（每题型 25 条，66 台；scan 175、oak1 48、oak2 41、rs 36），也就是负责人审核的同一批，
-  逐题可比。每个视角用 `vlm_collect.py subset --ids $PACK/eval_v1/audit/audit.ids.txt`
-  切出 300 条的真值。跑一次 `image`，不重复、不报标准差（Codex 不暴露 temperature）；要不要加一遍 `blind` 先问负责人。
+- 题目 = `eval_v2/audit/audit.ids.txt`（每题型约 25 条，从 `eval_v2` 内部抽；各单元的条数见 `$PACK/eval_v2/table.json`
+  的 `audit`），也就是作者审核的同一批，逐题可比。作者审核只核对**生成的答案**（V1 / V8 不审）。每个单元用
+  `vlm_collect.py subset --ids $PACK/eval_v2/audit/audit.ids.txt` 切出它那部分真值（合起来 300 条）。跑一次 `image`，不重复、不报标准差（Codex 不暴露 temperature）；要不要加一遍 `blind` 先问负责人。
 - **Codex 能读文件、跑命令，每题必须隔离**：在 `$PACK`、`$WORK` 之外新建空目录，只放这道题的图片（按不透明 id 拷贝），
   只读沙箱、除模型外不联网；只给 `vlm_to_chat.py` 为这条记录生成的用户文本（题面、选项、答题格式）加图片；
-  取最终回复作 `raw_text`。写 `$WORK/runs/gpt61sol_codex/image/<view>/pred.jsonl`（每行 `{"id", "raw_text", "meta"}`，
+  取最终回复作 `raw_text`。写 `$WORK/runs/gpt61sol_codex/image/<unit>/pred.jsonl`（每行 `{"id", "raw_text", "meta"}`，
   `meta` 记 Codex 版本、模型名、推理强度、送图尺寸、日期），再用 300 条真值 `vlm_score.py` 评分。驱动脚本放 `$WORK`，不进包。
-- 开源模型的全量 `pred.jsonl` 也用这 300 条真值再评一次，和闭源、审核错误率放在一起。
+- 开源模型的全量 `pred.jsonl` 也用这 300 条真值再评一次，和闭源、作者审核的错误率放在一起。
 
 第三种变体 `VARIANT=overlay`（W4-C）：把**已确认的可见掩码**按类别颜色画在原图上（固定透明度、细描边，不写字不画框），
-只对每张图都是已确认帧且有掩码的题出（V8 除外——框就是答案），是论文的"感知参照线"。包里 `overlays/` 已预先画好
-`eval_v1` 的那份；别的子集会从 `<view>.masks.jsonl` sidecar 现画（`OVERLAYS=` 指到可写目录）。它答的题比原图少，
+只对每张图都是已确认帧且有掩码的题出（V8 除外——框就是答案；`multi` 只画扫描仪那几张，侧面相机原样），是论文的"感知参照线"。包里 `overlays/` 已预先画好
+`eval_v2` 的那份；别的子集会从 `<unit>.masks.jsonl` sidecar 现画（`OVERLAYS=` 指到可写目录）。它答的题比原图少，
 `run_eval.sh` 仍按完整子集评分（没答的记为 parse failure），看 `truth/mask_overlay.summary.json` 知道少了哪些；
 `vlm_score.py` 的 `score.md` 同时给出 `chance` / `frequency` 两行参照。`submit_matrix.sh` 的清单默认只有
-`image blind`，要跑 overlay 自己加进 `VARIANTS`。**overlay 只对 scan 有意义**（其他视角没有确认的掩码，
+`image blind`，要跑 overlay 自己加进 `VARIANTS`。**overlay 只对 scan 和 multi 有意义**（其他相机没有确认的掩码，
 可答 0 条）；与原图比较时，两者都按 `truth/mask_overlay.jsonl` 的 id 重新评分。
 
 **中断 / 失败重跑**：同一命令再提交一次即可——`vlm_run.py` 跳过 `pred.jsonl` 里已答的 id，只补 `raw_text = null`
@@ -173,7 +181,7 @@ squeue -u $USER
 加 `RUN_ARGS=--no-api-key`）。
 
 常用旋钮（都走环境变量进 `run_eval.sh`）：`MAX_SIDE`（送图最长边；sbatch 默认 1568，单独跑 `run_eval.sh` 时默认不缩放）、`MAX_TOKENS`（默认 2048：V1 要列出全部可见零件，512 会截断）、
-`ROI=view`（按视角固定底盘裁切）、`CHAT_FORMAT`、`RUN_ARGS="--tensor-parallel 4 --dtype bf16 --batch-size 8
+`ROI=view`（按视角固定底盘裁切；跨出裁切框的红色标记框会在边缘被截断）、`CHAT_FORMAT`、`RUN_ARGS="--tensor-parallel 4 --dtype bf16 --batch-size 8
 --gpu-mem 0.85 --max-model-len 16384"`。OOM 先降 `--batch-size` 与 `MAX_SIDE`，再加卡 + `--tensor-parallel`。
 
 ## 6. 收分数
@@ -183,7 +191,7 @@ PACK=$PACK RUNS=$WORK/runs bash $PACK/tools/vlm_run/collect_scores.sh
 cat $WORK/runs/score.md
 ```
 
-`vlm_collect.py table` 把每个 `runs/<model>/<variant>/<view>/score/*.score.json` 变成一行（strict 准确率 +
+`vlm_collect.py table` 把每个 `runs/<model>/<variant>/<unit>/score/*.score.json` 变成一行（strict 准确率 +
 按台聚类自助法 95 % 区间）。单个作业的细表看
 `score/<model_tag>.score.md`：按任务 / 能力层 / 模板，附加指标（V6 blocked_rate、V7 violation_free、
 V16 localised、V4 blockers_f1、V10 bin_accuracy）、文本捷径上界列。
@@ -207,7 +215,7 @@ V16 localised、V4 blockers_f1、V10 bin_accuracy）、文本捷径上界列。
 - `bash: $'\r': command not found` → 脚本带 CRLF：只对 `$WORK` 里的副本 `dos2unix`，不要动包。
 - `environment variable X is not set` → `~/.vlm_keys.env` 没 source 或变量名写错；`--dry-run` 会打印 key 是否已设。
 - `HTTP 429` / `503` → 已自动指数退避重试（`--max-retries`，尊重 `Retry-After`）；仍失败的行留 `meta.error`，重跑补齐。
-- vllm `ValueError: ... images` → 多图题超过 `--max-images`（默认 2，V3 / V12 / V15 都是两图）。
+- vllm `ValueError: ... images` → 多图题超过 `--max-images`（相机单元默认 2，V15 两图；`multi` 要 8，V3 / V12 前后各 4 张）。
 - `transformers` 后端 `apply_chat_template` 报错 → 版本太旧或权重不是 HF 格式；驱动会退到「模板文本 + processor」两步法，
   再不行换 `-hf` 仓库或走 vllm。
 - `--dry-run` 报 `missing image` → `IMAGE_ROOT` 与 manifest 的相对路径不配，看包 README。

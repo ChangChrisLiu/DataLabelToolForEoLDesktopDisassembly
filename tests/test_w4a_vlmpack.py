@@ -526,3 +526,25 @@ def test_a_tree_without_the_redesign_tools_is_refused_before_the_export(tmp_path
     with pytest.raises(P.PackError, match="vlm_glossary.py, vlm_audit_carry.py"):
         _build(tmp_path, db_path, cache, "pack", repo=tree)
     assert not (tmp_path / "pack").exists()  # refused before anything was written
+
+
+def test_the_card_runs_the_references_on_multi_and_states_the_review_notes(built):
+    """Final review M1 / M4 / the deferred README line, and M2 (the shipped run guide)."""
+    text = (built["pack"] / "README.md").read_text(encoding="utf-8")
+    run = text.split("## How to run")[1].split("## Known limitations")[0]
+    # V6 / V7 / V16 live in multi only: the protocol prior is run there
+    assert "vlm_references.py --export eval_v2/multi.jsonl" in run
+    assert "--pred runs/refs/multi/protocol_prior.predictions.jsonl" in run
+    assert "vlm_references.py --export eval_v2/scan.jsonl" not in run
+    # a mark crossing the view ROI is clipped at the crop edge
+    assert "is clipped there" in text.split("## Images, crops, ROI")[1]
+    # the truth principle: a V4 group "yes" is demonstrated for one member only
+    assert "demonstrated for the one member the operator took next" in text
+    assert "graph-permitted for the others" in text
+    # eval_v2's own V4 bounds are on the card and in the manifest
+    assert "eval_shortcuts" in built["manifest"]
+    guide = (built["pack"] / "docs" / "vlm_run_hprc.md").read_text(encoding="utf-8")
+    assert "eval_v2/audit/audit.ids.txt" in guide and "pack_units.sh" in guide
+    assert "eval_v1/" not in guide and "四个视角" not in guide
+    for venue in ("CVPR", "ECCV", "ICCV", "NeurIPS"):
+        assert venue not in guide and venue not in text

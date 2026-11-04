@@ -1007,7 +1007,9 @@ def _known_issues(summary: dict) -> str:
     items.append(
         "**Shortcut bounds are in-sample.** The `summary.json` `shortcuts` table (and the "
         "scorer's *text-only upper bound* column) is measured on the **full export** of a "
-        "unit, not on `eval_v2`; `eval_v2/<unit>.summary.json` is a copy of the same file.")
+        "unit, not on `eval_v2`; `eval_v2/<unit>.summary.json` is a copy of the same file. "
+        "The pack's `manifest.json` `eval_shortcuts` gives the same bounds measured on "
+        "`eval_v2` itself (V4's are drawn balanced within each class).")
     items.append(
         "**Captive screws.** A truth that rests on a captive screw's tightness is marked "
         "`label.image_undecidable: true` (no 2D view shows it); the scorer reports every "
@@ -1136,6 +1138,11 @@ def readme_text(summary: dict) -> str:
     bracket_line = (f" The optical drive cage note above applies to "
                     f"{_n(len(bracket), 'desktop')}." if bracket else "")
     multi = MULTI_VIEW in units
+    # the references' example unit: the protocol prior answers V6 / V7 / V16, which live
+    # in the multi unit only (final review M1)
+    ref_unit = MULTI_VIEW if multi else units[0]
+    ref_why = ("the action tasks, the protocol prior's V6 / V7 / V16 among them" if multi
+               else "this copy has no action task, so no protocol prior")
     unit_list = ", ".join(f"`{u}`" for u in units)
     truth_files = " ".join(f"{ev_name}/{u}.jsonl" for u in units)
     multi_line = (
@@ -1299,7 +1306,11 @@ the glossary).
   occlusion ruling ("class rule x overlap in the annotation").
   `state_inapplicable`: the part is not in a state the verb starts from
   (already open, already removed) -- no longer used for V4's negatives.
-  `failed_attempt`: a real failed attempt in the log.
+  `failed_attempt`: a real failed attempt in the log. A V4 "yes" on a **group**
+  (its members outlined together, "can the motherboard screws outlined in red be
+  unscrewed?") is demonstrated for the one member the operator took next and
+  graph-permitted for the others: no edge forbids them and they are
+  interchangeable with it, but nobody did them at that moment.
 * `label.negative` -- the kind of negative half, or absent on a positive: V4 the
   truth source; V12 `captive_screw_loosened` (the log moves, the picture does
   not); V14 `unanswerable`; V15 `different_moment`; V16 the corruption
@@ -1345,7 +1356,9 @@ item has a box and no unanswerable one does; V8's box is its answer). Box
 answers (V1, V8) and the marks are in pixel coordinates of the image shown;
 with `--roi view` or `--max-side` the converter scales the marks with the
 picture, writes the crop offset and scale to `meta.transforms`, and
-`vlm_score.py --chat` maps box answers back. A multi-image question is one image
+`vlm_score.py --chat` maps box answers back. With `--roi view` a mark that
+crosses the edge of the view's ROI is clipped there: the model sees only the
+part of the outline inside the crop. A multi-image question is one image
 part per picture, or one side-by-side picture with `--composite` (fixed per
 model).
 
@@ -1434,14 +1447,15 @@ python tools/vlm_score.py --truth {ev_name}/{MULTI_VIEW if multi else views[0]}.
     --chat runs/{MULTI_VIEW if multi else views[0]}.openai.jsonl --out runs/scores --name <model>-{MULTI_VIEW if multi else views[0]}
 
 # references: blind, protocol prior, state oracle (no V14) and, with --assets, the mask overlay
-python tools/vlm_references.py --export {ev_name}/scan.jsonl --out runs/refs/scan \\
+# ({ref_unit}: {ref_why}; run the same on every unit)
+python tools/vlm_references.py --export {ev_name}/{ref_unit}.jsonl --out runs/refs/{ref_unit} \\
     --assets overlays --image-root images                     # overlays/ is pre-painted for {ev_name}
-python tools/vlm_to_chat.py --export {ev_name}/scan.jsonl --records runs/refs/scan/blind.jsonl \\
-    --format openai --out runs/scan.blind.jsonl
-python tools/vlm_to_chat.py --export runs/refs/scan/mask_overlay.jsonl --format openai \\
-    --image-root overlays --out runs/scan.overlay.jsonl       # the variant carries its own manifest
-python tools/vlm_score.py --truth {ev_name}/scan.jsonl --pred runs/refs/scan/protocol_prior.predictions.jsonl \\
-    --out runs/scores --name protocol-prior-scan
+python tools/vlm_to_chat.py --export {ev_name}/{ref_unit}.jsonl --records runs/refs/{ref_unit}/blind.jsonl \\
+    --format openai --out runs/{ref_unit}.blind.jsonl
+python tools/vlm_to_chat.py --export runs/refs/{ref_unit}/mask_overlay.jsonl --format openai \\
+    --image-root overlays --out runs/{ref_unit}.overlay.jsonl       # the variant carries its own manifest
+python tools/vlm_score.py --truth {ev_name}/{ref_unit}.jsonl --pred runs/refs/{ref_unit}/protocol_prior.predictions.jsonl \\
+    --out runs/scores --name protocol-prior-{ref_unit}
 # (or, for any subset: python tools/vlm_overlay.py render --export <truth.jsonl> --image-root images \\
 #      --assets <dir> --out <dir>/mask_overlay.jsonl; tools/vlm_run/run_eval.sh VARIANT=overlay does this)
 ```
