@@ -321,12 +321,24 @@ def _gen(tc, task):
 
 
 def test_action_record_has_four_images_scan_first(four):
+    """An unmarked action record shows every camera, the scanner first; a marked one (owner
+    2026-11-03: V4, V6 multiple choice, V7, V16) the scanner image its marks are drawn on."""
     db, tax, tc = four
-    for task in ("V4", "V6", "V7", "V10", "V16"):
-        records = _gen(tc, task)
+    for task in ("V4", "V6", "V7", "V16"):
+        records = [r for r in _gen(tc, task) if task != "V6" or r["prompt"].get("options")]
         assert records, task
         for r in records:
             step = r["label"]["step"]
+            assert r["prompt"]["images"] == [tc.frames[step].image_id], task
+            assert r["prompt"]["image_legend"] == [{"view": "scan", "moment": "now"}]
+            assert r["label"]["views"] == ["scan"] and r["label"]["image_steps"] == [step]
+            assert r["prompt"]["marks"] and {m["image"] for m in r["prompt"]["marks"]} == {0}
+    for task in ("V6", "V10"):
+        records = [r for r in _gen(tc, task) if not r["prompt"].get("options")]
+        assert records, task
+        for r in records:
+            step = r["label"]["step"]
+            assert not r["prompt"].get("marks"), task
             assert len(r["prompt"]["images"]) == 4, task
             assert r["prompt"]["images"][0] == tc.frames[step].image_id
             assert r["prompt"]["image_legend"] == [{"view": v, "moment": "now"}
@@ -347,15 +359,17 @@ def test_action_record_has_four_images_scan_first(four):
 
 def test_missing_side_view_shrinks_legend(four):
     db, tax, tc = four
-    step = min(r["label"]["step"] for r in _gen(tc, "V4"))
+    step = min(r["label"]["step"] for r in _gen(tc, "V10"))
     tc.side_frames["oak2"].pop(step)            # that camera has no picture of the step
-    records = [r for r in _gen(tc, "V4") if r["label"]["step"] == step]
+    records = [r for r in _gen(tc, "V10") if r["label"]["step"] == step]
     assert records
     for r in records:
         assert r["label"]["views"] == ["scan", "oak1", "rs"]
         assert [e["view"] for e in r["prompt"]["image_legend"]] == ["scan", "oak1", "rs"]
         assert len(r["prompt"]["images"]) == 3
-        assert r["prompt"]["marks"] and {m["image"] for m in r["prompt"]["marks"]} == {0}
+    # a marked record shows the scanner alone whichever side camera is missing
+    for r in (r for r in _gen(tc, "V4") if r["label"]["step"] == step):
+        assert r["label"]["views"] == ["scan"] and len(r["prompt"]["images"]) == 1
 
 
 def test_v3_tiny_target_skipped(tmp_path, monkeypatch):
@@ -374,15 +388,45 @@ def test_v3_tiny_target_skipped(tmp_path, monkeypatch):
     db.close()
 
 
-def test_v3_accepts_attached_part(tmp_path):
+def test_v3_accepts_only_the_part_acted_on(tmp_path):
+    """Owner 2026-11-03: removing the cooler is answered "the CPU cooler", never by a part
+    attached to it (its captive screws ride out with it): ``accept_targets`` is the target
+    alone and the grader gives such an answer 0."""
+    from tda.core.export.vlm_check import World, grade
+
     db = Db(str(tmp_path / "w.sqlite"))
     tax = W.build(db)
-    records = _of(_export(db, tax, tmp_path / "v.jsonl", desktop=W.DESKTOP, view=W.VIEW),
-                  "V3")
+    out = tmp_path / "v.jsonl"
+    records = _of(_export(db, tax, out, desktop=W.DESKTOP, view=W.VIEW), "V3")
+    db.close()
     cooler = next(r for r in records if r["label"]["step"] == 9)
     assert cooler["label"]["answer"]["target_instance"] == W.COOLER
-    assert cooler["label"]["answer_check"]["accept_targets"] == [W.COOLER, *W.SCREWS]
-    db.close()
+    assert cooler["label"]["answer_check"]["accept_targets"] == [W.COOLER]
+    # every V3 record accepts its target and nothing else
+    for r in records:
+        assert r["label"]["answer_check"]["accept_targets"] == [
+            r["label"]["answer"]["target_instance"]], r["label"]["readable_id"]
+    oracle = out.with_name(out.stem + ".oracle.jsonl")
+    row = next(json.loads(x) for x in oracle.read_text(encoding="utf-8").splitlines()
+               if json.loads(x).get("type") == "desktop")
+    world = World.from_oracle(row)
+    # the scene's screws are attached to the cooler (parent + attached)
+    assert all(world.instances[s]["parent"] == W.COOLER and world.instances[s]["attached"]
+               for s in W.SCREWS)
+
+    def reply(target):
+        return json.dumps({"verb": "remove", "target": target, "tool": None})
+
+    for name in ("the CPU cooler", W.COOLER):
+        assert grade(cooler, reply(name), world, tax).score == 1.0, name
+    for name in ("the CPU cooler screws", "a CPU cooler screw", W.SCREWS[0]):
+        g = grade(cooler, reply(name), world, tax)
+        assert g.score == 0.0 and not g.metrics["target_instance"], name
+    # an older record listing the attached parts does not bring the credit back
+    old = json.loads(json.dumps(cooler))
+    old["label"]["answer_check"]["accept_targets"] = [W.COOLER, *W.SCREWS]
+    assert grade(old, reply(W.SCREWS[0]), world, tax).score == 0.0
+    assert grade(old, reply("the CPU cooler"), world, tax).score == 1.0
 
 
 def test_v7_plan_uses_screw_group(tmp_path):

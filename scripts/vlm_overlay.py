@@ -25,7 +25,9 @@ does not know what to do with them.
   pictures are both painted when both frames are confirmed (the scanner is the
   only confirmed view on most desktops, so almost no V15 pair qualifies).
 * A ``multi`` record (``label.view == "multi"``: one moment from every camera,
-  the redesign of 2026-11-03) has **only its scanner frames painted** -- image 0,
+  the redesign of 2026-11-03; a record whose parts are outlined in red -- V4, V6
+  multiple choice, V7, V16 -- shows the scanner image alone) has **only its scanner
+  frames painted** -- image 0,
   and for V3 / V12 also the scanner frame of the second moment (:func:`painted_images`);
   those must be confirmed with masks, the side cameras' pictures are shown as they
   are. The variant's manifest points those at the plain frame, relative to

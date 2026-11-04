@@ -200,6 +200,121 @@ def test_multi_unit_shows_each_moment_from_every_camera_that_has_it(tmp_path, mo
     assert seen[3] == ids(3, ("scan", "oak1", "rs"))
 
 
+#: Owner 2026-11-03: the action questions whose parts are outlined in red show the marked
+#: scanner image alone; the unmarked ones keep every camera.
+SCANNER_ONLY = ("V4", "V6-mc", "V7", "V16")
+EVERY_CAMERA = ("V3", "V6-open", "V10", "V12")
+
+
+def _form(record: dict) -> str:
+    task = record["prompt"]["task"]
+    if task == "V6":
+        return "V6-mc" if record["prompt"].get("options") else "V6-open"
+    return task
+
+
+def test_marked_action_records_show_the_scanner_image_alone(tmp_path):
+    """Per task: V4, V6 multiple choice, V7 and V16 show one image -- the scanner frame
+    their marks are drawn on -- and every field describing images agrees; V3, V6 open,
+    V10 and V12 carry no mark and show every camera, as before. The converter, the
+    overlay, the references and the audit sheet take a one-image multi record."""
+    import vlm_audit_sheet
+    import vlm_overlay
+    import vlm_references
+    import vlm_to_chat
+    from tda.core.export.vlm_tasks import opaque_image_id
+
+    four = ("scan", "oak1", "oak2", "rs")
+    _, records = _unit(tmp_path, "multi", views=four)
+    out = tmp_path / "vlm_multi.jsonl"
+    manifest = IO.load_manifest(out)
+    worlds, frames = IO.load_oracle(out)
+    by_form: dict[str, list[dict]] = {}
+    for r in records:
+        by_form.setdefault(_form(r), []).append(r)
+    assert set(by_form) == set(SCANNER_ONLY) | set(EVERY_CAMERA), sorted(by_form)
+
+    def ids(step):
+        return [opaque_image_id(W.DESKTOP, v, step) for v in four]
+
+    for form in SCANNER_ONLY:
+        for r in by_form[form]:
+            prompt, label, step = r["prompt"], r["label"], r["label"]["step"]
+            rid = label["readable_id"]
+            scan = opaque_image_id(W.DESKTOP, "scan", step)
+            assert label["view"] == "multi", rid
+            assert prompt["images"] == [scan], rid
+            assert prompt["image_legend"] == [{"view": "scan", "moment": "now"}], rid
+            assert label["views"] == ["scan"] and label["image_steps"] == [step], rid
+            assert prompt["marks"] and all(m["image"] == 0 for m in prompt["marks"]), rid
+            assert manifest[scan]["view"] == "scan" and scan in frames, rid
+            assert vlm_to_chat.legend_line(r) == "Image 1: the top-down scanner.", rid
+            text = vlm_to_chat.user_text(r)
+            assert "Images 1" not in text and "side camera" not in text, rid
+            assert "Outlined in red: " in text and "(image 1" not in text, rid
+            assert vlm_overlay.painted_images(r, frames) == [scan], rid
+            assert vlm_references.moment_images(r, frames) == [scan], rid
+            oracle = vlm_references.state_oracle(r, worlds, frames)
+            assert oracle is None or len(oracle["prompt"]["state_tables"]) == 1, rid
+            article = vlm_audit_sheet.item_html(1, r, manifest, worlds.get(W.DESKTOP),
+                                                tmp_path / "images", tmp_path / "audit", 1)
+            assert len(re.findall(r"<figure ", article)) == 1, rid
+            assert "image 1 of 1: top-down scanner" in article, rid
+    for form in EVERY_CAMERA:
+        for r in by_form[form]:
+            prompt, label, step = r["prompt"], r["label"], r["label"]["step"]
+            rid = label["readable_id"]
+            assert not prompt.get("marks"), rid
+            two = form in ("V3", "V12")
+            want = [*ids(step - 1), *ids(step)] if two else ids(step)
+            assert prompt["images"] == want, rid
+            assert label["views"] == list(four) * (2 if two else 1), rid
+            assert label["image_steps"] == ([step - 1] * 4 + [step] * 4 if two
+                                            else [step] * 4), rid
+            assert len(prompt["image_legend"]) == len(want), rid
+            assert vlm_to_chat.legend_line(r).startswith("Images 1–4"), rid
+    # a V6 pair: the open form keeps the cameras, its multiple-choice twin the scanner only
+    pairs: dict[str, dict[str, dict]] = {}
+    for r in by_form["V6-open"] + by_form["V6-mc"]:
+        pairs.setdefault(r["label"]["v6_pair"], {})[_form(r)] = r
+    both = [p for p in pairs.values() if len(p) == 2]
+    assert both
+    for p in both:
+        assert len(p["V6-open"]["prompt"]["images"]) == 4
+        assert p["V6-mc"]["prompt"]["images"] == p["V6-open"]["prompt"]["images"][:1]
+    # the sidecars list exactly the pictures the records show
+    used = {i for r in records for i in r["prompt"]["images"]}
+    assert set(manifest) == used and used <= set(frames)
+
+
+def test_no_rendered_prompt_has_an_unfilled_placeholder(built):
+    """Every chat prompt of the scene pack, every unit: the answer-format line is filled
+    (V14 lists its class's states: ``answer_check.allowed``, the glossary's vocabulary)."""
+    import vlm_glossary as G
+    import vlm_to_chat
+
+    seen_v14 = 0
+    for path in sorted((built["pack"] / "data").glob("vlm_*.jsonl")):
+        if path.name.count(".") > 1:  # a sidecar
+            continue
+        for r in IO.read_jsonl(path):
+            text = vlm_to_chat.user_text(r)
+            rid = r["label"]["readable_id"]
+            assert "<one of: <" not in text and "{allowed}" not in text, (rid, text)
+            assert not re.search(r"\{[a-z_]+\}", text), (rid, text)
+            if r["prompt"]["task"] == "V14":
+                seen_v14 += 1
+                check = r["label"]["answer_check"]
+                cls = check["class"]
+                want = (["present", "removed"] if check.get("state_space") == "presence"
+                        else list(G.STATE_MEANINGS[cls]))
+                assert check["allowed"] == want, rid
+                assert f"<one of: {', '.join(want)}>, or null" in text, rid
+                if r["label"]["answer"]["answerable"]:
+                    assert r["label"]["answer"]["state"] in want, rid
+    assert seen_v14
+
+
 # --------------------------------------------------------------------------- #
 # the layout and the manifest
 # --------------------------------------------------------------------------- #

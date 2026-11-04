@@ -119,6 +119,7 @@ from tda.core.taxonomy import Taxonomy
 
 __all__ = [
     "ACTION_TASKS",
+    "MARKED_ACTION_TASKS",
     "MULTI_VIEW",
     "Namer",
     "PERCEPTION_TASKS_SINGLE",
@@ -172,6 +173,11 @@ ACTION_TASKS = ("V3", "V4", "V6", "V7", "V10", "V12", "V16")
 PERCEPTION_TASKS_SINGLE = ("V1", "V2", "V8", "V14", "V15")
 #: The export unit whose records show every view of a moment.
 MULTI_VIEW = "multi"
+#: The action tasks whose parts are outlined in red on the scanner image (owner 2026-11-03):
+#: their records show that image alone, no side camera (:meth:`TaskCtx.moment` ``marked``).
+#: V6's listed form (multiple choice) does the same; its open form, V3, V10 and V12 carry
+#: no mark and show every camera.
+MARKED_ACTION_TASKS = ("V4", "V7", "V16")
 
 #: Tasks whose answer is read off the compiled truth table of one view.
 PERCEPTION_TASKS = frozenset({"V1", "V2", "V8", "V12", "V14", "V15"})
@@ -511,11 +517,12 @@ class TaskCtx:
         """The camera this unit's own frames come from: the scanner for the ``multi`` unit."""
         return VIEWS[0] if self.view == MULTI_VIEW else self.view
 
-    def legend(self, *moments: tuple[int, str]) -> list[tuple[str, str, int]]:
+    def legend(self, *moments: tuple[int, str],
+               marked: bool = False) -> list[tuple[str, str, int]]:
         """``(view, moment, step)`` per image of :meth:`moment` calls, in image order."""
         out: list[tuple[str, str, int]] = []
         for step, name in moments:
-            for frame in self.moment(step):
+            for frame in self.moment(step, marked=marked):
                 out.append((self.view_of(frame), name, step))
         return out
 
@@ -527,11 +534,17 @@ class TaskCtx:
                 return view
         return self.own_view
 
-    def moment(self, step: int) -> list[FrameData]:
+    def moment(self, step: int, *, marked: bool = False) -> list[FrameData]:
         """The frames of one step to show together: this unit's own frame first, then the side views' frames
-        in VIEWS order, each only where that camera has a picture of the step."""
+        in VIEWS order, each only where that camera has a picture of the step.
+
+        ``marked`` (owner 2026-11-03): a question whose parts are outlined in red on the
+        scanner image (V4, V6 multiple choice, V7, V16) shows that image alone -- the
+        outline says where to look, so the side cameras are left out."""
         own = self.frames.get(step)
         out = [own] if own is not None else []
+        if marked:
+            return out
         for view in VIEWS:
             frame = (self.side_frames.get(view) or {}).get(step)
             if frame is not None:
@@ -1757,10 +1770,10 @@ def gen_v3(tc: TaskCtx, step: int) -> Iterator[dict]:
     if target not in before.pointable and target in frame.pointable:
         source_step, source = step, frame.pointable
     bboxes = {target: source[target][1]} if target in source else {}
-    # two parts moving as one (spec 3.6: the shroud on its fan, captive screws): the
-    # target or any part attached to it is the right answer
-    attached = sorted(k for k, r in tc.ctx.instances.items()
-                      if r.attached and r.parent == target and tc.askable(k))
+    # the part acted on is the answer and nothing else (owner 2026-11-03): a part
+    # attached to it (a RAM latch on the motherboard, a screw on the cooler) leaves
+    # with it but is not what was taken out; only a member of the target's own group
+    # of interchangeable parts stands for it (`target_group`)
     group = tc.group_of(target)
 
     rec_id = f"V3-{frame_id(tc.desktop, tc.view, step)}"
@@ -1771,7 +1784,7 @@ def gen_v3(tc: TaskCtx, step: int) -> Iterator[dict]:
         tc, "V3", rec_id, step, [*tc.moment(step - 1), *tc.moment(step)], question, index,
         answer,
         {"type": "exact", "derive": "action_slots", "fields": fields,
-         "visible_only": True, "accept_targets": [target, *attached],
+         "visible_only": True, "accept_targets": [target],
          "target_group": group.gid if group is not None else None},
         evidence(bboxes, tc, from_step=source_step), R.rationale(chain),
         # the grade follows the frame the answer was actually read off, which
@@ -1912,7 +1925,7 @@ def _v4_record(tc: TaskCtx, frame: FrameData, verb: str, target: str,
     if ident != target:
         check["members"] = list(members)
     return record(
-        tc, "V4", rec_id, frame.step, tc.moment(frame.step),
+        tc, "V4", rec_id, frame.step, tc.moment(frame.step, marked=True),
         template.format(phrase=verb_phrase(verb, label),
                         gerund=verb_gerund(verb, label)), index,
         {"feasible": feasible, "blockers": blockers, "reason": reason},
@@ -1921,7 +1934,7 @@ def _v4_record(tc: TaskCtx, frame: FrameData, verb: str, target: str,
         negative=None if feasible else truth_source,
         truth_source=truth_source, view_confirmed=frame.confirmed,
         marks=namer.marks(), mark_names=namer.names(), terms=[target_class(tc.ctx, target)],
-        moment=tc.legend((frame.step, "now")),
+        moment=tc.legend((frame.step, "now"), marked=True),
     )
 
 
@@ -2283,8 +2296,10 @@ def gen_v6(tc: TaskCtx, step: int) -> Iterator[dict]:
         index, question = pick(V6_QUESTIONS if form == "open" else V6_MC_QUESTIONS,
                                rec_id)
         mc = form == "mc"
+        # the listed form outlines its options' parts on the scanner image and shows that
+        # image alone; the open form names no part and keeps every camera
         yield record(
-            tc, "V6", rec_id, step, tc.moment(step), question, index, answer,
+            tc, "V6", rec_id, step, tc.moment(step, marked=mc), question, index, answer,
             dict(check, options_kind="listed" if mc else "open", form=form),
             evid, R.rationale(chain), frame.verified, options=listed_options,
             extra={"v6_form": form, "v6_pair": pair}, view_confirmed=frame.confirmed,
@@ -2292,7 +2307,7 @@ def gen_v6(tc: TaskCtx, step: int) -> Iterator[dict]:
             mark_names=namer.names() if mc else None,
             terms=([target_class(tc.ctx, (o.get("members") or [o["target"]])[0])
                     for o in listed_options] if mc else None),
-            moment=tc.legend((step, "now")),
+            moment=tc.legend((step, "now"), marked=mc),
         )
 
 
@@ -2777,8 +2792,13 @@ def gen_v14(tc: TaskCtx, step: int) -> Iterator[dict]:
             )
             bboxes = {}
         cls = tc.ctx.cls_of(members[0])
-        check = {"type": "exact", "derive": "answerable", "instance": ident,
+        # the answer space the format line lists and the chance row sizes: the class's
+        # states in the glossary's order (the taxonomy's), or present / removed for a
+        # screw, asked on presence alone
+        check = {"type": "exact", "derive": "answerable", "instance": ident, "class": cls,
                  "fields": ["answerable", "state"], "metric": "risk_coverage",
+                 "allowed": (list(PRESENCE_STATES) if cls == "screw"
+                             else list(tc.tax.states_of(cls))),
                  **({"state_space": "presence"} if cls == "screw" else {})}
         if many:
             check["members"] = list(members)
@@ -3251,7 +3271,7 @@ def _plan_record(tc: TaskCtx, frame: FrameData, plan: Sequence[tuple[str, str]],
         check["corruption_tag"] = tag
     shown = [m for _, t in plan for m in (_group_members(tc, t) or [t])]
     return record(
-        tc, "V16", rec_id, step, tc.moment(step),
+        tc, "V16", rec_id, step, tc.moment(step, marked=True),
         question + "\n" + "\n".join(
             f"{i + 1}. {verb_phrase(v, words[i])}" for i, (v, _) in enumerate(plan)),
         index,
@@ -3265,7 +3285,7 @@ def _plan_record(tc: TaskCtx, frame: FrameData, plan: Sequence[tuple[str, str]],
         negative=None if first_bad is None else family,
         truth_source=source, view_confirmed=frame.confirmed, marks=namer.marks(), mark_names=namer.names(),
         terms=[target_class(tc.ctx, (_group_members(tc, t) or [t])[0]) for _, t in plan],
-        moment=tc.legend((step, "now")),
+        moment=tc.legend((step, "now"), marked=True),
     )
 
 
@@ -3565,7 +3585,8 @@ def _v7_record(tc: TaskCtx, frame: FrameData, goal: str,
     # accepts any plan at all that breaks no edge, contains every required
     # action and reaches the goal (review M, 2026-10-31)
     return record(
-        tc, "V7", rec_id, step, tc.moment(step), template.format(goal=namer.say(goal)),
+        tc, "V7", rec_id, step, tc.moment(step, marked=True),
+        template.format(goal=namer.say(goal)),
         index,
         {"plan": _actions_seq(grouped), "goal": goal},
         {"type": "goal_plan", "goal": goal, "goal_state": REMOVED,
@@ -3585,7 +3606,7 @@ def _v7_record(tc: TaskCtx, frame: FrameData, goal: str,
         R.rationale(chain), frame.verified,
         truth_source=GRAPH_BLOCKED_PIXELS if pixel else GRAPH_BLOCKED,
         view_confirmed=frame.confirmed, marks=namer.marks(), mark_names=namer.names(), terms=[V7_GOAL_CLASS],
-        moment=tc.legend((step, "now")),
+        moment=tc.legend((step, "now"), marked=True),
     )
 
 

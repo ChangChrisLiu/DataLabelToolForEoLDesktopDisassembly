@@ -333,16 +333,18 @@ def _v3(verb, target, cls, accept=None) -> dict:
 
 
 def test_v3_accept_targets(world):
-    r = _v3("remove", COOLER, "cpu_cooler", accept=[COOLER, SHROUD])
-    for name in ("the CPU cooler", "the cover", "Cover 1", SHROUD):
-        g = grade(r, _reply(verb="remove", target=name), world)
-        assert g.score == 1.0 and g.metrics["target_instance"], name
-    assert grade(r, _reply(verb="remove", target="the CPU"), world).score == 0.0
-    assert grade(r, _reply(verb="open", target="the cover"), world).score == 0.0
-    # without accept_targets the attached part is not the answer (the old reading)
-    plain = _v3("remove", COOLER, "cpu_cooler")
-    assert grade(plain, _reply(verb="remove", target="the cover"), world).score == 0.0
-    assert grade(plain, _reply(verb="remove", target="the CPU cooler"), world).score == 1.0
+    # owner 2026-11-03: the part acted on is the answer, never a part attached to it --
+    # even where an older record lists it in accept_targets
+    for accept in ([COOLER], [COOLER, SHROUD], None):
+        r = _v3("remove", COOLER, "cpu_cooler", accept=accept)
+        for name in ("the CPU cooler", COOLER):
+            g = grade(r, _reply(verb="remove", target=name), world)
+            assert g.score == 1.0 and g.metrics["target_instance"], (accept, name)
+        for name in ("the cover", "Cover 1", SHROUD):
+            g = grade(r, _reply(verb="remove", target=name), world)
+            assert g.score == 0.0 and not g.metrics["target_instance"], (accept, name)
+        assert grade(r, _reply(verb="remove", target="the CPU"), world).score == 0.0
+        assert grade(r, _reply(verb="open", target="the CPU cooler"), world).score == 0.0
     # a group target, named in words
     screws = _v3("unscrew", G_SCREWS, "screw", accept=[G_SCREWS])
     for name in ("the CPU cooler screws", "a cooler screw", "CPU cooler screw 1"):

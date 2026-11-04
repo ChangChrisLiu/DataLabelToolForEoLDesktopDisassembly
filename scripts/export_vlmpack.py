@@ -103,7 +103,7 @@ from tda.core.export.vlm import (  # noqa: E402
 from tda.core.export.vlm import siblings as vlm_siblings  # noqa: E402
 from tda.core.export.vlm_check import CAPABILITY_LAYERS, RESPONSE_FORMATS  # noqa: E402
 from tda.core.export.vlm_shortcuts import shortcut_report  # noqa: E402
-from tda.core.export.vlm_tasks import ALL_TASKS, TRUTH_SOURCES  # noqa: E402
+from tda.core.export.vlm_tasks import ALL_TASKS, MARKED_ACTION_TASKS, TRUTH_SOURCES  # noqa: E402
 from tda.core.model import VIEWS, is_component_view  # noqa: E402
 from tda.core.taxonomy import Taxonomy, load_taxonomy  # noqa: E402
 from tda.core.truth import TruthService  # noqa: E402
@@ -1146,10 +1146,18 @@ def readme_text(summary: dict) -> str:
                else "this copy has no action task, so no protocol prior")
     unit_list = ", ".join(f"`{u}`" for u in units)
     truth_files = " ".join(f"{ev_name}/{u}.jsonl" for u in units)
+    multi_tasks = list(summary.get("unit_tasks", {}).get(MULTI_VIEW) or [])
+    every_camera = [("V6 open" if t == "V6" else t) for t in multi_tasks
+                    if t not in MARKED_ACTION_TASKS]
+    scanner_only = [("V6 multiple choice" if t == "V6" else t) for t in multi_tasks
+                    if t in MARKED_ACTION_TASKS or t == "V6"]
     multi_line = (
         f"`vlm_{MULTI_VIEW}.jsonl` holds the action tasks "
-        f"({', '.join(summary.get('unit_tasks', {}).get(MULTI_VIEW) or [])}): one record per "
-        f"step and question, whose pictures are that moment seen by every camera."
+        f"({', '.join(multi_tasks)}): one record per step and question. "
+        + (f"The multi-view ones ({', '.join(every_camera)}) show that moment seen by every "
+           f"camera. " if every_camera else "")
+        + (f"The ones whose parts are outlined in red ({', '.join(scanner_only)}) show the "
+           f"marked scanner image alone." if scanner_only else "")
         if multi else
         f"This copy has no `{MULTI_VIEW}` unit (built without the scanner view or with "
         f"`--no-multi`), so it holds no action task.")
@@ -1229,14 +1237,19 @@ cameras are shown, not read. Counts are records in `data/` per unit:
 
 ### Multi-view records
 
-A `{MULTI_VIEW}` record's `prompt.images` are the frames of one step in the fixed
-order scanner, OAK 1, OAK 2, RealSense; a camera without a photo of that step is
-left out, so a record has 1 to 4 images (V3 / V12: the cameras of the step
-before, then those of the step after, up to 8). `label.views` lists the views
-present and `label.image_steps` the step of each image, in image order;
+A multi-view `{MULTI_VIEW}` record (V3, V6 open, V10, V12: no part outlined) has as
+`prompt.images` the frames of one step in the fixed order scanner, OAK 1, OAK 2,
+RealSense; a camera without a photo of that step is left out, so a record has 1
+to 4 images (V3 / V12: the cameras of the step before, then those of the step
+after, up to 8). A `{MULTI_VIEW}` record whose parts are outlined in red (V4,
+V6 multiple choice, V7, V16) shows the marked scanner image of its step alone:
+the outline says where to look, so no side camera is added (owner, 2026-11-03);
+`label.views` is then `["scan"]`. `label.views` lists the views present and
+`label.image_steps` the step of each image, in image order;
 `prompt.image_legend` (`{{"view", "moment"}}` per image) is what the converter
-turns into the one line naming the images. The question text never names a
-view. `label.view_confirmed` is the scanner frame's.
+turns into the one line naming the images ("Image 1: the top-down scanner." on
+a one-image record). The question text never names a view.
+`label.view_confirmed` is the scanner frame's.
 
 ### Marks, groups, glossary
 
