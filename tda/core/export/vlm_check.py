@@ -34,7 +34,8 @@ model's words are grounded to a group by class + kind (:meth:`Grounder.
 ground_group`); a group action is its members' actions done together (V7),
 a set of group actions is graded as a set (V4 blockers, V10 done / started),
 and where two groups share a class the count of answers of that class is what
-is compared. V3 accepts any of ``accept_targets``; V8's ``components`` form is
+is compared. V3 accepts the part acted on alone (or a member of its group), never a
+part attached to it; V8's ``components`` form is
 V1's grade restricted to ``class_filter``. A world without groups grades
 exactly as before.
 
@@ -137,7 +138,10 @@ def format_instruction(record: dict) -> str:
         allowed = record["label"]["answer_check"].get("allowed") or []
         if not allowed and record["label"]["answer_check"].get("state_space") == "presence":
             allowed = ["present", "removed"]
-        text = text.replace("{allowed}", ", ".join(allowed) if allowed else "<state>")
+        if allowed:
+            text = text.replace("{allowed}", ", ".join(allowed))
+        else:  # a record that lists no state space (built before V14 wrote one)
+            text = text.replace("<one of: {allowed}>", "<state>").replace("{allowed}", "state")
     return text
 
 
@@ -695,9 +699,11 @@ def _g_v3(record, answer, world, tax, transform) -> Grade:
     check = record["label"].get("answer_check") or {}
     verb_ok = _norm(answer.get("verb")) == _norm(truth["verb"])
     target = truth.get("target_instance")
-    # spec 3.6: a part that moves with the target (D48's shroud on its fan) is
-    # also the answer; a group target is named by its members' class
-    accept = [t for t in [target, *(check.get("accept_targets") or [])] if t]
+    # the part acted on is the answer and nothing else (owner 2026-11-03): a part
+    # attached to it (a RAM latch on the motherboard, a screw on the cooler) is not,
+    # whatever an older record's `accept_targets` lists beside the target; a group
+    # target is named by its members' class, and a member stands for its group
+    accept = [target] if target else []
     if world is None:
         key, mclass = None, None
     elif check.get("accept_targets") or world.grouped:
@@ -705,9 +711,8 @@ def _g_v3(record, answer, world, tax, transform) -> Grade:
     else:
         key, mclass = grounder(world).ground(answer.get("target"))
     cls = world.cls_of(key) if (world and key) else (mclass.split(".")[0] if mclass else None)
-    accepted = any(_same_target(world, key, t) for t in accept if t != target)
-    class_ok = cls == truth.get("target_class") or accepted
-    inst_ok = _same_target(world, key, target) or accepted
+    class_ok = cls == truth.get("target_class")
+    inst_ok = _same_target(world, key, target)
     metrics = {"verb": verb_ok, "target_class": class_ok, "target_instance": inst_ok}
     if truth.get("tool") is not None:
         metrics["tool"] = _norm(answer.get("tool")) == _norm(truth["tool"])

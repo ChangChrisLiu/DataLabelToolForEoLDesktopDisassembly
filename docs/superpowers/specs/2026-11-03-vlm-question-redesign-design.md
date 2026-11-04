@@ -128,8 +128,11 @@ Consequences:
 * A V3 record is generated only if the acted-on part (or its group) is visible on the scanner frame before or after
   the action with at least `V3_MIN_PX` visible pixels (proposed 400 px at 1600 × 1600), or it is a large part
   (`BIG_PARTS`). The D17 connector of the audit is dropped by this rule.
-* When the target carries attached parts (`parent` + `attached`, e.g. D48's shroud on its fan, captive screws), the
-  gold accepts the target or any part attached to it (`answer_check.accept_targets`).
+* ~~When the target carries attached parts (`parent` + `attached`, e.g. D48's shroud on its fan, captive screws), the
+  gold accepts the target or any part attached to it (`answer_check.accept_targets`).~~ **Withdrawn (owner,
+  2026-11-03, after the real build: 156 V3 records accepted e.g. a RAM latch for the motherboard).** The gold accepts
+  the part acted on alone: `answer_check.accept_targets = [target]`, and the scorer never credits an attached part.
+  A member of the target's own group of interchangeable parts still stands for it (`target_group`).
 
 ### 3.7 Unchanged
 

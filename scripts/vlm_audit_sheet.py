@@ -141,9 +141,8 @@ def gold_lines(record: dict, world: Optional[World] = None) -> list[tuple[str, s
         out.append(("action", f"{answer.get('verb')} {name_of(answer.get('target_instance'), world)}"))
         out.append(("class", str(answer.get("target_class"))))
         out.append(("tool", str(answer.get("tool"))))
-        also = [t for t in check.get("accept_targets") or [] if t != answer.get("target_instance")]
-        if also:
-            out.append(("also accepted", "; ".join(name_of(t, world) for t in also)))
+        # no "also accepted" line: the part acted on is the only answer (owner 2026-11-03),
+        # whatever an older record's `accept_targets` lists beside it
     elif task == "V4":
         out.append(("feasible", _yes(answer.get("feasible"))))
         out.append(("action", f"{check.get('verb')} {name_of(check.get('target'), world)}"))

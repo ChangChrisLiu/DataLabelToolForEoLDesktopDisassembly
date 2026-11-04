@@ -164,8 +164,9 @@ def test_audit_sheet_draws_marks(tmp_path):
     assert "Images 1–4 before, images 5–8 after the action" in article
     assert "Outlined in red: A (2 outlines: one group of interchangeable parts; image 1)." in article
     assert "Glossary:" in article and "CPU cooler" in article
-    # V3's accepted alternatives are part of the gold
-    assert ("also accepted", "cover.01") in S.gold_lines(record, None)
+    # V3's gold is the part acted on alone: an attached part an older record still lists
+    # in accept_targets is not shown as an accepted answer (owner 2026-11-03)
+    assert not any(k == "also accepted" for k, _ in S.gold_lines(record, None))
     # a single-view record keeps one row and its evidence on every image
     single = dict(record, prompt=dict(record["prompt"], images=["img_scan_4"], marks=[],
                                       image_legend=None),
