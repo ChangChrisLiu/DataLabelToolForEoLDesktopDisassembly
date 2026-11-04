@@ -157,7 +157,9 @@ def test_only_verified_keeps_exactly_the_confirmed_records(db, tax, tmp_path: Pa
     export_vlm(db, tax, [DESKTOP], VIEW, str(out), only_verified=True)
     records = _records(out)
     assert records and all(r["verified"] is True for r in records)
-    assert {r["step"] for r in records} == {1, 2}
+    # (the step-2 V3 of the 8 x 8 screw is an invisible action since the redesign of
+    # 2026-11-03, spec 3.6, so only step 1 is left)
+    assert {r["step"] for r in records} == {1}
 
 
 # --------------------------------------------------------------------------- #

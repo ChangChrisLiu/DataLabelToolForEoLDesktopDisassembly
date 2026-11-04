@@ -432,7 +432,9 @@ def test_the_jsonl_is_split_into_what_the_model_sees_and_what_grades_it(
     assert raw
     for rec in raw:
         assert set(rec) == {"id", "prompt", "label"}
-        assert set(rec["prompt"]) <= {"task", "images", "question", "options"}
+        # (+ the redesign's marks and glossary terms, 2026-11-03: what the model is shown)
+        assert set(rec["prompt"]) <= {"task", "images", "question", "options", "marks",
+                                      "terms", "state_terms", "image_legend"}
         assert "answer" not in rec["prompt"] and "step" not in rec["prompt"]
         assert rec["label"]["answer"] is not None
 
@@ -477,7 +479,11 @@ def test_vlm_v2_asks_states_and_counts(db, tax, tmp_path: Path):
     # W3b: tightness was never annotated -- a screw is asked present / removed
     assert screw["answer"] == {"state": "present"}
     assert screw["answer_check"]["state_space"] == "presence"
-    assert "Motherboard screw 3" in screw["question"]
+    # named by its red outline, never by an ordinal (redesign 2026-11-03, spec 3.2)
+    assert "the motherboard screw outlined in red" in screw["question"]
+    assert "screw 3" not in screw["question"]
+    raw = next(r for r in _raw_records(out) if r["id"] == screw["id"])
+    assert [m["image"] for m in raw["prompt"]["marks"]] == [0]
     assert len(counts) == 1 and counts[0]["step"] == 1
     assert counts[0]["answer"] == {"count": 1}
     assert "motherboard screws" in counts[0]["question"]
@@ -486,22 +492,23 @@ def test_vlm_v2_asks_states_and_counts(db, tax, tmp_path: Path):
 
 def test_vlm_v3_reads_the_action_between_two_frames(db, tax, tmp_path: Path):
     out = tmp_path / "vlm.jsonl"
-    export_vlm(db, tax, [DESKTOP], VIEW, str(out), tasks=("V3",))
+    summary = export_vlm(db, tax, [DESKTOP], VIEW, str(out), tasks=("V3",))
     records = _records(out)
-    assert [r["step"] for r in records] == [2, 3]
+    # the 8 x 8 screw (64 px before, removed after) is an action no picture shows: not
+    # asked (redesign 2026-11-03, spec 3.6: V3_MIN_PX visible pixels or a big part)
+    assert [r["step"] for r in records] == [3]
+    assert summary["skip_reasons"][str(DESKTOP)]["V3"]["invisible_action"] >= 1
 
-    unscrew = records[0]
+    remove = records[0]
     from tda.core.export.vlm_tasks import opaque_image_id
 
-    assert unscrew["images"] == [opaque_image_id(DESKTOP, VIEW, 1),
-                                 opaque_image_id(DESKTOP, VIEW, 2)]
-    assert unscrew["answer"] == {
-        "verb": "unscrew", "target_class": "screw",
-        "target_instance": SCREW, "tool": "PH2",
+    assert remove["images"] == [opaque_image_id(DESKTOP, VIEW, 2),
+                                opaque_image_id(DESKTOP, VIEW, 3)]
+    assert remove["answer"] == {
+        "verb": "remove", "target_class": "psu",
+        "target_instance": PSU, "tool": "hand",
     }
-    assert unscrew["evidence"]["bboxes"][SCREW] == [50, 40, 8, 8]
-    assert records[1]["answer"]["verb"] == "remove"
-    assert records[1]["answer"]["tool"] == "hand"
+    assert PSU in remove["evidence"]["bboxes"]
 
 
 def test_vlm_output_is_reproducible(db, tax, tmp_path: Path):
@@ -514,7 +521,8 @@ def test_vlm_output_is_reproducible(db, tax, tmp_path: Path):
 def test_vlm_tasks_argument_selects_the_rows(db, tax, tmp_path: Path):
     out = tmp_path / "vlm.jsonl"
     summary = export_vlm(db, tax, [DESKTOP], VIEW, str(out), tasks=("V3",))
-    assert summary["by_task"] == {"V3": 2}
+    # (the screw's V3 is an invisible action since the redesign, spec 3.6)
+    assert summary["by_task"] == {"V3": 1}
     assert {r["task"] for r in _records(out)} == {"V3"}
 
 
@@ -523,8 +531,9 @@ def test_vlm_only_verified_keeps_confirmed_records(db, tax, tmp_path: Path):
     export_vlm(db, tax, [DESKTOP], VIEW, str(out), only_verified=True)
     records = _records(out)
     assert records and {r["verified"] for r in records} == {True}
-    # step 1 is the only verified frame; the V3 pair (1, 2) still reads it
-    assert {r["step"] for r in records} == {1, 2}
+    # step 1 is the only verified frame; the V3 pair (1, 2) would still read it, but
+    # its 8 x 8 screw is an invisible action since the redesign (spec 3.6)
+    assert {r["step"] for r in records} == {1}
 
 
 def test_rationale_never_observes_without_a_box(db, tax, tmp_path: Path):
@@ -611,7 +620,8 @@ def test_unknown_action_target_produces_no_v3_record(db, tax, tmp_path: Path):
 
     out = tmp_path / "vlm.jsonl"
     export_vlm(db, tax, [DESKTOP], VIEW, str(out), tasks=("V3",))
-    assert [r["step"] for r in _records(out)] == [2, 3]
+    # (step 2's screw is an invisible action since the redesign, spec 3.6)
+    assert [r["step"] for r in _records(out)] == [3]
 
 
 def test_step_types_gate_both_exports(db, tax, tmp_path: Path):
