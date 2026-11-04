@@ -257,7 +257,7 @@ ORACLE_SKIPS = ("V14",)
 def state_oracle_rows(records: list[dict], worlds: dict[int, World],
                       frames: dict[str, dict]) -> tuple[list[dict], dict[str, int]]:
     """``(oracle records, skipped per task)``: every record but V14's (and but those
-    whose question names a part by its mark tag only, counted as ``mark_tag``)."""
+    whose mark tag has no name in ``label.mark_names``, counted as ``mark_tag``)."""
     rows, skipped = [], Counter()
     for record in records:
         task = record["prompt"]["task"]
