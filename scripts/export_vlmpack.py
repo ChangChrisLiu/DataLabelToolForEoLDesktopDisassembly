@@ -113,7 +113,8 @@ OVERLAY_MODES = ("eval", "none")
 #: The W3b scripts shipped under ``tools/`` (W4-A's own two, W4-C's painter and W4-E's three included).
 TOOLS = ("vlm_io.py", "vlm_to_chat.py", "vlm_score.py", "vlm_references.py",
          "vlm_overlay.py", "vlm_sample.py", "vlm_eval_set.py", "vlm_selfcheck.py",
-         "vlm_audit_sheet.py", "vlm_audit_summary.py", "vlm_human_sheet.py")
+         "vlm_audit_sheet.py", "vlm_audit_summary.py", "vlm_human_sheet.py", "vlm_glossary.py",
+         "vlm_audit_carry.py")
 #: Items per page of the audit sheet the build writes into ``eval_v1/audit/``.
 AUDIT_BATCH = 50
 #: The ``tda`` modules :mod:`tda.core.export.vlm_check` needs, copied verbatim
