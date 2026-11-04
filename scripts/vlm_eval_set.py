@@ -113,7 +113,7 @@ def v2_class(record: dict) -> str:
     return str(check.get("class") or "?")
 
 
-#: The largest share one answer may have inside a V4 class of the subset (final review I1).
+#: The largest share one answer may have inside a V4 verb + class of the subset (final review I1).
 V4_MAX_MAJORITY = 0.6
 
 
@@ -124,24 +124,29 @@ def v4_class(record: dict) -> str:
     return str(check.get("match_class") or check.get("target_class") or "?")
 
 
+def v4_verb(record: dict) -> str:
+    return str((record["label"].get("answer_check") or {}).get("verb") or "?")
+
+
 def balance_v4(units: Sequence["Unit"], seed: int,
                max_majority: float = V4_MAX_MAJORITY) -> list["Unit"]:
-    """V4's pool with each (view, class) cut to at most ``max_majority`` of one answer.
+    """V4's pool with each (view, verb, class) cut to at most ``max_majority`` of one answer.
 
-    The minority answer of a class is kept whole and the majority cut, in a seeded order,
-    to ``minority * max_majority / (1 - max_majority)``; a class with one answer only
-    is left out (a text-only reader would answer it from the class name). The draw then
-    splits each class equally between yes and no, so no class of the subset leans past
-    ``max_majority`` (the pool's own lean is in the export's ``shortcuts``).
+    The minority answer of a cell is kept whole and the majority cut, in a seeded order,
+    to ``minority * max_majority / (1 - max_majority)``; a cell with one answer only
+    is left out (a text-only reader would answer it from the wording). The draw then
+    splits each cell equally between yes and no, so no class -- and no verb + class -- of
+    the subset leans past ``max_majority`` (the pool's own lean is in the export's
+    ``shortcuts``).
     """
     import math
 
     cells: dict[tuple, dict[bool, list]] = defaultdict(lambda: {True: [], False: []})
     for u in units:
         feasible = not u.records[0]["label"].get("negative")
-        cells[(u.view, v4_class(u.records[0]))][feasible].append(u)
+        cells[(u.view, v4_verb(u.records[0]), v4_class(u.records[0]))][feasible].append(u)
     keep: set = set()
-    for (view, cls), sides in cells.items():
+    for sides in cells.values():
         small = min(len(sides[True]), len(sides[False]))
         if small == 0:
             continue
@@ -167,11 +172,12 @@ def strata(record: dict) -> tuple[str, ...]:
     if task == "V3":
         return (f"verb={answer.get('verb')}",)
     if task == "V4":
-        # the class the question names first, then yes / no inside it (final review I1:
-        # "motherboard" was "no" 51 of 56 times in eval_v2) -- :func:`balance_v4` keeps
-        # each class's yes / no within V4_MAX_MAJORITY before the draw
+        # the class the question names first, its verb, then yes / no inside them (final
+        # review I1: "motherboard" was "no" 51 of 56 times in eval_v2) -- :func:`balance_v4`
+        # keeps each verb + class's yes / no within V4_MAX_MAJORITY before the draw
         feasible = not label.get("negative")
-        return ((f"class={v4_class(record)}", f"feasible={_bool(feasible)}")
+        return ((f"class={v4_class(record)}", f"verb={v4_verb(record)}",
+                 f"feasible={_bool(feasible)}")
                 + (() if feasible else (f"source={label.get('truth_source')}",)))
     if task == "V8":
         if label.get("answer_check", {}).get("type") == "components":
