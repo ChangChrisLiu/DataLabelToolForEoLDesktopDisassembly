@@ -195,6 +195,52 @@ def test_v14_mixed_group_skipped(tmp_path):
     db.close()
 
 
+# --------------------------------------------------------------------------- #
+# A4: V4 without empty negatives, blockers as groups, no captive tightness
+# --------------------------------------------------------------------------- #
+GID = f"screw.cpu_cooler@{W.COOLER}"
+
+
+def test_v4_has_no_state_inapplicable(scene, tmp_path):
+    db, tax = scene
+    records = _of(_export(db, tax, tmp_path / "v.jsonl"), "V4")
+    assert records
+    assert "state_inapplicable" not in {r["label"]["truth_source"] for r in records}
+    assert all(r["label"]["answer"]["blockers"] for r in records
+               if not r["label"]["answer"]["feasible"])
+
+
+def test_v4_fan_blockers_are_screw_group_and_connector(tmp_path):
+    from tda.core.export.vlm_tasks import GRAPH_BLOCKED, V4_QUESTIONS, _v4_record
+
+    db = Db(str(tmp_path / "w.sqlite"))
+    tax = W.build(db)
+    for rec in db.instances(W.DESKTOP).values():   # cooler screws whose tightness shows
+        if rec.key in W.SCREWS:
+            rec.attrs = dict(rec.attrs, captive=False)
+            db.upsert_instance(rec)
+    tc = S.task_ctx(db, tax, W.DESKTOP, W.VIEW)
+    made = _v4_record(tc, tc.frames[2], "remove", W.COOLER, V4_QUESTIONS, GRAPH_BLOCKED)
+    assert made is not None
+    assert made["label"]["answer"]["blockers"] == sorted([GID, W.FAN])
+    assert made["label"]["answer_check"]["blocker_members"][GID] == list(W.SCREWS)
+    db.close()
+
+
+def test_v4_captive_dependent_skipped(tmp_path):
+    db = Db(str(tmp_path / "w.sqlite"))
+    tax = W.build(db)
+    out = tmp_path / "v.jsonl"
+    summary = export_vlm(db, tax, [W.DESKTOP], W.VIEW, str(out), tasks=["V4"])
+    records = [json.loads(x) for x in out.read_text(encoding="utf-8").splitlines() if x]
+    assert summary["skip_reasons"][str(W.DESKTOP)]["V4"]["captive_tightness"] >= 1
+    for r in records:
+        check = r["label"]["answer_check"]
+        assert check["target"] not in (W.COOLER, GID, *W.SCREWS)
+        assert not any(e["blocker"] in W.SCREWS for e in check["edges"])
+    db.close()
+
+
 @pytest.mark.parametrize("which", ["vlm", "w3b"])
 def test_no_ordinal_in_any_question(tmp_path, which):
     db = Db(str(tmp_path / f"{which}.sqlite"))
