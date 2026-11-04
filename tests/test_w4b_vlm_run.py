@@ -59,13 +59,16 @@ def pack(tmp_path_factory) -> dict:
                                  "--image-root", str(root), "--out", str(out)]) == 0
         chats[fmt] = out
     # a relative-path chat file, the way a pack converted on another machine is
+    # (redesign 2026-11-03: a marked copy is written beside the chat file, not under
+    # the image root, and keeps its absolute path)
     rel = tmp / "chat_relative.jsonl"
     rows = []
     for row in IO.read_jsonl(chats["openai"]):
         for part in row["messages"][1]["content"]:
             if part["type"] == "image_url":
                 url = Path(part["image_url"]["url"])
-                part["image_url"]["url"] = url.relative_to(root).as_posix()
+                if url.is_relative_to(root):
+                    part["image_url"]["url"] = url.relative_to(root).as_posix()
         rows.append(row)
     IO.write_jsonl(rel, rows)
     chats["relative"] = rel
@@ -126,8 +129,14 @@ def test_every_chat_format_normalises_to_the_same_requests(pack, fmt, tmp_path):
 
 
 def test_a_relative_chat_file_needs_the_image_root(pack, tmp_path):
+    # the rows whose pictures are all relative (a marked copy keeps its absolute path)
+    chat = tmp_path / "chat_relative_only.jsonl"
+    IO.write_jsonl(chat, [row for row in _rows(pack["chats"]["relative"])
+                          if all(not Path(p["image_url"]["url"]).is_absolute()
+                                 for p in row["messages"][1]["content"]
+                                 if p["type"] == "image_url")])
     out = tmp_path / "pred.jsonl"
-    assert _gold(pack, pack["chats"]["relative"], out, "--limit", "2") == 3
+    assert _gold(pack, chat, out, "--limit", "2") == 3
     rows = _rows(out)
     assert len(rows) == 2
     assert all(r["raw_text"] is None and "FileNotFoundError" in r["meta"]["error"]
@@ -428,7 +437,11 @@ def test_the_blind_variant_has_no_images_and_the_gold_still_scores_one(pack, tmp
     blind = tmp_path / "blind.jsonl"
     assert vlm_collect.main(["blind", "--records", str(pack["export"]), "--out", str(blind)]) == 0
     rows = _rows(blind)
-    assert len(rows) == len(pack["records"])
+    # (redesign 2026-11-03: a question naming a part by its mark tag alone is left out)
+    import vlm_references
+
+    kept = [r["id"] for r in pack["records"] if vlm_references.blind(r) is not None]
+    assert [r["id"] for r in rows] == kept and len(kept) < len(pack["records"])
     assert all(r["prompt"]["images"] == [] and r["label"]["reference"] == "blind" for r in rows)
     chat = tmp_path / "chat.jsonl"
     assert vlm_to_chat.main(["--export", str(pack["export"]), "--records", str(blind),
@@ -438,8 +451,14 @@ def test_the_blind_variant_has_no_images_and_the_gold_still_scores_one(pack, tmp
     out = tmp_path / "pred.jsonl"
     assert _gold(pack, chat, out) == 0
     assert all(r["meta"]["images"] == 0 for r in _rows(out))
-    result = vlm_score.score(pack["export"], out, resamples=20)
+    # the gold scores 1 on every record the variant asks (scored over the full export,
+    # the records it leaves out count as unanswered)
+    asked = tmp_path / "asked.jsonl"
+    assert vlm_collect.subset(pack["export"], asked, records=str(blind)) == len(kept)
+    result = vlm_score.score(asked, out, resamples=20)
+    assert result["predicted"] == result["records"] == len(kept)
     assert all(c["mean"] == 1.0 for c in result["strict"]["by_task"].values())
+    assert vlm_score.score(pack["export"], out, resamples=20)["predicted"] == len(kept)
 
 
 def _score_json(path: Path, means: dict, parse_fail: float = 0.0, records: int = 100):
