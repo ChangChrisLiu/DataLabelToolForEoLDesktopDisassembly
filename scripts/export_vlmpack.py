@@ -1318,7 +1318,16 @@ the glossary).
   here is shown to a model.
 * `label.evidence` / `label.rationale` -- boxes of the parts the answer rests
   on and the reasoning chain (`observe` / `recall_relation` /
-  `check_precondition` / ... steps); label side only.
+  `check_precondition` / ... steps); label side only. V4 / V6 / V7 / V16 also carry
+  `rationale.text`, the reason in what the picture shows ("No: the CPU socket lever
+  still locks the CPU.").
+* V4's `answer.reason` is that reason in words -- the prerequisites now met ("both its RAM
+  latches are open, so the RAM module can be taken out") or what still holds the part --,
+  `answer.why` its machine-readable list (`{"part", "state", "relation"}`, a plain verb:
+  "locks", "covers", "fastens", "is plugged into", "is mounted on", ...), and
+  `answer_check.reason_code` the internal code (`violates_edge`, or none on a "yes"). V16's
+  `answer.reason` is the first broken step in words, its code in `answer_check.reason_code`.
+  Parts are named without ordinals everywhere a person or a model reads them.
 * `label.truth_source` (V4, V7, V16) -- where an answer's "yes" or "no" comes
   from: `{'`, `'.join(TRUTH_SOURCES)}`. `demonstrated`: the operator did it
   next. `graph_blocked`: a constraint edge forbids it. `graph_blocked_pixels`:

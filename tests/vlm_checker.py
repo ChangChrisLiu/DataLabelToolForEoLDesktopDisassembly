@@ -753,9 +753,13 @@ class Checker:
         if sorted(answer.get("blockers") or []) != blockers:
             _fail(record, f"blockers {answer.get('blockers')} != {blockers}")
 
+        # the internal code is label side (answer_check.reason_code); answer.reason is the
+        # reason in what the picture shows (owner 2026-11-04): never a code, never graph words,
+        # and it speaks of every kind of blocker -- or ends on what can now be done
         want_reason = None if source == "demonstrated" else "violates_edge"
-        if answer.get("reason") != want_reason:
-            _fail(record, f"reason {answer.get('reason')!r} != {want_reason!r}")
+        if spec.get("reason_code") != want_reason:
+            _fail(record, f"reason_code {spec.get('reason_code')!r} != {want_reason!r}")
+        self._check_reason_text(record, answer.get("reason"), verb, bad)
         if source == "demonstrated":
             # a "yes" is only ever the action the log went on to perform
             shown = self.demonstrated(step)
@@ -778,6 +782,32 @@ class Checker:
                     _fail(record, "no failed attempt at the next step says this")
         else:
             _fail(record, f"unknown truth_source {source!r}")
+
+    #: "the CPU can be <taken out>" (transcribed from vlm_tasks.PARTICIPLES).
+    PARTICIPLES = {"remove": "taken out", "displace": "moved aside", "open": "opened",
+                   "unscrew": "unscrewed", "disconnect": "unplugged", "release": "released"}
+
+    def _check_reason_text(self, record: dict, text, verb: str, bad: list) -> None:
+        """A V4 reason a person reads (owner 2026-11-04): words, no code, no graph vocabulary, no
+        instance key; a "no" names the class of every blocker, a "yes" says what can be done."""
+        if not isinstance(text, str) or not text.strip():
+            _fail(record, f"reason {text!r} is no text")
+        low = text.lower()
+        for word in ("violates", "_by", "edge", "recall", "precondition", "already_",
+                     "not_present"):
+            if word in low:
+                _fail(record, f"reason {text!r} speaks the graph's words ({word})")
+        if re.search(r"\b[a-z_]+\.\d{2}\b", text) or "@" in text:
+            _fail(record, f"reason {text!r} names an instance key")
+        if bad:
+            for edge in bad:
+                blocker = edge["blocker"]
+                cls = ("cable" if blocker.startswith("cable:")
+                       else self.instances[blocker].cls)
+                if cls.replace("_", " ") not in low:
+                    _fail(record, f"reason {text!r} does not speak of the {cls}")
+        elif not low.endswith(f"can be {self.PARTICIPLES.get(verb, verb)}"):
+            _fail(record, f"reason {text!r} does not say what can now be done")
 
     def _check_inapplicable(self, record: dict, spec: dict, frame: dict,
                             step: int, verb: str, target: str) -> None:
@@ -1027,8 +1057,14 @@ class Checker:
             return
         if sorted(answer.get("violated_edges") or []) != violated:
             _fail(record, f"violated edges {answer.get('violated_edges')} != {violated}")
-        if answer.get("reason") != reason:
-            _fail(record, f"reason {answer.get('reason')!r} != {reason!r}")
+        # the code is label side (answer_check.reason_code); answer.reason is the words a person
+        # reads (owner 2026-11-04): about the first step that breaks, never a code
+        if spec.get("reason_code") != reason:
+            _fail(record, f"reason_code {spec.get('reason_code')!r} != {reason!r}")
+        text = answer.get("reason")
+        if not isinstance(text, str) or not text.startswith(f"step {first_bad + 1} (") \
+                or "_" in text or "violates" in text:
+            _fail(record, f"reason {text!r} is not the words of step {first_bad + 1}")
         if violated and answer.get("violated_edge") != violated[0]:
             _fail(record, "violated_edge is not the first of violated_edges")
         if not violated and answer.get("violated_edge") is not None:
