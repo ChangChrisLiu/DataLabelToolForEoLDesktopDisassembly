@@ -35,6 +35,7 @@ __all__ = [
     "class_label",
     "class_phrase",
     "group_anchor",
+    "group_labels",
     "group_of",
     "mark_box",
     "match_class",
@@ -194,15 +195,100 @@ def part_groups(ctx: DesktopCtx) -> dict[str, PartGroup]:
         if mc is None:
             continue
         buckets.setdefault((mc, group_anchor(ctx, key)), []).append(key)
+    found = [(mc, anchor, members) for (mc, anchor), members in sorted(buckets.items())
+             if len(members) >= 2]
+    labels = group_labels(ctx, [(mc, anchor, members[0]) for mc, anchor, members in found])
     out: dict[str, PartGroup] = {}
-    for (mc, anchor), members in sorted(buckets.items()):
-        if len(members) < 2:
-            continue
+    for (mc, anchor, members), label in zip(found, labels):
         group = PartGroup(gid=f"{mc}@{anchor}", members=tuple(members), match_class=mc,
-                          anchor=anchor, label=class_phrase(ctx, members[0], many=True))
+                          anchor=anchor, label=label)
         for key in members:
             out[key] = group
     return out
+
+
+def _cable_words(cable: str) -> str:
+    """``cable:psu`` -> "PSU cable" (an ordinal in the node name is dropped)."""
+    owner = cable.split(":", 1)[1] if ":" in cable else cable
+    owner = ".".join(part for part in owner.split(".") if not part.isdigit())
+    words = _words(owner)
+    return " ".join([*words, "cable"]) if words else "cable"
+
+
+def _anchor_phrases(ctx: DesktopCtx, mc: str, anchor: str) -> list[str]:
+    """The qualifiers that tell a group from the others of its class, coarse to fine.
+
+    A connector group: the cable it belongs to ("PSU cable"), then the part it plugs
+    into ("on the motherboard"); any other group: the part it is anchored on ("of the
+    fan CPU cooler"). Class phrases only -- never an ordinal.
+    """
+    if anchor == NO_ANCHOR:
+        return []
+    if mc.split(".")[0] == "connector" and "|" in anchor:
+        host, cable = anchor.split("|", 1)
+        out = []
+        if cable != NO_ANCHOR:
+            out.append(("cable", _cable_words(cable)))
+        if host != NO_ANCHOR and host in ctx.instances:
+            out.append(("on", class_phrase(ctx, host)))
+        return out
+    if anchor in ctx.instances:
+        return [("of", class_phrase(ctx, anchor))]
+    return []
+
+
+def _qualified(base: str, quals: Sequence[tuple[str, str]]) -> str:
+    text = base
+    for kind, words in quals:
+        if kind == "cable":
+            text = f"{words} {text}"
+        else:
+            text = f"{text} {kind} the {words}"
+    return text
+
+
+def group_labels(ctx: DesktopCtx, groups: Sequence[tuple[str, str, str]]) -> list[str]:
+    """How each group ``(match_class, anchor, first member)`` is said, in that order.
+
+    The plural class phrase ("CPU cooler screws", "connectors"); where several groups of
+    one desktop would read the same, the anchor's words are added until they differ or
+    run out -- "PSU cable connectors", "optical drive cable connectors on the motherboard",
+    "CPU cooler screws of the fan CPU cooler"; an anchor-less group beside anchored ones
+    reads "RAM latches without a RAM module". Groups whose anchors read the same (the
+    latches of two RAM modules) keep the plain label: words cannot tell them apart, and the
+    grader counts group actions per class there (spec 6.2). Never an ordinal.
+    """
+    base = [class_phrase(ctx, first, many=True) for _, _, first in groups]
+    quals = [_anchor_phrases(ctx, mc, anchor) for mc, anchor, _ in groups]
+    labels = list(base)
+    depth = max((len(q) for q in quals), default=0)
+    for level in range(1, depth + 1):
+        seen: dict[str, list[int]] = {}
+        for i, label in enumerate(labels):
+            seen.setdefault(label, []).append(i)
+        clashing = [ids for ids in seen.values() if len(ids) > 1]
+        if not clashing:
+            break
+        for ids in clashing:
+            for i in ids:
+                labels[i] = _qualified(base[i], quals[i][:level])
+    # words that still read the same tell nothing apart: such groups keep the plain label
+    counts: dict[str, int] = {}
+    for label in labels:
+        counts[label] = counts.get(label, 0) + 1
+    labels = [base[i] if counts[label] > 1 else label for i, label in enumerate(labels)]
+    # an anchor-less group among anchored ones of its label: "... without a <anchor>"
+    seen = {}
+    for i, label in enumerate(labels):
+        seen.setdefault(base[i], []).append(i)
+    for ids in seen.values():
+        if len(ids) < 2:
+            continue
+        anchored = {quals[i][0][1] for i in ids if quals[i] and quals[i][0][0] == "of"}
+        for i in ids:
+            if not quals[i] and len(anchored) == 1:
+                labels[i] = f"{base[i]} without a {next(iter(anchored))}"
+    return labels
 
 
 def group_of(groups: dict[str, PartGroup], key: str) -> Optional[PartGroup]:
