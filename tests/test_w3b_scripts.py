@@ -66,14 +66,23 @@ def test_the_three_references_keep_ids_and_labels(export, tmp_path):
     raw = _records(export)
     records = {r["id"]: r for r in raw}
     worlds, frames = IO.load_oracle(export)
-    blind = [vlm_references.blind(r) for r in raw]
-    oracle = [vlm_references.state_oracle(r, worlds, frames) for r in raw]
-    assert [r["id"] for r in blind] == list(records)
-    assert [r["id"] for r in oracle] == list(records)
+    # (redesign 2026-11-03: the text-only variants drop the mark wording, and leave
+    # out -- None -- a question that names a part by its mark tag alone, "part A")
+    by_tag = {r["id"] for r in raw if r["prompt"].get("marks") and any(
+        vlm_references.MARK_TAG.search(t) for t in [r["prompt"]["question"]] + [
+            str(o.get("target_label") or "") for o in r["prompt"].get("options") or []])}
+    blind = [b for b in map(vlm_references.blind, raw) if b is not None]
+    oracle = [o for o in (vlm_references.state_oracle(r, worlds, frames) for r in raw)
+              if o is not None]
+    assert [r["id"] for r in blind] == [i for i in records if i not in by_tag]
+    assert [r["id"] for r in oracle] == [i for i in records if i not in by_tag]
     for r in blind:
         assert r["prompt"]["images"] == [] and r["label"]["reference"] == "blind"
         assert r["label"]["answer_check"] == records[r["id"]]["label"]["answer_check"]
-        assert r["prompt"]["question"] == records[r["id"]]["prompt"]["question"]
+        assert r["prompt"]["question"] == vlm_references.MARK_PHRASE.sub(
+            "", records[r["id"]]["prompt"]["question"])
+        assert "outlined in red" not in r["prompt"]["question"]
+        assert "marks" not in r["prompt"]
     for r in oracle:
         src = records[r["id"]]
         assert r["prompt"]["images"] == []
@@ -182,13 +191,15 @@ def test_roi_crop_composite_and_base64(export, tmp_path):
     image = v8["prompt"]["images"][0]
     same = [r for r in records if r["prompt"]["images"] == [image]]
     assert len(same) > 1  # V1 V2 V8 V14 ... of one frame
-    crops = set()
+    # (redesign 2026-11-03: a record that outlines a part is shown its own marked
+    # copy of that crop -- same region, same size -- the unmarked ones share one file)
+    crops, marked = set(), set()
     for r in same:
         row = vlm_to_chat.convert(r, manifest, images, "openai", roi="view")
         assert row["meta"]["transforms"] == [{"crop": [4, 2], "scale": 1.0}]
-        crops.add(row["meta"]["images"][0])
+        (marked if vlm_to_chat.shown_marks(r) else crops).add(row["meta"]["images"][0])
     assert len(crops) == 1
-    assert Image.open(crops.pop()).size == (56, 48)
+    assert {Image.open(p).size for p in crops | marked} == {(56, 48)}
     pair = next(r for r in records if len(r["prompt"]["images"]) == 2)
     row = vlm_to_chat.convert(pair, manifest, images, "qwen", composite=True)
     assert row["meta"]["composite"] is True and len(row["meta"]["images"]) == 1
