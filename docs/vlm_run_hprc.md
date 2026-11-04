@@ -100,9 +100,9 @@ cd $WORK && sbatch --export=ALL,PACK=$PACK,RUNS=$WORK/runs $WORK/slurm/gold_chec
 去图像变体的 gold 也应是 1.000（gold 从标签作答，不看图）：`VARIANT=blind`。去图像变体把题面里的
 "outlined in red" 去掉，按标记字母点名的零件写成 "part A (a RAM module)"，不丢题。
 
-## 4. 100 题试点（一个开源模型，一个单元）
+## 4. 试点（一个开源模型，scan 单元）
 
-试点只在 **train 台**上做（论文 §6.2），从评测集里按任务分层抽 100 条：
+试点只在 **train 台**上做（论文 §6.2），从评测集里按任务分层抽，每个任务最多 9 条（scan 五个任务共 45 条；multi 同法得 63 条，见 HANDOFF §8.4）：
 
 ```bash
 cd $WORK                     # pilot_ids.txt 写在工作目录
