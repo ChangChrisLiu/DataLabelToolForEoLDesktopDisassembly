@@ -1,20 +1,24 @@
 """The frozen evaluation subset of the VLM pack (W4-A; paper plan 6.2).
 
-``python scripts/vlm_eval_set.py --export <vlm_scan.jsonl> [<vlm_oak1.jsonl> ...]
---out <dir>/eval_v1 [--seed 0] [--target-binary 400] [--target-other 300]
+``python scripts/vlm_eval_set.py --export <vlm_scan.jsonl> [<vlm_oak1.jsonl> ... <vlm_multi.jsonl>]
+--out <dir>/eval_v2 [--seed 0] [--target-binary 400] [--target-other 300]
 [--max-share 0.2] [--audit 300]``
 
-Every model is run on the same subset, drawn once from the four-view export
-over **all** desktops (zero-shot: no training split is spent). Per task:
+Every model is run on the same subset, drawn once from the export units over
+**all** desktops (zero-shot: no training split is spent). Since the redesign of
+2026-11-03 the subset is ``eval_v2``: perception (V1 V2 V8 V14 V15) comes from
+the four camera units, the action tasks (V3 V4 V6 V7 V10 V12 V16) from the
+``multi`` unit, with the same per-task targets as ``eval_v1``; the command line
+refuses an ``eval_v1`` path (:func:`refuse_old_eval`). Per task:
 
 * at least ``--target-binary`` records for the yes / no tasks (V4 feasible or
   not, V12 changed or not, V14 answerable or not, V15 same moment or not) and
   at least ``--target-other`` for the rest; V6 is drawn as **pairs** (open +
   multiple choice of one frame, ``label.v6_pair``), so its 300 units are 600
   records;
-* the records are allocated **per view in proportion to the export** (the
-  three unconfirmed views ask a restricted question set -- large parts only --
-  and an equal split would over-weight it), then **equally over the task's
+* the records are allocated **per unit in proportion to the export** (a task
+  lives in one unit since the redesign, so this is the identity unless several
+  units hold it), then **equally over the task's
   strata** (:func:`strata`), level by level: V4 feasible / infeasible, the
   infeasible half over ``truth_source``; V2 ``prior_is_correct`` false / true,
   then class; V12 changed / unchanged, then the negative's kind; V14 answerable
@@ -54,11 +58,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vlm_io as IO  # noqa: E402
 
-__all__ = ["BINARY_TASKS", "EVAL_VERSION", "TASK_ORDER", "allocate_equal",
-           "allocate_proportional", "build", "draw", "strata", "table_markdown", "units_of"]
+__all__ = ["BINARY_TASKS", "EVAL_VERSION", "OLD_EVAL_VERSIONS", "TASK_ORDER",
+           "allocate_equal", "allocate_proportional", "build", "draw", "refuse_old_eval",
+           "strata", "table_markdown", "units_of"]
 
-#: The subset's name; bumped when the draw or its parameters change.
-EVAL_VERSION = "eval_v1"
+#: The subset's name; bumped when the draw or its parameters change (eval_v2: the
+#: redesign of 2026-11-03 -- marks, part groups, multi-view action tasks).
+EVAL_VERSION = "eval_v2"
+#: Subsets the current records no longer match: a path through one is refused.
+OLD_EVAL_VERSIONS = ("eval_v1",)
 #: Tasks whose answer is a yes / no: the larger target.
 BINARY_TASKS = frozenset({"V4", "V12", "V14", "V15"})
 TARGET_BINARY = 400
@@ -68,8 +76,26 @@ SEED = 0
 #: Table order (the spec's codes; V5 is not in the default export).
 TASK_ORDER = ("V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V10", "V12", "V14",
               "V15", "V16")
-#: The views a record can come from, in the export's order.
-VIEWS = ("scan", "oak1", "oak2", "rs")
+#: The export units a record can come from, in the export's order: the four camera views,
+#: then ``multi`` (the action tasks, every camera at once).
+VIEWS = ("scan", "oak1", "oak2", "rs", "multi")
+
+
+def refuse_old_eval(*paths) -> None:
+    """``SystemExit`` whose message names the current subset when a path goes through
+    a superseded subset directory (``eval_v1``): its records are the old questions,
+    and scored with the new tools they would mean something else. The interpreter
+    prints the message and exits 1."""
+    for path in paths:
+        if path is None:
+            continue
+        parts = Path(str(path)).parts
+        old = next((p for p in parts for v in OLD_EVAL_VERSIONS
+                    if p == v or p.startswith(v + ".")), None)
+        if old is not None:
+            raise SystemExit(f"[vlm] refused: {path} is under {old}, the subset before the "
+                             f"question redesign of 2026-11-03; use {EVAL_VERSION}/ (the same "
+                             f"layout, with a multi unit for the action tasks)")
 
 
 # --------------------------------------------------------------------------- #
@@ -106,6 +132,8 @@ def strata(record: dict) -> tuple[str, ...]:
         return ((f"feasible={_bool(feasible)}",)
                 + (() if feasible else (f"source={label.get('truth_source')}",)))
     if task == "V8":
+        if label.get("answer_check", {}).get("type") == "components":
+            return ()  # every visible part of a class: a set answer like V1's, no stratum
         instance = str(answer.get("instance") or "?")
         return (f"class={instance.split('.', 1)[0]}",)
     if task == "V10":
@@ -491,7 +519,7 @@ def _audit(records: list[dict], per_view: dict, out: Path, seed: int, size: int,
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     ap.add_argument("--export", nargs="+", required=True,
-                    help="the export-vlm JSONL files, one per view")
+                    help="the export-vlm JSONL files, one per unit (vlm_<view>.jsonl, vlm_multi.jsonl)")
     ap.add_argument("--out", required=True, help=f"the subset's directory ({EVAL_VERSION})")
     ap.add_argument("--seed", type=int, default=SEED)
     ap.add_argument("--target-binary", type=int, default=TARGET_BINARY)
@@ -500,6 +528,7 @@ def main(argv=None) -> int:
     ap.add_argument("--audit", type=int, default=0,
                     help="also draw the human-audit sample of this many records")
     args = ap.parse_args(argv)
+    refuse_old_eval(args.out, *args.export)
     result = build(args.export, args.out, seed=args.seed, target_binary=args.target_binary,
                    target_other=args.target_other, max_share=args.max_share,
                    audit=args.audit)

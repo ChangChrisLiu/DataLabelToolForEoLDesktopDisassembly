@@ -7,6 +7,7 @@ fake OpenAI-compatible server on the loopback -- no model, no network, no
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -512,3 +513,113 @@ def test_the_shell_templates_are_lf_and_parse():
     for script in scripts:
         proc = subprocess.run([bash, "-n", str(script)], capture_output=True, text=True)
         assert proc.returncode == 0, f"{script.name}: {proc.stderr}"
+
+
+def _multi_pack(root: Path) -> Path:
+    """A minimal pack: the scene's multi unit (four cameras), its eval_v2 cut, the frames."""
+    from PIL import Image
+
+    import vlm_eval_set
+
+    db = Db(str(root / "m.sqlite"))
+    tax = W.build(db, views=("scan", "oak1", "oak2", "rs"))
+    data = root / "pack" / "data"
+    data.mkdir(parents=True)
+    export_vlm(db, tax, [W.DESKTOP], "multi", str(data / "vlm_multi.jsonl"))
+    db.close()
+    for entry in IO.load_manifest(data / "vlm_multi.jsonl").values():
+        path = root / "pack" / "images" / entry["path"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (64, 64), (entry["step"] * 20 % 255, 80, 120)).save(path)
+    vlm_eval_set.build([data / "vlm_multi.jsonl"], root / "pack" / "eval_v2", seed=0)
+    return root / "pack"
+
+
+def test_run_eval_accepts_multi(tmp_path):
+    """``run_eval.sh VIEW=multi`` runs the multi unit's eval_v2 cut end to end (gold
+    backend: every task 1.0); the Slurm arrays and the matrix cover the five units; a
+    bogus view and an eval_v1 subset are refused."""
+    for name in ("open_model.sbatch", "closed_model.sbatch", "gold_check.sbatch"):
+        text = (RUN_DIR / "slurm" / name).read_text(encoding="utf-8")
+        assert "#SBATCH --array=0-4" in text and "pack_units.sh" in text, name
+        assert "eval_v1" not in text, name
+    matrix = (RUN_DIR / "slurm" / "submit_matrix.sh").read_text(encoding="utf-8")
+    assert "pack_units.sh" in matrix and "eval_v1" not in matrix
+    assert "--max-images $MAX_IMAGES" in (RUN_DIR / "slurm" / "open_model.sbatch").read_text(
+        encoding="utf-8")
+    bash = _bash()
+    if bash is None:
+        pytest.skip("no working bash on this machine")
+    pack = _multi_pack(tmp_path)
+    runs = tmp_path / "runs"
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME")}
+    env.update({"PACK": pack.as_posix(), "VIEW": "multi", "BACKEND": "gold", "MODEL_TAG": "gold",
+                "RUNS": runs.as_posix(), "TOOLS": SCRIPTS.as_posix(),
+                "PYTHON": Path(sys.executable).as_posix(), "PYTHONIOENCODING": "utf-8",
+                "PYTHONDONTWRITEBYTECODE": "1"})
+    script = str(RUN_DIR / "run_eval.sh")
+    proc = subprocess.run([bash, script], capture_output=True, text=True, env=env,
+                          cwd=str(tmp_path), timeout=600)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = runs / "gold" / "image" / "multi"
+    subset = list(IO.read_jsonl(out / "truth" / "multi.jsonl"))
+    assert subset and {r["id"] for r in subset} == {
+        r["id"] for r in IO.read_jsonl(pack / "eval_v2" / "multi.jsonl")}
+    assert all(r["label"]["view"] == "multi" for r in subset)
+    result = json.loads((out / "score" / "gold.score.json").read_text(encoding="utf-8"))
+    assert result["predicted"] == len(subset)
+    by_task = result["strict"]["by_task"]
+    assert {"V3", "V4", "V12"} <= set(by_task)
+    assert all(abs(cell["mean"] - 1.0) < 1e-9 for cell in by_task.values()), by_task
+    # refusals: not a unit; the subset before the redesign
+    bad = subprocess.run([bash, script], capture_output=True, text=True,
+                         env=dict(env, VIEW="cmp_scan"), cwd=str(tmp_path), timeout=120)
+    assert bad.returncode == 2 and "multi" in bad.stderr
+    old = subprocess.run([bash, script], capture_output=True, text=True,
+                         env=dict(env, SUBSET=(pack / "eval_v1" / "audit" / "audit.ids.txt").as_posix()),
+                         cwd=str(tmp_path), timeout=120)
+    assert old.returncode == 2 and "eval_v2" in old.stderr
+
+
+def test_a_unit_missing_from_the_pack_is_skipped_and_the_matrix_lists_the_manifest_units(tmp_path):
+    """An empty unit is left out of the pack (manifest "units"): run_eval.sh ends its
+    job cleanly, and submit_matrix.sh submits arrays over the manifest's units only."""
+    bash = _bash()
+    if bash is None:
+        pytest.skip("no working bash on this machine")
+    pack = _multi_pack(tmp_path)
+    (pack / "manifest.json").write_text(json.dumps({"package": "vlmpack",
+                                                   "units": ["scan", "oak1", "oak2", "multi"]}),
+                                       encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME")}
+    env.update({"PACK": pack.as_posix(), "BACKEND": "gold", "MODEL_TAG": "gold",
+                "RUNS": (tmp_path / "runs").as_posix(), "TOOLS": SCRIPTS.as_posix(),
+                "PYTHON": Path(sys.executable).as_posix(), "PYTHONIOENCODING": "utf-8"})
+    units = subprocess.run([bash, str(RUN_DIR / "pack_units.sh"), pack.as_posix()],
+                           capture_output=True, text=True, env=env, timeout=120)
+    assert units.returncode == 0 and units.stdout.split() == ["scan", "oak1", "oak2", "multi"]
+    proc = subprocess.run([bash, str(RUN_DIR / "run_eval.sh")], capture_output=True, text=True,
+                          env=dict(env, VIEW="rs"), cwd=str(tmp_path), timeout=120)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "[run_eval] unit rs not in this pack, skipped" in proc.stdout
+    assert not (tmp_path / "runs" / "gold" / "image" / "rs").exists()
+    # without a manifest the five units are listed (run_eval skips what is not there)
+    bare = subprocess.run([bash, str(RUN_DIR / "pack_units.sh"), (tmp_path / "nowhere").as_posix()],
+                          capture_output=True, text=True, env=env, timeout=120)
+    assert bare.stdout.split() == ["scan", "oak1", "oak2", "rs", "multi"]
+    # the matrix, with sbatch replaced by a recorder
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    log = tmp_path / "sbatch.log"
+    script = ["#!/usr/bin/env bash", f'echo "$* VIEW_LIST=$VIEW_LIST" >> "{log.as_posix()}"', ""]
+    (fake / "sbatch").write_bytes("\n".join(script).encode())
+    matrix = subprocess.run(
+        # (cd + pwd: the shell's own spelling of the folder, no drive colon in PATH)
+        [bash, "-c", f'export PATH="$(cd "{fake.as_posix()}" && pwd):$PATH"; '
+                     f'bash "{(RUN_DIR / "slurm" / "submit_matrix.sh").as_posix()}"'],
+        capture_output=True, text=True, env=env, cwd=str(tmp_path), timeout=120)
+    assert matrix.returncode == 0, matrix.stdout + matrix.stderr
+    assert "[submit_matrix] units: scan oak1 oak2 multi" in matrix.stdout
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert calls and all(c.startswith("--array=0-3 ") for c in calls), calls
+    assert all(c.endswith("VIEW_LIST=scan oak1 oak2 multi") for c in calls), calls
