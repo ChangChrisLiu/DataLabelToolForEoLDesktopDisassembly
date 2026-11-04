@@ -154,10 +154,12 @@ def test_audit_sheet_draws_marks(tmp_path):
     # the evidence is a scanner-frame box: drawn on the two scanner images, not on the side views
     evidence = [[b for b in bs if b["kind"] == "evidence"] for bs in boxes]
     assert [bool(e) for e in evidence] == [True, False, False, False, True, False, False, False]
-    # the overlay fix holds for every figure; marks are red; the boxes switch does not hide them
+    # the overlay fix holds for every figure; marks are red on the model's layer, the
+    # reviewer's boxes on a layer of their own, hidden until asked (owner 2026-11-04)
     assert article.count('<span class="imgbox"><img ') == 8
-    assert "svg.boxes rect.mark { stroke: #ff1744;" in S.CSS
-    assert "rect:not(.mark)" in S.CSS
+    assert article.count('<svg class="boxes"') == article.count('<svg class="review"') == 8
+    assert "svg.boxes line.mark { stroke: #ff1744; }" in S.CSS
+    assert "body:not(.show-review) svg.review { display: none; }" in S.CSS
     # captions name the camera and the moment; the prompt lines the model reads are shown
     assert "image 1 of 8: top-down scanner, before (step 4" in article
     assert "image 8 of 8: RealSense, after (step 5" in article
@@ -174,6 +176,49 @@ def test_audit_sheet_draws_marks(tmp_path):
     one = S.item_html(2, single, manifest, None, tmp_path / "images", tmp_path / "out", 1)
     assert re.findall(r'<div class="frames ([a-z ]*)">', one) == ["single"]
     assert '&quot;kind&quot;:&quot;evidence&quot;' in one and "&quot;mark&quot;" not in one
+
+
+def test_the_page_opens_on_the_models_view(tmp_path):
+    """Owner 2026-11-04: the cyan / yellow reviewer boxes beside the red marks were taken for
+    marks the model sees. The picture shows the model's view; the reviewer boxes are a layer
+    of their own, off by default, behind a "show reviewer boxes / 显示审核框" switch, with a
+    one-line legend saying the model does not see them; the marks are drawn with the
+    converter's own mark-v2 parameters and rule."""
+    import vlm_to_chat as C
+
+    record, manifest = _multi_v3(tmp_path)
+    page = S.page("t", S.item_html(1, record, manifest, None, tmp_path / "images",
+                                   tmp_path / "out", 1),
+                  sheet="s", js=S.JS_AUDIT, columns=S.CSV_COLUMNS, guide=S.AUDIT_GUIDE)
+    assert '<input type="checkbox" id="toggle-review">' in page  # not checked
+    assert "show reviewer boxes / 显示审核框" in page
+    assert "not shown to the model" in page and "模型看不到" in page
+    assert 'id="toggle-boxes"' not in page
+    # the script draws marks into the model layer, evidence / answer into the review layer
+    for needle in ("function drawModel(", "function drawReview(", "function labelPlace(",
+                   "Math.max(2, Math.round(2 * W / 1600))", "Math.round(14 * W / 1600)",
+                   "Math.round(8 * W / 1600)", "Math.round(18 * W / 1600)",
+                   "classList.toggle('show-review', tr.checked)"):
+        assert needle in page, needle
+    assert f'"opacity": {C.MARK_OPACITY}' in page and C.MARK_STYLE_VERSION in page
+    assert C.mark_width(1600) == 2 and C.mark_dash(1600) == (14, 8) \
+        and C.label_font_size(1600) == 18  # the numbers the page transcribes
+    # no reviewer box label carries an ordinal, and the human form has no reviewer switch
+    article = H.item_html(1, record, manifest, tmp_path / "images", tmp_path / "out")
+    assert "toggle-review" not in article
+
+
+def test_v3_hint_is_on_the_models_layer(tmp_path):
+    record, manifest = _multi_v3(tmp_path)
+    record = dict(record, prompt=dict(record["prompt"], marks=[], hint_regions=[
+        {"image": 0, "bbox": [50, 40, 300, 300]}, {"image": 4, "bbox": [50, 40, 300, 300]}]),
+        label=dict(record["label"], v3_form="roi"))
+    assert [b["kind"] for b in S.marks_of(record, 0)] == ["hint"]
+    assert S.marks_of(record, 4)[0]["bbox"] == [50.0, 40.0, 300.0, 300.0]
+    assert S.marks_of(record, 1) == []
+    article = S.item_html(1, record, manifest, None, tmp_path / "images", tmp_path / "out", 1)
+    assert article.count("&quot;kind&quot;:&quot;hint&quot;") == 2
+    assert ("form", "roi (a yellow dashed hint box is drawn)") in S.gold_lines(record, None)
 
 
 def test_audit_sheet_never_marks_a_box_task(tmp_path):
@@ -597,7 +642,8 @@ def test_the_human_form_has_no_answer_in_it(scene, human):
         # (redesign 2026-11-03), each on its own image
         shipped = [json.loads(html_unescape(b)) for b in re.findall(r'data-boxes="([^"]*)"', article)]
         assert len(shipped) == len(r["prompt"]["images"])
-        assert all(b["kind"] == "mark" for bs in shipped for b in bs)
+        # (V3's roi form also shows its yellow hint box: the model sees it too)
+        assert all(b["kind"] in ("mark", "hint") for bs in shipped for b in bs)
         assert [len(bs) for bs in shipped] == [len(S.marks_of(r, i)) for i in range(len(shipped))]
     for page in human["pages"]:
         assert "<script src" not in page and "answered_at" in page and "started_at" in page

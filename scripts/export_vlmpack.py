@@ -1214,7 +1214,7 @@ tools/
   vlm_sample.py           stratified seeded samples (audit / repeat)
   vlm_eval_set.py         the procedure that drew {ev_name} (re-runnable, byte-identical)
   vlm_selfcheck.py        gold replies must score 1.0 everywhere -- run it first
-  vlm_audit_sheet.py      the fillable audit pages (gold shown, marks drawn) + CSV skeleton
+  vlm_audit_sheet.py      the fillable audit pages (model view first, reviewer boxes on request) + CSV
   vlm_audit_summary.py    filled audit CSVs -> error rates with Wilson 95 % intervals, flagged items
   vlm_audit_carry.py      carries audit verdicts over to a re-drawn subset where the item is unchanged
   vlm_human_sheet.py      a timed answer form without answers (not part of the evaluation plan)
@@ -1439,9 +1439,12 @@ The strata counts are in `{ev_name}/table.md`. {audit_line}
 The error rate of the generated truth. Open `{ev_name}/audit/audit.sheet.b01.html`
 (and the following pages) in a browser from the pack directory -- plain HTML
 with inline script, no server, no network; the frames are loaded by relative
-path (`../../images/...`). Every item shows the picture(s) with the marks drawn,
-the question, the gold answer in words and as JSON, its evidence boxes drawn on
-the frame and the rationale chain; the reviewer marks 正确 / 错误 / 存疑
+path (`../../images/...`). Every item shows the picture(s) exactly as the model gets
+them -- the red dashed marks (and V3's yellow dashed hint box) drawn the converter's way,
+nothing else --, the question, the gold answer in words (no ordinals) and as JSON, and
+the rationale (the reason in what the picture shows); the evidence and answer boxes are a
+separate reviewer layer, hidden until **show reviewer boxes / 显示审核框** is ticked, and a
+legend line says the model never sees them. The reviewer marks 正确 / 错误 / 存疑
 (correct / wrong / doubtful) and may leave a note. Answers stay in the browser
 until **Export answers** downloads a CSV (`id, task, readable_id, desktop, view,
 step, batch, verdict, note, reviewer, answered_at`); `audit.sheet.csv` is the
