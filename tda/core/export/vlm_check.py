@@ -885,15 +885,34 @@ def _g_v6_groups(world: World, verb: str, text: Any, reference: tuple, equivalen
         "blocked_rate_defined": bool(check.get("blocked_rate_defined"))})
 
 
+def _v7_eligible(record: dict, world: World) -> list[tuple[str, str]]:
+    """The ``(verb, target)`` pairs a V7 plan's wording is grounded on.
+
+    The gold plan first (its targets are keys or group ids), then the graph's
+    shortest plan and the demonstrated remainder. Those two are told member by
+    member; on a world with groups a member's action is its group's action
+    (spec 3.1: one group action replaces the N member actions in a plan), so a
+    class phrase or an exact member name grounds to the group, never to one
+    screw of it. Repeats are kept (a group action said twice grounds twice and
+    is a no-op the second time). A world without groups grades as before.
+    """
+    check = record["label"]["answer_check"]
+    told = [*(check.get("reference_shortest") or []), *(check.get("demonstrated_remainder") or [])]
+    if not world.grouped:
+        return [(i["verb"], i["target"]) for i in told]
+    pairs = [(i["verb"], i["target"]) for i in record["label"]["answer"].get("plan") or []]
+    for item in told:
+        pairs.append((item["verb"], world.group_of(item["target"]) or item["target"]))
+    return pairs
+
+
 def _g_v7(record, answer, world, tax, transform) -> Grade:
     check = record["label"]["answer_check"]
     if world is None or tax is None:
         raise ValueError("V7 needs the world and the taxonomy")
     sim: dict[str, InstState] = {k: InstState(state=v, placement="in_chassis")
                                  for k, v in check["start_state"].items()}
-    eligible_pairs = [(i["verb"], i["target"]) for i in check["reference_shortest"]] + \
-        [(i["verb"], i["target"]) for i in check["demonstrated_remainder"]]
-    steps = _pairs_grounded(answer.get("plan"), world, eligible_pairs)
+    steps = _pairs_grounded(answer.get("plan"), world, _v7_eligible(record, world))
     violations, first_violation, unresolved, noop = 0, None, 0, 0
     for index, (verb, target, _) in enumerate(steps):
         if target is None:
