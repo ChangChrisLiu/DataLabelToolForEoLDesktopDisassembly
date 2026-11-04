@@ -58,6 +58,64 @@ def test_latches_group_per_module():
     assert "motherboard.01" not in groups
 
 
+def _plug(key, host, cable, kind=None):
+    return InstanceRec(key=key, desktop=1, cls="connector",
+                       attrs={"kind": kind} if kind else {}, socket_host=host, cable=cable)
+
+
+def test_groups_of_one_class_are_told_apart_by_their_anchors():
+    """Final review C2: every kind-less connector group read "connectors"; where one class
+    has several groups on a desktop the anchor's words are added -- the cable, then the
+    host -- and the labels carry no ordinal."""
+    recs = [InstanceRec(key="motherboard.01", desktop=1, cls="motherboard"),
+            InstanceRec(key="optical_drive.01", desktop=1, cls="optical_drive"),
+            InstanceRec(key="storage_drive.ssd.01", desktop=1, cls="storage_drive",
+                        attrs={"kind": "ssd"}),
+            _plug("connector.01", "motherboard.01", "cable:psu"),
+            _plug("connector.02", "motherboard.01", "cable:psu"),
+            _plug("connector.03", "storage_drive.ssd.01", "cable:storage_drive"),
+            _plug("connector.04", "storage_drive.ssd.01", "cable:storage_drive"),
+            _plug("connector.05", "motherboard.01", "cable:optical_drive"),
+            _plug("connector.06", "motherboard.01", "cable:optical_drive"),
+            _plug("connector.07", "optical_drive.01", "cable:optical_drive"),
+            _plug("connector.08", "optical_drive.01", "cable:optical_drive"),
+            # a kind of its own: one group, the plain label
+            _plug("connector.fan.01", "motherboard.01", None, kind="fan"),
+            _plug("connector.fan.02", "motherboard.01", None, kind="fan")]
+    groups = part_groups(_ctx(recs))
+    labels = {g.gid: g.label for g in groups.values()}
+    assert labels == {
+        "connector@motherboard.01|cable:psu": "PSU cable connectors",
+        "connector@storage_drive.ssd.01|cable:storage_drive": "storage drive cable connectors",
+        "connector@motherboard.01|cable:optical_drive":
+            "optical drive cable connectors on the motherboard",
+        "connector@optical_drive.01|cable:optical_drive":
+            "optical drive cable connectors on the optical drive",
+        "connector.fan@motherboard.01|-": "fan connectors",
+    }
+    assert not any(ORDINAL.search(label) for label in labels.values())
+
+
+def test_anchor_words_that_read_the_same_keep_the_plain_label():
+    fan, heat = "cpu_cooler.fan.01", "cpu_cooler.heatsink.01"
+    recs = [InstanceRec(key=fan, desktop=1, cls="cpu_cooler", attrs={"kind": "fan"}),
+            InstanceRec(key=heat, desktop=1, cls="cpu_cooler", attrs={"kind": "heatsink"}),
+            *(_screw(f"screw.cpu_cooler.{i:02d}", fan) for i in (1, 2)),
+            *(_screw(f"screw.cpu_cooler.{i:02d}", heat) for i in (3, 4))]
+    for m in (1, 2):
+        recs.append(InstanceRec(key=f"ram_module.{m:02d}", desktop=1, cls="ram_module"))
+        for j in (1, 2):
+            recs.append(InstanceRec(key=f"ram_latch.{m}{j}", desktop=1, cls="ram_latch",
+                                    attrs={"of": f"ram_module.{m:02d}"}))
+    recs += [InstanceRec(key=f"ram_latch.9{j}", desktop=1, cls="ram_latch") for j in (1, 2)]
+    labels = {g.gid: g.label for g in part_groups(_ctx(recs)).values()}
+    assert labels["screw.cpu_cooler@cpu_cooler.fan.01"] == "CPU cooler screws of the fan CPU cooler"
+    assert labels["screw.cpu_cooler@cpu_cooler.heatsink.01"] ==         "CPU cooler screws of the heatsink CPU cooler"
+    # two modules' latches read the same however they are qualified: the plain label
+    assert labels["ram_latch@ram_module.01"] == labels["ram_latch@ram_module.02"] == "RAM latches"
+    assert labels["ram_latch@-"] == "RAM latches without a RAM module"
+
+
 def test_singleton_is_no_group():
     recs = [InstanceRec(key="psu.01", desktop=1, cls="psu"),
             _screw("screw.psu.01", "psu.01", role="psu", captive=False),
