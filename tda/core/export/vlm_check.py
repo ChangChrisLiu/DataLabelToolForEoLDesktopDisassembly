@@ -694,16 +694,16 @@ def _same_target(world: Optional[World], got: Optional[str], want: Optional[str]
     return world.group_of(got) == want if world.is_group(want) else world.group_of(want) == got
 
 
-def _g_v3(record, answer, world, tax, transform) -> Grade:
-    truth = record["label"]["answer"]
-    check = record["label"].get("answer_check") or {}
-    verb_ok = _norm(answer.get("verb")) == _norm(truth["verb"])
-    target = truth.get("target_instance")
+def _v3_slots(answer, slots, check, world, group) -> tuple[float, dict]:
+    """One V3 slot set (verb, target class, target instance, tool) against the answer."""
+    verb_ok = _norm(answer.get("verb")) == _norm(slots["verb"])
+    target = slots.get("target_instance")
     # the part acted on is the answer and nothing else (owner 2026-11-03): a part
     # attached to it (a RAM latch on the motherboard, a screw on the cooler) is not,
     # whatever an older record's `accept_targets` lists beside the target; a group
-    # target is named by its members' class, and a member stands for its group
-    accept = [target] if target else []
+    # target is named by its members' class, and a member of the group a target
+    # belongs to (`target_group`) stands for it -- "RAM latch 2" for RAM latch 1
+    accept = [t for t in (target, group) if t]
     if world is None:
         key, mclass = None, None
     elif check.get("accept_targets") or world.grouped:
@@ -711,12 +711,49 @@ def _g_v3(record, answer, world, tax, transform) -> Grade:
     else:
         key, mclass = grounder(world).ground(answer.get("target"))
     cls = world.cls_of(key) if (world and key) else (mclass.split(".")[0] if mclass else None)
-    class_ok = cls == truth.get("target_class")
-    inst_ok = _same_target(world, key, target)
+    class_ok = cls == slots.get("target_class")
+    inst_ok = _same_target(world, key, target) or (group is not None and key == group)
     metrics = {"verb": verb_ok, "target_class": class_ok, "target_instance": inst_ok}
-    if truth.get("tool") is not None:
-        metrics["tool"] = _norm(answer.get("tool")) == _norm(truth["tool"])
-    return Grade(True, float(verb_ok and class_ok), metrics)
+    if slots.get("tool") is not None:
+        metrics["tool"] = _norm(answer.get("tool")) == _norm(slots["tool"])
+    return float(verb_ok and class_ok), metrics
+
+
+def _g_v3(record, answer, world, tax, transform) -> Grade:
+    """Any action of the step, read as the first one is, scores (controller 2026-11-03).
+
+    A compound step (``answer.actions``: a PSU displaced and a connector pulled in
+    one step) was carried out in every one of its actions, so the answer is graded
+    against each slot set and the best one counts; the top-level slots are the
+    first action and grade alone where there is no list.
+    """
+    truth = record["label"]["answer"]
+    check = record["label"].get("answer_check") or {}
+
+    def group_of(target: Optional[str], given: Optional[str] = None) -> Optional[str]:
+        if given:
+            return given
+        if world is None or not target or not world.grouped or world.is_group(target):
+            return None
+        return world.group_of(target)
+
+    sets = [(0, truth, group_of(truth.get("target_instance"), check.get("target_group")))]
+    for i, slots in enumerate(truth.get("actions") or []):
+        if not isinstance(slots, dict) or "verb" not in slots:
+            continue
+        if i == 0 and all(slots.get(f) == truth.get(f) for f in
+                          ("verb", "target_class", "target_instance", "tool")):
+            continue  # the first action is the top-level slots
+        sets.append((i, slots, group_of(slots.get("target_instance"))))
+    best_rank, best, best_index = None, {}, 0
+    for i, slots, group in sets:
+        score, metrics = _v3_slots(answer, slots, check, world, group)
+        rank = (score, metrics["target_instance"])
+        if best_rank is None or rank > best_rank:  # the first one on a tie
+            best_rank, best, best_index = rank, metrics, i
+    if len(sets) > 1:
+        best = {**best, "matched_action": best_index}
+    return Grade(True, best_rank[0], best)
 
 
 def _g_v4(record, answer, world, tax, transform) -> Grade:
