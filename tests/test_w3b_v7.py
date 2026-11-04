@@ -79,13 +79,19 @@ def test_the_answer_is_the_remaining_legal_plan_and_its_requirements(scene):
     assert plan[-1] == ("remove", W.CPU)
     assert check["plan_length"] == len(plan)
     # the answer is the demonstrated remainder; any legal plan scores
-    assert first["label"]["answer"]["plan"] == check["demonstrated_remainder"]
+    # ... told in group actions (redesign 2026-11-03): one "unscrew the CPU cooler screws"
+    gid = f"screw.cpu_cooler@{W.COOLER}"
+    assert [(a["verb"], a["target"]) for a in first["label"]["answer"]["plan"]] == [
+        W.LOG[3], ("unscrew", gid), *(W.LOG[s] for s in range(8, 12))]
+    assert check["plan_groups"] == {gid: list(W.SCREWS)}
     assert check["any_legal_plan_scores"] is True
     required = {r["target"]: r for r in check["required_actions"]}
     # the cooler's screws (fastened_by gates both ways of moving it), the
     # cooler, the lever, and what covers the lever -- but not the fan lead:
     # connected_to only gates *removing* the cooler, and swinging it aside works
-    assert set(required) == {W.CPU, W.COOLER, W.LEVER, W.OPTICAL, *W.SCREWS}
+    # ... the cooler screws as one group item (redesign 2026-11-03, spec 6.6)
+    assert set(required) == {W.CPU, W.COOLER, W.LEVER, W.OPTICAL, gid}
+    assert required[gid]["members"] == list(W.SCREWS)
     assert W.FAN not in required
     assert required[W.OPTICAL]["pixel_only"] is True
     assert first["label"]["truth_source"] == "graph_blocked_pixels"
@@ -169,7 +175,10 @@ def test_a_plan_through_the_lever_or_without_the_cooler_is_wrong(scene):
     assert g.metrics["violations"] == 1 and g.metrics["first_violation"] == 0
     assert g.metrics["goal_reached"] is True and g.metrics["required_recall"] < 1.0
     # the class phrase is grounded on an eligible part: "a CPU cooler" is the cooler
-    ok = {"plan": [{"verb": "displace", "target": "the heatsink fan CPU cooler"},
+    # ... and "loosen the cooler screws" stays required while the cooler is in, whatever
+    # the log says about each of them (redesign 2026-11-03, spec 6.6)
+    ok = {"plan": [{"verb": "unscrew", "target": "the CPU cooler screws"},
+                   {"verb": "displace", "target": "the heatsink fan CPU cooler"},
                    {"verb": "open", "target": "CPU socket lever"},
                    {"verb": "remove", "target": "CPU"}]}
     g = grade(r, json.dumps(ok), world, tax)

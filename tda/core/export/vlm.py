@@ -250,8 +250,13 @@ def _read_view(db: Db, ctx: DesktopCtx, desktop: int, view: str,
     at all: whatever the propagation drew there nobody looked at, so neither a
     box nor a visibility of it reaches a record (:attr:`FrameData.confirmed`).
     """
+    from tda.core.export.vlm_groups import HIDDEN_IN_PLACE
+    from tda.core.truth_inputs import InputCache
+    from tda.core.vis_review import amodal_box
+
     frames: dict[int, FrameData] = {}
     order: list[int] = []
+    amodal_cache = InputCache()
     for row in db.frames_for(desktop, view):
         step = int(row["step"])
         if not ctx.exportable(step):
@@ -274,6 +279,20 @@ def _read_view(db: Db, ctx: DesktopCtx, desktop: int, view: str,
         for inst, fo in db.frame_overrides(key).items():
             if fo.occluder and inst in slim:
                 slim[inst]["occluder"] = fo.occluder
+        # the redesign (2026-11-03): a part present and wholly hidden is outlined on the
+        # image by its amodal box, so "can the CPU come off?" under the cooler can be asked
+        hidden = [inst for inst, r in slim.items() if r.get("visibility") in HIDDEN_IN_PLACE]
+        if hidden:
+            hw = (row.get("aux") or {}).get("hw") or next(
+                (r["visible_rle"]["size"] for r in compiled.values()
+                 if (r.get("visible_rle") or {}).get("size")), None)
+            if hw:
+                for inst in hidden:
+                    box = amodal_box(db, key, inst, str(slim[inst].get("placement") or ""),
+                                     (int(hw[0]), int(hw[1])), amodal_cache)
+                    if box is not None:
+                        x0, y0, x1, y1 = box
+                        slim[inst]["amodal_box"] = [x0, y0, x1 - x0, y1 - y0]
         frames[step] = FrameData(
             step=step, image=frame_file_name(row, key),
             image_id=opaque_image_id(desktop, view, step), verified=verified,
@@ -349,12 +368,15 @@ def _dumps(value) -> str:
 
 
 def _desktop_world(tc: TaskCtx) -> dict:
-    """The oracle's per-desktop line: instances, active edges, named log (W3b)."""
+    """The oracle's per-desktop line: instances, active edges, named log (W3b),
+    and the part groups of the redesign (``groups``, ``instances[*].group``)."""
     ctx = tc.ctx
     instances = {}
+    part_groups = tc.groups
     for key, rec in sorted(ctx.instances.items()):
         if ctx.cls_of(key) is None:
             continue
+        group = part_groups.get(key)
         instances[key] = {
             "class": rec.cls, "label": instance_label(key, rec, ctx.tax),
             "match_class": match_class(ctx, key),
@@ -362,7 +384,12 @@ def _desktop_world(tc: TaskCtx) -> dict:
                       if k in rec.attrs},
             "parent": rec.parent, "attached": bool(rec.attached),
             "group_id": rec.group_id, "group_order": rec.group_order,
+            "group": group.gid if group is not None else None,
         }
+    groups = {g.gid: {"members": list(g.members), "match_class": g.match_class,
+                      "anchor": g.anchor, "label": g.label}
+              for g in sorted({g.gid: g for g in part_groups.values()}.values(),
+                              key=lambda g: g.gid)}
     edges = [{"type": e.type, "target": e.target, "blocker": e.blocker,
               "necessity": e.necessity, "mode": e.mode, "source": e.source,
               "status": e.status}
@@ -378,7 +405,7 @@ def _desktop_world(tc: TaskCtx) -> dict:
                         "changes_state": tc.changes_state(action)})
     return {"type": "desktop", "desktop": int(tc.desktop),
             "model_family": tc.meta.get("model_family"), "instances": instances,
-            "edges": edges, "log": log}
+            "groups": groups, "edges": edges, "log": log}
 
 
 def _frame_table(tc: TaskCtx, view: str, data: FrameData) -> dict:

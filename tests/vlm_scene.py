@@ -367,3 +367,35 @@ def freeze(db: Db, tax: Taxonomy, *, views=VIEWS, steps=STEPS) -> None:
         service.refresh_range(DESKTOP, view, STEPS)
         for step in steps:
             service.verify_frame(FrameKey(DESKTOP, step, view), "tester")
+
+
+def task_ctx(db: Db, tax: Taxonomy, desktop: int = DESKTOP, view: str = VIEW,
+             side=()):
+    """A :class:`~tda.core.export.vlm_tasks.TaskCtx` of one desktop, built the way the export does.
+
+    ``side`` lists the views whose frames go into ``side_frames`` (the ``multi`` unit's
+    side views), each read as the export reads it (no rows of a view nothing is confirmed of).
+    """
+    from tda.core.export.coco import conflicted_steps, load_ctx, view_tier
+    from tda.core.export.vlm import _read_view, graph_version_of, view_has_confirmed
+    from tda.core.export.vlm_tasks import TaskCtx, exclusion_reason, illegal_steps
+    from tda.core.graph import constraint_edges, edges_from_db
+
+    service = TruthService(db, tax)
+    ctx = load_ctx(db, tax, desktop, view, holes=False)
+
+    def read(v):
+        labelled = view_has_confirmed(db, desktop, v)
+        if labelled:
+            service.ensure_fresh(desktop, v, False)
+        disputed = conflicted_steps(service, desktop, v, True)
+        return _read_view(db, ctx, desktop, v, disputed, False, labelled)
+
+    frames, order = read(view)
+    edges = constraint_edges(edges_from_db(db, desktop))
+    stamp = graph_version_of(db, desktop)
+    return TaskCtx(ctx=ctx, view=view, tier=view_tier(view, tax), graph_version=stamp,
+                   meta=db.get_desktop(desktop) or {}, edges=edges, frames=frames,
+                   steps=order, illegal=illegal_steps(ctx, edges, tax),
+                   excluded=exclusion_reason(ctx, edges, stamp),
+                   side_frames={v: read(v)[0] for v in side})
