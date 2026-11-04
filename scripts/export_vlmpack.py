@@ -898,7 +898,7 @@ def _shortcut_table(summary: dict) -> str:
     v4 = (summary.get("eval_shortcuts") or {}).get("V4")
     if v4:
         ev = summary.get("eval_version") or vlm_eval_set.EVAL_VERSION
-        lines += ["", f"V4 in `{ev}` ({v4['records']} records, drawn balanced within each "
+        lines += ["", f"V4 in `{ev}` ({v4['records']} records, drawn balanced within each verb + "
                   f"class): majority {v4['majority']:.1%}, class {v4['class']:.1%}, match "
                   f"class {v4['match_class']:.1%}, group {v4['group']:.1%}, verb "
                   f"{v4['verb']:.1%}, verb + class {v4['verb_class']:.1%}."]
@@ -1009,7 +1009,7 @@ def _known_issues(summary: dict) -> str:
         "scorer's *text-only upper bound* column) is measured on the **full export** of a "
         "unit, not on `eval_v2`; `eval_v2/<unit>.summary.json` is a copy of the same file. "
         "The pack's `manifest.json` `eval_shortcuts` gives the same bounds measured on "
-        "`eval_v2` itself (V4's are drawn balanced within each class).")
+        "`eval_v2` itself (V4: drawn balanced within each verb + class).")
     items.append(
         "**Captive screws.** A truth that rests on a captive screw's tightness is marked "
         "`label.image_undecidable: true` (no 2D view shows it); the scorer reports every "
