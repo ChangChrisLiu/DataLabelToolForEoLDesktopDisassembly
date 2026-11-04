@@ -242,9 +242,9 @@ def test_marks_need_somewhere_to_go(tmp_path):
     assert Path(row["meta"]["images"][0]).parent == out.parent / "x.openai_marked"
 
 
-@pytest.mark.parametrize("task", ["V1", "V8", "V14"])
+@pytest.mark.parametrize("task", ["V1", "V8"])
 def test_box_tasks_never_show_marks(tmp_path, task):
-    """A mark on V1 / V8 / V14 would be the answer: none is drawn or named, whatever the record holds."""
+    """A mark on V1 / V8 would be the answer: none is drawn or named, whatever the record holds."""
     from PIL import Image
 
     root = tmp_path / "images"
@@ -347,7 +347,7 @@ def test_multiview_legend_lists_present_views():
     blind = _multi(VIEWS)
     blind["prompt"]["images"] = []
     assert "Image" not in C.user_text(blind).split("\n")[0] and "Outlined" not in C.user_text(blind)
-    assert C.CHAT_FORMAT_ID == "chat-v4"
+    assert C.CHAT_FORMAT_ID == "chat-v5"
 
 
 def test_glossary_has_class_and_states():
@@ -384,10 +384,11 @@ def test_a_presence_question_glosses_presence_states():
     import vlm_glossary as G
 
     record = _v2(["img_a"], [], terms=["screw.cpu_cooler"], state_terms=["screw.cpu_cooler"],
-                 task="V14", question="Can this view settle whether the CPU cooler screw is "
-                                       "still in place?")
+                 task="V2", question="Is the CPU cooler screw still in place, or has it "
+                                      "been removed?")
     record["label"]["answer_check"] = {"type": "exact", "state_space": "presence",
-                                       "fields": ["answerable", "state"]}
+                                       "derive": "instance_state", "fields": ["state"],
+                                       "allowed": ["present", "removed", "cannot_tell"]}
     assert G.is_presence(record)
     text = C.user_text(record)
     gloss = text[text.index("Glossary:"):]

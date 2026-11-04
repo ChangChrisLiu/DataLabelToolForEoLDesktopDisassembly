@@ -15,7 +15,7 @@ V16 / change V3 V12 V10 / cross V15) and per question template, each with a
 with replacement, ``--resamples`` times, seeded). Beside the primary score:
 
 * V2's headline row ``V2`` is every V2 question -- perceiving the part's
-  current state (owner 2026-11-03; ``eval_v2`` draws V2 equally over classes and
+  current state (owner 2026-11-03; ``eval_v3`` draws V2 equally over classes and
   half ``prior_is_correct = false``); ``V2-prior-wrong`` (the questions the
   class alone does not answer) is the secondary row, a shortcut check;
 * V6's headline (``headline.v6_open``, table row ``V6``) is the **open**

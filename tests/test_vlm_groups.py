@@ -202,10 +202,10 @@ def test_v4_hidden_target_marked_with_amodal_box(scene, tmp_path):
     assert "the RAM module outlined in red" in hidden[0]["prompt"]["question"]
 
 
-def test_v1_v8_v14_have_no_marks(scene, tmp_path):
+def test_v1_v8_have_no_marks(scene, tmp_path):
     db, tax = scene
     records = _export(db, tax, tmp_path / "v.jsonl")
-    for task in ("V1", "V8", "V14"):
+    for task in ("V1", "V8"):
         assert _of(records, task), task
         for r in _of(records, task):
             assert "marks" not in r["prompt"]
@@ -238,19 +238,24 @@ def test_v8_multi_instance_is_components(tmp_path):
     db.close()
 
 
-def test_v14_mixed_group_skipped(tmp_path):
+def test_v2_cannot_tell_asks_no_group_half_seen(tmp_path, monkeypatch):
+    """V14 merged into V2 (owner 2026-11-04): a hidden-part question asks a group only when
+    every member still in is hidden -- one PSU screw seen, its twin ``too_small``: no
+    cannot_tell question about the pair."""
+    from tda.core.export import vlm_tasks as T
+
+    monkeypatch.setattr(T, "V2_HIDDEN_EVERY", 1)
     db = Db(str(tmp_path / "tiny.sqlite"))
-    tax = S.build(db, tiny_screw=True)   # one PSU screw seen, its twin `too_small`
+    tax = S.build(db, tiny_screw=True)
     out = tmp_path / "v.jsonl"
-    summary = export_vlm(db, tax, [S.DESKTOP], S.VIEW, str(out), tasks=["V14"])
+    export_vlm(db, tax, [S.DESKTOP], S.VIEW, str(out), tasks=["V2"], balance=False)
     records = [json.loads(x) for x in out.read_text(encoding="utf-8").splitlines() if x]
-    assert summary["skip_reasons"][str(S.DESKTOP)]["V14"]["mixed_group"] >= 1
     for r in records:
-        if r["label"]["step"] >= 2:
+        if r["label"]["step"] >= 2 or not r["label"]["answer_check"].get("hidden"):
             continue  # the seen one is out from step 2: its twin is then asked alone
         members = r["label"]["answer_check"].get("members") or [
             r["label"]["answer_check"]["instance"]]
-        assert S.SCREW not in members and S.TINY_SCREW not in members
+        assert S.SCREW not in members
     db.close()
 
 
@@ -325,9 +330,10 @@ def test_action_record_images_marked_scan_alone(four):
     2026-11-03: V4, V6 multiple choice, V7, V16) the scanner image its marks are drawn on,
     and its question speaks of one picture."""
     db, tax, tc = four
-    for task in ("V4", "V6", "V7", "V16"):
-        records = [r for r in _gen(tc, task) if task != "V6" or r["prompt"].get("options")]
-        assert records, task
+    # V6's multiple choice names its options in words (owner 2026-11-04): no mark, every camera
+    for task in ("V4", "V7", "V16"):
+        records = [r for r in _gen(tc, task) if task != "V7" or r["prompt"].get("marks")]
+        assert records or task == "V7", task
         for r in records:
             step = r["label"]["step"]
             assert r["prompt"]["images"] == [tc.frames[step].image_id], task
@@ -337,7 +343,7 @@ def test_action_record_images_marked_scan_alone(four):
             assert not re.search(r"\b(pictures|images|views|cameras)\b",
                                  r["prompt"]["question"]), (task, r["prompt"]["question"])
     for task in ("V6", "V10"):
-        records = [r for r in _gen(tc, task) if not r["prompt"].get("options")]
+        records = _gen(tc, task)
         assert records, task
         for r in records:
             step = r["label"]["step"]

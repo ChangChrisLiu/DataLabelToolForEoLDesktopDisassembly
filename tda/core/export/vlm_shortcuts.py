@@ -38,7 +38,7 @@ __all__ = ["KEYS", "LABELLED_TASKS", "option_verb_shortcut", "shortcut_report",
 #: tasks with a small closed answer are scored; V1, V5, V8 and V10 answer with
 #: sets and boxes, which no wording shortcut can produce.
 LABELLED_TASKS = {
-    "V4": "feasible", "V12": "changed", "V14": "answerable", "V16": "valid",
+    "V4": "feasible", "V12": "changed", "V16": "valid",
     "V15": "same_moment", "V2": "state", "V3": "verb",
 }
 

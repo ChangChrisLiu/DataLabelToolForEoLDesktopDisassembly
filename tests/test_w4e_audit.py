@@ -44,7 +44,7 @@ UNITS = (W.VIEW, "multi")
 @pytest.fixture(scope="module")
 def scene(tmp_path_factory) -> dict:
     """The two-view export (every task per view), the pack's units, a fake ``images/`` tree and
-    ``eval_v2`` drawn from the units with a 20-item audit."""
+    ``eval_v3`` drawn from the units with a 20-item audit."""
     from PIL import Image
 
     from tda.core.export.vlm import unit_tasks
@@ -70,7 +70,7 @@ def scene(tmp_path_factory) -> dict:
             path.parent.mkdir(parents=True, exist_ok=True)
             if not path.is_file():
                 Image.new("RGB", W.HW, (entry["step"] * 20 % 255, 80, 120)).save(path)
-    eval_dir = tmp / "eval_v2"
+    eval_dir = tmp / "eval_v3"
     E.build([units / f"vlm_{u}.jsonl" for u in UNITS], eval_dir, seed=0, audit=20)
     exports = [eval_dir / f"{u}.jsonl" for u in UNITS]
     return {"tmp": tmp, "data": data, "images": images, "eval": eval_dir, "exports": exports,
@@ -667,13 +667,14 @@ def test_the_human_form_fields_follow_the_answer_format(human):
             assert f'data-boxmode="{"multi" if key == "V1" else "single"}"' in article
         if key == "V6.options":
             assert article.count('data-field="choice"') == len(r["prompt"]["options"])
-        if key == "V14":
+        if key == "V2.state":
+            # V14 merged into V2: the state radio lists cannot_tell too
             assert f'value="{H.CANNOT_TELL}"' in article
             for state in H.allowed_states(r):
                 assert f'value="{state}"' in article
         if key in ("V12", "V15.moment", "V4", "V16"):
             assert 'value="yes"' in article and 'value="no"' in article
-    assert {"V12", "V4", "V6.open", "V6.options", "V3"} <= seen
+    assert {"V12", "V4", "V6.open", "V3"} <= seen
     ids = (human["out"] / "human.ids.txt").read_text(encoding="utf-8").split()
     assert ids == [r["id"] for r in human["records"]]
 
@@ -712,8 +713,10 @@ def test_fields_map_to_the_model_formats():
         {"valid": True, "first_error_step": None}
     assert H.to_answer("V16", {"valid": "no", "first_error_step": "3"}) == \
         {"valid": False, "first_error_step": 3}
-    assert H.to_answer("V14", {"state": H.CANNOT_TELL}) == {"answerable": False, "state": None}
-    assert H.to_answer("V14", {"state": "open"}) == {"answerable": True, "state": "open"}
+    assert H.to_answer("V2.state", {"state": H.CANNOT_TELL}) == {"state": H.CANNOT_TELL}
+    assert H.to_answer("V6.open", {"actions": "disconnect the connectors\nopen the cover"}) == \
+        {"actions": [{"verb": "disconnect", "target": "the connectors"},
+                     {"verb": "open", "target": "the cover"}]}
     assert H.to_answer("V2.count", {"count": "3"}) == {"count": 3}
     assert H.to_answer("V2.count", {"count": "three"}) is None
     assert H.to_answer("V1", {"boxes": json.dumps([{"class": "cpu", "bbox": [1, 2, 3, 4]},
@@ -768,7 +771,7 @@ def test_gold_answers_through_the_form_score_one(scene, tmp_path):
                 assert cell["mean"] == pytest.approx(1.0), (view, mode, task)
         tasks = set(result["strict"]["by_task"])
         if view == W.VIEW:
-            assert {"V1", "V8", "V2", "V14", "V6", "V6-mc", "V7", "V10", "V16", "V12", "V3", "V4"} <= tasks
+            assert {"V1", "V8", "V2", "V6", "V7", "V10", "V16", "V12", "V3", "V4"} <= tasks
 
 
 def test_convert_skips_blank_rows_and_passes_answer_json_through(scene, tmp_path):
@@ -834,7 +837,7 @@ def test_the_pack_ships_the_sheet_and_the_tools(pack):
     import export_vlmpack as P
 
     root = pack["pack"]
-    audit = root / "eval_v2" / "audit"
+    audit = root / "eval_v3" / "audit"
     assert (audit / "audit.sheet.b01.html").is_file() and (audit / "audit.sheet.csv").is_file()
     page = (audit / "audit.sheet.b01.html").read_text(encoding="utf-8")
     srcs = set(re.findall(r'<img src="([^"]+)"', page))
@@ -848,8 +851,8 @@ def test_the_pack_ships_the_sheet_and_the_tools(pack):
     sheet = pack["summary"]["eval"]["audit"]["sheet"]
     assert sheet["batches"] == 1 and sheet["files"] == ["audit.sheet.b01.html", "audit.sheet.csv"]
     files = pack["manifest"]["files"]
-    assert "eval_v2/audit/audit.sheet.b01.html" in files and "eval_v2/audit/audit.sheet.csv" in files
-    assert files["eval_v2/audit/audit.sheet.csv"]["sha256"] == _sha(audit / "audit.sheet.csv")
+    assert "eval_v3/audit/audit.sheet.b01.html" in files and "eval_v3/audit/audit.sheet.csv" in files
+    assert files["eval_v3/audit/audit.sheet.csv"]["sha256"] == _sha(audit / "audit.sheet.csv")
     # the vendored tools import from the pack alone (the build already did this with -I)
     P.smoke_import(root / "tools")
 
@@ -860,8 +863,8 @@ def test_the_card_has_the_author_audit_paragraph(pack):
     # the evaluation plan)
     text = (pack["pack"] / "README.md").read_text(encoding="utf-8")
     assert "## Author audit" in text and "## Audit and human baseline" not in text
-    for needle in ("eval_v2/audit/audit.sheet.b01.html", "audit.sheet.csv",
-                   "vlm_audit_summary.py", "--records eval_v2/audit/audit.jsonl",
+    for needle in ("eval_v3/audit/audit.sheet.b01.html", "audit.sheet.csv",
+                   "vlm_audit_summary.py", "--records eval_v3/audit/audit.jsonl",
                    "Wilson 95 % intervals", "0 of 300 -> [0, 1.3 %]", "vlm_audit_carry.py",
                    "exactly as the model gets", "show reviewer boxes / 显示审核框",
                    "do not show them to anyone answering the questions"):

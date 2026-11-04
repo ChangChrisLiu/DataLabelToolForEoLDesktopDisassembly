@@ -99,7 +99,7 @@ def test_every_p0_task_is_emitted_and_re_derivable(scene, tmp_path: Path):
     checker = Checker(db, tax, S.DESKTOP)
     assert checker.check_all(records) == len(records)
     assert set(checker.by_type) == {"boxes", "exact", "feasibility",
-                                    "next_action", "history", "plan"}
+                                    "frontier", "history", "plan"}
 
     # V5 left the default set (W3b) and is still one `tasks=` away
     v5 = _run(db, tax, tmp_path / "v5.jsonl", tasks=["V5"])
@@ -160,8 +160,10 @@ def test_every_rationale_stays_inside_the_closed_operation_set(scene, tmp_path: 
             seen.add(step["op"])
             if step["op"] == "observe":
                 assert step["evidence"]["bbox"] and step["evidence"]["visibility"]
+    # `abstain` closes a V2 cannot_tell chain, asked on about one frame in three
+    # (test_v2_answers_cannot_tell_exactly_where_the_view_cannot_decide forces it)
     assert {"observe", "propagate_state", "recall_relation", "check_precondition",
-            "compare_frames", "conclude", "abstain"} <= seen
+            "compare_frames", "conclude"} <= seen
 
 
 def test_the_two_sources_of_truth_are_kept_apart(scene, tmp_path: Path):
@@ -180,9 +182,10 @@ def test_the_two_sources_of_truth_are_kept_apart(scene, tmp_path: Path):
     assert tasks & PERCEPTION_TASKS == {"V12"}
     assert all(r["label"]["view_confirmed"] is False for r in records)
     # V5 is out of the default set and the scene has no CPU for V7 (W3b); V4 and V16
-    # name their parts by a mark on a confirmed frame (redesign 2026-11-03), so a view
-    # with nothing confirmed asks neither
-    assert tasks == (PLANNING_TASKS - {"V15", "V5", "V7", "V4", "V16"}) | {"V12"}
+    # name their parts by a mark on a confirmed frame (redesign 2026-11-03), and V6's
+    # frontier is what the confirmed scanner frame can point at (owner 2026-11-04), so a
+    # view with nothing confirmed asks none of them
+    assert tasks == (PLANNING_TASKS - {"V15", "V5", "V7", "V4", "V16", "V6"}) | {"V12"}
     assert Checker(other, tax, S.DESKTOP).check_all(records) == len(records)
     other.close()
 
@@ -528,9 +531,11 @@ def test_v5_is_a_bounded_set_and_never_claims_the_upper_bound_is_the_truth(
             assert banned not in record["question"].lower()
 
 
-def test_v6_grades_on_the_demonstrated_action_and_the_blocked_rate(
+def test_v6_is_the_frontier_with_the_demonstrated_action_inside_it(
     scene, tmp_path: Path
 ):
+    """V6 (owner 2026-11-04): the gold is every action possible now, grouped; the
+    demonstrated action is kept label side and is inside the frontier."""
     db, tax = scene
     checker = Checker(db, tax, S.DESKTOP)
     raw = [r for r in _run(db, tax, tmp_path / "v.jsonl")
@@ -539,25 +544,22 @@ def test_v6_grades_on_the_demonstrated_action_and_the_blocked_rate(
     with_options = 0
     for entry in raw:
         record = flat(entry)
+        check = record["answer_check"]
+        assert check["type"] == "frontier" and check["metric"] == "group_f1"
         shown = checker.demonstrated(record["step"])
-        assert (record["answer"]["verb"], record["answer"]["target"]) == (
-            shown[1].verb, shown[1].target)
-        assert record["answer_check"]["metric"] == "group_match_rate+blocked_rate"
-        assert {(a["verb"], a["target"])
-                for a in record["answer_check"]["blocked_actions"]} == \
-            checker.blocked(record["step"])
+        acts = {(a["verb"], a["target"]) for g in check["groups"] for a in g["actions"]}
+        if shown is not None and check["demonstrated_group"] is not None:
+            assert (shown[1].verb, shown[1].target) in acts
         options = entry["label"].get("options")
         if options is None:
-            # late in a teardown nothing is certainly blocked, so the question
-            # is open-ended rather than a choice between unknowns -- and says so
             assert "options" not in entry["prompt"]
-            assert record["answer_check"]["options_kind"] == "open"
+            assert record["v6_form"] in ("open", "constrained")
             continue
-        assert record["answer_check"]["options_kind"] == "listed"
+        assert check["options_kind"] == "listed"
         with_options += 1
         kinds = [o["kind"] for o in options]
-        assert kinds.count("demonstrated") == 1
-        assert kinds.count("graph_blocked") + kinds.count("state_inapplicable") >= 2
+        assert kinds.count("frontier") == 1
+        assert len(kinds) - 1 >= 2
         # the prompt lists them without saying which is which
         shown_options = entry["prompt"]["options"]
         assert len(shown_options) == len(options)
@@ -577,7 +579,7 @@ def test_v16_valid_plans_are_logged_suffixes_and_errors_can_land_anywhere(
     assert abs(len(valid) - len(invalid)) <= 1     # ~1:1
 
     for record in valid:
-        assert record["truth_source"] == "demonstrated"
+        assert record["truth_source"] == "simulated"
         wanted = [(i["verb"], i["target"]) for i in record["answer_check"]["plan"]]
         logged = [(a.verb, a.target) for s in checker.log_steps()
                   if s > record["step"] for a in checker.named(s)]
@@ -749,9 +751,8 @@ def test_an_unknown_tool_is_never_a_graded_field(tmp_path: Path):
     v3 = next(r for r in records if r["task"] == "V3" and r["step"] == 5)
     assert v3["answer"]["tool"] is None
     assert "tool" not in v3["answer_check"]["fields"]
-    v6 = next(r for r in records if r["task"] == "V6" and r["answer_check"][
-        "reference_step"] == 5)
-    assert v6["answer"]["tool"] is None and "tool" not in v6["answer_check"]["fields"]
+    # V6 lists what can be done now (owner 2026-11-04): it grades no tool at all
+    assert all("tool" not in r["answer"] for r in records if r["task"] == "V6")
     assert Checker(db, tax, S.DESKTOP).check_all(_read(tmp_path / "v.jsonl"))
     db.close()
 
@@ -938,27 +939,26 @@ def test_a_step_flagged_dupli_counts_even_when_its_type_does_not_say_so(
 # --------------------------------------------------------------------------- #
 # V14 / V15 -- the metacognitive pair
 # --------------------------------------------------------------------------- #
-def test_v14_abstains_exactly_where_the_view_cannot_decide(scene, tmp_path: Path):
+def test_v2_answers_cannot_tell_exactly_where_the_view_cannot_decide(scene, tmp_path: Path,
+                                                                    monkeypatch):
+    """V14 merged into V2 (owner 2026-11-04): a part in place this view cannot see is a V2
+    state question whose answer is ``cannot_tell``."""
+    from tda.core.export import vlm_tasks as T
+
+    monkeypatch.setattr(T, "V2_HIDDEN_EVERY", 1)
     db, tax = scene
-    records = _of(_run(db, tax, tmp_path / "v.jsonl"), "V14")
-    abstain = {(r["step"], r["answer_check"]["instance"]) for r in records
-               if not r["answer"]["answerable"]}
-    assert (4, S.RAM) in abstain and (7, S.LATCH) in abstain
+    records = [r for r in _of(_run(db, tax, tmp_path / "v.jsonl"), "V2")
+               if r["answer_check"].get("derive") == "instance_state"]
+    hidden = {(r["step"], r["answer_check"]["instance"]) for r in records
+              if r["answer"]["state"] == "cannot_tell"}
+    assert (4, S.RAM) in hidden and (7, S.LATCH) in hidden
     for record in records:
         instance = record["answer_check"]["instance"]
         row = db.compiled(_key(record))[instance]
         seen = row["visibility"] in ("visible", "occluded_partial", "visible_tiny")
-        assert record["answer"]["answerable"] is seen
-        assert (record["answer"]["state"] is None) is not seen
-        assert record["rationale"]["steps"][-1]["op"] == (
-            "conclude" if seen else "abstain")
-    # exactly balanced by construction, per frame and therefore overall
-    per_frame: dict[int, list[bool]] = {}
-    for record in records:
-        per_frame.setdefault(record["step"], []).append(record["answer"]["answerable"])
-    for step, flags in per_frame.items():
-        assert sum(flags) == len(flags) - sum(flags), step
-    assert sum(r["answer"]["answerable"] for r in records) * 2 == len(records)
+        assert (record["answer"]["state"] == "cannot_tell") is not seen
+        assert record["rationale"]["steps"][-1]["op"] == ("conclude" if seen else "abstain")
+        assert "cannot_tell" in record["answer_check"]["allowed"]
 
 
 def test_v15_uses_no_geometry_and_writes_each_view_pair_once(scene, tmp_path: Path):
@@ -1025,8 +1025,7 @@ def test_a_different_moment_negative_really_is_a_different_state(
     ("V2", "state", lambda a: a.__setitem__("state", "nonsense")),
     ("V2", "count", lambda a: a.__setitem__("count", 99)),
     ("V8", "bbox", lambda a: a.__setitem__("bbox", [0, 0, 1, 1])),
-    ("V14", "answerable", lambda a: a.__setitem__("answerable",
-                                                  not a["answerable"])),
+    ("V6", "actions", lambda a: a["actions"].pop()),
 ])
 def test_a_corrupted_answer_fails_the_checker(scene, tmp_path: Path, task, field,
                                               mutate):
@@ -1132,9 +1131,10 @@ def test_the_summary_file_reports_the_counts_and_the_shortcuts(
     assert written["by_task"] == stats["by_task"]
     assert written["excluded_desktops"] == {}
     assert set(written["by_truth_source"]) <= {
-        "demonstrated", "graph_blocked", "state_inapplicable", "failed_attempt"}
+        "demonstrated", "graph_blocked", "state_inapplicable", "failed_attempt",
+        "simulated", "occlusion_blocked", "loose_first"}
     assert set(written["v16_corruptions"]) <= {"swap", "move", "substitute"}
-    assert set(written["v6_options"]) <= {"listed", "open"}
+    assert set(written["v6_options"]) <= {"open", "mc", "constrained"}
     for task, row in written["shortcuts"].items():
         # V4 also says what the target's group-ness and refined class give away
         extra = {"group", "match_class", "group_class", "group_records"} if task == "V4" else set()

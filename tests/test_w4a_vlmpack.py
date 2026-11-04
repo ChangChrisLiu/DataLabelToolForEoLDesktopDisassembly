@@ -202,14 +202,16 @@ def test_multi_unit_shows_each_moment_from_every_camera_that_has_it(tmp_path, mo
 
 #: Owner 2026-11-03: the action questions whose parts are outlined in red show the marked
 #: scanner image alone; the unmarked ones keep every camera.
-SCANNER_ONLY = ("V4", "V6-mc", "V7", "V16")
-EVERY_CAMERA = ("V3", "V6-open", "V10", "V12")
+SCANNER_ONLY = ("V4", "V7", "V16")
+#: V6 names its actions in words in all its forms (owner 2026-11-04): no mark, every camera;
+#: V7 outlines the CPU only where it can be seen ("V7-words" otherwise, every camera)
+EVERY_CAMERA = ("V3", "V6", "V10", "V12", "V7-words")
 
 
 def _form(record: dict) -> str:
     task = record["prompt"]["task"]
-    if task == "V6":
-        return "V6-mc" if record["prompt"].get("options") else "V6-open"
+    if task == "V7" and not record["prompt"].get("marks"):
+        return "V7-words"
     return task
 
 
@@ -232,13 +234,14 @@ def test_marked_action_records_show_the_scanner_image_alone(tmp_path):
     by_form: dict[str, list[dict]] = {}
     for r in records:
         by_form.setdefault(_form(r), []).append(r)
-    assert set(by_form) == set(SCANNER_ONLY) | set(EVERY_CAMERA), sorted(by_form)
+    assert set(by_form) <= set(SCANNER_ONLY) | set(EVERY_CAMERA), sorted(by_form)
+    assert {"V4", "V16", "V3", "V6", "V10", "V12"} <= set(by_form), sorted(by_form)
 
     def ids(step):
         return [opaque_image_id(W.DESKTOP, v, step) for v in four]
 
     for form in SCANNER_ONLY:
-        for r in by_form[form]:
+        for r in by_form.get(form, []):
             prompt, label, step = r["prompt"], r["label"], r["label"]["step"]
             rid = label["readable_id"]
             scan = opaque_image_id(W.DESKTOP, "scan", step)
@@ -273,15 +276,16 @@ def test_marked_action_records_show_the_scanner_image_alone(tmp_path):
                                             else [step] * 4), rid
             assert len(prompt["image_legend"]) == len(want), rid
             assert vlm_to_chat.legend_line(r).startswith("Images 1–4"), rid
-    # a V6 pair: the open form keeps the cameras, its multiple-choice twin the scanner only
+    # a V6 pair: both forms keep every camera (owner 2026-11-04: the options are named in
+    # words, no mark)
     pairs: dict[str, dict[str, dict]] = {}
-    for r in by_form["V6-open"] + by_form["V6-mc"]:
-        pairs.setdefault(r["label"]["v6_pair"], {})[_form(r)] = r
-    both = [p for p in pairs.values() if len(p) == 2]
-    assert both
-    for p in both:
-        assert len(p["V6-open"]["prompt"]["images"]) == 4
-        assert p["V6-mc"]["prompt"]["images"] == p["V6-open"]["prompt"]["images"][:1]
+    for r in by_form["V6"]:
+        if r["label"].get("v6_pair"):
+            pairs.setdefault(r["label"]["v6_pair"], {})[r["label"]["v6_form"]] = r
+    for p in pairs.values():
+        assert len(p["open"]["prompt"]["images"]) == 4
+        if "mc" in p:
+            assert p["mc"]["prompt"]["images"] == p["open"]["prompt"]["images"]
     # the sidecars list exactly the pictures the records show
     used = {i for r in records for i in r["prompt"]["images"]}
     assert set(manifest) == used and used <= set(frames)
@@ -302,16 +306,13 @@ def test_no_rendered_prompt_has_an_unfilled_placeholder(built):
             rid = r["label"]["readable_id"]
             assert "<one of: <" not in text and "{allowed}" not in text, (rid, text)
             assert not re.search(r"\{[a-z_]+\}", text), (rid, text)
-            if r["prompt"]["task"] == "V14":
+            check = r["label"]["answer_check"]
+            if r["prompt"]["task"] == "V2" and check.get("derive") == "instance_state":
+                # V14 merged into V2: the class's states and cannot_tell
                 seen_v14 += 1
-                check = r["label"]["answer_check"]
-                cls = check["class"]
-                want = (["present", "removed"] if check.get("state_space") == "presence"
-                        else list(G.STATE_MEANINGS[cls]))
-                assert check["allowed"] == want, rid
-                assert f"<one of: {', '.join(want)}>, or null" in text, rid
-                if r["label"]["answer"]["answerable"]:
-                    assert r["label"]["answer"]["state"] in want, rid
+                assert check["allowed"][-1] == "cannot_tell", rid
+                assert f"<one of: {', '.join(check['allowed'])}>" in text, rid
+                assert r["label"]["answer"]["state"] in check["allowed"], rid
     assert seen_v14
 
 
@@ -320,8 +321,8 @@ def test_no_rendered_prompt_has_an_unfilled_placeholder(built):
 # --------------------------------------------------------------------------- #
 def test_the_pack_has_the_promised_layout(built):
     pack = built["pack"]
-    for rel in ("README.md", "LICENSE_NOTE.txt", "manifest.json", "eval_v2/ids.txt",
-                "eval_v2/table.md", "eval_v2/table.json", "eval_v2/audit/audit.sheet.md",
+    for rel in ("README.md", "LICENSE_NOTE.txt", "manifest.json", "eval_v3/ids.txt",
+                "eval_v3/table.md", "eval_v3/table.json", "eval_v3/audit/audit.sheet.md",
                 "tools/vlm_score.py", "tools/vlm_to_chat.py", "tools/vlm_references.py",
                 "tools/vlm_selfcheck.py", "tools/vlm_eval_set.py", "tools/requirements.txt",
                 "tools/tda/core/export/vlm_check.py", "tools/tda/core/export/vlm_tasks.py",
@@ -330,7 +331,7 @@ def test_the_pack_has_the_promised_layout(built):
     for view in UNITS:
         for suffix in ("jsonl", "images_manifest.jsonl", "oracle.jsonl", "summary.json"):
             assert (pack / "data" / f"vlm_{view}.{suffix}").is_file()
-            assert (pack / "eval_v2" / f"{view}.{suffix}").is_file()
+            assert (pack / "eval_v3" / f"{view}.{suffix}").is_file()
     assert not (pack / "eval_v1").exists()
     assert (pack / "images" / W.VIEW / f"D{W.DESKTOP:02d}" / "s001.png").is_file()
     assert not list(pack.rglob("__pycache__"))
@@ -348,7 +349,7 @@ def test_the_manifest_lists_every_file_with_its_sha256(built):
     image = next(k for k in files if k.startswith("images/"))
     assert files[image]["view"] in VIEWS and files[image]["desktop"] == W.DESKTOP
     m = built["manifest"]
-    assert m["package"] == "vlmpack" and m["eval_version"] == "eval_v2"
+    assert m["package"] == "vlmpack" and m["eval_version"] == "eval_v3"
     assert m["views"] == list(VIEWS) and m["desktops"] == [W.DESKTOP]
     assert m["units"] == list(UNITS)
     assert m["selfcheck"]["ok"] is True
@@ -389,7 +390,7 @@ def test_two_builds_are_byte_identical(built):
 def test_no_machine_path_or_clock_in_the_shipped_text(built):
     pack = built["pack"]
     root = str(built["root"])
-    for rel in ("README.md", "manifest.json", "eval_v2/table.md", "eval_v2/table.json"):
+    for rel in ("README.md", "manifest.json", "eval_v3/table.md", "eval_v3/table.json"):
         text = (pack / rel).read_text(encoding="utf-8")
         assert root not in text and root.replace("\\", "/") not in text, rel
         assert "D:/DataSet" not in text and "D:\\DataSet" not in text, rel
@@ -443,11 +444,11 @@ def test_a_directory_that_is_not_a_pack_is_never_deleted(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_the_subset_files_agree_with_ids_and_carry_their_sidecars(built):
     pack = built["pack"]
-    ids = [l for l in (pack / "eval_v2" / "ids.txt").read_text(encoding="utf-8").splitlines() if l]
+    ids = [l for l in (pack / "eval_v3" / "ids.txt").read_text(encoding="utf-8").splitlines() if l]
     assert len(ids) == len(set(ids)) == built["summary"]["eval"]["records"]
     seen: list[str] = []
     for view in UNITS:
-        truth = pack / "eval_v2" / f"{view}.jsonl"
+        truth = pack / "eval_v3" / f"{view}.jsonl"
         records = list(IO.read_jsonl(truth))
         full = {r["id"]: r for r in IO.read_jsonl(pack / "data" / f"vlm_{view}.jsonl")}
         assert all(r == full[r["id"]] for r in records)
@@ -462,19 +463,19 @@ def test_the_subset_files_agree_with_ids_and_carry_their_sidecars(built):
         # V6 pairs travel whole
         pairs = {}
         for r in records:
-            if r["prompt"]["task"] == "V6":
+            if r["prompt"]["task"] == "V6" and r["label"].get("v6_pair"):
                 pairs.setdefault(r["label"]["v6_pair"], set()).add(r["label"]["v6_form"])
-        assert all(forms == {"open", "mc"} for forms in pairs.values())
+        assert all("open" in forms and forms <= {"open", "mc"} for forms in pairs.values())
     assert sorted(seen) == sorted(ids)
 
 
 def test_the_audit_sample_is_drawn_from_inside_the_subset(built):
     pack = built["pack"]
-    ids = set((pack / "eval_v2" / "ids.txt").read_text(encoding="utf-8").split())
-    audit = [l for l in (pack / "eval_v2" / "audit" / "audit.ids.txt")
+    ids = set((pack / "eval_v3" / "ids.txt").read_text(encoding="utf-8").split())
+    audit = [l for l in (pack / "eval_v3" / "audit" / "audit.ids.txt")
              .read_text(encoding="utf-8").splitlines() if l]
     assert audit and set(audit) <= ids
-    sheet = (pack / "eval_v2" / "audit" / "audit.sheet.md").read_text(encoding="utf-8")
+    sheet = (pack / "eval_v3" / "audit" / "audit.sheet.md").read_text(encoding="utf-8")
     assert sheet.count("\n|") >= len(audit) + 1 and "ok?" in sheet
 
 
@@ -485,11 +486,11 @@ def test_images_eval_ships_only_what_the_subset_names(tmp_path):
     named = set()
     for view in UNITS:
         named |= {"images/" + e["path"]
-                  for e in IO.load_manifest(pack / "eval_v2" / f"{view}.jsonl").values()}
+                  for e in IO.load_manifest(pack / "eval_v3" / f"{view}.jsonl").values()}
     files = json.loads((pack / "manifest.json").read_text(encoding="utf-8"))["files"]
     assert {k for k in files if k.startswith("images/")} == named
     assert summary["images"] == len(named)
-    assert "holds only the frames `eval_v2` names" in (pack / "README.md").read_text(
+    assert "holds only the frames `eval_v3` names" in (pack / "README.md").read_text(
         encoding="utf-8")
 
 
@@ -524,7 +525,7 @@ def test_the_self_check_catches_a_wrong_oracle(built, tmp_path):
     import vlm_selfcheck
 
     pack = built["pack"]
-    truth = pack / "eval_v2" / f"{W.VIEW}.jsonl"
+    truth = pack / "eval_v3" / f"{W.VIEW}.jsonl"
     assert vlm_selfcheck.main(["--truth", str(truth), "--out", str(tmp_path / "ok")]) == 0
     # a truth file whose oracle has lost the desktop's world (parts, edges, log)
     # cannot ground a model's wording: the check says so, even though the gold
@@ -578,15 +579,15 @@ def test_the_card_names_the_optical_bracket_when_a_desktop_has_one(built):
 
 
 # --------------------------------------------------------------------------- #
-# the redesign's layout (lane D2): five units, eval_v2, the new tools
+# the redesign's layout (lane D2): five units, eval_v3, the new tools
 # --------------------------------------------------------------------------- #
-def test_pack_has_multi_and_eval_v2(built):
+def test_pack_has_multi_and_eval_v3(built):
     import re
 
     from tda.core.export.vlm_tasks import ACTION_TASKS, PERCEPTION_TASKS_SINGLE
 
     pack, m = built["pack"], built["manifest"]
-    assert m["eval_version"] == "eval_v2" and m["units"] == list(UNITS)
+    assert m["eval_version"] == "eval_v3" and m["units"] == list(UNITS)
     assert m["empty_units"] == list(EMPTY_UNITS)
     assert not (pack / "data" / f"vlm_{W.OTHER}.jsonl").exists()
     assert m["unit_tasks"]["multi"] == list(ACTION_TASKS)
@@ -598,15 +599,15 @@ def test_pack_has_multi_and_eval_v2(built):
         assert tasks and tasks <= set(allowed), (unit, tasks)
     assert m["exports"]["multi"]["primary_view"] == W.VIEW
     assert m["exports"]["multi"]["side_views"] == [W.OTHER]
-    # eval_v2 draws every action task from multi, every perception task from a camera unit
+    # eval_v3 draws every action task from multi, every perception task from a camera unit
     for row in m["eval"]["rows"]:
         units = set(row["by_view"])
-        if row["task"] in ACTION_TASKS:
+        if row["task"].split(".")[0] in ACTION_TASKS:
             assert units == {"multi"}, row
         else:
             assert "multi" not in units, row
     assert {r["task"] for r in m["eval"]["rows"]} >= {"V3", "V4", "V6", "V1", "V2"}
-    multi = list(IO.read_jsonl(pack / "eval_v2" / "multi.jsonl"))
+    multi = list(IO.read_jsonl(pack / "eval_v3" / "multi.jsonl"))
     assert multi and all(r["label"]["view"] == "multi" for r in multi)
     # every picture a multi record shows ships with the pack, whichever camera took it
     for entry in IO.load_manifest(pack / "data" / "vlm_multi.jsonl").values():
@@ -615,14 +616,15 @@ def test_pack_has_multi_and_eval_v2(built):
     for name in ("vlm_glossary.py", "vlm_audit_carry.py"):
         assert (pack / "tools" / name).is_file() and name in m["tools"]
     text = (pack / "README.md").read_text(encoding="utf-8")
-    for needle in ("`eval_v2`", "eval_v2/multi.jsonl", "vlm_multi.jsonl", "### Multi-view records",
+    for needle in ("`eval_v3`", "eval_v3/multi.jsonl", "vlm_multi.jsonl", "### Multi-view records",
                    "### Marks, groups, glossary", "outlined in red", "prompt.marks",
                    "image_legend", "label.image_steps", "groups", "vlm_glossary.py",
-                   "vlm_audit_carry.py", "refuse an `eval_v1` path", "--max-images 8"):
+                   "vlm_audit_carry.py", "refuse an `eval_v1` or `eval_v2` path",
+                   "--max-images 8"):
         assert needle in text, needle
     assert "eval_v1/" not in text
     venues = VENUES
-    for rel in ("README.md", "eval_v2/table.md", "tools/vlm_eval_set.py",
+    for rel in ("README.md", "eval_v3/table.md", "tools/vlm_eval_set.py",
                 "tools/vlm_selfcheck.py", "tools/vlm_references.py", "tools/vlm_run/run_eval.sh"):
         assert not re.search(venues, (pack / rel).read_text(encoding="utf-8")), rel
 
@@ -656,18 +658,20 @@ def test_the_card_runs_the_references_on_multi_and_states_the_review_notes(built
     text = (built["pack"] / "README.md").read_text(encoding="utf-8")
     run = text.split("## How to run")[1].split("## Known limitations")[0]
     # V6 / V7 / V16 live in multi only: the protocol prior is run there
-    assert "vlm_references.py --export eval_v2/multi.jsonl" in run
+    assert "vlm_references.py --export eval_v3/multi.jsonl" in run
     assert "--pred runs/refs/multi/protocol_prior.predictions.jsonl" in run
-    assert "vlm_references.py --export eval_v2/scan.jsonl" not in run
+    assert "vlm_references.py --export eval_v3/scan.jsonl" not in run
     # a mark crossing the view ROI is clipped at the crop edge
     assert "is clipped there" in text.split("## Images, crops, ROI")[1]
     # the truth principle: a V4 group "yes" is demonstrated for one member only
     assert "demonstrated for the one member the operator took next" in text
     assert "graph-permitted for the others" in text
-    # eval_v2's own V4 bounds are on the card and in the manifest
+    # eval_v3's own V4 bounds are on the card and in the manifest
     assert "eval_shortcuts" in built["manifest"]
     guide = (built["pack"] / "docs" / "vlm_run_hprc.md").read_text(encoding="utf-8")
-    assert "eval_v2/audit/audit.ids.txt" in guide and "pack_units.sh" in guide
+    # the guide is the docs' (docs/vlm_run_hprc.md, kept by the docs pass): it names the audit
+    # ids of the current subset, whichever version that page was last written for
+    assert "/audit/audit.ids.txt" in guide and "pack_units.sh" in guide
     assert "eval_v1/" not in guide and "四个视角" not in guide
     assert not re.search(VENUES, guide) and not re.search(VENUES, text)
 
@@ -676,4 +680,4 @@ def test_the_card_describes_the_blind_variant_and_v6_exact_as_they_are(built):
     text = (built["pack"] / "README.md").read_text(encoding="utf-8")
     assert "leaves out a question that names a part by its mark tag alone" not in text
     assert "part A (a RAM module)" in text
-    assert "on a group\nstep, any member still to do" in text
+    assert "F1 over the frontier's groups" in text and "`V6-constrained`" in text

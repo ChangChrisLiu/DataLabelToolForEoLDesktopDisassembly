@@ -340,15 +340,18 @@ def _merged(scene, path: Path) -> Path:
     return path
 
 
-def test_the_state_oracle_has_no_v14_and_says_so(scene, refs, refs_multi):
+def test_the_state_oracle_has_no_cannot_tell_item_and_says_so(scene, refs, refs_multi):
+    """V14 merged into V2 (owner 2026-11-04): the V2 questions on a hidden part are what the
+    oracle's visibility column answers, so it leaves them out and counts them."""
     records = list(IO.read_jsonl(scene["exports"][W.VIEW]))
-    v14 = [r for r in records if r["prompt"]["task"] == "V14"]
-    assert v14  # the scanner is confirmed: V14 exists
+    hidden = [r for r in records if r["prompt"]["task"] == "V2"
+              and r["label"]["answer_check"].get("hidden")]
     oracle = list(IO.read_jsonl(refs["out"] / "state_oracle.jsonl"))
-    assert all(r["prompt"]["task"] != "V14" for r in oracle)
+    assert not any(r["label"]["answer_check"].get("hidden") for r in oracle)
     # (records naming a part by its mark tag alone, mark_tag, are left out too)
     skipped = refs["summary"]["state_oracle"]["skipped"]
-    assert set(skipped) <= {"V14", "mark_tag"} and skipped["V14"] == len(v14)
+    assert set(skipped) <= {"V2-cannot_tell", "mark_tag"}
+    assert skipped.get("V2-cannot_tell", 0) == len(hidden)
     assert len(oracle) == len(records) - sum(skipped.values())
     assert refs["summary"]["state_oracle"]["records"] == len(oracle)
     assert "visibility" in refs["summary"]["state_oracle"]["skipped_why"]
@@ -358,7 +361,7 @@ def test_the_state_oracle_has_no_v14_and_says_so(scene, refs, refs_multi):
     assert n_blind == blind["records"] == len(records) - sum((blind.get("skipped") or {}).values())
     # the protocol prior answers V6 / V7 / V16, which live in the multi unit
     assert refs_multi["summary"]["protocol_prior"]["records"] > 0
-    # (the multi unit has no V14; only its mark_tag records are left out)
+    # (the multi unit has no V2; only its mark_tag records are left out)
     multi_skipped = refs_multi["summary"]["state_oracle"]["skipped"]
     assert set(multi_skipped) <= {"mark_tag"}
     assert refs_multi["summary"]["state_oracle"]["records"] == len(
@@ -444,23 +447,17 @@ def test_chance_follows_the_rule_table_on_the_scene(scene, tmp_path):
     by_task: dict[str, list[dict]] = {}
     for r in records:
         by_task.setdefault(vlm_score.task_key(r), []).append(r)
-    mc = by_task["V6-mc"]
-    assert chance["V6-mc"]["mean"] == round(sum(1 / len(r["prompt"]["options"]) for r in mc)
-                                            / len(mc), 4)
+    mc = by_task.get("V6-mc") or []
+    if mc:
+        assert chance["V6-mc"]["mean"] == round(sum(1 / len(r["prompt"]["options"]) for r in mc)
+                                                / len(mc), 4)
     # V2 state questions: 1 / |allowed| per record; V14: 0.5, or 0.5 / |states| when answerable
     v2 = by_task["V2"]
     want = [1 / len(r["label"]["answer_check"]["allowed"]) for r in v2
             if "state" in r["label"]["answer"]]
     assert want and chance["V2"]["mean"] == pytest.approx(
         sum(vlm_score.chance_of(r, worlds[IO.desktop_of(r)], tax) for r in v2) / len(v2), abs=1e-4)
-    for r in by_task["V14"]:
-        p = vlm_score.chance_of(r, worlds[IO.desktop_of(r)], tax)
-        if r["label"]["answer"]["answerable"]:
-            states = r["label"]["answer_check"].get("allowed") or vlm_score._states_of(
-                r, worlds[IO.desktop_of(r)], tax)
-            assert p == 0.5 / len(states)
-        else:
-            assert p == 0.5
+    assert "V14" not in by_task
     # frequency: fitted on D41 (train), graded on both desktops, by the scorer's own grader
     for key, cell in freq.items():
         rows = [r for r in records if key in vlm_score._rows_of(vlm_score.task_key(r), r["label"])]
@@ -493,7 +490,7 @@ def test_the_pack_ships_the_masks_the_overlays_and_the_painter(pack):
     assert refs["masks"]["source"] == "coco"
     for view in UNITS:
         assert (out / "data" / f"vlm_{view}.masks.jsonl").is_file()
-        assert (out / "eval_v2" / f"{view}.masks.jsonl").is_file()
+        assert (out / "eval_v3" / f"{view}.masks.jsonl").is_file()
         row = refs["masks"]["views"][view]
         assert row["frames_with_masks"] == row["confirmed_frames"] > 0
         assert row["confirmed_without_masks"] == 0
@@ -503,18 +500,18 @@ def test_the_pack_ships_the_masks_the_overlays_and_the_painter(pack):
     assert set(painted) == set(UNITS)
     scan = painted[W.VIEW]
     assert 0 < scan["records"] < scan["records_in"] and scan["skipped"]["V8"] > 0
-    variant = out / "eval_v2" / "mask_overlay" / f"{W.VIEW}.jsonl"
+    variant = out / "eval_v3" / "mask_overlay" / f"{W.VIEW}.jsonl"
     rows = list(IO.read_jsonl(variant))
     assert len(rows) == scan["records"]
-    subset_ids = {r["id"] for r in IO.read_jsonl(out / "eval_v2" / f"{W.VIEW}.jsonl")}
+    subset_ids = {r["id"] for r in IO.read_jsonl(out / "eval_v3" / f"{W.VIEW}.jsonl")}
     assert {r["id"] for r in rows} <= subset_ids
     overlay_manifest = IO.load_manifest(variant)
     assert overlay_manifest and all((out / "overlays" / e["path"]).is_file()
                                     for e in overlay_manifest.values())
     # the subset's masks sidecar is the data one cut to the subset's images
-    used = {i for r in IO.read_jsonl(out / "eval_v2" / f"{W.VIEW}.jsonl")
+    used = {i for r in IO.read_jsonl(out / "eval_v3" / f"{W.VIEW}.jsonl")
             for i in r["prompt"]["images"]}
-    cut = O.load_masks(out / "eval_v2" / f"{W.VIEW}.masks.jsonl")
+    cut = O.load_masks(out / "eval_v3" / f"{W.VIEW}.masks.jsonl")
     full = O.load_masks(out / "data" / f"vlm_{W.VIEW}.masks.jsonl")
     assert set(cut) == {i for i in full if i in used} and all(cut[i] == full[i] for i in cut)
     # every overlay is in the manifest with its hash; the self-check still passes
@@ -522,7 +519,7 @@ def test_the_pack_ships_the_masks_the_overlays_and_the_painter(pack):
     overlays = {k for k in files if k.startswith("overlays/")}
     # (a multi record's side cameras are not painted: their entries point at the plain frame)
     assert overlays == {"overlays/" + e["path"] for v in UNITS
-                        for e in IO.load_manifest(out / "eval_v2" / "mask_overlay" / f"{v}.jsonl").values()
+                        for e in IO.load_manifest(out / "eval_v3" / "mask_overlay" / f"{v}.jsonl").values()
                         if e.get("painted", True)}
     assert summary["selfcheck"]["ok"] is True
     assert all(abs(m - 1.0) < 1e-9 for f in summary["selfcheck"]["files"] for m in f["tasks"].values())
@@ -533,7 +530,7 @@ def test_the_card_documents_the_references(pack):
     text = (pack["pack"] / "README.md").read_text(encoding="utf-8")
     assert "## Reference lines" in text
     for needle in ("**chance**", "**frequency**", "**blind**", "**protocol_prior**",
-                   "**state_oracle**", "**mask_overlay**", "no V14 items", "Do **not** report",
+                   "**state_oracle**", "**mask_overlay**", "no V2 `cannot_tell` items", "Do **not** report",
                    "text-only upper bound (in-sample)", "pre-painted", "vlm_overlay.py",
                    "VARIANT=overlay", "`overlays/`"):
         assert needle in text, needle

@@ -1486,9 +1486,11 @@ def gold_reply(record: dict, world: Optional[World] = None, *, plain: bool = Fal
         if index is None:
             raise ValueError(f"{record.get('id')}: no option is the reference action")
         out = {"choice": LETTERS[index]}
-    elif key == "V6.open":
+    elif key == "V6.open" and "actions" in answer:
         out = {"actions": [{"verb": a["verb"], "target": name(a["target"])}
                            for a in answer["actions"]]}
+    elif key == "V6.open":  # a record from before the final round: one next action
+        out = {"verb": answer["verb"], "target": name(answer["target"])}
     elif task == "V7":
         out = {"plan": [{"verb": a["verb"], "target": name(a["target"])}
                         for a in answer["plan"]]}
