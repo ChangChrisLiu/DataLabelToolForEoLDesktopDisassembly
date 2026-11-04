@@ -1,11 +1,16 @@
 """Groups of interchangeable parts and the marks that name them (redesign 2026-11-03, lane A)."""
 from __future__ import annotations
 
+import json
+import re
+
 import pytest
 
 import vlm_scene as S
+import w3b_scene as W
 from tda.core.db import Db
 from tda.core.export.coco import DesktopCtx
+from tda.core.export.vlm import ALL_TASKS, export_vlm
 from tda.core.export.vlm_groups import mark_box, part_groups
 from tda.core.model import InstanceRec
 from tda.core.taxonomy import load_taxonomy
@@ -91,3 +96,77 @@ def test_mark_box_none_when_removed(scene):
     assert mark_box(tc, frame, S.PSU) is None
     assert mark_box(tc, frame, S.SCREW) is None   # unscrewed (removed) at step 2
     assert mark_box(tc, frame, S.RAM) is not None
+
+
+# --------------------------------------------------------------------------- #
+# A2: naming by mark, never by ordinal
+# --------------------------------------------------------------------------- #
+ORDINAL = re.compile(r"\b[A-Za-z]+ \d+\b")
+
+
+def _export(db, tax, out, desktop=S.DESKTOP, view=S.VIEW, **kw):
+    kw.setdefault("tasks", ALL_TASKS)
+    export_vlm(db, tax, [desktop], view, str(out), **kw)
+    return [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines() if line]
+
+
+def _of(records, task):
+    return [r for r in records if r["prompt"]["task"] == task]
+
+
+def test_v2_question_has_mark_and_no_ordinal(scene, tmp_path):
+    db, tax = scene
+    records = _of(_export(db, tax, tmp_path / "v.jsonl", balance=False), "V2")
+    states = [r for r in records if r["label"]["answer_check"]["derive"] == "instance_state"]
+    assert states
+    for r in states:
+        assert "outlined in red" in r["prompt"]["question"]
+        assert not ORDINAL.search(r["prompt"]["question"])
+        marks = r["prompt"]["marks"]
+        assert marks and {m["image"] for m in marks} == {0} and {m["tag"] for m in marks} == {"A"}
+        key = r["label"]["answer_check"]["instance"]
+        assert marks[0]["bbox"] == r["label"]["evidence"]["bboxes"][key]
+        assert r["prompt"]["terms"] == r["prompt"]["state_terms"] == [
+            r["label"]["answer_check"]["class"]]
+
+
+def test_v4_hidden_target_marked_with_amodal_box(scene, tmp_path):
+    db, tax = scene
+    records = _of(_export(db, tax, tmp_path / "v.jsonl"), "V4")
+    hidden = [r for r in records if r["label"]["step"] == 4
+              and r["label"]["answer_check"]["target"] == S.RAM]
+    assert hidden, "the RAM module is `occluded_full` at step 4 and still asked"
+    x0, y0, x1, y1 = S.RECTS[S.RAM]
+    assert hidden[0]["prompt"]["marks"] == [
+        {"image": 0, "bbox": [x0, y0, x1 - x0, y1 - y0], "tag": "A"}]
+    assert "the RAM module outlined in red" in hidden[0]["prompt"]["question"]
+
+
+def test_v1_v8_v14_have_no_marks(scene, tmp_path):
+    db, tax = scene
+    records = _export(db, tax, tmp_path / "v.jsonl")
+    for task in ("V1", "V8", "V14"):
+        assert _of(records, task), task
+        for r in _of(records, task):
+            assert "marks" not in r["prompt"]
+            assert "outlined" not in r["prompt"]["question"]
+
+
+@pytest.mark.parametrize("which", ["vlm", "w3b"])
+def test_no_ordinal_in_any_question(tmp_path, which):
+    db = Db(str(tmp_path / f"{which}.sqlite"))
+    if which == "vlm":
+        tax = S.build(db, tiny_screw=True)
+        records = _export(db, tax, tmp_path / "v.jsonl")
+    else:
+        tax = W.build(db)
+        records = _export(db, tax, tmp_path / "v.jsonl", desktop=W.DESKTOP, view=W.VIEW)
+    assert len({r["prompt"]["task"] for r in records}) >= 8
+    for r in records:
+        if r["label"]["answer_check"].get("derive") == "screw_count":
+            continue  # the one class-level exception (spec 6.5)
+        texts = [r["prompt"]["question"],
+                 *(o["target_label"] for o in r["prompt"].get("options") or [])]
+        for text in texts:
+            assert not ORDINAL.search(text), (r["label"]["readable_id"], text)
+    db.close()
