@@ -6,7 +6,8 @@
         [--out D:/DataSet/exports/scanpack_2026-10-26] [--desktops 2,3,4,13,19,23,24,28,30,31] \
         [--exclude "D2:1,D4:1=why"] [--note "text"] \
         [--not-clean "D28:connector.06,connector.07@1-10=why"] \
-        [--paths configs/paths.yaml] [--cache-dir <dir>] [--work <dir>] [--force]
+        [--paths configs/paths.yaml] [--cache-dir <dir>] [--work <dir>] [--force] \
+        [--update <existing package> --desktops <the ones to rebuild>]
 
 The collaborators hold 3D reconstructions from the same structured-light
 scanner whose top-down 1600 x 1600 RGB frames are our main view. They want to
@@ -66,6 +67,19 @@ person ruled not clean whatever the six rules say (``clean: false`` and the
 reason in ``clean_note``; out of ``clean_parts.csv``). All three are recorded
 in ``manifest.json``.
 
+``--update <pack>`` rebuilds only ``--desktops`` and takes every other desktop
+of an existing package as it is: its ``D<nn>/`` files are checked against that
+package's ``manifest.json`` (size and sha256, no file more or fewer) and
+hard-linked (copied where a link cannot be made) into ``--out``, its counts
+are the old manifest's ``per_desktop`` entry and what the pack-level totals
+need is read back from its own files (:func:`desktop_from_files`). The README,
+``clean_parts.csv``, ``parts_3d_plan.csv`` and ``manifest.json`` are then
+written over the whole set as a full build would: an update that rebuilds
+nothing writes the old package again byte for byte, and one that rebuilds a
+desktop writes what a full build over the same database would. The old
+package's exclusions, ``--not-clean`` rules and notes of the desktops taken as
+they are stay in the README and the manifest.
+
 Read-only on the database it is given (a ``mode=ro`` backup-API copy is made
 into ``--work`` and only that copy is opened -- the export's re-check pass
 writes to it), on the raw drive and on the frame cache. Deterministic: two runs
@@ -75,9 +89,11 @@ any shipped file).
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import hashlib
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -128,7 +144,8 @@ from tda.core.truth_refusals import frozen_disagreements  # noqa: E402
 from tda.ui.locator_pair import leaving_steps  # noqa: E402
 
 __all__ = ["CLASS_EN", "DEFAULT_DESKTOPS", "MODEL_NAMES", "PACK_VERSION", "PackError",
-           "build_pack", "main", "model_names", "parse_exclusions", "parse_not_clean"]
+           "build_pack", "desktop_from_files", "main", "model_names", "parse_exclusions",
+           "parse_not_clean"]
 
 #: The ten desktops of the first package: five Dell, five HP.
 DEFAULT_DESKTOPS = (2, 3, 4, 13, 19, 23, 24, 28, 30, 31)
@@ -1120,6 +1137,145 @@ def _work_copy(db_path: str, work: Path) -> Path:
     return dest
 
 
+# --------------------------------------------------------------------------- #
+# --update: the desktops an existing package keeps as they are
+# --------------------------------------------------------------------------- #
+def load_old_pack(path: str, out: Path, expected_hw: tuple[int, int],
+                  expected_tier: str) -> dict:
+    """The package ``--update`` starts from: its root, manifest and per-desktop entries."""
+    root = Path(path)
+    marker = root / "manifest.json"
+    if not marker.is_file():
+        raise PackError(f"--update: {root} holds no manifest.json")
+    if root.resolve() == out.resolve() or root.resolve() in out.resolve().parents:
+        raise PackError(f"--update: {out} must be a folder of its own, not {root} or inside it")
+    manifest = json.loads(marker.read_text(encoding="utf-8"))
+    if manifest.get("package") != "scanpack":
+        raise PackError(f"--update: {root} is not a scanpack")
+    if (manifest.get("pack_version"), manifest.get("coco_export_version")) \
+            != (PACK_VERSION, EXPORT_VERSION):
+        raise PackError(f"--update: {root} is pack v{manifest.get('pack_version')} / COCO "
+                        f"v{manifest.get('coco_export_version')}; this script writes "
+                        f"v{PACK_VERSION} / v{EXPORT_VERSION} -- rebuild it whole")
+    size = manifest.get("frame_size") or {}
+    if (size.get("height"), size.get("width")) != tuple(expected_hw) \
+            or manifest.get("tier") != expected_tier:
+        raise PackError(f"--update: {root} promises frames {size} / tier "
+                        f"{manifest.get('tier')!r}, not {expected_hw} / {expected_tier!r}")
+    return {"root": root, "manifest": manifest,
+            "entries": {int(d["desktop"]): d for d in manifest["per_desktop"]}}
+
+
+def _link_or_copy(src: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(src, dest)
+    except OSError:
+        shutil.copyfile(src, dest)
+
+
+def reuse_desktop(old: dict, desktop: int, out: Path) -> dict:
+    """Bring ``D<nn>/`` of the old package into ``out`` unchanged; its :func:`build_desktop` dict.
+
+    Every file is checked against the old manifest first (size and sha256, and
+    no file on disk that the manifest does not list, nor the other way round):
+    a package edited after it was written is refused, not carried on.
+    """
+    root, prefix = old["root"], desktop_dir(desktop) + "/"
+    listed = {rel: f for rel, f in old["manifest"]["files"].items() if rel.startswith(prefix)}
+    on_disk = {p.relative_to(root).as_posix()
+               for p in (root / desktop_dir(desktop)).rglob("*") if p.is_file()}
+    if not listed or on_disk != set(listed):
+        raise PackError(f"--update: {root / desktop_dir(desktop)} does not hold exactly the "
+                        f"files its manifest lists (only on disk: "
+                        f"{sorted(on_disk - set(listed))[:5]}, only listed: "
+                        f"{sorted(set(listed) - on_disk)[:5]})")
+    for rel, f in sorted(listed.items()):
+        src = root / rel
+        if src.stat().st_size != int(f["bytes"]) or sha256_of(src) != f["sha256"]:
+            raise PackError(f"--update: {src} is not the file its manifest lists")
+        _link_or_copy(src, out / rel)
+    if desktop not in old["entries"]:
+        raise PackError(f"--update: {root} lists files of {desktop_dir(desktop)} but no counts")
+    entry = copy.deepcopy(old["entries"][desktop])
+    return dict(entry, **desktop_from_files(out / desktop_dir(desktop), desktop))
+
+
+def desktop_from_files(ddir: Path, desktop: int) -> dict:
+    """What :func:`build_pack` needs of a desktop beyond its manifest entry, from its files.
+
+    The ``_``-keys of :func:`build_desktop`'s dict -- the clean rows, the
+    counts per class, the state and placement values, the frame records naming
+    another picture, and the statistics the pack-level totals are summed from
+    -- read back from ``annotations.json``, ``instances.json`` and
+    ``frames.json`` with the same rules the build applies (the six clean
+    rules are re-evaluated on the shipped fields, so a ``--not-clean`` override
+    does not hide what the rules said).
+    """
+    coco = json.loads((ddir / "annotations.json").read_text(encoding="utf-8"))
+    instances = json.loads((ddir / "instances.json").read_text(encoding="utf-8"))["instances"]
+    frames = json.loads((ddir / "frames.json").read_text(encoding="utf-8"))["frames"]
+    stats: Counter = Counter()
+    by_class: dict[str, Counter] = defaultdict(Counter)
+    values = {"state": set(), "placement": set()}
+    other_image: list[dict] = []
+    for entry in frames.values():
+        if not entry.get("exported"):
+            continue
+        choice = entry.get("burst_choice") or {}
+        stats[f"burst_{int(choice.get('burst_size') or 0)}"] += 1
+        stats[f"burst_reason:{choice.get('reason') or 'frame_record'}"] += 1
+        if entry.get("frame_record_file") is not None:
+            other_image.append({"step": int(entry["step"]),
+                                "frame_record_file": entry["frame_record_file"],
+                                "file_name": entry["file_name"]})
+    for rec in instances.values():
+        for here in (rec.get("states") or {}).values():
+            if here is not None:
+                values["state"].add(here["state"])
+                values["placement"].add(here["placement"])
+    step_of = {img["id"]: int(img["extra"]["step"]) for img in coco["images"]}
+    roi_of_image = {img["id"]: img["extra"].get("roi") for img in coco["images"]}
+    clean_rows = []
+    for ann in coco["annotations"]:
+        attrs = ann["attributes"]
+        cls = instances[str(ann["instance_id"])]["class"]
+        roi = roi_of_image[ann["image_id"]]
+        area = masks.rle_area(ann["segmentation"]) if ann.get("segmentation") else 0
+        whole = (masks.rle_area(ann["amodal_segmentation"])
+                 if ann.get("amodal_segmentation") else 0)
+        rules = {
+            "equal": area > 0 and not ann.get("iscrowd") and area == whole,
+            "visible": attrs.get("visibility") == VISIBLE,
+            "roi": _bbox_inside(ann.get("amodal_bbox"), roi),
+            "shape": bool(ann["amodal_is_shape"]),
+            "label": int(ann["label_px"]) == area,
+            "shared": int(ann["shared_px"]) == 0,
+        }
+        for rule, held in rules.items():
+            if not held and all(v for r, v in rules.items() if r != rule):
+                stats[f"only_{rule}"] += 1
+        stats["roi_outside"] += int(not rules["roi"])
+        confirmed = attrs.get("occlusion_ratio")
+        stats["ratio_differs"] += int(confirmed is None or
+                                      abs(float(confirmed) - float(ann["occlusion_ratio"])) > 1e-9)
+        stats[f"visibility:{attrs.get('visibility')}"] += 1
+        stats[f"placement:{attrs.get('placement')}"] += 1
+        if not rules["roi"]:
+            stats[f"roi_outside:{cls}"] += 1
+        if attrs.get("visibility") == OCCLUDED_FULL and ann["area"] > 0:
+            stats["occluded_full_with_pixels"] += 1
+        by_class[cls]["annotations"] += 1
+        if ann.get("clean"):
+            by_class[cls]["clean"] += 1
+            clean_rows.append({"desktop": desktop, "step": step_of[ann["image_id"]],
+                               "instance_id": ann["instance_id"], "class": cls,
+                               "area": int(ann["area"]),
+                               "instance_key": attrs["instance_key"]})
+    return {"_clean_rows": clean_rows, "_stats": stats, "_by_class": by_class,
+            "_values": values, "_other_image": other_image}
+
+
 def build_pack(db_path: str, out_dir: str, desktops: Sequence[int] = DEFAULT_DESKTOPS, *,
                cache_dir: Optional[str] = None, work_dir: Optional[str] = None,
                resolve: Optional[Callable[[str], Optional[str]]] = None,
@@ -1129,8 +1285,16 @@ def build_pack(db_path: str, out_dir: str, desktops: Sequence[int] = DEFAULT_DES
                notes: Sequence[str] = (),
                expected_hw: tuple[int, int] = EXPECTED_HW,
                expected_tier: str = EXPECTED_TIER,
-               not_clean: Sequence[dict] = ()) -> dict:
+               not_clean: Sequence[dict] = (),
+               update_from: Optional[str] = None) -> dict:
     """Write the package; returns the summary (counts per desktop, the QA lists).
+
+    ``update_from`` is an existing package: only ``desktops`` are built, every
+    other desktop it holds is taken from it unchanged (:func:`reuse_desktop`)
+    and the pack-level files are written over the whole set (``--update``).
+    Its exclusions, not-clean rules and notes of the desktops taken as they are
+    stay; ``exclude`` and ``not_clean`` may name only the desktops built, and
+    ``notes`` are added after the old package's.
 
     ``not_clean`` are :func:`parse_not_clean` rules: annotations a person
     ruled not clean whatever the six rules say (``clean: false``,
@@ -1160,13 +1324,27 @@ def build_pack(db_path: str, out_dir: str, desktops: Sequence[int] = DEFAULT_DES
     stray = sorted({r["desktop"] for r in rules if r["desktop"] not in wanted})
     if stray:
         raise PackError(f"--not-clean names desktops that are not packed: {stray}")
+    old = (load_old_pack(update_from, out, tuple(expected_hw), expected_tier)
+           if update_from else None)
+    reused = [d for d in old["manifest"]["desktops"] if d not in wanted] if old else []
+    order = sorted(set(wanted) | set(reused)) if old else wanted
+    # what the old package said of the desktops it keeps as they are
+    old_exclusions = {(int(e["desktop"]), int(e["step"])): e["reason"]
+                      for e in (old["manifest"]["exclusions"] if old else ())
+                      if e["desktop"] in reused}
+    old_rules = [r for r in (old["manifest"]["not_clean"] if old else ())
+                 if r["desktop"] in reused]
+    notes = list(old["manifest"]["notes"] if old else ()) + [str(n) for n in notes]
     _prepare_out(out, force)
     db = Db(str(_work_copy(db_path, work)))
     qa: dict[str, list] = {k: [] for k in QA_KEYS}
     try:
         truth = TruthService(db, tax, cache_dir=cache_dir)
         per_desktop = []
-        for desktop in wanted:
+        for desktop in order:
+            if desktop in reused:
+                per_desktop.append(reuse_desktop(old, desktop, out))
+                continue
             if db.get_desktop(desktop) is None:
                 raise PackError(f"desktop {desktop} is not in {db_path}")
             mine = {s: r for (d, s), r in exclude.items() if d == desktop}
@@ -1229,16 +1407,18 @@ def build_pack(db_path: str, out_dir: str, desktops: Sequence[int] = DEFAULT_DES
             "amodal_box_outside_roi": int(stats["roi_outside"]),
             "clean_but_for_roi": int(stats["only_roi"]),
             "clean_but_for_shared_px": int(stats["only_shared"]),
-            "clean_but_ruled_not_clean": sum(r["were_clean"] for r in rules),
+            "clean_but_ruled_not_clean": (sum(r["were_clean"] for r in rules)
+                                          + sum(int(r["were_clean"]) for r in old_rules)),
         },
         "frame_record_names_other_image": sorted(
             other_image, key=lambda r: (r["desktop"], r["step"])),
-        "not_clean": [{"desktop": r["desktop"], "parts": r["parts"],
-                       "steps": _steps_text(r["steps"]), "reason": r["reason"],
-                       "annotations": r["annotations"], "were_clean": r["were_clean"]}
-                      for r in rules],
+        "not_clean": [copy.deepcopy(r) for r in old_rules] + [
+            {"desktop": r["desktop"], "parts": r["parts"],
+             "steps": _steps_text(r["steps"]), "reason": r["reason"],
+             "annotations": r["annotations"], "were_clean": r["were_clean"]}
+            for r in rules],
         "exclusions": [{"desktop": d, "step": s, "reason": r}
-                       for (d, s), r in sorted(exclude.items())],
+                       for (d, s), r in sorted({**old_exclusions, **exclude}.items())],
         "notes": [str(n) for n in notes],
     }
     (out / "LICENSE_NOTE.txt").write_text(LICENSE_NOTE, encoding="utf-8", newline="\n")
@@ -1882,8 +2062,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--db", required=True,
                         help="the database to read (a copy; it is only ever opened read-only)")
     parser.add_argument("--out", default=DEFAULT_OUT, help="the package folder")
-    parser.add_argument("--desktops", default=",".join(str(d) for d in DEFAULT_DESKTOPS),
-                        help="e.g. 2,3,4,13 or 20-25")
+    parser.add_argument("--desktops", default=None,
+                        help="e.g. 2,3,4,13 or 20-25 (default: the first package's ten; with "
+                             "--update, required: the desktops to rebuild, '' for none)")
     parser.add_argument("--exclude", action="append", default=[],
                         help="frames to leave out, 'D2:1,D4:1=reason' (repeatable)")
     parser.add_argument("--note", action="append", default=[],
@@ -1898,7 +2079,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="scratch folder: the database copy, plain exports, qa.json")
     parser.add_argument("--force", action="store_true",
                         help="replace an existing package in --out")
+    parser.add_argument("--update", default=None, metavar="PACK",
+                        help="an existing package: rebuild only --desktops, take every other "
+                             "desktop from it unchanged, rewrite the pack-level files")
     args = parser.parse_args(argv)
+    if args.desktops is None:
+        if args.update:
+            parser.error("--update needs --desktops: the desktops to rebuild ('' for none)")
+        args.desktops = ",".join(str(d) for d in DEFAULT_DESKTOPS)
 
     from tda.cli_common import load_paths
     from tda.core import rawroot
@@ -1913,7 +2101,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             work_dir=args.work, resolve=rawroot.resolve_raw,
             tail=(raw.tail if raw is not None else None), force=args.force,
             exclude=parse_exclusions(args.exclude), notes=args.note,
-            not_clean=parse_not_clean(args.not_clean))
+            not_clean=parse_not_clean(args.not_clean), update_from=args.update)
     except PackError as exc:
         print(f"[scanpack] refused: {exc}")
         return 1
@@ -1921,6 +2109,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"[scanpack] D{d['desktop']:02d}: {d['frames']} frames, {d['instances']} parts, "
               f"{d['annotations']} annotations, {d['crowd']} crowd, {d['clean']} clean, "
               f"confirmed vs today {d['confirmed_vs_today']}")
+    if args.update:
+        built = set(_parse_desktops(args.desktops))
+        print(f"[scanpack] rebuilt {sorted(built)}; taken unchanged from {args.update}: "
+              f"{[d for d in summary['desktops'] if d not in built]}")
     print(f"[scanpack] totals {summary['totals']}")
     print(f"[scanpack] checks {summary['checks']}")
     print(f"[scanpack] clean by class: {summary['clean_by_class']}")
