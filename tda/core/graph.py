@@ -25,7 +25,7 @@ Everything is pure except :func:`edges_to_db` / :func:`edges_from_db`.
 from __future__ import annotations
 
 import hashlib
-from typing import Mapping, Optional, Union
+from typing import Mapping, Optional, Sequence, Union
 
 from tda.core.graph_plan import (
     DeadEnd,
@@ -53,6 +53,7 @@ from tda.core.graph_rules import (
     connector_owner,
     gated_verbs,
     infer_relational_fields,
+    is_loose,
     is_provisional,
     propose_edges,
     required_states,
@@ -64,7 +65,7 @@ from tda.core.graph_rules import (
     verb_applies,
 )
 from tda.core.graph_templates import apply_template, save_template
-from tda.core.model import ActionRec, InstanceRec
+from tda.core.model import ActionRec, InstanceRec, StateEvent
 from tda.core.states import FrameState, events_from_actions, state_at
 from tda.core.taxonomy import Taxonomy
 
@@ -95,6 +96,7 @@ __all__ = [
     "infer_relational_fields",
     "is_provisional",
     "legal_actions",
+    "loose_parts",
     "propose_edges",
     "remaining_plan",
     "required_states",
@@ -197,12 +199,41 @@ def unmet(
 # --------------------------------------------------------------------------- #
 # 2. legal actions
 # --------------------------------------------------------------------------- #
+def loose_parts(instances: Mapping[str, InstanceRec], state: FrameState) -> list[str]:
+    """The loose parts (R16, ``attrs.loose``) still in the machine in ``state``, sorted."""
+    out = []
+    for key, rec in instances.items():
+        inst = state.get(key)
+        if is_loose(rec) and inst is not None and inst.state != REMOVED:
+            out.append(key)
+    return sorted(out)
+
+
+def _loose_scope(instances: dict[str, InstanceRec], edges: list[Edge], state: FrameState,
+                 tax: Taxonomy, loose: list[str]) -> set[str]:
+    """What may be touched while loose parts are present: them and their own way out.
+
+    A loose case fan still has its lead plugged in (D43 D54 D60 D65 pull it the
+    step before), and a loose drive its SATA plugs (D16 D54): the actions
+    :func:`remaining_plan` needs to take each loose part out are part of
+    taking it out. Everything else waits.
+    """
+    scope = set(loose)
+    for key in loose:
+        plan = remaining_plan(instances, edges, state, key, tax)
+        scope.update(target for _verb, target in plan or ())
+    return scope
+
+
 def legal_actions(
     instances: dict[str, InstanceRec],
     edges: list[Edge],
     state: FrameState,
     tax: Taxonomy,
     strict: bool = True,
+    *,
+    loose_first: bool = True,
+    occluded: Optional[Mapping[str, Sequence[str]]] = None,
 ) -> list[VerbTarget]:
     """Every ``(verb, target)`` that is physically possible in ``state``.
 
@@ -219,6 +250,19 @@ def legal_actions(
     Virtual ``cable:*`` nodes named by the graph are included, so a cable that
     has to be released before a part comes free shows up as a legal action too.
     The result is sorted and free of duplicates.
+
+    **Loose parts first** (R16, ``loose_first``, on by default): while a part
+    marked ``attrs.loose`` (:data:`~tda.core.graph_rules.LOOSE_ATTR`) is still
+    in the machine, the only legal actions are the ones that take the loose
+    parts out -- ``remove`` of the part itself, and the actions on what its own
+    removal plan needs (its lead unplugged). The flag is data, so a desktop
+    without loose parts is unchanged.
+
+    **Dynamic occlusion** (``occluded``, optional): ``{X: [Y, ...]}`` as
+    :func:`tda.core.occlusion.occlusion_blockers` answers it for this moment --
+    a part Y above X covering at least 20 % of X's amodal mask. Every action on
+    such an X is left out until no Y covers it any more. Not a stored edge:
+    the caller computes it from the frame and hands it in.
     """
     necessity = "recommended" if strict else "required"
     active = active_edges(edges)
@@ -240,6 +284,14 @@ def legal_actions(
     for key, current in cable_nodes(active, state).items():
         if verb_applies(tax, "cable", {}, "release", current) and allowed("release", key):
             out.append(("release", key))
+    if loose_first:
+        loose = loose_parts(instances, state)
+        if loose:
+            scope = _loose_scope(instances, active, state, tax, loose)
+            out = [(verb, target) for verb, target in out if target in scope
+                   and (target not in loose or verb == "remove")]
+    if occluded:
+        out = [(verb, target) for verb, target in out if not occluded.get(target)]
     return sorted(set(out))
 
 
@@ -256,6 +308,7 @@ def validate_sequence(
     actions: list[ActionRec],
     tax: Taxonomy,
     initial: Optional[Mapping[str, str]] = None,
+    manual: Optional[Sequence[StateEvent]] = None,
 ) -> list[str]:
     """Replay the observed actions and report every spec 7.4 breach.
 
@@ -280,16 +333,29 @@ def validate_sequence(
     An ``initial`` of ``removed`` is a part this machine does not have (task
     U34): its own actions are not replayed at all -- D34's failed "remove the
     optical drive" is no constraint's business.
+
+    ``manual`` is the desktop's hand-written events (``auto=False``). Those of
+    step 1 and later are folded in before every action of a **later** step,
+    after the derived events of their own step, as
+    :func:`tda.core.truth_inputs.merge_events` folds them for every export:
+    a RAM stick added in S1 comes out through a hand-written event (R6, the
+    owner's 2026-11-04 ruling), and a replay blind to it called the board's
+    removal a breach that no export sees.
     """
     active = active_edges(edges)
     ordered = sorted(actions, key=lambda a: (a.step, a.idx))
     gone = {key for key, state in (initial or {}).items() if state == REMOVED}
+    later = sorted((e for e in (manual or ()) if e.step >= 1), key=lambda e: e.step)
     problems: list[str] = []
 
     for i, action in enumerate(ordered):
         if action.target in gone:
             continue
         events = events_from_actions(instances, ordered[:i], tax, initial=initial)
+        earlier = [e for e in later if e.step < action.step]
+        if earlier:
+            tagged = [(e.step, 0, e) for e in events] + [(e.step, 1, e) for e in earlier]
+            events = [e for _, _, e in sorted(tagged, key=lambda t: (t[0], t[1]))]
         state = state_at(instances, events, _ALL_STEPS, tax, initial=initial)
         gating = applicable_preconditions(active, action)
         bad = unmet(gating, state, "required")

@@ -120,10 +120,19 @@ def test_every_mounted_class_and_nothing_else():
     assert {desk[k].cls for k in blockers} == set(MOUNTED_ON_MOTHERBOARD)
 
 
-def test_an_extra_ram_stick_takes_no_edge():
+def test_an_extra_ram_stick_blocks_the_board_too():
+    # the owner's R6 ruling of 2026-11-04: a stick added in S1 also comes off
+    # before the board (it was the old "an extra takes no edge" convention)
     desk = bench_instances()
     desk["ram_module.02"] = extra(_inst("ram_module.02", "ram_module"))
-    assert ("blocked_by", BOARD, "ram_module.02") not in board_edges(desk)
+    assert ("blocked_by", BOARD, "ram_module.02") in board_edges(desk)
+    assert board_edges(desk) == {("blocked_by", BOARD, key)
+                                 for key in (*ON_BENCH_BOARD, "ram_module.02")}
+
+
+def test_an_extra_card_still_takes_no_board_edge():
+    desk = bench_instances()
+    desk["expansion_card.gpu.01"] = extra(_inst("expansion_card.gpu.01", "expansion_card"))
     assert board_edges(desk) == {("blocked_by", BOARD, key) for key in ON_BENCH_BOARD}
 
 

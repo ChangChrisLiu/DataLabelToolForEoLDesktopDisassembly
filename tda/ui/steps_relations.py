@@ -118,7 +118,8 @@ class RelationsData:
         left behind.
         """
         if self._view is None:
-            self._view = derive_edges(self.data.instances, self.edges, self.data.tax)
+            self._view = derive_edges(self.data.instances, self.edges, self.data.tax,
+                                      self.data.actions)
         return self._view
 
     # -- what the panel shows ---------------------------------------------- #
@@ -156,7 +157,8 @@ class RelationsData:
         """
         return violations_of(settled_instances(self.data.instances), self.view().edges,
                              self.data.actions, self.data.tax,
-                             initial=self.data.initial_states())
+                             initial=self.data.initial_states(),
+                             manual=self.data.stored_manual)
 
     def cycles(self) -> list:
         """The spec 7.4 deadlock check over the staged **active** graph."""
@@ -259,7 +261,8 @@ class RelationsData:
         an ``Apply`` that moved no edge must not re-stamp ``graph_version`` or
         leave a row in the op log.
         """
-        derivation = derive_edges(self.data.instances, self.edges, self.data.tax)
+        derivation = derive_edges(self.data.instances, self.edges, self.data.tax,
+                                  self.data.actions)
         self._refuse_deadlock(derivation)
         rows = [*derivation.edges, *derivation.other]
         before = self._by_triple(self.stored)
