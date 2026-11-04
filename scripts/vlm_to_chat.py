@@ -58,7 +58,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vlm_io as IO  # noqa: E402
-from vlm_glossary import glossary_text  # noqa: E402
+from vlm_glossary import glossary_text, is_presence  # noqa: E402
 from tda.core.export.vlm_check import LETTERS, format_instruction  # noqa: E402
 
 #: Bumped whenever the wording around the question changes (chat-v2: marks, image legend,
@@ -220,7 +220,8 @@ def user_text(record: dict) -> str:
         parts.append("\n".join(f"{LETTERS[i]}. {o['verb']} {o['target_label']}"
                                for i, o in enumerate(options)))
     parts.append(format_instruction(record))
-    glossary = glossary_text(prompt.get("terms"), prompt.get("state_terms"))
+    glossary = glossary_text(prompt.get("terms"), prompt.get("state_terms"),
+                             presence=is_presence(record))
     if glossary:
         parts.append(glossary)
     return "\n\n".join(parts)
