@@ -241,3 +241,45 @@ def test_a_group_demonstrated_option_is_the_right_letter(tmp_path: Path):
         assert grade(r, gold_reply(r, world), world, tax).score == 1.0, r["label"]["readable_id"]
     assert Checker(db, tax, W.DESKTOP).check_all(records) == len(records)
     db.close()
+
+
+def test_a_done_member_does_not_stand_for_its_group(tmp_path: Path):
+    """Re-review of the fix wave: with the group action among equivalent_actions, naming a
+    member already done ("unscrew motherboard screw 1" after screw 1 came out) scored 1.0.
+    A member stands for its group only while it is still to do."""
+    import vlm_scene as S
+    from tda.core.taxonomy import load_taxonomy
+
+    db = Db(str(tmp_path / "wide.sqlite"))
+    tax = S.build_wide(db, confirm_step=1)
+    out = tmp_path / "wide.jsonl"
+    export_vlm(db, tax, list(S.WIDE_DESKTOPS), S.VIEW, str(out), only_verified=False)
+    db.close()
+    worlds = {}
+    for line in oracle_path(str(out)).read_text(encoding="utf-8").splitlines():
+        row = json.loads(line)
+        if row["type"] == "desktop":
+            worlds[row["desktop"]] = World.from_oracle(row)
+    tax = load_taxonomy()
+    seen = 0
+    for r in _read(out):
+        label = r["label"]
+        if r["prompt"]["task"] != "V6" or label.get("options"):
+            continue
+        check, world = label["answer_check"], worlds[label["desktop"]]
+        verb, ref = check["reference"]
+        if not world.is_group(ref):
+            continue
+        todo = check["part_group_members"]
+        done = [m for m in world.members(ref) if m not in todo]
+        for m in done:
+            seen += 1
+            g = grade(r, json.dumps({"verb": verb, "target": world.label_of(m)}), world, tax)
+            assert g.score == 0.0 and not g.metrics["group_match"], (label["readable_id"], m)
+            assert not g.metrics["exact_match"]
+        for m in todo:
+            g = grade(r, json.dumps({"verb": verb, "target": world.label_of(m)}), world, tax)
+            assert g.score == 1.0 and g.metrics["group_match"] and g.metrics["exact_match"]
+        # the group's words and the gold reply still score
+        assert grade(r, gold_reply(r, world), world, tax).score == 1.0
+    assert seen >= 10

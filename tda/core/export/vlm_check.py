@@ -913,6 +913,24 @@ def _in_actions(world: World, verb: str, target: Optional[str], actions: set) ->
     return world.is_group(target) and any((verb, m) in actions for m in world.members(target))
 
 
+def _still_to_do(world: World, verb: str, member: str, gid: Optional[str], equivalent: set,
+                 check: dict) -> bool:
+    """May ``member``, named exactly, stand for its group ``gid`` in a V6 answer?
+
+    Only while it is still to do: its own action is equivalent, or it is among the
+    record's ``part_group_members`` (the members still in the asked situation). A record
+    that lists neither -- the group action alone, no member of it -- cannot tell, and
+    lets every member stand for it.
+    """
+    if (verb, member) in equivalent:
+        return True
+    todo = check.get("part_group_members") or check.get("members")
+    if todo:
+        return member in todo
+    members = world.members(gid) if gid is not None and world.is_group(gid) else []
+    return not any((verb, m) in equivalent for m in members)
+
+
 def _g_v6_groups(world: World, verb: str, text: Any, reference: tuple, equivalent: set,
                  blocked: set, check: dict) -> Grade:
     """V6's open form on a world with groups (spec 3.1, 6.1).
@@ -920,18 +938,28 @@ def _g_v6_groups(world: World, verb: str, text: Any, reference: tuple, equivalen
     The answer is grounded on the targets of the equivalent actions of its
     verb, then on the blocked ones -- so "remove the CPU" is the blocked action
     without an ordinal. A group and any of its remaining members are the same
-    answer. ``exact_match``: the reference itself, named exactly or (a group
-    reference) by its class.
+    answer; a member named exactly stands for its group only while it is still to
+    do -- its own ``(verb, member)`` is an equivalent action -- so "unscrew
+    motherboard screw 1" when screw 1 is already out is no match (review of the
+    fix wave). ``exact_match``: the reference itself, named exactly or (a group
+    reference) by its class; on a group step any member still to do is exact.
     """
     g = grounder(world)
     eligible = [t for v, t in sorted(equivalent) if v == verb] + \
         [t for v, t in sorted(blocked) if v == verb]
     named, mclass = g.ground(text)
     target = g.resolve(text, eligible)[0]
-    group = _in_actions(world, verb, target, equivalent)
+    if (named is not None and not world.is_group(named) and target != named
+            and not _still_to_do(world, verb, named, target, equivalent, check)):
+        target = named  # a member already done does not stand for its group
+    group = target is not None and (
+        (verb, target) in equivalent
+        or (world.is_group(target)
+            and any((verb, m) in equivalent for m in world.members(target))))
     hit_blocked = not group and _in_actions(world, verb, target, blocked)
     if named is not None:
-        exact = verb == reference[0] and _same_target(world, target, reference[1]) \
+        exact = group and verb == reference[0] \
+            and _same_target(world, target, reference[1]) \
             and (target == reference[1] or world.is_group(reference[1]))
     else:
         exact = (verb == reference[0] and world.is_group(reference[1])
