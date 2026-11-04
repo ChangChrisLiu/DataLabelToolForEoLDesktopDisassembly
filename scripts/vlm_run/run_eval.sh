@@ -69,6 +69,17 @@ if [[ "$VIEW" == "multi" && "$BACKEND" == "vllm" && "$RUN_ARGS" != *--max-images
   RUN_ARGS="$RUN_ARGS --max-images 8"
 fi
 
+# a unit with no record is left out of the pack (manifest.json "units", export_vlmpack.py
+# "empty_units"): its array task has nothing to run and ends cleanly
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -z "${TRUTH:-}" && -f "$PACK/manifest.json" ]]; then
+  UNITS=" $(PYTHON="$PYTHON" bash "$HERE/pack_units.sh" "$PACK") "
+  if [[ "$UNITS" != *" $VIEW "* ]]; then
+    echo "[run_eval] unit $VIEW not in this pack, skipped"
+    exit 0
+  fi
+fi
+
 # the view's full export (records + .images_manifest.jsonl + .oracle.jsonl + .summary.json)
 if [[ -z "${TRUTH:-}" ]]; then
   for cand in "$PACK/data/vlm_$VIEW.jsonl" "$PACK/$VIEW.jsonl" "$PACK/vlm_$VIEW.jsonl" "$PACK/export/vlm_$VIEW.jsonl"; do

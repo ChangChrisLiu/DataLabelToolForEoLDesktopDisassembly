@@ -580,7 +580,7 @@ def run_selfcheck(out: Path, views: Sequence[str], work: Path,
 # --------------------------------------------------------------------------- #
 def masks_sidecars(data_dir: Path, eval_dir: Path, views: Sequence[str], coco_root: str,
                    log=print) -> dict:
-    """``data/vlm_<view>.masks.jsonl`` and ``eval_v1/<view>.masks.jsonl`` from the COCO.
+    """``data/vlm_<unit>.masks.jsonl`` and ``eval_v2/<unit>.masks.jsonl`` from the COCO.
 
     One pass over the scanner pack for all views (an image id is the same in
     every export file), then one sidecar per view with the rows its manifest
@@ -629,7 +629,7 @@ def masks_sidecars(data_dir: Path, eval_dir: Path, views: Sequence[str], coco_ro
 
 
 def render_overlays(out: Path, eval_dir: Path, views: Sequence[str], log=print) -> dict:
-    """The subset's ``mask_overlay`` variant per view: ``eval_v1/mask_overlay/<view>.jsonl``
+    """The subset's ``mask_overlay`` variant per unit: ``eval_v2/mask_overlay/<unit>.jsonl``
     and the painted frames under ``overlays/``; returns the painter's summary per view."""
     result: dict = {}
     for view in views:

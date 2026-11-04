@@ -27,9 +27,14 @@ export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"       # pre-fetch with `hf download
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 export PYTHONUNBUFFERED=1
 
-# the five export units: the camera views (perception) and multi (the action tasks);
-# submit_matrix.sh passes VIEW_LIST (and a matching --array) to run a subset of them
-read -r -a VIEWS <<< "${VIEW_LIST:-scan oak1 oak2 rs multi}"
+# the pack's export units (manifest.json "units": the camera views with records, then multi;
+# an empty unit is not in the pack); submit_matrix.sh passes VIEW_LIST and a matching --array
+: "${PACK:?set PACK}"
+read -r -a VIEWS <<< "${VIEW_LIST:-$(bash "$PACK/tools/vlm_run/pack_units.sh" "$PACK")}"
+if (( SLURM_ARRAY_TASK_ID >= ${#VIEWS[@]} )); then
+  echo "[${SLURM_JOB_NAME:-vlm}] array task $SLURM_ARRAY_TASK_ID: the pack has ${#VIEWS[@]} units (${VIEWS[*]}), nothing to run"
+  exit 0
+fi
 export PACK="${PACK:?set PACK}"
 export MODEL="${MODEL:?set MODEL to the HF id or local path}"
 export VIEW="${VIEWS[$SLURM_ARRAY_TASK_ID]}"
