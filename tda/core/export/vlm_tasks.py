@@ -1170,6 +1170,7 @@ def record(tc: TaskCtx, task: str, rec_id: str, step: int,
            view_confirmed: Optional[bool] = None,
            extra: Optional[dict] = None,
            marks: Optional[Sequence[dict]] = None,
+           mark_names: Optional[dict] = None,
            terms: Optional[Sequence[str]] = None,
            state_terms: Optional[Sequence[str]] = None,
            moment: Optional[Sequence[tuple[str, str, int]]] = None) -> dict:
@@ -1239,6 +1240,10 @@ def record(tc: TaskCtx, task: str, rec_id: str, step: int,
     }
     if views:
         label["views"] = list(views)
+    if marks and mark_names:
+        # label side: what each mark tag outlines, in words and by key -- the text-only
+        # references say "part A (a RAM module)" and tag the state table's rows
+        label["mark_names"] = {tag: dict(entry) for tag, entry in sorted(mark_names.items())}
     if moment:
         label["views"] = [v for v, _, _ in moment]
         label["image_steps"] = [int(s) for _, _, s in moment]
@@ -1529,7 +1534,7 @@ def _v2_states(tc: TaskCtx, frame: FrameData) -> Iterator[dict]:
                                    occluder=frame.pointable[k][0].get("occluder"))
                          for k in members]),
             row_verified(rows, frame.verified),
-            extra={"class_prior_answer": prior}, marks=namer.marks(),
+            extra={"class_prior_answer": prior}, marks=namer.marks(), mark_names=namer.names(),
             terms=[cls], state_terms=[cls],
         )
 
@@ -1915,7 +1920,7 @@ def _v4_record(tc: TaskCtx, frame: FrameData, verb: str, target: str,
         row_verified([frame.pointable[k][0] for k in bboxes], frame.verified),
         negative=None if feasible else truth_source,
         truth_source=truth_source, view_confirmed=frame.confirmed,
-        marks=namer.marks(), terms=[target_class(tc.ctx, target)],
+        marks=namer.marks(), mark_names=namer.names(), terms=[target_class(tc.ctx, target)],
         moment=tc.legend((frame.step, "now")),
     )
 
@@ -2284,6 +2289,7 @@ def gen_v6(tc: TaskCtx, step: int) -> Iterator[dict]:
             evid, R.rationale(chain), frame.verified, options=listed_options,
             extra={"v6_form": form, "v6_pair": pair}, view_confirmed=frame.confirmed,
             marks=namer.marks() if mc else None,
+            mark_names=namer.names() if mc else None,
             terms=([target_class(tc.ctx, (o.get("members") or [o["target"]])[0])
                     for o in listed_options] if mc else None),
             moment=tc.legend((step, "now")),
@@ -3257,7 +3263,7 @@ def _plan_record(tc: TaskCtx, frame: FrameData, plan: Sequence[tuple[str, str]],
                  tc, plan_length=len(listed)),
         R.rationale(chain), frame.verified,
         negative=None if first_bad is None else family,
-        truth_source=source, view_confirmed=frame.confirmed, marks=namer.marks(),
+        truth_source=source, view_confirmed=frame.confirmed, marks=namer.marks(), mark_names=namer.names(),
         terms=[target_class(tc.ctx, (_group_members(tc, t) or [t])[0]) for _, t in plan],
         moment=tc.legend((step, "now")),
     )
@@ -3578,7 +3584,7 @@ def _v7_record(tc: TaskCtx, frame: FrameData, goal: str,
                   if r.target in frame.pointable}, tc, plan_length=len(grouped)),
         R.rationale(chain), frame.verified,
         truth_source=GRAPH_BLOCKED_PIXELS if pixel else GRAPH_BLOCKED,
-        view_confirmed=frame.confirmed, marks=namer.marks(), terms=[V7_GOAL_CLASS],
+        view_confirmed=frame.confirmed, marks=namer.marks(), mark_names=namer.names(), terms=[V7_GOAL_CLASS],
         moment=tc.legend((step, "now")),
     )
 

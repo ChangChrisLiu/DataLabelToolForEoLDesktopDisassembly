@@ -7,10 +7,13 @@ Reads one export and its sidecars -- never the database -- and writes:
 
 * ``blind.jsonl`` -- every record with its images taken away: question and
   options only, the mark wording of the 2026-11-03 redesign removed ("the RAM
-  module outlined in red" -> "the RAM module", :func:`unmark`); a question that
-  names a part by its mark tag alone ("part A") is left out (``mark_tag``, also
-  in the state oracle). What a model scores here is template leakage (the export's
-  ``shortcuts`` table is the in-sample upper bound of the same thing).
+  module outlined in red" -> "the RAM module", :func:`unmark`); a part named by
+  its mark tag alone gets its class phrase beside the tag ("part A" -> "part A
+  (a RAM module)", from ``label.mark_names``), and the state oracle's table shows
+  the tag on that part's rows. Only a record whose tag has no name (an export from
+  before ``mark_names``) is left out (``mark_tag``). What a model scores here is
+  template leakage (the export's ``shortcuts`` table is the in-sample upper bound
+  of the same thing).
 * ``protocol_prior.jsonl`` + ``protocol_prior.predictions.jsonl`` -- V6 / V7 /
   V16 answered from **nothing but the previous demonstrated action**, by a
   bigram over ``(verb, match class)`` fitted leave-one-desktop-out on the other
@@ -80,10 +83,27 @@ PRIOR_TASKS = ("V6", "V7", "V16")
 #: The mark wording of the redesign of 2026-11-03 ("the RAM module outlined in red"):
 #: meaningless without the picture, so the text-only variants drop it.
 MARK_PHRASE = re.compile(r"\s*\(?\b(?:which (?:is|are) |that (?:is|are) )?outlined in red\b\)?")
-#: A part named by its tag alone ("part A", "parts A and B"): no text can stand in for it.
-MARK_TAG = re.compile(r"\bparts?\s+[A-Z]\b")
-#: Why a text-only variant leaves a record out.
+#: A part named by its tag alone ("part A", "parts B"): the text variants add its class
+#: phrase ("part A (a RAM module)", :func:`name_tags`).
+MARK_TAG = re.compile(r"\b(parts?)\s+([A-Z])\b")
+#: Why a text-only variant leaves a record out: a tag with no name to stand beside it.
 UNMARK_SKIP = "mark_tag"
+
+
+def name_tags(text: str, names: dict) -> Optional[str]:
+    """``text`` with every "part A" made "part A (a RAM module)"; ``None`` when a tag has
+    no name in ``names`` (``label.mark_names``: ``tag -> {"name", "parts"}``)."""
+    missing = []
+
+    def sub(m: "re.Match") -> str:
+        entry = names.get(m.group(2)) or {}
+        if not entry.get("name"):
+            missing.append(m.group(2))
+            return m.group(0)
+        return f"{m.group(1)} {m.group(2)} ({entry['name']})"
+
+    out = MARK_TAG.sub(sub, text)
+    return None if missing else out
 
 
 def unmark(record: dict) -> Optional[dict]:
@@ -92,23 +112,36 @@ def unmark(record: dict) -> Optional[dict]:
     The converter drops the images and the marks of such a variant, but the question
     would still say "the RAM module outlined in red": the phrase is removed ("the RAM
     module" -- the class phrase the mark qualified), in the question and the options,
-    and ``prompt.marks`` / ``prompt.image_legend`` go. A question that names a part by
-    its tag only ("part A") cannot stand without the mark and is left out
-    (:data:`UNMARK_SKIP`). A record without marks is returned as a plain copy.
+    and ``prompt.marks`` / ``prompt.image_legend`` go. A part named by its tag only
+    ("part A") keeps the tag and gets its class phrase beside it -- "part A (a RAM
+    module)", no ordinal, no key -- from ``label.mark_names``; a record whose tag has
+    no name there is left out (:data:`UNMARK_SKIP`). A record without marks is returned
+    as a plain copy.
     """
     out = copy.deepcopy(record)
     prompt = out["prompt"]
     marked = bool(prompt.pop("marks", None))
     prompt.pop("image_legend", None)
+    names = record["label"].get("mark_names") or {}
     texts = [prompt.get("question") or ""] + [str(o.get("target_label") or "")
                                               for o in prompt.get("options") or []]
-    if marked and any(MARK_TAG.search(t) for t in texts):
+    if marked and any(name_tags(t, names) is None for t in texts):
         return None
     prompt["question"] = MARK_PHRASE.sub("", prompt.get("question") or "")
+    if marked:
+        prompt["question"] = name_tags(prompt["question"], names)
     for option in prompt.get("options") or []:
         if option.get("target_label"):
             option["target_label"] = MARK_PHRASE.sub("", option["target_label"])
+            if marked:
+                option["target_label"] = name_tags(option["target_label"], names)
     return out
+
+
+def tag_of_parts(record: dict) -> dict[str, str]:
+    """``instance key -> its mark tag`` (``label.mark_names``), for the state tables."""
+    return {key: tag for tag, entry in (record["label"].get("mark_names") or {}).items()
+            for key in entry.get("parts") or []}
 
 
 def blind(record: dict) -> Optional[dict]:
@@ -137,8 +170,13 @@ def blind_rows(records: list[dict]) -> tuple[list[dict], dict[str, int]]:
 # --------------------------------------------------------------------------- #
 # (iii) state oracle
 # --------------------------------------------------------------------------- #
-def state_table_text(frame: Optional[dict], world: Optional[World]) -> str:
-    """One line per instance: wording, state, placement[, visibility]."""
+def state_table_text(frame: Optional[dict], world: Optional[World],
+                     tags: Optional[dict] = None) -> str:
+    """One line per instance: wording, state, placement[, visibility].
+
+    ``tags`` (``key -> mark tag``) adds "(part A)" to the rows of the parts a question
+    names by its mark, so the tag stays resolvable without the picture.
+    """
     if frame is None:
         return "(no state table)"
     lines = []
@@ -147,6 +185,8 @@ def state_table_text(frame: Optional[dict], world: Optional[World]) -> str:
         name = inst.get("label") if inst else key
         if key.startswith("cable:"):
             name = "cable of the " + key.split(":", 1)[1].replace("_", " ")
+        if tags and key in tags:
+            name = f"{name} (part {tags[key]})"
         state = entry.get("state") or "?"
         if inst and inst.get("class") == "screw":
             # a picture shows a screw's presence, never its tightness: neither
@@ -199,7 +239,8 @@ def state_oracle(record: dict, worlds: dict[int, World], frames: dict[str, dict]
     if out is None:
         return None
     world = worlds.get(IO.desktop_of(record))
-    tables = [state_table_text(frames.get(image), world)
+    tags = tag_of_parts(record)
+    tables = [state_table_text(frames.get(image), world, tags)
               for image in moment_images(record, frames)]
     out["prompt"]["images"] = []
     out["prompt"]["state_tables"] = tables

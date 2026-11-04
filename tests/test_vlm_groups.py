@@ -528,3 +528,25 @@ def test_no_ordinal_in_any_question(tmp_path, which):
         for text in texts:
             assert not ORDINAL.search(text), (r["label"]["readable_id"], text)
     db.close()
+
+
+def test_every_mark_tag_has_a_name_on_the_label_side(scene, tmp_path):
+    """Final review I2: ``label.mark_names`` says what each tag outlines -- a class phrase
+    (no ordinal, no key) and the instance keys -- so the text-only references can keep
+    "part A" resolvable; the prompt carries nothing new."""
+    db, tax = scene
+    records = _export(db, tax, tmp_path / "v.jsonl", balance=False)
+    marked = [r for r in records if r["prompt"].get("marks")]
+    assert marked
+    for r in marked:
+        names = r["label"]["mark_names"]
+        assert set(names) == {m["tag"] for m in r["prompt"]["marks"]}, r["label"]["readable_id"]
+        for tag, entry in names.items():
+            assert entry["name"] and not ORDINAL.search(entry["name"]) and "." not in entry["name"]
+            assert entry["parts"] and all(p in tc_keys(db) for p in entry["parts"])
+        assert "mark_names" not in r["prompt"]
+    assert not [r for r in records if "mark_names" in r["label"] and not r["prompt"].get("marks")]
+
+
+def tc_keys(db) -> set:
+    return set(db.instances(S.DESKTOP))
