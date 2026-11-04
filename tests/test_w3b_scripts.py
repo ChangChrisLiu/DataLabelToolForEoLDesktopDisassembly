@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -66,21 +67,30 @@ def test_the_three_references_keep_ids_and_labels(export, tmp_path):
     raw = _records(export)
     records = {r["id"]: r for r in raw}
     worlds, frames = IO.load_oracle(export)
-    # (redesign 2026-11-03: the text-only variants drop the mark wording, and leave
-    # out -- None -- a question that names a part by its mark tag alone, "part A")
+    # (redesign 2026-11-03: the text-only variants drop the mark wording; final review
+    # I2: a part named by its mark tag alone keeps it with its class phrase beside it,
+    # "part A (a CPU)", so no record is left out)
     by_tag = {r["id"] for r in raw if r["prompt"].get("marks") and any(
         vlm_references.MARK_TAG.search(t) for t in [r["prompt"]["question"]] + [
             str(o.get("target_label") or "") for o in r["prompt"].get("options") or []])}
     blind = [b for b in map(vlm_references.blind, raw) if b is not None]
     oracle = [o for o in (vlm_references.state_oracle(r, worlds, frames) for r in raw)
               if o is not None]
-    assert [r["id"] for r in blind] == [i for i in records if i not in by_tag]
-    assert [r["id"] for r in oracle] == [i for i in records if i not in by_tag]
+    assert [r["id"] for r in blind] == list(records)
+    assert [r["id"] for r in oracle] == list(records)
     for r in blind:
         assert r["prompt"]["images"] == [] and r["label"]["reference"] == "blind"
         assert r["label"]["answer_check"] == records[r["id"]]["label"]["answer_check"]
-        assert r["prompt"]["question"] == vlm_references.MARK_PHRASE.sub(
-            "", records[r["id"]]["prompt"]["question"])
+        src = records[r["id"]]
+        want = vlm_references.MARK_PHRASE.sub("", src["prompt"]["question"])
+        if src["prompt"].get("marks"):
+            want = vlm_references.name_tags(want, src["label"]["mark_names"])
+        assert r["prompt"]["question"] == want
+        if r["id"] in by_tag:
+            said = [r["prompt"]["question"]] + [o["target_label"]
+                                                for o in r["prompt"].get("options") or []]
+            assert all(re.search(r"\bparts? [A-Z] \(", t) for t in said
+                       if vlm_references.MARK_TAG.search(t))
         assert "outlined in red" not in r["prompt"]["question"]
         assert "marks" not in r["prompt"]
     for r in oracle:
@@ -88,8 +98,11 @@ def test_the_three_references_keep_ids_and_labels(export, tmp_path):
         assert r["prompt"]["images"] == []
         assert len(r["prompt"]["state_tables"]) == len(src["prompt"]["images"])
         assert "image_undecidable" in r["label"]
+        tags = vlm_references.tag_of_parts(src)
         for table in r["prompt"]["state_tables"]:
-            assert "CPU 1:" in table and "cpu.01" not in table
+            # a part a mark tag names carries the tag on its row (final review I2)
+            cpu = f"CPU 1 (part {tags['cpu.01']}):" if "cpu.01" in tags else "CPU 1:"
+            assert cpu in table and "cpu.01" not in table
     # the scanner is confirmed, OAK1 is not: visibility only where it was drawn
     v15 = next(r for r in oracle if r["prompt"]["task"] == "V15")
     scan_table, oak_table = v15["prompt"]["state_tables"]

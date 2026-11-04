@@ -7,6 +7,7 @@ fake OpenAI-compatible server on the loopback -- no model, no network, no
 from __future__ import annotations
 
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -437,11 +438,15 @@ def test_the_blind_variant_has_no_images_and_the_gold_still_scores_one(pack, tmp
     blind = tmp_path / "blind.jsonl"
     assert vlm_collect.main(["blind", "--records", str(pack["export"]), "--out", str(blind)]) == 0
     rows = _rows(blind)
-    # (redesign 2026-11-03: a question naming a part by its mark tag alone is left out)
+    # (final review I2: a part named by its mark tag alone keeps the tag with its class
+    # phrase beside it -- "part A (a RAM module)" -- so no record is left out)
     import vlm_references
 
     kept = [r["id"] for r in pack["records"] if vlm_references.blind(r) is not None]
-    assert [r["id"] for r in rows] == kept and len(kept) < len(pack["records"])
+    assert [r["id"] for r in rows] == kept == [r["id"] for r in pack["records"]]
+    tagged = [r for r in rows if vlm_references.MARK_TAG.search(r["prompt"]["question"])]
+    assert tagged and all(re.search(r"\bparts? [A-Z] \((an? )?[A-Za-z]", r["prompt"]["question"])
+                          for r in tagged)
     assert all(r["prompt"]["images"] == [] and r["label"]["reference"] == "blind" for r in rows)
     chat = tmp_path / "chat.jsonl"
     assert vlm_to_chat.main(["--export", str(pack["export"]), "--records", str(blind),

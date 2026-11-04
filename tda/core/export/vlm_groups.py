@@ -430,3 +430,16 @@ class Namer:
     def members(self) -> dict[str, list[str]]:
         """``id -> the members outlined for it`` (label side)."""
         return {ref.ident: list(ref.members) for ref in self.refs}
+
+    def names(self) -> dict[str, dict]:
+        """``tag -> {"name", "parts"}`` (label side): the class phrase of what each tag
+        outlines -- "a RAM module", "CPU cooler screws" (no ordinal, no key) -- and the
+        instance keys. The text-only references use it to keep "part A" resolvable."""
+        out = {}
+        for ref in self.refs:
+            if len(ref.members) > 1:
+                name = plural(ref.phrase)
+            else:
+                name = ("an " if ref.phrase[:1].lower() in "aeiou" else "a ") + ref.phrase
+            out[ref.tag] = {"name": name, "parts": list(ref.members)}
+        return out

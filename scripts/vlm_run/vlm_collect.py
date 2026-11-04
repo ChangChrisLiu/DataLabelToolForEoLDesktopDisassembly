@@ -43,7 +43,23 @@ OPTIONAL_SIDECARS = ("masks.jsonl",)
 _REPEAT = re.compile(r"^(?P<stem>.+)\.r(?P<k>\d+)$")
 #: The mark wording and the bare mark tag (vlm_references.MARK_PHRASE / MARK_TAG).
 _MARK_PHRASE = re.compile(r"\s*\(?\b(?:which (?:is|are) |that (?:is|are) )?outlined in red\b\)?")
-_MARK_TAG = re.compile(r"\bparts?\s+[A-Z]\b")
+_MARK_TAG = re.compile(r"\b(parts?)\s+([A-Z])\b")
+
+
+def _name_tags(text: str, names: dict) -> Optional[str]:
+    """vlm_references.name_tags: "part A" -> "part A (a RAM module)"; ``None`` when a tag
+    has no name in ``label.mark_names``."""
+    missing = []
+
+    def sub(m):
+        entry = names.get(m.group(2)) or {}
+        if not entry.get("name"):
+            missing.append(m.group(2))
+            return m.group(0)
+        return f"{m.group(1)} {m.group(2)} ({entry['name']})"
+
+    out = _MARK_TAG.sub(sub, text)
+    return None if missing else out
 #: The current evaluation subset, and the ones its records replaced.
 EVAL_VERSION = "eval_v2"
 OLD_EVAL_VERSIONS = ("eval_v1",)
@@ -116,21 +132,27 @@ def subset(export, out, ids_file: Optional[str] = None, records: Optional[str] =
 def blind(records, out) -> int:
     """Every record with its images taken away; label unchanged. The mark wording
     ("the RAM module outlined in red") is removed from the question and the options and
-    ``prompt.marks`` / ``prompt.image_legend`` go; a record whose question names a part by
-    its mark tag alone ("part A") is left out -- the same rows as ``vlm_references.blind``."""
+    ``prompt.marks`` / ``prompt.image_legend`` go; a part named by its mark tag alone gets
+    its class phrase beside the tag ("part A (a RAM module)", ``label.mark_names``), and a
+    record whose tag has no name is left out -- the same rows as ``vlm_references.blind``."""
     def strip(r: dict) -> Optional[dict]:
         r = json.loads(json.dumps(r))
         prompt = r["prompt"]
         marked = bool(prompt.pop("marks", None))
         prompt.pop("image_legend", None)
+        names = r["label"].get("mark_names") or {}
         texts = [prompt.get("question") or ""] + [str(o.get("target_label") or "")
                                                   for o in prompt.get("options") or []]
-        if marked and any(_MARK_TAG.search(t) for t in texts):
+        if marked and any(_name_tags(t, names) is None for t in texts):
             return None
         prompt["question"] = _MARK_PHRASE.sub("", prompt.get("question") or "")
+        if marked:
+            prompt["question"] = _name_tags(prompt["question"], names)
         for option in prompt.get("options") or []:
             if option.get("target_label"):
                 option["target_label"] = _MARK_PHRASE.sub("", option["target_label"])
+                if marked:
+                    option["target_label"] = _name_tags(option["target_label"], names)
         prompt["images"] = []
         r["label"]["reference"] = "blind"
         return r

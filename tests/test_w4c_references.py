@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -23,7 +24,7 @@ import w3b_scene as W
 from tda.core.db import Db
 from tda.core.export.coco import export_coco
 from tda.core.export.vlm import export_vlm, unit_tasks
-from tda.core.export.vlm_check import gold_reply, grade
+from tda.core.export.vlm_check import World, gold_reply, grade
 from tda.core.taxonomy import load_taxonomy
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
@@ -744,3 +745,53 @@ def test_text_only_variants_drop_the_mark_wording(tmp_path):
     IO.write_jsonl(src, [named, options, tagged, plain])
     assert vlm_collect.blind(src, tmp_path / "blind.jsonl") == 3
     assert list(IO.read_jsonl(tmp_path / "blind.jsonl")) == rows
+
+
+def test_a_part_named_by_its_tag_keeps_it_with_its_class_phrase(tmp_path):
+    """Final review I2: the text variants dropped every question naming a part by tag
+    (2686 / 2686 V6-mc, 5136 / 5230 V16). With ``label.mark_names`` the tag stays, its
+    class phrase beside it (no ordinal, no key), and the state table tags the part's rows."""
+    import vlm_collect
+
+    marks = [{"image": 0, "bbox": [1, 1, 4, 4], "tag": "A"},
+             {"image": 0, "bbox": [9, 9, 4, 4], "tag": "B"},
+             {"image": 0, "bbox": [19, 9, 4, 4], "tag": "B"}]
+    names = {"A": {"name": "a RAM module", "parts": ["ram_module.01"]},
+             "B": {"name": "RAM latches", "parts": ["ram_latch.01", "ram_latch.02"]}}
+    tagged = {"id": "rec_tag", "prompt": {
+        "task": "V16", "images": ["img_a"], "marks": marks,
+        "question": "Is this plan valid? 1. open parts B 2. remove part A",
+        "options": [{"verb": "remove", "target_label": "part A"}]},
+        "label": {"desktop": 7, "view": "multi", "answer": {}, "answer_check": {},
+                  "mark_names": names}}
+    [row], skipped = vlm_references.blind_rows([tagged])
+    assert skipped == {}
+    assert row["prompt"]["question"] == ("Is this plan valid? 1. open parts B (RAM latches) "
+                                         "2. remove part A (a RAM module)")
+    assert row["prompt"]["options"][0]["target_label"] == "part A (a RAM module)"
+    assert not re.search(r"\b[A-Za-z]+ \d+\b|ram_|\.0\d", row["prompt"]["question"])
+    world = World.from_oracle({"type": "desktop", "desktop": 7, "edges": [], "log": [],
+                               "instances": {
+        "ram_module.01": {"class": "ram_module", "label": "RAM module 1"},
+        "ram_latch.01": {"class": "ram_latch", "label": "RAM latch 1"},
+        "ram_latch.02": {"class": "ram_latch", "label": "RAM latch 2"},
+        "psu.01": {"class": "psu", "label": "PSU 1"}}})
+    frames = {"img_a": {"image": "img_a", "step": 3, "view": "scan", "state": {
+        k: {"state": "installed", "placement": "in_chassis"}
+        for k in ("ram_module.01", "ram_latch.01", "ram_latch.02", "psu.01")}}}
+    [oracle], why = vlm_references.state_oracle_rows([tagged], {7: world}, frames)
+    assert why == {} and oracle["prompt"]["question"] == row["prompt"]["question"]
+    table = oracle["prompt"]["state_tables"][0]
+    assert "- RAM module 1 (part A): installed" in table
+    assert "- RAM latch 2 (part B): installed" in table and "- PSU 1: installed" in table
+    # the run driver's copy of the regexes and the naming is the same
+    assert vlm_collect._MARK_TAG.pattern == vlm_references.MARK_TAG.pattern
+    assert vlm_collect._MARK_PHRASE.pattern == vlm_references.MARK_PHRASE.pattern
+    src = tmp_path / "in.jsonl"
+    IO.write_jsonl(src, [tagged])
+    assert vlm_collect.blind(src, tmp_path / "blind.jsonl") == 1
+    assert list(IO.read_jsonl(tmp_path / "blind.jsonl")) == [row]
+    # a tag with no name (an export from before mark_names) is still left out
+    old = json.loads(json.dumps(tagged))
+    del old["label"]["mark_names"]
+    assert vlm_references.blind(old) is None
