@@ -287,7 +287,9 @@ def group_labels(ctx: DesktopCtx, groups: Sequence[tuple[str, str, str]]) -> lis
         anchored = {quals[i][0][1] for i in ids if quals[i] and quals[i][0][0] == "of"}
         for i in ids:
             if not quals[i] and len(anchored) == 1:
-                labels[i] = f"{base[i]} without a {next(iter(anchored))}"
+                anchor = next(iter(anchored))
+                article = "an" if anchor[:1].lower() in "aeiou" else "a"
+                labels[i] = f"{base[i]} without {article} {anchor}"
     return labels
 
 

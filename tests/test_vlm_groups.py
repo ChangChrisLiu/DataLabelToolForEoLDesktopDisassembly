@@ -551,3 +551,13 @@ def test_every_mark_tag_has_a_name_on_the_label_side(scene, tmp_path):
 
 def tc_keys(db) -> set:
     return set(db.instances(S.DESKTOP))
+
+
+def test_an_anchor_with_a_vowel_takes_an():
+    recs = [InstanceRec(key="expansion_card.01", desktop=1, cls="expansion_card")]
+    recs += [InstanceRec(key=f"card_latch.0{j}", desktop=1, cls="card_latch",
+                         attrs={"of": "expansion_card.01"}) for j in (1, 2)]
+    recs += [InstanceRec(key=f"card_latch.1{j}", desktop=1, cls="card_latch") for j in (1, 2)]
+    labels = {g.gid: g.label for g in part_groups(_ctx(recs)).values()}
+    assert labels["card_latch@-"] == "card latches without an expansion card"
+    assert labels["card_latch@expansion_card.01"] == "card latches of the expansion card"
