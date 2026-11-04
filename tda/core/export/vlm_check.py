@@ -501,10 +501,30 @@ class Grounder:
             return key, mclass
         if mclass is None:
             return None, None
-        for candidate in eligible:
-            if self.world.match_class(candidate) == mclass:
-                return candidate, mclass
-        return None, mclass
+        return self.closest(text, [c for c in eligible
+                                   if self.world.match_class(c) == mclass]), mclass
+
+    def closest(self, text: Any, candidates: Sequence[str]) -> Optional[str]:
+        """The candidate whose wording shares the most words with ``text``, the first on a tie.
+
+        How a class phrase picks among the eligible targets of its class: "the PSU
+        cable connectors" is the group anchored on the PSU cable, not the SSD's; words
+        that tell no candidate apart ("the RAM latches" of two modules) leave the order
+        of ``candidates`` -- the gold order -- to decide.
+        """
+        if not candidates:
+            return None
+
+        def words(t: Any) -> set:
+            return set(re.sub(r"\b\d+\b", " ", self.norm(t)).split())
+
+        said = words(text)
+        best, best_n = candidates[0], -1
+        for candidate in candidates:
+            n = len(said & words(self.world.label_of(candidate)))
+            if n > best_n:
+                best, best_n = candidate, n
+        return best
 
     def ground_group(self, text: Any, eligible: Sequence[str] = ()) -> Optional[str]:
         """Model wording -> a group id or an instance key (spec 3.1, 6.2).
@@ -727,7 +747,11 @@ def _blockers_f1(answered: Any, blockers: Sequence[str], world: World) -> float:
     for text in answered or []:
         key, mclass = g.ground(text)
         if key is not None:
+            # an exact name (or a member of a gold group) claims its target, so a
+            # class phrase after it grounds to another one
             target = g.resolve(text, list(blockers))[0]
+            if target in left:
+                left.remove(target)
         else:
             target = g.ground_group(text, left)
             if target is None:
@@ -745,10 +769,13 @@ def _pairs_grounded(items: Any, world: Optional[World], eligible: Sequence[tuple
     """``[(verb, target, match_class)]`` for a list of ``{verb, target}`` answers.
 
     A class phrase is resolved to an eligible target of its class (instance
-    key or group id), each eligible one used once -- "unscrew a CPU cooler
-    screw" twice is two screws, "open the RAM latches" twice is the latches of
-    two modules (spec 6.2: the count of group actions per class). A member
-    named exactly stands for its group where the group is eligible.
+    key or group id), each eligible one used once and in the order given --
+    "unscrew a CPU cooler screw" twice is two screws, "open the RAM latches"
+    twice is the latches of two modules (spec 6.2: the count of group actions
+    per class); among several of its class it takes the one its words fit best
+    (:meth:`Grounder.closest`). A member named exactly stands for its group
+    where the group is eligible, and on a world with groups an exact name
+    spends its target too.
     """
     out = []
     g = grounder(world) if world else None
@@ -770,8 +797,12 @@ def _pairs_grounded(items: Any, world: Optional[World], eligible: Sequence[tuple
         mine = [t for v, t in left if v == verb]
         key, mclass = g.ground(item.get("target"))
         if key is not None:
-            # an exact name is never spent from the eligible list (the old reading)
             key = g.resolve(item.get("target"), mine)[0]
+            if world.grouped and (verb, key) in left:
+                # an exact name (or a member standing for its group) spends its
+                # target, so a later class phrase grounds to another one; an old
+                # world keeps the old reading (exact names are never spent)
+                left.remove((verb, key))
         elif mclass is not None:
             key = g.ground_group(item.get("target"), mine)
             if key is not None:
@@ -1082,17 +1113,21 @@ def _g_v10(record, answer, world, tax, transform) -> Grade:
     the other one -- a begun group named as done is a false positive there.
     """
     truth = record["label"]["answer"]
-    want = {(a["verb"], a["target"]) for a in truth["done"]}
-    begun = {(a["verb"], a["target"]) for a in truth.get("started") or []}
+    # the gold lists in their own order: a class phrase grounds to the first
+    # unclaimed target of its class, so the gold reply reads back exactly
+    done = list(dict.fromkeys((a["verb"], a["target"]) for a in truth["done"]))
+    started = list(dict.fromkeys((a["verb"], a["target"])
+                                 for a in truth.get("started") or []))
+    want, begun = set(done), set(started)
     got = {(v, k) for v, k, _ in _pairs_grounded(answer.get("done"), world,
-                                                  sorted(want) + sorted(begun)) if k}
+                                                  done + started) if k}
     f1 = _f1(len(got & want), len(got), len(want))
     progress = answer.get("progress", answer.get("progress_bin"))
     bin_ok = _norm(progress).replace(" ", "-") == _norm(truth["progress_bin"]).replace(" ", "-")
     metrics = {"set_f1": f1, "bin_correct": bin_ok}
     if "started" in truth:
         said = {(v, k) for v, k, _ in _pairs_grounded(answer.get("started"), world,
-                                                       sorted(begun) + sorted(want)) if k}
+                                                       started + done) if k}
         metrics["started_f1"] = _f1(len(said & begun), len(said), len(begun))
     return Grade(True, f1, metrics)
 
