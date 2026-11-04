@@ -93,7 +93,9 @@ def test_an_of_changed_in_the_session_is_recorded_too(db, tax):
     data = StepTableData.load(db, D2, tax, "tester")
     data.instances["ram_latch.01"].attrs["of"] = "ram_module.02"
     data.save(db)
-    assert fixes(db, D2) == [("ram_latch.01", "of", "ram_module.01", "ram_module.02", "tester")]
+    # the importer no longer pairs latches by key order (2026-11-04): the stored
+    # value is blank, and the fix records it as such
+    assert fixes(db, D2) == [("ram_latch.01", "of", None, "ram_module.02", "tester")]
 
 
 def test_set_back_to_the_importers_value_is_recorded_and_replayed(db, tmp_path, tax):

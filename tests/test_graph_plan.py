@@ -435,13 +435,20 @@ def test_infer_fills_screw_fastens_and_captive_parents(tax):
     assert any("screw.motherboard.01.fastens" in line for line in filled)
 
 
-def test_infer_pairs_ram_latches_with_the_nearest_module(tax):
+def test_infer_never_pairs_ram_latches_by_key_order(tax):
+    """Retired 2026-11-04: which module a latch locks is geometry, not numbering.
+
+    Key order put latch 2 on module 1 where the masks put it on module 2 (96 of
+    254 wrong). ``of`` comes from the masks as ``relation_fix`` rows now, so the
+    importer leaves it blank and reports no fill for it.
+    """
     instances = _d13(tax).instances
-    infer_relational_fields(instances, tax)
-    assert instances["ram_latch.01"].attrs["of"] == "ram_module.01"
-    assert instances["ram_latch.02"].attrs["of"] == "ram_module.01"
-    assert instances["ram_latch.03"].attrs["of"] == "ram_module.02"
-    assert instances["ram_latch.04"].attrs["of"] == "ram_module.02"
+    filled = infer_relational_fields(instances, tax)
+    latches = [key for key, rec in instances.items() if rec.cls == "ram_latch"]
+    assert latches
+    for key in latches:
+        assert "of" not in instances[key].attrs, key
+    assert not any(".attrs.of = " in line for line in filled)
 
 
 def test_infer_resolves_a_class_level_socket_host(tax):

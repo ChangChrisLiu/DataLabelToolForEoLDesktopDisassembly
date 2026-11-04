@@ -264,13 +264,21 @@ def test_a_run_with_no_failures_says_nothing_about_them(env, capsys):
 # --------------------------------------------------------------------------- #
 # a latch whose `of` is a stray space is still unanswered
 # --------------------------------------------------------------------------- #
-def test_a_whitespace_latch_of_counts_as_blank(tax):
+def test_a_blank_latch_of_is_never_guessed(tax):
+    """A blank or whitespace ``of`` stays as it is: the latch's module is geometry.
+
+    The key-order pairing is retired (2026-11-04,
+    :func:`tda.core.graph_infer._infer_ram_latches`); an empty-slot latch that
+    locks nothing must not be handed a module by its number.
+    """
     instances = {
         "ram_module.01": InstanceRec("ram_module.01", 1, "ram_module"),
         "ram_latch.01": InstanceRec("ram_latch.01", 1, "ram_latch", attrs={"of": "  "}),
+        "ram_latch.02": InstanceRec("ram_latch.02", 1, "ram_latch"),
     }
-    infer_relational_fields(instances, tax)
-    assert instances["ram_latch.01"].attrs["of"] == "ram_module.01"
+    assert infer_relational_fields(instances, tax) == []
+    assert instances["ram_latch.01"].attrs["of"] == "  "
+    assert "of" not in instances["ram_latch.02"].attrs
 
 
 def test_a_filled_latch_of_is_still_never_overwritten(tax):
