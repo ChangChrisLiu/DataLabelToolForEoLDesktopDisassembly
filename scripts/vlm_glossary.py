@@ -285,4 +285,13 @@ def glossary_text(terms: Optional[Iterable] = None, state_terms: Optional[Iterab
         if cls in states and meanings:
             line += " States: " + "; ".join(f"{s} = {m}" for s, m in meanings.items()) + "."
         lines.append(line)
+    if states:
+        # V14 merged into V2 (owner 2026-11-04): a state question may be answered "cannot tell"
+        lines.append(f"- {CANNOT_TELL}: {CANNOT_TELL_MEANING}")
     return "\n".join(lines)
+
+
+#: The answer a V2 state question has beside the class's states (V14 merged into V2).
+CANNOT_TELL = "cannot_tell"
+CANNOT_TELL_MEANING = ("this image does not show the part well enough to tell its state "
+                       "(it is covered, too small, or outside the picture).")

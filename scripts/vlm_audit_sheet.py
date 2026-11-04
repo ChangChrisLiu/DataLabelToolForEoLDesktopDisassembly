@@ -208,10 +208,27 @@ def gold_lines(record: dict, world: Optional[World] = None) -> list[tuple[str, s
         options = label.get("options") or []
         index = reference_option(label)
         letter = LETTERS[index] if index is not None else "?"
-        out.append(("choice", f"{letter}: {_action(answer, world, record)}"))
+        right = options[index] if index is not None else {}
+        out.append(("choice", f"{letter}: {right.get('say_verb', right.get('verb', '?'))} "
+                              f"{right.get('target_label', '?')}"))
         kinds = ", ".join(f"{LETTERS[i]} {o.get('kind', '?')}" for i, o in enumerate(options))
         if kinds:
             out.append(("option kinds", kinds))
+    elif key == "V6.open" and check.get("type") == "frontier":
+        # every action possible now, by group (owner 2026-11-04)
+        if check.get("form") == "constrained":
+            out.append(("rule", str((check.get("constraint") or {}).get("rule"))))
+        groups = {g["key"]: g for g in [*(check.get("ruled_groups") or []),
+                                        *(check.get("groups") or [])]}
+        for i, key_ in enumerate(check.get("gold_groups") or [], start=1):
+            g = groups.get(key_) or {}
+            hidden = " (a cable hides some)" if g.get("hidden_by_cable") else ""
+            out.append((f"possible {i}", f"{g.get('phrase', key_)}{hidden}"))
+        for key_ in check.get("forbidden_groups") or []:
+            out.append(("ruled out", str((groups.get(key_) or {}).get("phrase", key_))))
+        blocked = [g.get("phrase", g.get("key")) for g in check.get("blocked_groups") or []]
+        if blocked:
+            out.append(("not yet", "; ".join(blocked[:6]) + (" ..." if len(blocked) > 6 else "")))
     elif key == "V6.open":
         out.append(("next action", _action(answer, world, record)))
         eq = check.get("equivalent_actions") or []
@@ -222,6 +239,10 @@ def gold_lines(record: dict, world: Optional[World] = None) -> list[tuple[str, s
                         + (" ..." if len(check["blocked_actions"]) > 8 else "")))
     elif task == "V7":
         plan = answer.get("plan") or []
+        if check.get("constraint"):
+            out.append(("rule", str(check["constraint"].get("rule"))))
+        if check.get("count"):
+            out.append(("connectors to unplug", str(check["count"].get("present"))))
         out.append(("plan", f"{len(plan)} steps to remove {name(answer.get('goal'))}"))
         for i, a in enumerate(plan, start=1):
             out.append((f"{i}", _action(a, world, record)))
@@ -255,11 +276,6 @@ def gold_lines(record: dict, world: Optional[World] = None) -> list[tuple[str, s
                         f"{name(ev.get('target'))}: {ev.get('old')} -> {ev.get('new')}"))
         if label.get("negative"):
             out.append(("negative kind", str(label["negative"])))
-    elif task == "V14":
-        out.append(("answerable", _yes(answer.get("answerable"))))
-        out.append(("part", name(check.get("instance"))))
-        if answer.get("answerable"):
-            out.append(("state", str(answer.get("state"))))
     elif key == "V15.moment":
         out.append(("same moment", _yes(answer.get("same_moment"))))
         views = label.get("views") or []
@@ -350,7 +366,7 @@ def boxes_of(record: dict, world: Optional[World] = None) -> list[dict]:
 def marks_of(record: dict, index: int) -> list[dict]:
     """What the model sees drawn on image ``index``: the ``prompt.marks`` (``kind = "mark"``,
     the tag as label; red, dashed) and V3's ``prompt.hint_regions`` (``kind = "hint"``, no
-    label; yellow, dashed). None on V1 / V8 / V14."""
+    label; yellow, dashed). None on V1 / V8."""
     marks = [{"label": str(m.get("tag") or ""), "bbox": [float(v) for v in m["bbox"]],
               "kind": "mark"}
              for m in shown_marks(record)

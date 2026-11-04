@@ -26,8 +26,8 @@ go to ``meta.transforms`` so ``scripts/vlm_score.py --chat`` can map boxes back.
 
 There is deliberately no crop around a record's own evidence (W3b review S2):
 the evidence boxes are label side, and a crop built from them is the answer
-leaking into the picture -- every decidable V14 item has a box and no
-undecidable one does, V12's changed pairs have boxes and its no-change pairs
+leaking into the picture -- every V2 state question on a visible part has a box and
+nearly no cannot_tell one does, V12's changed pairs have boxes and its no-change pairs
 none, and V8's box *is* its answer. A crop may depend on the desktop and the
 view, never on the record.
 A two-image question is two image parts, or with ``--composite`` one
@@ -65,8 +65,10 @@ from tda.core.export.vlm_check import LETTERS, format_instruction  # noqa: E402
 #: Bumped whenever the wording around the question changes (chat-v2: marks, image legend,
 #: glossary; chat-v3: the V6 multiple choice speaks of its one picture; chat-v4: V3's two
 #: forms -- the free question also asks the region, the roi one shows a yellow hint box -- and
-#: the dashed mark-v2 outlines).
-CHAT_FORMAT_ID = "chat-v4"
+#: the dashed mark-v2 outlines; chat-v5, the final round of 2026-11-04: V6 lists every action
+#: possible now (open / constrained, the options named in words), V7 plans under rules in
+#: words, V2 answers cannot_tell, V14 is gone).
+CHAT_FORMAT_ID = "chat-v5"
 SYSTEM = ("You are shown photographs of a desktop PC being disassembled on a bench. "
           "Answer exactly in the JSON format asked for.")
 #: The crops a run may use: none, or the view's fixed chassis ROI.
@@ -146,11 +148,11 @@ def legend_line(record: dict) -> str:
 
 #: Tasks whose answer is a box or a visibility: a mark there would give the answer away
 #: (spec 3.2), so marks are never drawn nor named on them, whatever the record holds.
-UNMARKED_TASKS = ("V1", "V8", "V14")
+UNMARKED_TASKS = ("V1", "V8")
 
 
 def shown_marks(record: dict) -> list[dict]:
-    """The ``prompt.marks`` the model may see: none on V1 / V8 / V14."""
+    """The ``prompt.marks`` the model may see: none on V1 / V8."""
     prompt = record["prompt"]
     if prompt.get("task") in UNMARKED_TASKS:
         return []
@@ -159,7 +161,7 @@ def shown_marks(record: dict) -> list[dict]:
 
 def shown_hints(record: dict) -> list[dict]:
     """The ``prompt.hint_regions`` (V3's ``roi`` form), as marks of ``style = "hint"``: a dashed
-    box in :data:`HINT_RGB`, no tag (none on V1 / V8 / V14)."""
+    box in :data:`HINT_RGB`, no tag (none on V1 / V8)."""
     prompt = record["prompt"]
     if prompt.get("task") in UNMARKED_TASKS:
         return []

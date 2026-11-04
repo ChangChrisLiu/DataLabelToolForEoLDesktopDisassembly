@@ -63,7 +63,7 @@ __all__ = ["CAPABILITY_LAYERS", "RESPONSE_FORMATS", "VERBS", "Grade", "Grounder"
 #: spec 8.2's L1-L4 of ``label.layer``: these group the tasks the way the
 #: results table does.
 CAPABILITY_LAYERS = {
-    "V1": "L1", "V2": "L1", "V8": "L1", "V14": "L1",
+    "V1": "L1", "V2": "L1", "V8": "L1",
     "V4": "L2", "V5": "L2",
     "V6": "L3", "V7": "L3", "V16": "L3",
     "V3": "change", "V12": "change", "V10": "change",
@@ -78,7 +78,8 @@ VERBS = ("unscrew", "disconnect", "open", "release", "remove", "displace", "reor
 RESPONSE_FORMATS = {
     "V1": 'Answer with JSON only: {"components": [{"class": "<part name>", '
           '"bbox": [x, y, width, height]}, ...]} in pixel coordinates of the image.',
-    "V2.state": 'Answer with JSON only: {"state": "<one of: {allowed}>"}.',
+    "V2.state": 'Answer with JSON only: {"state": "<one of: {allowed}>"} (cannot_tell: this '
+                'image does not show it well enough to tell).',
     "V2.count": 'Answer with JSON only: {"count": <integer>}.',
     "V3": 'Answer with JSON only: {"verb": "<one of: ' + ", ".join(VERBS) + '>", '
           '"target": "<the part acted on>", "tool": "<tool, or null>"}.',
@@ -91,8 +92,10 @@ RESPONSE_FORMATS = {
           '["<part that has to be dealt with first>", ...]}.',
     "V5": 'Answer with JSON only: {"actions": [{"verb": "<verb>", "target": '
           '"<part>"}, ...]}.',
-    "V6.open": 'Answer with JSON only: {"verb": "<one of: ' + ", ".join(VERBS) + '>", '
-               '"target": "<part>"}.',
+    # V6 (owner 2026-11-04): every action possible now, one entry per action; the optional
+    # "why" is not graded
+    "V6.open": 'Answer with JSON only: {"actions": [{"verb": "<one of: ' + ", ".join(VERBS)
+               + '>", "target": "<part>"}, ...], "why": "<optional: one sentence>"}.',
     "V6.options": 'Answer with JSON only: {"choice": "<letter of the option>"}.',
     "V7": 'Answer with JSON only: {"plan": [{"verb": "<verb>", "target": "<part>"}, '
           '...]} in the order you would carry them out.',
@@ -107,8 +110,7 @@ RESPONSE_FORMATS = {
            'a set of parts begun but not finished; progress: percent of the teardown '
            'finished).',
     "V12": 'Answer with JSON only: {"changed": true or false}.',
-    "V14": 'Answer with JSON only: {"answerable": true or false, "state": '
-           '"<one of: {allowed}>, or null when it cannot be told"}.',
+
     "V15.cross": 'Answer with JSON only: {"state": "<state>", "best_view": '
                  '"<first or second>"}.',
     "V15.moment": 'Answer with JSON only: {"same_moment": true or false}.',
@@ -759,7 +761,10 @@ def _g_v2(record, answer, world, tax, transform) -> Grade:
         return Grade(True, score, {"correct": exact, "exact": exact, "off_by": off,
                                    "prior_is_correct": prior})
     ok = _norm(answer.get("state")) == _norm(truth["state"])
-    return Grade(True, float(ok), {"correct": ok, "exact": ok, "prior_is_correct": prior})
+    # cannot_tell is graded like any other state (V14 merged into V2, owner 2026-11-04)
+    return Grade(True, float(ok), {"correct": ok, "exact": ok, "prior_is_correct": prior,
+                                   "cannot_tell": _norm(truth["state"]) == "cannot tell",
+                                   "abstained": _norm(answer.get("state")) == "cannot tell"})
 
 
 def _same_target(world: Optional[World], got: Optional[str], want: Optional[str]) -> bool:
@@ -960,9 +965,76 @@ def _g_v5(record, answer, world, tax, transform) -> Grade:
     return Grade(True, recall, {"demonstrated_recall": recall, "blocked_rate": blocked})
 
 
+def _frontier_index(check: dict, world: World) -> tuple[dict, list[tuple[str, str]]]:
+    """``(verb, target) -> group key`` over the base frontier and the blocked groups, and the
+    eligible pairs a reply's wording is grounded on (part groups of a group's members
+    included, so "unscrew the PSU screws" grounds to the group)."""
+    index: dict[tuple[str, str], str] = {}
+    for group in [*(check.get("groups") or []), *(check.get("ruled_groups") or []),
+                  *(check.get("blocked_groups") or [])]:
+        for a in group.get("actions") or []:
+            index.setdefault((a["verb"], a["target"]), group["key"])
+            gid = world.group_of(a["target"]) if world is not None else None
+            if gid is not None:
+                index.setdefault((a["verb"], gid), group["key"])
+    return index, list(index)
+
+
+def _g_v6_frontier(record, answer, world, tax, transform) -> Grade:
+    """V6 since the owner's 2026-11-04 rulings: the gold is every action possible now, grouped.
+
+    **mc**: the chosen option is right when it is the one inside the frontier. **open** and
+    **constrained**: each answered action is grounded (class phrases to a target of their
+    class, a member to its group) and mapped to its group; precision = groups hit /
+    (groups hit + wrong answers), recall = groups hit / gold groups, F1 the score. An action
+    on a blocked, already-done or absent part is a wrong answer; repeats of a group already
+    hit cost nothing; ``why`` is not graded. **constrained** also reports whether an answer
+    named an action the rule forbids (``constraint_violated``, ``violations``)."""
+    label = record["label"]
+    check = label["answer_check"]
+    options = label.get("options")
+    if options:
+        choice = str(answer.get("choice") or "").strip().upper()[:1]
+        if choice not in LETTERS[:len(options)]:
+            return Grade(True, 0.0, {"invalid_choice": True, "blocked": None})
+        option = options[LETTERS.index(choice)]
+        right = option.get("kind") == "frontier"
+        return Grade(True, float(right), {"correct": right, "blocked": not right,
+                                          "group_match": right})
+    gold = set(check.get("gold_groups") or [])
+    forbidden = set(check.get("forbidden_groups") or [])
+    index, eligible = _frontier_index(check, world)
+    items = _pairs_grounded(answer.get("actions"), world, eligible) if world else []
+    hit: set = set()
+    wrong = violations = 0
+    for verb, key, mclass in items:
+        group = index.get((verb, key)) if key is not None else None
+        if group is None and key is not None and world is not None and world.is_group(key):
+            group = next((index[(verb, m)] for m in world.members(key)
+                          if (verb, m) in index), None)
+        if group in gold:
+            hit.add(group)
+            continue
+        wrong += 1
+        if group in forbidden:
+            violations += 1
+    n_pred = len(hit) + wrong
+    precision = len(hit) / n_pred if n_pred else 0.0
+    recall = len(hit) / len(gold) if gold else 1.0
+    f1 = _f1(len(hit), n_pred, len(gold))
+    metrics = {"precision": precision, "recall": recall, "f1": f1, "groups_hit": len(hit),
+               "gold_groups": len(gold), "wrong_actions": wrong,
+               "answered_actions": len(items)}
+    if check.get("form") == "constrained":
+        metrics.update(constraint_violated=violations > 0, violations=violations)
+    return Grade(True, f1, metrics)
+
+
 def _g_v6(record, answer, world, tax, transform) -> Grade:
     label = record["label"]
     check = label["answer_check"]
+    if check.get("type") == "frontier":
+        return _g_v6_frontier(record, answer, world, tax, transform)
     equivalent = {(a["verb"], a["target"]) for a in check.get("equivalent_actions")
                   or [{"verb": check["reference"][0], "target": check["reference"][1]}]}
     blocked = {(a["verb"], a["target"]) for a in check.get("blocked_actions") or []}
@@ -1024,7 +1096,7 @@ def reference_option(label: dict) -> Optional[int]:
         if len(ref) == 2 and o.get("verb") == ref[0] and ref[1] in (o.get("members") or ()):
             return i
     for i, o in enumerate(options):
-        if o.get("kind") == "demonstrated":
+        if o.get("kind") in ("demonstrated", "frontier"):
             return i
     return None
 
@@ -1118,12 +1190,50 @@ def _v7_eligible(record: dict, world: World) -> list[tuple[str, str]]:
     return pairs
 
 
+def moment_edges_of(check: dict, nodes) -> list[Edge]:
+    """The moment's own rules of a record (``answer_check.moment``) as edges: what covers a
+    part in this frame (``covered_by``) and the loose parts that come out first -- every
+    node of ``nodes`` outside ``loose_scope`` waits for each loose part (``blocked_by``,
+    mode ``loose``: every verb, only ``removed`` clears it). The twin of
+    :func:`tda.core.graph.moment_edges`, rebuilt from the label alone."""
+    moment = check.get("moment") or {}
+    out = [Edge(type="covered_by", target=x, blocker=y, source="occlusion", status="accepted")
+           for x, ys in sorted((moment.get("occluded") or {}).items()) for y in ys]
+    loose = list(moment.get("loose") or [])
+    if loose:
+        scope = set(moment.get("loose_scope") or [])
+        for key in sorted(set(nodes)):
+            if key in scope or key in loose:
+                continue
+            out.extend(Edge(type="blocked_by", target=key, blocker=part, mode="loose",
+                            source="loose", status="accepted") for part in loose)
+    return out
+
+
+def constraint_edges_of(check: dict) -> list[Edge]:
+    """A constrained question's rule as edges (``answer_check.constraint.edges``)."""
+    rule = check.get("constraint") or {}
+    return [Edge(type=e["type"], target=e["target"], blocker=e["blocker"],
+                 necessity=e.get("necessity", "required"), mode=e.get("mode"),
+                 source=e.get("source", "constraint"), status="accepted")
+            for e in rule.get("edges") or []]
+
+
 def _g_v7(record, answer, world, tax, transform) -> Grade:
     check = record["label"]["answer_check"]
     if world is None or tax is None:
         raise ValueError("V7 needs the world and the taxonomy")
     sim: dict[str, InstState] = {k: InstState(state=v, placement="in_chassis")
                                  for k, v in check["start_state"].items()}
+    # the rules a plan is replayed under (owner 2026-11-04): the stored graph, this frame's
+    # occlusion, loose parts first -- and a constrained question's own rule
+    present = [k for k, v in check["start_state"].items() if v != "removed"]
+    rule_edges = constraint_edges_of(check)
+    edges = [*world.edges, *moment_edges_of(check, present), *rule_edges]
+    count = check.get("count") or None
+    counted = set((count or {}).get("members") or [])
+    disconnected: set = set()
+    rule_broken = False
     steps = _pairs_grounded(answer.get("plan"), world, _v7_eligible(record, world))
     violations, first_violation, unresolved, noop = 0, None, 0, 0
     for index, (verb, target, _) in enumerate(steps):
@@ -1147,9 +1257,13 @@ def _g_v7(record, answer, world, tax, transform) -> Grade:
                 # no redundancy penalty: an action already done (or one that
                 # changes nothing) is a no-op, not an error
                 continue
-            gating = applicable_preconditions(world.edges, (verb, key))
-            if unmet(gating, sim, "required"):
+            gating = applicable_preconditions(edges, (verb, key))
+            broken = unmet(gating, sim, "required")
+            if broken:
                 violated = True
+                rule_broken = rule_broken or any(e.source == "constraint" for e in broken)
+            if count and verb == count.get("verb") and key in counted:
+                disconnected.add(key)
             applied = True
             sim[key] = InstState(state=new, placement="in_chassis")
             if new == "removed" and cls != "connector":
@@ -1183,11 +1297,21 @@ def _g_v7(record, answer, world, tax, transform) -> Grade:
     reached = bool(goal_members) and all(
         sim.get(k) is not None and sim[k].state == goal_state for k in goal_members)
     success = reached and violations == 0 and recall == 1.0
-    return Grade(True, float(success), {
+    metrics = {
         "violation_free": violations == 0, "violations": violations,
         "first_violation": first_violation, "required_recall": recall,
         "goal_reached": reached, "unresolved_steps": unresolved, "noop_steps": noop,
-        "plan_length": len(steps), "reference_length": check.get("plan_length")})
+        "plan_length": len(steps), "reference_length": check.get("plan_length"),
+        "valid": reached and violations == 0}
+    if check.get("form") == "constrained":
+        metrics["constraint_kept"] = not rule_broken
+    if count:
+        # how many plugs the plan unplugs against how many are in (owner 2026-11-04)
+        planned, present_n = len(disconnected), int(count.get("present") or 0)
+        metrics.update(count_planned=planned, count_present=present_n,
+                       count_exact=planned == present_n,
+                       count_abs_error=abs(planned - present_n))
+    return Grade(True, float(success), metrics)
 
 
 def _box_set_grade(truth: Sequence[dict], preds: list[tuple[Optional[str], Optional[list]]],
@@ -1297,17 +1421,6 @@ def _g_bool(field_name: str):
     return handler
 
 
-def _g_v14(record, answer, world, tax, transform) -> Grade:
-    truth = record["label"]["answer"]
-    got = _as_bool(answer.get("answerable"))
-    ok = got is not None and got == bool(truth["answerable"])
-    state_ok = None
-    if truth["answerable"]:
-        state_ok = _norm(answer.get("state")) == _norm(truth["state"])
-    return Grade(True, float(ok and state_ok is not False),
-                 {"answerable_correct": ok, "state_correct": state_ok,
-                  "abstained": got is False})
-
 
 def _g_v15(record, answer, world, tax, transform) -> Grade:
     truth = record["label"]["answer"]
@@ -1334,19 +1447,22 @@ def _g_v16(record, answer, world, tax, transform) -> Grade:
     return Grade(True, float(ok), {"correct": ok, "localised": located})
 
 
-def gold_reply(record: dict, world: Optional[World] = None) -> str:
+def gold_reply(record: dict, world: Optional[World] = None, *, plain: bool = False) -> str:
     """The reply a perfect model would give, in :data:`RESPONSE_FORMATS`.
 
     Instance keys become their wording when a ``world`` is given, the way a
     model would name them. A sanity check of the whole chain: every gold reply
-    must score 1 (``tests/test_w3b_scripts.py``).
+    must score 1 (``tests/test_w3b_scripts.py``). ``plain`` names every part the way a
+    person reads it, no ordinal (:meth:`World.plain_name`): the reasoning side product's
+    answer, never graded.
     """
     label, task = record["label"], record["prompt"]["task"]
     answer = label["answer"]
 
     def name(key):
-        if world is not None and (key in world.instances or world.is_group(key)):
-            return world.label_of(key)
+        if world is not None and (key in world.instances or world.is_group(key)
+                                  or (plain and str(key).startswith(CABLE_PREFIX))):
+            return world.plain_name(key) if plain else world.label_of(key)
         return key
 
     key = format_key(record)
@@ -1371,7 +1487,8 @@ def gold_reply(record: dict, world: Optional[World] = None) -> str:
             raise ValueError(f"{record.get('id')}: no option is the reference action")
         out = {"choice": LETTERS[index]}
     elif key == "V6.open":
-        out = {"verb": answer["verb"], "target": name(answer["target"])}
+        out = {"actions": [{"verb": a["verb"], "target": name(a["target"])}
+                           for a in answer["actions"]]}
     elif task == "V7":
         out = {"plan": [{"verb": a["verb"], "target": name(a["target"])}
                         for a in answer["plan"]]}
@@ -1387,8 +1504,7 @@ def gold_reply(record: dict, world: Optional[World] = None) -> str:
                               for a in answer["started"]]
     elif task == "V12":
         out = {"changed": answer["changed"]}
-    elif task == "V14":
-        out = {"answerable": answer["answerable"], "state": answer["state"]}
+
     elif key == "V15.moment":
         out = {"same_moment": answer["same_moment"]}
     elif key == "V15.cross":
@@ -1405,5 +1521,5 @@ def gold_reply(record: dict, world: Optional[World] = None) -> str:
 _GRADERS = {
     "V1": _g_v1, "V2": _g_v2, "V3": _g_v3, "V4": _g_v4, "V5": _g_v5, "V6": _g_v6,
     "V7": _g_v7, "V8": _g_v8, "V10": _g_v10, "V12": _g_bool("changed"),
-    "V14": _g_v14, "V15": _g_v15, "V16": _g_v16,
+    "V15": _g_v15, "V16": _g_v16,
 }

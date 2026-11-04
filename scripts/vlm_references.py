@@ -22,7 +22,8 @@ Reads one export and its sidecars -- never the database -- and writes:
   ``protocol_prior.report.json`` gives its accuracy by task -- the line a text
   model reading the log would start from. Its next-action accuracy over coarse
   ``(verb, class)`` is reported too, the number the 71.8 % probe measured.
-* ``state_oracle.jsonl`` -- every record **except V14** with its images replaced
+* ``state_oracle.jsonl`` -- every record **except the V2 questions on a hidden part**
+  (``cannot_tell``; V14 merged into V2) with its images replaced
   by the structured state table of each moment (instances with state, placement
   and, only where that view has confirmed rows, visibility): the "perfect
   perception" upper bound. One table per image in a camera unit, **one per
@@ -30,9 +31,10 @@ Reads one export and its sidecars -- never the database -- and writes:
   table; V3 / V12 have two, before and after -- :func:`moment_images`). A screw is shown as present / removed, never as
   tight or loose -- no picture shows that either. Records whose truth rests on
   a captive screw's tightness keep ``label.image_undecidable = true`` so the
-  oracle-vs-VLM gap can leave them out. V14 asks whether *this view* can settle
-  a part's state: the table's visibility column is that answer, so the oracle
-  has no V14 items (W4-C) and the summary says how many were left out.
+  oracle-vs-VLM gap can leave them out. A V2 question on a part this view cannot
+  see asks whether *this view* can settle its state: the table's visibility column
+  is that answer, so the oracle has no such item (W4-C, ``V2-cannot_tell``) and the
+  summary says how many were left out.
 * ``mask_overlay.jsonl`` (+ ``.images_manifest.jsonl``, with ``--assets``) --
   every eligible record with its frames replaced by a copy on which the
   confirmed visible masks are painted in class colours (:mod:`vlm_overlay`):
@@ -249,20 +251,29 @@ def state_oracle(record: dict, worlds: dict[int, World], frames: dict[str, dict]
     return out
 
 
-#: Tasks the state oracle does not answer: V14 asks whether the view can settle
-#: a part's state, and the table's visibility column is exactly that (W4-C).
-ORACLE_SKIPS = ("V14",)
+#: What the state oracle does not answer: a V2 question on a part this view cannot see
+#: (``cannot_tell``, V14 merged into V2) -- the table's visibility column is exactly that
+#: (W4-C). Counted as this key.
+CANNOT_TELL_SKIP = "V2-cannot_tell"
+
+
+def oracle_skip(record: dict) -> Optional[str]:
+    """Why the state oracle leaves ``record`` out, or ``None``."""
+    if record["prompt"]["task"] == "V2" and record["label"]["answer_check"].get("hidden"):
+        return CANNOT_TELL_SKIP
+    return None
 
 
 def state_oracle_rows(records: list[dict], worlds: dict[int, World],
                       frames: dict[str, dict]) -> tuple[list[dict], dict[str, int]]:
-    """``(oracle records, skipped per task)``: every record but V14's (and but those
-    whose mark tag has no name in ``label.mark_names``, counted as ``mark_tag``)."""
+    """``(oracle records, skipped per kind)``: every record but the V2 questions on a hidden
+    part (and but those whose mark tag has no name in ``label.mark_names``, counted as
+    ``mark_tag``)."""
     rows, skipped = [], Counter()
     for record in records:
-        task = record["prompt"]["task"]
-        if task in ORACLE_SKIPS:
-            skipped[task] += 1
+        why = oracle_skip(record)
+        if why:
+            skipped[why] += 1
             continue
         row = state_oracle(record, worlds, frames)
         if row is None:
@@ -356,7 +367,8 @@ def prior_answer(record: dict, model: Bigram, world: World,
         guess = model.best(prev)
         if guess is None:
             return None
-        return {"verb": guess[0], "target": _phrase(world, guess[1])}
+        # the open and constrained forms list every action possible now: the prior lists one
+        return {"actions": [{"verb": guess[0], "target": _phrase(world, guess[1])}]}
     if task == "V7":
         goal_class = world.match_class(record["label"]["answer_check"]["goal"]) or "cpu"
         plan, done = [], Counter()
@@ -462,8 +474,9 @@ def protocol_prior(records: list[dict], worlds: dict[int, World], tax,
         variant.append(out)
         mc = task == "V6" and bool(record["prompt"].get("options"))
         by_task["V6-mc" if mc else task].append(grade(record, raw, world, tax).score)
-        if task == "V6" and not mc:
-            ref = record["label"]["answer_check"]["reference"]
+        ref = (record["label"]["answer_check"].get("demonstrated")
+               or record["label"]["answer_check"].get("reference"))
+        if task == "V6" and not mc and ref:
             want = (ref[0], (world.match_class(ref[1]) or "?").split(".")[0])
             coarse_hits.append(float(coarse.best(_prev(record)) == want))
     report = {
@@ -526,8 +539,9 @@ def main(argv=None) -> int:
     summary = {
         "blind": {"records": n_blind, **({"skipped": blind_skipped} if blind_skipped else {})},
         "state_oracle": {"records": n_oracle, "skipped": oracle_skipped,
-                         "skipped_why": "V14 asks whether the view can settle the state; "
-                                        "the table's visibility column is that answer"
+                         "skipped_why": "V2-cannot_tell: the question asks whether the view "
+                                        "can settle the state; the table's visibility "
+                                        "column is that answer"
                                         + ("; mark_tag: the question names a part by its "
                                            "mark only, which no text can stand in for"
                                            if UNMARK_SKIP in oracle_skipped else "")},
