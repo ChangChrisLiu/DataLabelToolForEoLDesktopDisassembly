@@ -62,8 +62,8 @@ from vlm_glossary import glossary_text, is_presence  # noqa: E402
 from tda.core.export.vlm_check import LETTERS, format_instruction  # noqa: E402
 
 #: Bumped whenever the wording around the question changes (chat-v2: marks, image legend,
-#: glossary).
-CHAT_FORMAT_ID = "chat-v2"
+#: glossary; chat-v3: the V6 multiple choice speaks of its one picture).
+CHAT_FORMAT_ID = "chat-v3"
 SYSTEM = ("You are shown photographs of a desktop PC being disassembled on a bench. "
           "Answer exactly in the JSON format asked for.")
 #: The crops a run may use: none, or the view's fixed chassis ROI.

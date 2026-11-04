@@ -2103,7 +2103,8 @@ V6_QUESTIONS = (
 #: The multiple-choice form (W3b): a secondary record beside the open one.
 V6_MC_QUESTIONS = (
     "Which of these is the next disassembly step?",
-    "Looking at the machine in these pictures, which of the following actions would you "
+    # the listed form shows the marked scanner image alone (owner 2026-11-03): one picture
+    "Looking at the machine in this picture, which of the following actions would you "
     "perform next?",
     "Pick the single action to carry out next on this machine.",
 )

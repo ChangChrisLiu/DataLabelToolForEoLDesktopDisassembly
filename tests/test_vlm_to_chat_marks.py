@@ -280,7 +280,7 @@ def test_multiview_legend_lists_present_views():
     blind = _multi(VIEWS)
     blind["prompt"]["images"] = []
     assert "Image" not in C.user_text(blind).split("\n")[0] and "Outlined" not in C.user_text(blind)
-    assert C.CHAT_FORMAT_ID == "chat-v2"
+    assert C.CHAT_FORMAT_ID == "chat-v3"
 
 
 def test_glossary_has_class_and_states():
