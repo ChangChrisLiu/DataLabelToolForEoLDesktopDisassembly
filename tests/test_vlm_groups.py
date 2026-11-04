@@ -14,6 +14,7 @@ from tda.core.export.vlm import ALL_TASKS, export_vlm
 from tda.core.export.vlm_groups import mark_box, part_groups
 from tda.core.model import InstanceRec
 from tda.core.taxonomy import load_taxonomy
+from vlm_checker import Checker
 
 
 def _ctx(instances) -> DesktopCtx:
@@ -150,6 +151,48 @@ def test_v1_v8_v14_have_no_marks(scene, tmp_path):
         for r in _of(records, task):
             assert "marks" not in r["prompt"]
             assert "outlined" not in r["prompt"]["question"]
+
+
+# --------------------------------------------------------------------------- #
+# A3: V8 / V14 / V2 on classes with several instances
+# --------------------------------------------------------------------------- #
+def test_v8_multi_instance_is_components(tmp_path):
+    db = Db(str(tmp_path / "wide.sqlite"))
+    tax = S.build_wide(db, desktops=(21,), confirm_step=1)
+    records = _of(_export(db, tax, tmp_path / "v.jsonl", desktop=21), "V8")
+    sets = [r for r in records if r["label"]["answer_check"]["type"] == "components"]
+    assert sets
+    for r in sets:
+        check = r["label"]["answer_check"]
+        comps = r["label"]["answer"]["components"]
+        assert len(comps) >= 2 and check["exhaustive"] is True
+        assert check["class_filter"] in ("screw.motherboard", "connector.front_panel",
+                                         "ram_module", "ram_latch")
+        assert "every" in r["prompt"]["question"] or "all" in r["prompt"]["question"] \
+            or "Where are" in r["prompt"]["question"]
+        assert not ORDINAL.search(r["prompt"]["question"])
+    for r in records:
+        if r["label"]["answer_check"]["type"] == "boxes":
+            # a single box only for a part its class (or a relational phrase) names alone
+            assert r["label"]["answer_check"]["expression"] in ("class", "fastens", "of")
+    assert Checker(db, tax, 21).check_all(records) == len(records)
+    db.close()
+
+
+def test_v14_mixed_group_skipped(tmp_path):
+    db = Db(str(tmp_path / "tiny.sqlite"))
+    tax = S.build(db, tiny_screw=True)   # one PSU screw seen, its twin `too_small`
+    out = tmp_path / "v.jsonl"
+    summary = export_vlm(db, tax, [S.DESKTOP], S.VIEW, str(out), tasks=["V14"])
+    records = [json.loads(x) for x in out.read_text(encoding="utf-8").splitlines() if x]
+    assert summary["skip_reasons"][str(S.DESKTOP)]["V14"]["mixed_group"] >= 1
+    for r in records:
+        if r["label"]["step"] >= 2:
+            continue  # the seen one is out from step 2: its twin is then asked alone
+        members = r["label"]["answer_check"].get("members") or [
+            r["label"]["answer_check"]["instance"]]
+        assert S.SCREW not in members and S.TINY_SCREW not in members
+    db.close()
 
 
 @pytest.mark.parametrize("which", ["vlm", "w3b"])
