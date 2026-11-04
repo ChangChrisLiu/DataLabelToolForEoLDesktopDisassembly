@@ -863,7 +863,8 @@ def test_the_card_has_the_author_audit_paragraph(pack):
     for needle in ("eval_v2/audit/audit.sheet.b01.html", "audit.sheet.csv",
                    "vlm_audit_summary.py", "--records eval_v2/audit/audit.jsonl",
                    "Wilson 95 % intervals", "0 of 300 -> [0, 1.3 %]", "vlm_audit_carry.py",
-                   "with the marks drawn", "do not show them to anyone answering the questions"):
+                   "exactly as the model gets", "show reviewer boxes / 显示审核框",
+                   "do not show them to anyone answering the questions"):
         assert needle in text, needle
     for gone in ("vlm_human_sheet.py build", "vlm_human_sheet.py convert",
                  "human-baseline participant", "eval_v1/"):
