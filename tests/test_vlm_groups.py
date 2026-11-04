@@ -110,7 +110,8 @@ def test_anchor_words_that_read_the_same_keep_the_plain_label():
     recs += [InstanceRec(key=f"ram_latch.9{j}", desktop=1, cls="ram_latch") for j in (1, 2)]
     labels = {g.gid: g.label for g in part_groups(_ctx(recs)).values()}
     assert labels["screw.cpu_cooler@cpu_cooler.fan.01"] == "CPU cooler screws of the fan CPU cooler"
-    assert labels["screw.cpu_cooler@cpu_cooler.heatsink.01"] ==         "CPU cooler screws of the heatsink CPU cooler"
+    heat_label = labels["screw.cpu_cooler@cpu_cooler.heatsink.01"]
+    assert heat_label == "CPU cooler screws of the heatsink CPU cooler"
     # two modules' latches read the same however they are qualified: the plain label
     assert labels["ram_latch@ram_module.01"] == labels["ram_latch@ram_module.02"] == "RAM latches"
     assert labels["ram_latch@-"] == "RAM latches without a RAM module"
