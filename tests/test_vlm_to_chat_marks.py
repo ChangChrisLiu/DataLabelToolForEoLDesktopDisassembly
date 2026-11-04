@@ -396,6 +396,24 @@ def test_a_presence_question_glosses_presence_states():
     assert G.glossary_text(["ram_latch"], ["ram_latch"], presence=True) == latch
 
 
+def test_glossary_rulings_of_2026_11_04():
+    """Owner audit 2026-11-04: a cable clip ``open`` is open with its cable out; ``displaced``
+    means one concrete thing per class (decision (a)) -- no two classes share the line, and the
+    four classes that use it (drive cage, PSU, storage drive, CPU cooler) say how they move."""
+    import vlm_glossary as G
+
+    assert G.STATE_MEANINGS["cable_clip"]["open"] == \
+        "the clip is open and its cable has been taken out of it"
+    lines = {c: m["displaced"] for c, m in G.STATE_MEANINGS.items() if "displaced" in m}
+    assert len(set(lines.values())) == len(lines)
+    assert "swung out of its bay" in lines["psu"] and "still in the case" in lines["psu"]
+    assert "hinge" in lines["drive_cage"] and "optical drive" in lines["drive_cage"]
+    assert "partly out of its bay" in lines["storage_drive"]
+    assert "off the CPU" in lines["cpu_cooler"]
+    text = G.glossary_text(["psu"], ["psu"])
+    assert "displaced = the power supply has been pulled or swung out of its bay" in text
+
+
 def test_glossary_tables_follow_the_scanner_pack_and_the_taxonomy():
     """``vlm_glossary`` is self-contained (it ships without ``tda`` and the taxonomy); these keep it honest."""
     import yaml
