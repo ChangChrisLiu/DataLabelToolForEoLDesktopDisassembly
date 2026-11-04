@@ -670,17 +670,33 @@ def _g_v1(record, answer, world, tax, transform) -> Grade:
                           float(record["label"]["answer_check"].get("iou_threshold", 0.5)))
 
 
+#: V2's count form (``derive == "screw_count"``, owner 2026-11-04): the score of an answer
+#: ``|answer - gold|`` away from the gold count; any other distance scores 0. The exact match
+#: is reported beside it (``exact``).
+COUNT_SCORES = {0: 1.0, 1: 0.8}
+
+
+def count_score(answered: Any, gold: int) -> tuple[float, Optional[int]]:
+    """``(score, |answered - gold|)`` of a V2 count answer (:data:`COUNT_SCORES`); an answer
+    that is no integer scores 0 at distance ``None``."""
+    try:
+        off = abs(int(answered) - int(gold))
+    except (TypeError, ValueError):
+        return 0.0, None
+    return COUNT_SCORES.get(off, 0.0), off
+
+
 def _g_v2(record, answer, world, tax, transform) -> Grade:
     truth = record["label"]["answer"]
+    prior = record["label"].get("prior_is_correct")
     if "count" in truth:
-        try:
-            ok = int(answer.get("count")) == int(truth["count"])
-        except (TypeError, ValueError):
-            ok = False
-    else:
-        ok = _norm(answer.get("state")) == _norm(truth["state"])
-    return Grade(True, float(ok), {"correct": ok,
-                                   "prior_is_correct": record["label"].get("prior_is_correct")})
+        # exact 1.0, off by one 0.8, else 0 (owner 2026-11-04)
+        score, off = count_score(answer.get("count"), truth["count"])
+        exact = off == 0
+        return Grade(True, score, {"correct": exact, "exact": exact, "off_by": off,
+                                   "prior_is_correct": prior})
+    ok = _norm(answer.get("state")) == _norm(truth["state"])
+    return Grade(True, float(ok), {"correct": ok, "exact": ok, "prior_is_correct": prior})
 
 
 def _same_target(world: Optional[World], got: Optional[str], want: Optional[str]) -> bool:

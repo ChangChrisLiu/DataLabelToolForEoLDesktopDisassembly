@@ -1030,7 +1030,8 @@ def _references_text(summary: dict) -> str:
         "Every model row is read against reference lines, none of which is a model "
         "(`tools/vlm_references.py`, `tools/vlm_overlay.py`, and two rows the scorer "
         "prints itself). **chance** is the expected score of a uniform guess over the "
-        "record's answer space (binary tasks 0.5, `V6-mc` 1/|options|, V2 1/|allowed|, V14 "
+        "record's answer space (binary tasks 0.5, `V6-mc` 1/|options|, V2 1/|allowed| -- its "
+        "count form (1 + 0.8 k)/(n+1) over the guesses 0..n, k the gold's neighbours --, V14 "
         "0.5 x 1/|states| when answerable, open tasks 0; the rule per task is printed under "
         "the score table). V14's |states| counts every state of the part's class, "
         "`removed` included. **frequency** is the most frequent gold reply over the truth "
@@ -1483,7 +1484,9 @@ python tools/vlm_score.py --truth {ev_name}/{ref_unit}.jsonl --pred runs/refs/{r
 layer and per question template, strict and lenient, 95 % cluster-bootstrap
 intervals over desktops, the text-only upper bound beside each task, V6 open
 (headline, group-equivalent; its `exact` metric is the reference itself -- on a group
-step, any member still to do) and `V6-mc`, V2 (headline: every V2 question) and `V2-prior-wrong`, V7's violation-free /
+step, any member still to do) and `V6-mc`, V2 (headline: every V2 question) and `V2-prior-wrong`
+(V2's count form, `derive = screw_count`, scores the exact count 1.0, one off 0.8 and anything
+else 0; the extra row `exact` is the exact matches alone, `count_exact` those of the counts), V7's violation-free /
 required-recall / goal-reached, V4's blockers F1, V10's bin accuracy. Score the
 units separately (each truth file has its own oracle) and pool in your
 analysis; `{ev_name}/ids.txt` is the subset. The model driver (`tools/vlm_run/vlm_run.py`:

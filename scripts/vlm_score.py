@@ -59,7 +59,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vlm_io as IO  # noqa: E402
-from tda.core.export.vlm_check import CAPABILITY_LAYERS, grade  # noqa: E402
+from tda.core.export.vlm_check import CAPABILITY_LAYERS, count_score, grade  # noqa: E402
 
 LAYER_ORDER = ("L1", "L2", "L3", "change", "cross")
 #: V6's secondary record type, the multiple choice (W3b ruling): ``V6`` in the
@@ -74,7 +74,9 @@ V2_PRIOR_WRONG = "V2-prior-wrong"
 CHANCE_RULES = {
     "V1": "0: the set of (class, box) pairs is open; a guess has F1 0",
     "V2": "state form 1/|allowed| (the class's state vocabulary; presence = 2); "
-          "count form 1/(n+1), n the desktop's screws of that role",
+          "count form (1 + 0.8 k)/(n+1), a uniform guess over 0..n (n the desktop's screws "
+          "of that role) scored exact 1.0 / off by one 0.8, k = the gold's neighbours in "
+          "0..n (the extra row exact: exact matches only)",
     V2_PRIOR_WRONG: "as V2, over the questions the class prior answers wrong",
     "V3": "0: verb and target are open and the score needs both",
     "V4": "0.5: feasible yes / no (blockers are the extra row blockers_f1)",
@@ -152,7 +154,9 @@ def chance_of(record: dict, world, tax) -> Optional[float]:
                     and (inst.get("attrs") or {}).get("role") == role
                     and (captive is None
                          or bool((inst.get("attrs") or {}).get("captive")) == bool(captive)))
-            return 1.0 / (n + 1)
+            # a uniform guess over 0..n, graded exact 1.0 / off by one 0.8 (owner 2026-11-04)
+            gold = int(answer["count"])
+            return sum(count_score(guess, gold)[0] for guess in range(n + 1)) / (n + 1)
         states = _states_of(record, world, tax)
         return 1.0 / len(states) if states else None
     if task in ("V4", "V12", "V16"):
@@ -305,6 +309,13 @@ def score(truth_path, pred_path, chat_path=None, *, resamples: int = 1000,
             m = g.metrics
             if not label.get("image_undecidable"):
                 extras[task]["decidable"].append(row)
+            if task == "V2":
+                # the count form scores an off-by-one 0.8 (owner 2026-11-04): `exact` is
+                # the exact matches alone, over every V2 question (and the prior-wrong row)
+                for key in rows_of:
+                    extras[key]["exact"].append((desk, float(bool(m.get("exact")))))
+                if "count" in label["answer"]:
+                    extras[task]["count_exact"].append((desk, float(bool(m.get("exact")))))
             if task in ("V6", V6_MC):
                 extras[task]["exact"].append((desk, float(bool(m.get("exact_match")))))
                 if m.get("blocked_rate_defined") and g.parsed:

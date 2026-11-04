@@ -618,3 +618,48 @@ def test_v10_grounds_in_the_gold_order():
     r = _v10([("open", G_LATCH[RAMS[1]])], started=[("open", G_LATCH[RAMS[0]])])
     g = grade(r, gold_reply(r, world), world)
     assert g.score == 1.0 and g.metrics["started_f1"] == 1.0, g.metrics
+
+
+def _v2_count(count: int) -> dict:
+    return {"id": "rec_v2_count", "prompt": {"task": "V2", "images": ["img_a"],
+                                             "question": "Count the motherboard screws."},
+            "label": {"answer": {"count": count}, "desktop": 1, "prior_is_correct": False,
+                      "answer_check": {"type": "exact", "derive": "screw_count",
+                                       "role": "motherboard", "state": "present",
+                                       "state_space": "presence", "captive": False,
+                                       "fields": ["count"]}}}
+
+
+@pytest.mark.parametrize("said,score,exact", [
+    (3, 1.0, True), (2, 0.8, False), (4, 0.8, False), (1, 0.0, False),
+    (5, 0.0, False), ("three", 0.0, False)])
+def test_v2_count_scores_an_off_by_one_eight_tenths(said, score, exact):
+    """Owner 2026-11-04: a count exact scores 1.0, off by one 0.8, anything else 0; the exact
+    match rides beside it. A state question is unchanged."""
+    g = grade(_v2_count(3), json.dumps({"count": said}))
+    assert g.score == pytest.approx(score) and g.metrics["exact"] is exact
+    assert g.metrics["correct"] is exact
+    assert grade(_v2_count(3), gold_reply(_v2_count(3))).score == 1.0  # gold still 1.0
+    state = dict(_v2_count(3), label=dict(_v2_count(3)["label"], answer={"state": "open"},
+                                          answer_check={"type": "exact",
+                                                        "derive": "instance_state"}))
+    assert grade(state, '{"state": "closed"}').score == 0.0
+    assert grade(state, '{"state": "open"}').metrics["exact"] is True
+
+
+def test_v2_count_chance_follows_the_tolerance():
+    """A uniform guess over 0..n graded the same way: (1 + 0.8 k) / (n + 1)."""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import vlm_score
+
+    world = World(1, {f"screw.motherboard.0{i}": {"class": "screw",
+                                                  "label": f"Motherboard screw {i}",
+                                                  "attrs": {"role": "motherboard"}}
+                      for i in range(1, 5)}, [])
+    assert vlm_score.chance_of(_v2_count(3), world, None) == pytest.approx((1 + 0.8 * 2) / 5)
+    assert vlm_score.chance_of(_v2_count(0), world, None) == pytest.approx((1 + 0.8) / 5)
+    assert vlm_score.chance_of(_v2_count(4), world, None) == pytest.approx((1 + 0.8) / 5)
+    assert "0.8" in vlm_score.CHANCE_RULES["V2"]
