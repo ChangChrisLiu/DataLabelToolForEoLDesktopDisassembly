@@ -405,6 +405,7 @@ def violations_of(
     actions: list[ActionRec],
     tax,
     initial: Optional[Mapping[str, str]] = None,
+    manual=None,
 ) -> list[Violation]:
     """The spec 7.4 replay of ``actions`` against ``edges``, one record per line.
 
@@ -414,11 +415,12 @@ def violations_of(
     shows as gone is gone from the report too. The step is read back off the
     line rather than re-derived, because there is only one replay and only one
     wording. ``initial`` is the hand-written initial states (an added part the
-    picture shows ``open``), as :func:`~tda.core.graph.validate_sequence` takes it.
+    picture shows ``open``), as :func:`~tda.core.graph.validate_sequence` takes it,
+    and ``manual`` the hand-written events it folds in after step 0.
     """
     out: list[Violation] = []
     for text in validate_sequence(instances, constraint_edges(edges), list(actions), tax,
-                                  initial=initial):
+                                  initial=initial, manual=manual):
         match = _STEP.match(text)
         out.append(Violation(
             step=int(match.group(1)) if match else 0,
@@ -446,6 +448,7 @@ def violations(db, desktop: int, tax=None) -> list[Violation]:
     # no draft, no 框外零件 (task U18), no gallery-only part (task U45)
     instances = {k: rec for k, rec in teardown_only(db.instances(desktop)).items()
                  if not is_provisional(k)}
-    initial = initial_overrides(e for e in db.events(desktop) if not e.auto)
+    manual = [e for e in db.events(desktop) if not e.auto]
+    initial = initial_overrides(manual)
     return violations_of(instances, edges_from_db(db, desktop), db.actions(desktop), tax,
-                         initial=initial)
+                         initial=initial, manual=manual)

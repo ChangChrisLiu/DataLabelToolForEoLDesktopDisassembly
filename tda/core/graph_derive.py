@@ -41,7 +41,7 @@ from tda.core.graph_rules import (
     is_orphan,
     is_provisional,
 )
-from tda.core.model import InstanceRec, teardown_only
+from tda.core.model import ActionRec, InstanceRec, teardown_only
 from tda.core.taxonomy import Taxonomy
 
 __all__ = [
@@ -150,14 +150,22 @@ def derive_edges(
     instances: dict[str, InstanceRec],
     existing: Iterable[Edge],
     tax: Taxonomy,
+    actions: Optional[Iterable[ActionRec]] = None,
 ) -> Derivation:
     """The rows one desktop should hold, from its instances and its current rows.
 
     Pure. ``instances`` may contain drafts (they are dropped here, once);
     ``existing`` is everything :func:`~tda.core.graph.edges_from_db` returned.
+    ``actions`` is the desktop's log: the R1 fan-lead rule reads which lead was
+    unplugged right before the CPU fan came out
+    (:func:`~tda.core.graph_rules.fan_leads_by_timing`). Both callers -- the
+    ``constraints`` command and the S1 ``Apply`` -- pass it, so they derive the
+    same graph.
     """
     settled = settled_instances(instances)
-    proposed = [replace(e, source=RULE) for e in propose_edges(settled, tax)]
+    proposed = [replace(e, source=RULE)
+                for e in propose_edges(settled, tax,
+                                       None if actions is None else list(actions))]
     proposed_triples = {_triple(p) for p in proposed}
 
     existing = list(existing)

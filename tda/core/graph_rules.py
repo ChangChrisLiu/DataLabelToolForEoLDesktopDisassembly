@@ -34,7 +34,7 @@ from tda.core.graph_infer import (
     unresolved_kind,
     unresolved_relations,
 )
-from tda.core.model import InstanceRec, is_extra
+from tda.core.model import ActionRec, InstanceRec, is_extra
 from tda.core.states import FrameState
 from tda.core.taxonomy import Taxonomy
 
@@ -48,7 +48,11 @@ __all__ = [
     "CABLE_PREFIX",
     "CONTAINED_MODE",
     "INACTIVE_STATUSES",
+    "LOOSE_ATTR",
     "LS_PREFIX",
+    "NON_STEPWISE_DESKTOPS",
+    "STEPWISE_META",
+    "STEPWISE_TASKS",
     "MOTHERBOARD_CLASS",
     "MOUNTED_MODE",
     "MOUNTED_ON_MOTHERBOARD",
@@ -74,8 +78,11 @@ __all__ = [
     "cable_owner",
     "connector_owner",
     "cooler_on_cpu",
+    "fan_leads_by_timing",
     "infer_relational_fields",
+    "is_loose",
     "is_provisional",
+    "is_stepwise",
     "propose_edges",
     "required_states",
     "unresolved_boards",
@@ -302,6 +309,45 @@ def is_orphan(edge: "Edge") -> bool:
     return edge.status in SETTLED_OF
 
 
+#: Instance ``attrs`` flag of a part that was lying loose in the machine from
+#: the start -- fallen out, not fixed to anything (the owner's R16, ruling of
+#: 2026-11-04 afternoon: D43 D60 D65 case fan, D54 SSD and case fan, D45 HDD,
+#: D16 SSD, and no others). Data, set by hand with an op record, never
+#: inferred. While one is present it has the highest priority: only the actions
+#: that take the loose parts out are legal
+#: (:func:`tda.core.graph.legal_actions`, ``loose_first``).
+LOOSE_ATTR = "loose"
+
+
+def is_loose(rec: Optional[InstanceRec]) -> bool:
+    """Was this part lying loose in the machine from the start (R16)?"""
+    return rec is not None and bool((rec.attrs or {}).get(LOOSE_ATTR))
+
+
+#: Desktop-meta flag of a desktop whose log is **not stepwise**: several parts
+#: came out at once, so neither the general rules nor any step-ordered question
+#: apply to it (the owner's ruling on D66, 2026-11-04). Its annotations are
+#: left as they are; the VLM export skips :data:`STEPWISE_TASKS` there.
+STEPWISE_META = "stepwise"
+#: The tasks that read the order of the steps (next action, feasibility, plan,
+#: plan check) and so are not asked on a non-stepwise desktop.
+STEPWISE_TASKS = ("V4", "V6", "V7", "V16")
+#: The desktops the owner ruled non-stepwise; the meta flag says the same and
+#: is what a reader of the database goes by.
+NON_STEPWISE_DESKTOPS = frozenset({66})
+
+
+def is_stepwise(desktop: int, meta: Optional[dict] = None) -> bool:
+    """May step-ordered questions be asked on this desktop? (D66: no.)
+
+    ``meta`` is the desktop's meta row; its ``stepwise: false`` decides, and
+    :data:`NON_STEPWISE_DESKTOPS` answers when there is no row to read.
+    """
+    if meta is not None and STEPWISE_META in meta:
+        return meta.get(STEPWISE_META) is not False
+    return int(desktop) not in NON_STEPWISE_DESKTOPS
+
+
 def verb_effect(tax: Taxonomy, cls: str, attrs: dict, verb: str) -> Optional[str]:
     """The state this verb would put the class in, or ``None`` for no effect."""
     effect = tax.apply_verb(cls, attrs, verb)
@@ -470,6 +516,89 @@ def owns_fan_lead(owner: Optional[InstanceRec]) -> bool:
     return str(owner.attrs.get("kind") or "") in FAN_CAPABLE_COOLER_KINDS
 
 
+#: Connector ``kind`` of a fan lead (``taxonomy.yaml`` ``connector.kind``).
+FAN_LEAD_KIND = "fan"
+#: Verbs that take a plug out of its socket.
+UNPLUG_VERBS = frozenset({"disconnect", "remove"})
+#: Classes a fan lead can be moulded into.
+FAN_OWNER_CLASSES = frozenset({COOLER_CLASS, "case_fan"})
+
+
+def _is_fan_lead(rec: InstanceRec) -> bool:
+    """A fan-type connector: ``kind = fan``, or filed under a fan's cable."""
+    if rec.cls != "connector":
+        return False
+    if str(rec.attrs.get("kind") or "") == FAN_LEAD_KIND:
+        return True
+    owner = cable_owner(rec.cable or "")
+    return owner in FAN_OWNER_CLASSES
+
+
+def fan_leads_by_timing(
+    instances: dict[str, InstanceRec],
+    actions: Iterable[ActionRec],
+) -> dict[str, set[str]]:
+    """``fan cooler -> the fan leads the log unplugs right before it comes out`` (R1).
+
+    The owner's ruling of 2026-11-04: which part a fan lead belongs to is read
+    off **when it is unplugged**. A fan-type connector unplugged in the step(s)
+    right before the CPU fan is removed is that fan's lead; one still plugged
+    after the fan is out is a case fan's lead and constrains only its socket
+    host (the motherboard), which is what the connector rule already says.
+
+    For each settled ``cpu_cooler`` that carries a fan
+    (:data:`FAN_CAPABLE_COOLER_KINDS` -- the ``fan`` part of a two-part cooler,
+    or a one-part fan cooler; a bare ``heatsink`` owns no lead, so on a
+    heatsink-only machine every fan lead is a case fan's) whose removal the
+    log records, the **window** is the removal step itself (plugs pulled
+    before it inside that step) plus the run of log steps immediately before
+    it in which a fan lead is pulled or the fan itself is moved aside. Every
+    fan lead whose first unplug falls in the window belongs to that fan.
+
+    A cooler the log never removes gets no entry: the caller then falls back
+    to the cable tag (:func:`connector_owner`). Pure; sorted inputs, so the
+    answer does not depend on the order the actions were read in.
+    """
+    ordered = sorted((a for a in actions if a.result == "success"),
+                     key=lambda a: (a.step, a.idx))
+    steps = sorted({a.step for a in ordered})
+    by_step: dict[int, list[ActionRec]] = {}
+    for a in ordered:
+        by_step.setdefault(a.step, []).append(a)
+    leads = {key for key, rec in instances.items()
+             if not is_provisional(key) and _is_fan_lead(rec)}
+    first_unplug: dict[str, ActionRec] = {}
+    for a in ordered:
+        if a.target in leads and a.verb in UNPLUG_VERBS:
+            first_unplug.setdefault(a.target, a)
+
+    out: dict[str, set[str]] = {}
+    for fan in _real_instances(instances, COOLER_CLASS):
+        if not owns_fan_lead(instances[fan]):
+            continue
+        removal = next((a for a in ordered if a.target == fan and a.verb == "remove"), None)
+        if removal is None:
+            continue
+        window = {removal.step}
+        pos = steps.index(removal.step)
+        for step in reversed(steps[:pos]):
+            acts = by_step[step]
+            pulls = any(a.target in leads and a.verb in UNPLUG_VERBS for a in acts)
+            moves_fan = all(a.target == fan for a in acts)
+            if not (pulls or moves_fan):
+                break
+            window.add(step)
+        mine = set()
+        for lead, a in first_unplug.items():
+            if a.step not in window:
+                continue
+            if a.step == removal.step and a.idx > removal.idx:
+                continue  # pulled after the fan was already out
+            mine.add(lead)
+        out[fan] = mine
+    return out
+
+
 def unresolved_fan_owners(instances: dict[str, InstanceRec]) -> list[str]:
     """One line per fan lead whose cooler cannot carry a fan, for stage S1.
 
@@ -505,6 +634,11 @@ def unresolved_fan_owners(instances: dict[str, InstanceRec]) -> list[str]:
 #: Latch classes whose ``of`` attribute names what they lock.
 LATCH_OF_CLASSES = ("ram_latch", "drive_latch", "card_latch", "cooler_latch")
 
+#: The latch bar on the chassis that holds the expansion cards (R12), and
+#: what it holds: every one of them at once (the owner, 2026-11-04).
+CARD_LATCH_CLASS = "card_latch"
+CARD_CLASS = "expansion_card"
+
 #: Latch classes that lock a fixed part class (the spec-7.3 template edges).
 LATCH_TEMPLATE_HOSTS = {"cpu_socket_lever": "cpu", "psu_latch": "psu"}
 
@@ -531,6 +665,10 @@ MOTHERBOARD_CLASS = "motherboard"
 #: board (user rule 2026-10-31, task W3d). The export side's class-level support
 #: table (:data:`tda.core.export.graph_covers.SUPPORT`) is built from this tuple.
 MOUNTED_ON_MOTHERBOARD = ("cpu", "ram_module", "cpu_cooler", "expansion_card")
+#: Classes of :data:`MOUNTED_ON_MOTHERBOARD` whose S1 extras block the board as
+#: well (R6, the owner's ruling of 2026-11-04: an added RAM stick also comes
+#: off before the board). Their removal is a hand-written state event.
+EXTRA_MOUNTED_CLASSES = ("ram_module",)
 
 
 def cooler_on_cpu(instances: dict[str, InstanceRec]
@@ -615,7 +753,8 @@ def unresolved_boards(instances: dict[str, InstanceRec]) -> list[str]:
     return [problem] if problem else []
 
 
-def propose_edges(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[Edge]:
+def propose_edges(instances: dict[str, InstanceRec], tax: Taxonomy,
+                  actions: Optional[Iterable[ActionRec]] = None) -> list[Edge]:
     """Derive every hard edge the recorded attributes imply (spec 7.3 item 1).
 
     Rules, in order: ``screw.fastens`` -> ``fastened_by``; the connector rule of
@@ -661,15 +800,35 @@ def propose_edges(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[Edge
     What it does **not** say is "the board is the last thing out": that holds
     on 56 of the 60 logs, but D01 D02 D35 D36 take the PSU (D01 also the optical
     drive, D02 the cover and its PSU latch) out after the board, so only these
-    four classes block it. An extra on either end -- a RAM stick or a board
-    added in S1 -- takes no part (the class-keyed convention above); drafts are
-    not real instances at all. Two real boards on one desktop give no edge and
-    one S1 line (:func:`unresolved_boards`, the channel of
-    :func:`unresolved_coolers`).
+    four classes block it. A board added in S1 takes no part (the class-keyed
+    convention above); a **RAM stick added in S1 does** (the owner's R6 ruling
+    of 2026-11-04: an added stick also comes off before the board -- every such
+    stick is the second module of a 'RAM set' row, taken out with the first),
+    see :data:`EXTRA_MOUNTED_CLASSES`; drafts are not real instances at all.
+    Two real boards on one desktop give no edge and one S1 line
+    (:func:`unresolved_boards`, the channel of :func:`unresolved_coolers`).
+
+    **A card latch locks every expansion card of its desktop** (R12, the
+    owner's ruling of 2026-11-04): one latch bar holds all the cards at once,
+    so ``locked_by(card <- card_latch)`` for every real ``expansion_card``,
+    whatever its ``of`` says (the sheets write the class word ``gpu``, which
+    names no instance; D61's bar holds the GPU and the WLAN card).
+
+    ``actions`` (the desktop's log) switches on the **timing rule of R1**
+    (:func:`fan_leads_by_timing`): a fan lead unplugged right before the CPU
+    fan comes out is that fan's lead, ``connected_to(fan <- lead)``, which is
+    how the two-part coolers (one ``fan`` on one ``heatsink``) get the edge the
+    cable tag could not give them. Without ``actions`` the cable tag alone
+    decides, as before; every caller that holds the log passes it.
     """
+    timing = fan_leads_by_timing(instances, actions) if actions is not None else {}
     out: list[Edge] = []
     for rule in (_fastened_by, _connected_to, _locked_by, _covered_by, _mounted_on_board):
-        out.extend(rule(instances, tax))
+        if rule is _connected_to:
+            out.extend(_connected_to(instances, tax, timing))
+        else:
+            out.extend(rule(instances, tax))
+    out.extend(_fan_lead_edges(instances, timing))
     return _dedupe(out)
 
 
@@ -704,7 +863,8 @@ def _fastened_by(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[Edge]
     return out
 
 
-def _connected_to(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[Edge]:
+def _connected_to(instances: dict[str, InstanceRec], tax: Taxonomy,
+                  timing: Optional[dict[str, set[str]]] = None) -> list[Edge]:
     """The connector rule of spec 7.2.
 
     For a part X, every connector whose ``socket_host`` is X *or* whose cable is
@@ -712,7 +872,14 @@ def _connected_to(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[Edge
     data cable carry no owner, so each gates only the part it plugs into; every
     plug of the PSU harness gates the PSU as well as its own socket host. See
     :func:`connector_owner` for how the owner is decided.
+
+    ``timing`` is :func:`fan_leads_by_timing`. Where it names leads of a
+    cooler, it -- not the cable tag -- decides which fan leads that cooler owns
+    (R1): a lead tagged ``cable:cpu_fan`` that the log unplugs after the fan is
+    out is a case fan's, and gates only its socket host. A cooler with no timed
+    lead falls back to the tag.
     """
+    timing = timing or {}
     out: list[Edge] = []
     for key, rec in sorted(instances.items()):
         if rec.cls != "connector":
@@ -723,10 +890,30 @@ def _connected_to(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[Edge
         if is_extra(rec) and not rec.cable:
             continue  # its kind alone names no owner (see propose_edges)
         owner = connector_owner(rec, instances)
+        if owner and timing.get(owner) and key not in timing[owner]:
+            continue  # the log says this lead is not the cooler's (R1 timing)
         if owner and owner != host:
             out.append(
                 _edge("connected_to", owner, key, f"{key} is on the {owner} cable")
             )
+    return out
+
+
+def _fan_lead_edges(instances: dict[str, InstanceRec],
+                    timing: dict[str, set[str]]) -> list[Edge]:
+    """``connected_to(fan <- lead)`` for every lead the R1 timing rule gives a fan.
+
+    Most of them the cable tag already derives (:func:`_connected_to` runs
+    first, and :func:`_dedupe` keeps its reason); the new ones are the two-part
+    coolers' fan leads, whose ``cable:cpu_fan`` tag resolves to no single
+    cooler.
+    """
+    out: list[Edge] = []
+    for fan, leads in sorted(timing.items()):
+        for lead in sorted(leads):
+            out.append(_edge(
+                "connected_to", fan, lead,
+                f"{lead} is the lead of {fan}: unplugged right before {fan} comes out (R1)"))
     return out
 
 
@@ -741,6 +928,10 @@ def _locked_by(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[Edge]:
             target = _unique_of_class(instances, LATCH_TEMPLATE_HOSTS[rec.cls])
         if target:
             out.append(_edge("locked_by", target, key, f"{key} locks {target}"))
+        if rec.cls == CARD_LATCH_CLASS and not is_provisional(key):
+            for card in _real_instances(instances, CARD_CLASS):
+                out.append(_edge("locked_by", card, key,
+                                 f"{key} holds every expansion card, {card} too (R12)"))
     return out
 
 
@@ -781,7 +972,8 @@ def _mounted_on_board(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[
     instance of the four classes: the part has to be removed before the board
     can be moved or taken out. No edge at all when the desktop has no single
     real board (:func:`board_of`) or the board is an S1 extra (see
-    :func:`propose_edges`).
+    :func:`propose_edges`). A part added in S1 takes part only when its class
+    is in :data:`EXTRA_MOUNTED_CLASSES` (R6).
     """
     board, _ = board_of(instances)
     if board is None or is_extra(instances[board]):
@@ -789,7 +981,7 @@ def _mounted_on_board(instances: dict[str, InstanceRec], tax: Taxonomy) -> list[
     out: list[Edge] = []
     for cls in MOUNTED_ON_MOTHERBOARD:
         for key in _real_instances(instances, cls):
-            if not is_extra(instances[key]):
+            if not is_extra(instances[key]) or cls in EXTRA_MOUNTED_CLASSES:
                 out.append(_edge("blocked_by", board, key, f"{key} sits on {board}",
                                  mode=MOUNTED_MODE))
     return out

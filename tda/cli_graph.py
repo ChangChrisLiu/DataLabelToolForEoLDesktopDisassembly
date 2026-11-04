@@ -271,8 +271,9 @@ def _apply_one(db: Db, tax: Taxonomy, desktop: int, dry_run: bool,
     """
     instances = _settled(db, desktop)
     stored = edges_from_db(db, desktop)
-    derivation = derive_edges(instances, stored, tax)
-    initial = initial_overrides(e for e in db.events(desktop) if not e.auto)
+    derivation = derive_edges(instances, stored, tax, db.actions(desktop))
+    manual = [e for e in db.events(desktop) if not e.auto]
+    initial = initial_overrides(manual)
     out = _summary(desktop, derivation, instances, tax, validate, initial)
     # a fan lead without a fan, a cooler set nobody can stack (task W3a), two
     # real boards (task W3d): S1 work
@@ -280,7 +281,8 @@ def _apply_one(db: Db, tax: Taxonomy, desktop: int, dry_run: bool,
                       + unresolved_boards(instances))
     if validate:
         out.violations = validate_sequence(
-            instances, derivation.edges, db.actions(desktop), tax, initial=initial)
+            instances, derivation.edges, db.actions(desktop), tax, initial=initial,
+            manual=manual)
     if dry_run:
         return out
     with db.transaction():
