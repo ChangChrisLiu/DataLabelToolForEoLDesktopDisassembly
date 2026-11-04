@@ -102,6 +102,7 @@ from tda.core.export.vlm import (  # noqa: E402
 )
 from tda.core.export.vlm import siblings as vlm_siblings  # noqa: E402
 from tda.core.export.vlm_check import CAPABILITY_LAYERS, RESPONSE_FORMATS  # noqa: E402
+from tda.core.export.vlm_shortcuts import shortcut_report  # noqa: E402
 from tda.core.export.vlm_tasks import ALL_TASKS, TRUTH_SOURCES  # noqa: E402
 from tda.core.model import VIEWS, is_component_view  # noqa: E402
 from tda.core.taxonomy import Taxonomy, load_taxonomy  # noqa: E402
@@ -741,6 +742,11 @@ def build_pack(db_path: str, out_dir: str, *, cache_dir: Optional[str] = DEFAULT
                                      seed=seed, audit=audit)
     log(f"[vlmpack] {vlm_eval_set.EVAL_VERSION}: {eval_result['records']} records: "
         + " ".join(f"{r['task']}={r['records']}" for r in eval_result["rows"]))
+    # the subset's own text-only bounds (the exports' are over the whole pool); kept out
+    # of table.json, which tools/vlm_eval_set.py re-creates byte for byte without them
+    eval_shortcuts = shortcut_report(
+        r for v in units if (eval_dir / f"{v}.jsonl").exists()
+        for r in IO.read_jsonl(eval_dir / f"{v}.jsonl"))
     # the fillable audit sheet (W4-E): static pages + CSV skeleton beside audit.jsonl,
     # image paths relative to the page, so the pack travels whole
     audit_dir = eval_dir / "audit"
@@ -793,6 +799,7 @@ def build_pack(db_path: str, out_dir: str, *, cache_dir: Optional[str] = DEFAULT
         "source_commit": _git_head(repo),
         "exports": {v: _summary_for_manifest(s) for v, s in exports.items()},
         "eval": eval_result,
+        "eval_shortcuts": eval_shortcuts,
         "composition": comp,
         "references": references,
         "selfcheck": check,
@@ -873,7 +880,8 @@ def _shortcut_table(summary: dict) -> str:
                 cells.append("-")
                 continue
             best = max((row.get(k) or 0.0) for k in ("verb", "class", "verb_class",
-                                                    "template", "majority"))
+                                                    "template", "majority", "group",
+                                                    "match_class", "group_class"))
             cells.append(f"{best:.1%}")
         lines.append(f"| {t} | " + " | ".join(cells) + " |")
     mc = []
@@ -887,6 +895,13 @@ def _shortcut_table(summary: dict) -> str:
                       if opt.get("records"))
         lines += ["", f"The V6 multiple choice has its own shortcut, the option's verb alone: "
                   + ", ".join(mc) + f" (random {random:.1%})."]
+    v4 = (summary.get("eval_shortcuts") or {}).get("V4")
+    if v4:
+        ev = summary.get("eval_version") or vlm_eval_set.EVAL_VERSION
+        lines += ["", f"V4 in `{ev}` ({v4['records']} records, drawn balanced within each "
+                  f"class): majority {v4['majority']:.1%}, class {v4['class']:.1%}, match "
+                  f"class {v4['match_class']:.1%}, group {v4['group']:.1%}, verb "
+                  f"{v4['verb']:.1%}, verb + class {v4['verb_class']:.1%}."]
     return "\n".join(lines)
 
 

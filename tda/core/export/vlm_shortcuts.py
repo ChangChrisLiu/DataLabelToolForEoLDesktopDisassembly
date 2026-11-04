@@ -138,6 +138,21 @@ def shortcut_report(records: Iterable[dict]) -> dict:
             "template": _round(_accuracy((templates[r["id"]], label)
                                          for r, label in rows)),
         }
+        if task == "V4":
+            # what else the wording gives away (final review I1): whether the target is
+            # a group ("the CPU cooler screws outlined in red" = several outlines), and
+            # the refined class the question names ("motherboard screws")
+            group = {r["id"]: "members" in r["label"]["answer_check"] for r, _ in rows}
+            mclass = {r["id"]: r["label"]["answer_check"].get("match_class")
+                      or keys[r["id"]][1] for r, _ in rows}
+            out[task].update({
+                "group": _round(_accuracy((group[r["id"]], label) for r, label in rows)),
+                "match_class": _round(_accuracy((mclass[r["id"]], label)
+                                                for r, label in rows)),
+                "group_class": _round(_accuracy(((group[r["id"]], mclass[r["id"]]), label)
+                                                for r, label in rows)),
+                "group_records": sum(group.values()),
+            })
     return out
 
 

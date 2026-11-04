@@ -92,9 +92,12 @@ def test_proportional_allocation_follows_the_pool():
 
 
 def test_strata_paths():
-    r = _rec("V4", 1, 1, "scan", negative="graph_blocked", truth_source="graph_blocked")
-    assert E.strata(r) == ("feasible=no", "source=graph_blocked")
-    assert E.strata(_rec("V4", 2, 1, "scan")) == ("feasible=yes",)
+    r = _rec("V4", 1, 1, "scan", negative="graph_blocked", truth_source="graph_blocked",
+             answer_check={"match_class": "screw.motherboard", "target_class": "screw"})
+    assert E.strata(r) == ("class=screw.motherboard", "feasible=no", "source=graph_blocked")
+    assert E.strata(_rec("V4", 2, 1, "scan", answer_check={"target_class": "psu"})) == \
+        ("class=psu", "feasible=yes")
+    assert E.strata(_rec("V4", 2, 1, "scan")) == ("class=?", "feasible=yes")
     v2 = _rec("V2", 3, 1, "scan", prior_is_correct=False,
               answer_check={"derive": "screw_count", "role": "motherboard"})
     assert E.strata(v2) == ("prior_correct=no", "screw:motherboard")
@@ -170,14 +173,52 @@ def test_a_pool_smaller_than_the_target_gives_everything_under_the_cap(units):
 
 
 def test_the_top_up_fills_a_task_whose_strata_ran_dry(units):
-    # only infeasible V4 on desktops 1-2, feasible everywhere: the strata cannot
-    # give 200 infeasible, the feasible half tops the task up to 400
-    pool = [u for u in units if u.task == "V4"
+    # only unchanged V12 on desktops 1-2, changed everywhere: the strata cannot
+    # give 200 unchanged, the changed half tops the task up to 400
+    pool = [u for u in units if u.task == "V12"
             and (not u.records[0]["label"].get("negative") or u.desktop <= 2)]
-    chosen = E.draw(pool, seed=0)["V4"]
+    chosen = E.draw(pool, seed=0)["V12"]
     assert len(chosen) == 400
     negatives = sum(1 for u in chosen if u.records[0]["label"].get("negative"))
     assert 0 < negatives < 200
+
+
+def _v4(n, desktop, mclass, feasible, group=False):
+    check = {"match_class": mclass, "target_class": mclass.split(".")[0]}
+    if group:
+        check["members"] = ["a", "b"]
+    return _rec("V4", n, desktop, "multi", answer_check=check,
+                **({} if feasible else {"negative": "graph_blocked",
+                                        "truth_source": "graph_blocked"}))
+
+
+def test_v4_is_balanced_within_each_class():
+    """Final review I1: eval_v2's V4 leaned per class (motherboard 51 of 56 "no"), so
+    the class name answered it. Each class is cut to at most 60 % of one answer before
+    the draw, a one-answer class is left out, and the draw splits each class equally."""
+    recs, n = [], 0
+    for desktop in range(1, 31):
+        for k in range(12):
+            n += 1
+            recs.append(_v4(n, desktop, "motherboard", feasible=k < 2))   # 1 yes : 5 no
+            n += 1
+            recs.append(_v4(n, desktop, "screw.motherboard", feasible=k % 2 == 0, group=True))
+            n += 1
+            recs.append(_v4(n, desktop, "psu", feasible=False))           # never a yes
+    units = E.units_of(recs, "multi")
+    kept = E.balance_v4(units, seed=0)
+    by = Counter((E.v4_class(u.records[0]), not u.records[0]["label"].get("negative"))
+                 for u in kept)
+    assert by[("motherboard", True)] == 60 and by[("motherboard", False)] == 90
+    assert ("psu", False) not in by
+    chosen = E.draw(units, seed=0)["V4"]
+    per_class: dict = {}
+    for u in chosen:
+        per_class.setdefault(E.v4_class(u.records[0]), Counter())[
+            not u.records[0]["label"].get("negative")] += 1
+    for cls, counts in per_class.items():
+        assert max(counts.values()) / sum(counts.values()) <= E.V4_MAX_MAJORITY + 1e-9, cls
+    assert "psu" not in per_class
 
 
 # --------------------------------------------------------------------------- #

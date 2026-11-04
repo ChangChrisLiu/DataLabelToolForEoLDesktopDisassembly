@@ -113,6 +113,45 @@ def v2_class(record: dict) -> str:
     return str(check.get("class") or "?")
 
 
+#: The largest share one answer may have inside a V4 class of the subset (final review I1).
+V4_MAX_MAJORITY = 0.6
+
+
+def v4_class(record: dict) -> str:
+    """The class a V4 question names: its match class (screw role, connector kind), else
+    its taxonomy class."""
+    check = record["label"].get("answer_check") or {}
+    return str(check.get("match_class") or check.get("target_class") or "?")
+
+
+def balance_v4(units: Sequence["Unit"], seed: int,
+               max_majority: float = V4_MAX_MAJORITY) -> list["Unit"]:
+    """V4's pool with each (view, class) cut to at most ``max_majority`` of one answer.
+
+    The minority answer of a class is kept whole and the majority cut, in a seeded order,
+    to ``minority * max_majority / (1 - max_majority)``; a class with one answer only
+    is left out (a text-only reader would answer it from the class name). The draw then
+    splits each class equally between yes and no, so no class of the subset leans past
+    ``max_majority`` (the pool's own lean is in the export's ``shortcuts``).
+    """
+    import math
+
+    cells: dict[tuple, dict[bool, list]] = defaultdict(lambda: {True: [], False: []})
+    for u in units:
+        feasible = not u.records[0]["label"].get("negative")
+        cells[(u.view, v4_class(u.records[0]))][feasible].append(u)
+    keep: set = set()
+    for (view, cls), sides in cells.items():
+        small = min(len(sides[True]), len(sides[False]))
+        if small == 0:
+            continue
+        room = math.floor(small * max_majority / (1.0 - max_majority) + 1e-9)
+        for side in (True, False):
+            ordered = sorted(sides[side], key=lambda u: _key(seed, "v4bal", u.key))
+            keep.update(u.key for u in ordered[:room])
+    return [u for u in units if u.key in keep]
+
+
 def strata(record: dict) -> tuple[str, ...]:
     """The task-specific stratum path of a record (view and desktop apart).
 
@@ -128,8 +167,11 @@ def strata(record: dict) -> tuple[str, ...]:
     if task == "V3":
         return (f"verb={answer.get('verb')}",)
     if task == "V4":
+        # the class the question names first, then yes / no inside it (final review I1:
+        # "motherboard" was "no" 51 of 56 times in eval_v2) -- :func:`balance_v4` keeps
+        # each class's yes / no within V4_MAX_MAJORITY before the draw
         feasible = not label.get("negative")
-        return ((f"feasible={_bool(feasible)}",)
+        return ((f"class={v4_class(record)}", f"feasible={_bool(feasible)}")
                 + (() if feasible else (f"source={label.get('truth_source')}",)))
     if task == "V8":
         if label.get("answer_check", {}).get("type") == "components":
@@ -316,6 +358,8 @@ def draw(units: Sequence[Unit], *, seed: int = SEED, target_binary: int = TARGET
     out: dict[str, list[Unit]] = {}
     for task in sorted(by_task, key=_task_order):
         pool = by_task[task]
+        if task == "V4":
+            pool = balance_v4(pool, seed)
         n = (targets or {}).get(task)
         if n is None:
             n = target_binary if task in BINARY_TASKS else target_other
