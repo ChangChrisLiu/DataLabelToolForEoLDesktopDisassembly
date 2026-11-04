@@ -10,7 +10,8 @@ the way the oracle labels them) as a predictions file ``<out>/<view>.gold.jsonl`
 and scores it with :mod:`vlm_score`. It exits 0 only when, in **strict**
 parsing, every task row of every file has mean 1.0 and no parse failure; a
 pack whose scorer, oracle and records disagree anywhere exits 1 and names the
-rows. The ``multi`` unit (the action tasks, every camera of a moment) is checked
+rows. The ``multi`` unit (the action tasks: every camera of a moment, or the marked
+scanner image alone for V4, V6 multiple choice, V7 and V16) is checked
 like any other file; its oracle must hold a state table for every side-view image
 too. An ``eval_v1`` path is refused (the subset before the 2026-11-03 redesign).
 

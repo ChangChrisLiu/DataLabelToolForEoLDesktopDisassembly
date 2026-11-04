@@ -100,10 +100,11 @@ dict[str, dict[int, FrameData]]` (filled by lane D for the `multi` unit) and `Ta
 - [ ] **A5 V3 / V6 / V7 / V10 / V12 / V16 on groups and multi-view.** Every action-task record uses
   `tc.moment(step)` images (V3 / V12: moment(k-1) + moment(k)) and writes `image_legend`, `views`, `image_steps`;
   V3 needs the target (or group) visible ≥ `V3_MIN_PX = 400` px on the scanner before or after, or a `BIG_PARTS` part
-  (else skip `invisible_action`), and writes `accept_targets` = target + parts attached to it; V6 options / V16 plans
+  (else skip `invisible_action`), and writes `accept_targets` = target + parts attached to it (**superseded**, owner
+  2026-11-03: `accept_targets` is the target alone; a member of its group still stands for it); V6 options / V16 plans
   / V7 plans / V10 done use group actions; V6 distractors and V16 corruptions prefer graph-blocked over
   state-inapplicable; "loosen the cooler screws" stays required in V7 / V16 / V10 until the held part comes off. Tests:
-  `test_action_record_has_four_images_scan_first`, `test_missing_side_view_shrinks_legend`,
+  `test_action_record_images_marked_scan_alone` (was `test_action_record_has_four_images_scan_first`), `test_missing_side_view_shrinks_legend`,
   `test_v3_tiny_target_skipped`, `test_v3_accepts_attached_part`, `test_v7_plan_uses_screw_group`,
   `test_v10_partial_group_is_started`. Commit.
 - [ ] **A6 oracle groups.** `_desktop_world` (in `vlm.py`, the only `vlm.py` edit lane A makes — coordinate by
@@ -118,7 +119,8 @@ eligible: Sequence[str]) -> Optional[str]` (gid or key).
 - [ ] **B1 grounding to groups.** Tests: `test_plural_and_singular_ground_to_group` ("the cooler screws", "a CPU
   cooler screw" → the gid), `test_instance_key_still_grounds`, `test_two_groups_one_class_graded_by_count`. Commit.
 - [ ] **B2 task grades.** V4 blockers F1 over groups / keys; V7 / V16 plans and V10 done sets over group actions
-  (V10 `started` graded as its own set); V3 accepts any of `accept_targets`; V8 `components` = V1's grade restricted
+  (V10 `started` graded as its own set); V3 accepts any of `accept_targets` (**superseded**, owner 2026-11-03: only the
+  part acted on, or its group; a compound step accepts any of its actions); V8 `components` = V1's grade restricted
   to `class_filter`. Tests: `test_v4_group_blockers_f1`, `test_v7_group_plan_violation_free`,
   `test_v10_started_set`, `test_v3_accept_targets`, `test_v8_components_grade`. The gold reply must still grade 1.0
   for every task (`test_gold_scores_one` over a lane-B fixture). Commit.

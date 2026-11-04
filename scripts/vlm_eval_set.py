@@ -77,7 +77,8 @@ SEED = 0
 TASK_ORDER = ("V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V10", "V12", "V14",
               "V15", "V16")
 #: The export units a record can come from, in the export's order: the four camera views,
-#: then ``multi`` (the action tasks, every camera at once).
+#: then ``multi`` (the action tasks: every camera at once, or the marked scanner image
+#: alone for V4, V6 multiple choice, V7 and V16).
 VIEWS = ("scan", "oak1", "oak2", "rs", "multi")
 
 
