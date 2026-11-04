@@ -61,7 +61,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import zlib
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Optional, Sequence
 
@@ -88,16 +90,22 @@ from tda.core.export.coco import (
     row_bbox_xywh,
 )
 from tda.core.graph import (
+    LOOSE_SOURCE,
+    OCCLUSION_SOURCE,
     Edge,
     applicable_preconditions,
     find_deadlocks,
     gated_verbs,
     legal_actions,
+    loose_parts,
+    moment_edges,
     remaining_plan,
     unmet,
 )
 from tda.core.graph_rules import (
     CABLE_PREFIX,
+    LOOSE_MODE,
+    is_stepwise,
     active_edges,
     blocker_state,
     cable_nodes,
@@ -158,8 +166,9 @@ __all__ = [
 
 #: Every task this module can generate, in the order records are written per
 #: frame. ``--tasks V5`` still reaches V5 through this tuple.
-ALL_TASKS = ("V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V10", "V12", "V14",
-             "V15", "V16")
+#: V14 is gone (owner 2026-11-04): merged into V2, whose state questions answer
+#: ``cannot_tell`` on a part this view cannot see.
+ALL_TASKS = ("V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V10", "V12", "V15", "V16")
 
 #: The default task set (W3b, spec 8.2 v1.48): V5 is out of it. Its legal set is
 #: the graph's upper bound, a median of 37 actions per step (p90 57, max 76), so
@@ -172,7 +181,7 @@ TASKS = tuple(t for t in ALL_TASKS if t != "V5")
 #: The redesign of 2026-11-03 (owner): the action tasks show one moment from all four views and live in the
 #: `multi` export unit; the per-view units keep single-view perception and V15.
 ACTION_TASKS = ("V3", "V4", "V6", "V7", "V10", "V12", "V16")
-PERCEPTION_TASKS_SINGLE = ("V1", "V2", "V8", "V14", "V15")
+PERCEPTION_TASKS_SINGLE = ("V1", "V2", "V8", "V15")
 #: The export unit whose records show every view of a moment.
 MULTI_VIEW = "multi"
 #: The action tasks whose parts are outlined in red on the scanner image (owner 2026-11-03):
@@ -182,7 +191,7 @@ MULTI_VIEW = "multi"
 MARKED_ACTION_TASKS = ("V4", "V7", "V16")
 
 #: Tasks whose answer is read off the compiled truth table of one view.
-PERCEPTION_TASKS = frozenset({"V1", "V2", "V8", "V12", "V14", "V15"})
+PERCEPTION_TASKS = frozenset({"V1", "V2", "V8", "V12", "V15"})
 #: Tasks whose answer is the step log, the state machine and the graph.
 PLANNING_TASKS = frozenset({"V3", "V4", "V5", "V6", "V7", "V10", "V16"})
 #: Tasks that cannot be derived without a trustworthy constraint graph.
@@ -194,7 +203,7 @@ LAYERS = {
     "V1": "L1", "V2": "L1", "V3": "L1", "V12": "L1", "V8": "L1",
     "V4": "L2", "V5": "L2",
     "V6": "L3", "V7": "L3", "V10": "L3", "V16": "L3",
-    "V14": "L4", "V15": "L4",
+    "V15": "L4",
 }
 
 #: The large parts (W3b): a state change of one of these is decidable at
@@ -227,6 +236,7 @@ CHECK_TYPES = frozenset({
     "history",       # V10: the done set, the remaining count and the bin
     "plan",          # V16: validity, the first bad index and the violated edge
     "goal_plan",     # V7: violations, required-action recall, goal reached
+    "frontier",      # V6 (final round): every action possible now, grouped -- set F1 / one option
     "components",    # V8 on a class with several instances: V1's grade on that class
 })
 
@@ -236,15 +246,37 @@ CHECK_TYPES = frozenset({
 #: paper writes those as "class rule x overlap in the annotation", not as an
 #: observed constraint, so a sample has to say which kind it is.
 TRUTH_SOURCES = ("demonstrated", "graph_blocked", "state_inapplicable",
-                 "failed_attempt", "graph_blocked_pixels")
+                 "failed_attempt", "graph_blocked_pixels", "occlusion_blocked",
+                 "loose_first", "simulated")
 (DEMONSTRATED, GRAPH_BLOCKED, STATE_INAPPLICABLE, FAILED_ATTEMPT,
- GRAPH_BLOCKED_PIXELS) = TRUTH_SOURCES
-#: The two kinds of graph-certain "no".
-GRAPH_KINDS = frozenset({GRAPH_BLOCKED, GRAPH_BLOCKED_PIXELS})
+ GRAPH_BLOCKED_PIXELS, OCCLUSION_BLOCKED, LOOSE_FIRST, SIMULATED) = TRUTH_SOURCES
+#: The kinds of rule-certain "no": the stored graph, and the two moment rules of the
+#: owner's 2026-11-04 rulings -- dynamic occlusion (a part above covers it) and loose parts
+#: first (R16) -- which :func:`graph_kind` names when they alone say no.
+GRAPH_KINDS = frozenset({GRAPH_BLOCKED, GRAPH_BLOCKED_PIXELS, OCCLUSION_BLOCKED, LOOSE_FIRST})
+
+#: ``Edge.source`` of the moment edges (never stored): occlusion and loose parts first.
+MOMENT_SOURCES = frozenset({OCCLUSION_SOURCE, LOOSE_SOURCE})
+#: ``Edge.source`` of an edge a constrained question's own constraint adds (V6, V7).
+CONSTRAINT_SOURCE = "constraint"
+
+
+@dataclass
+class Moment:
+    """The rules of one moment (the frame after ``step``): the stored graph plus the moment
+    edges -- dynamic occlusion and loose parts first (:func:`tda.core.graph.moment_edges`)."""
+
+    step: int
+    occluded: dict
+    extra: list
+    edges: list
+    by_target: dict
+    loose: list
+
 
 #: Tasks whose records never carry a mark: the box is the answer (V1, V8) or would say the
-#: part is visible (V14) -- spec 3.2.
-UNMARKED_TASKS = frozenset({"V1", "V8", "V14"})
+#: part is visible (a V2 question on a hidden part, which names it in words) -- spec 3.2.
+UNMARKED_TASKS = frozenset({"V1", "V8"})
 #: V3 (spec 3.6): the acted-on part (or its group) must show this many visible pixels on
 #: the scanner frame before or after the action (1600 x 1600 frames), unless it is large.
 V3_MIN_PX = 400
@@ -500,6 +532,61 @@ class TaskCtx:
     _v7_plan0: dict = field(default_factory=dict, repr=False)
 
     _groups: Optional[dict] = field(default=None, repr=False)
+    #: ``step -> {X: [Y, ...]}``: dynamic occlusion in this unit's scanner frame of ``step``
+    #: (:func:`tda.core.occlusion.occlusion_blockers`, R17); ``None`` -- a unit read without
+    #: a database, a test -- covers nothing.
+    occlusion: Optional[Callable[[int], dict]] = field(default=None, repr=False)
+    _moments: dict = field(default_factory=dict, repr=False)
+    _active: Optional[Moment] = field(default=None, repr=False)
+
+    # -- the rules of one moment (owner 2026-11-04) -------------------------- #
+    @property
+    def stepwise(self) -> bool:
+        """May step-ordered questions be asked here? (D66: several parts at once -- no.)"""
+        return is_stepwise(self.desktop, self.meta)
+
+    def moment_at(self, step: int) -> Moment:
+        """The rules of the frame after ``step`` (cached): stored edges + moment edges."""
+        hit = self._moments.get(step)
+        if hit is None:
+            occluded = {k: list(v) for k, v in
+                        ((self.occlusion(step) if self.occlusion is not None else {}) or {}).items()
+                        if v}
+            state = self.ctx.state_at(step)
+            extra = moment_edges(self.ctx.instances, self.edges, state, self.tax,
+                                 occluded=occluded, loose_first=True)
+            edges = [*self.edges, *extra]
+            index: dict[str, list[Edge]] = {}
+            for edge in active_edges(edges):
+                index.setdefault(edge.target, []).append(edge)
+            hit = Moment(step, occluded, extra, edges, index,
+                         loose_parts(self.ctx.instances, state))
+            self._moments[step] = hit
+        return hit
+
+    @contextmanager
+    def at(self, step: int, extra: Sequence[Edge] = ()):
+        """Generate under the rules of ``step``'s moment (and a question's own ``extra``
+        constraint edges): :attr:`by_target` and :attr:`cur_edges` answer with them."""
+        before = self._active
+        moment = self.moment_at(step)
+        if extra:
+            edges = [*moment.edges, *extra]
+            index = {k: list(v) for k, v in moment.by_target.items()}
+            for edge in active_edges(extra):
+                index.setdefault(edge.target, []).append(edge)
+            moment = Moment(step, moment.occluded, [*moment.extra, *extra], edges, index,
+                            moment.loose)
+        self._active = moment
+        try:
+            yield moment
+        finally:
+            self._active = before
+
+    @property
+    def cur_edges(self) -> list[Edge]:
+        """The edges in force: the active moment's, else the stored graph."""
+        return self._active.edges if self._active is not None else self.edges
 
     @property
     def groups(self) -> dict[str, PartGroup]:
@@ -578,13 +665,16 @@ class TaskCtx:
 
     @property
     def by_target(self) -> dict[str, list[Edge]]:
-        """``target -> its active edges``, built once per desktop.
+        """``target -> its active edges``, built once per desktop -- the active moment's
+        (:meth:`at`: stored + occlusion + loose-first edges) while one is set.
 
         :func:`~tda.core.graph.applicable_preconditions` scans the whole edge
         list, which is nothing for one call and 76 million comparisons for a
         66-desktop export: every frame asks for the permitted set and the
         blocked set, and every candidate action asks for its own preconditions.
         """
+        if self._active is not None:
+            return self._active.by_target
         if self._by_target is None:
             index: dict[str, list[Edge]] = {}
             for edge in active_edges(self.edges):
@@ -674,8 +764,11 @@ class TaskCtx:
     def _permitted(self, step: int, strict: bool) -> list[tuple[str, str]]:
         hit = self._legal.get((step, strict))
         if hit is None:
+            # the owner's rules of 2026-11-04: loose parts first, and nothing a part above
+            # still covers (dynamic occlusion of this frame)
             hit = legal_actions(self.ctx.instances, self.edges, self.state(step),
-                                self.tax, strict=strict)
+                                self.tax, strict=strict, loose_first=True,
+                                occluded=self.moment_at(step).occluded)
             self._legal[(step, strict)] = hit
         return hit
 
@@ -683,7 +776,8 @@ class TaskCtx:
         """``(verb, target, unmet edges)`` -- what the graph *certainly* forbids."""
         hit = self._blocked.get(step)
         if hit is None:
-            hit = blocked_actions(self, step)
+            with self.at(step):
+                hit = blocked_actions(self, step)
             self._blocked[step] = hit
         return hit
 
@@ -775,6 +869,11 @@ class TaskCtx:
                     zlib.crc32(f"{seed}|{c.verb}|{c.target}".encode("utf-8")),
                     c.verb, c.target)
         return sorted(candidates, key=rank)
+
+    @property
+    def displaced_in_log(self) -> frozenset[str]:
+        """The parts this desktop's log swings aside (R14: only those are hinged)."""
+        return frozenset(a.target for a in self.ctx.actions if a.verb == "displace")
 
     @property
     def demonstrated_verbs(self) -> frozenset[str]:
@@ -914,13 +1013,20 @@ def is_pixel_edge(edge: Edge) -> bool:
 
 
 def graph_kind(edges: Sequence[Edge]) -> str:
-    """``graph_blocked_pixels`` when every edge saying "no" is pixel-imported.
+    """``graph_blocked_pixels`` when every edge saying "no" is pixel-imported;
+    ``occlusion_blocked`` / ``loose_first`` when every one is a moment edge of that kind
+    (:func:`tda.core.graph.moment_edges`).
 
     One ordinary edge among them is enough for the plain ``graph_blocked``: the
     "no" is then certain without the pixels.
     """
     edges = list(edges)
-    if edges and all(is_pixel_edge(e) for e in edges):
+    if edges and all(e.source == OCCLUSION_SOURCE for e in edges):
+        return OCCLUSION_BLOCKED
+    if edges and all(e.source == LOOSE_SOURCE for e in edges):
+        return LOOSE_FIRST
+    if edges and all(is_pixel_edge(e) or e.source in MOMENT_SOURCES for e in edges) \
+            and any(is_pixel_edge(e) for e in edges):
         return GRAPH_BLOCKED_PIXELS
     return GRAPH_BLOCKED
 
@@ -968,7 +1074,7 @@ def blocked_actions(tc: TaskCtx, step: int) -> list[tuple[str, str, list[Edge]]]
             bad = unmet_for(tc, verb, key, state)
             if bad:
                 out.append((verb, key, bad))
-    for key, current in sorted(cable_nodes(active_edges(tc.edges), state).items()):
+    for key, current in sorted(cable_nodes(active_edges(tc.cur_edges), state).items()):
         if not verb_applies(tc.tax, CABLE_CLASS, {}, "release", current):
             continue
         bad = unmet_for(tc, "release", key, state)
@@ -1048,7 +1154,8 @@ RELATION_WORDS = {"fastened_by": "fastens", "connected_to": "is plugged into",
 #: ... and a ``blocked_by`` edge by its mode.
 BLOCKED_RELATION_WORDS = {"physical_path": "is in the way of", "mounted": "is mounted on",
                           "contained": "sits in", "tool_access": "blocks access to",
-                          "cable_tension": "holds back by its cable"}
+                          "cable_tension": "holds back by its cable",
+                          LOOSE_MODE: "lies loose in the case and comes out before"}
 #: What a blocker looks like once it no longer holds the part.
 MET_WORDS = {REMOVED: "out", "open": "open", "loosened": "undone", "unplugged": "unplugged",
              "displaced": "moved aside", "released": "released"}
@@ -1201,6 +1308,10 @@ def reason_clauses(tc: "TaskCtx", edges: Sequence[Edge], state: FrameState, *, m
             out.append(f"{subject} still block{s} access to {tgt}")
         elif mode == "cable_tension":
             out.append(f"{subject} still hold{s} {tgt} back by its cable")
+        elif mode == LOOSE_MODE:
+            # R16: a part lying loose in the case comes out before anything else is done
+            out.append(f"{subject} lying loose in the case {'have' if plural_subject else 'has'}"
+                       f" to come out first")
         else:
             out.append(f"{subject} {be} still in the way of {tgt}")
     return out
@@ -1427,11 +1538,15 @@ def record(tc: TaskCtx, task: str, rec_id: str, step: int,
     if check.get("type") not in CHECK_TYPES:
         raise ValueError(f"{rec_id}: answer_check type {check.get('type')!r} "
                          f"is not one a checker can execute")
+    if not rationale.get("text"):
+        # every record carries a reasoning chain in words (owner 2026-11-04): what is seen,
+        # which rule applies, so the answer -- the training side product
+        rationale = dict(rationale, text=default_reasoning(tc, task, step, answer, check))
     if truth_source is not None and truth_source not in TRUTH_SOURCES:
         raise ValueError(f"{rec_id}: truth_source {truth_source!r} is not one of "
                          f"{', '.join(TRUTH_SOURCES)}")
     if marks and task in UNMARKED_TASKS:
-        # the box would be the answer (V1, V8) or say the part is visible (V14)
+        # the box would be the answer (V1, V8)
         raise ValueError(f"{rec_id}: {task} never carries marks")
     prompt: dict[str, Any] = {
         "task": task,
@@ -1440,8 +1555,9 @@ def record(tc: TaskCtx, task: str, rec_id: str, step: int,
         "question": question[:1].upper() + question[1:],
     }
     if options is not None:
-        prompt["options"] = [{"verb": o["verb"], "target_label": o["target_label"]}
-                             for o in options]
+        # V6's options name the whole action in words ("unplug" the connectors): `say_verb`
+        prompt["options"] = [{"verb": o.get("say_verb", o["verb"]),
+                              "target_label": o["target_label"]} for o in options]
     if marks:
         prompt["marks"] = [dict(m) for m in marks]
     if hints:
@@ -1500,6 +1616,99 @@ def record(tc: TaskCtx, task: str, rec_id: str, step: int,
     if extra:
         label.update(extra)
     return {"id": opaque_record_id(rec_id), "prompt": prompt, "label": label}
+
+
+def _say(tc: TaskCtx, key: str) -> str:
+    """A part, a group or a cable in words, no ordinal ("the PSU", "the RAM latches")."""
+    if tc.group_by_id(key) is not None:
+        return f"the {tc.group_by_id(key).label}"
+    if key.startswith(CABLE_PREFIX):
+        return cable_words(key)
+    return asked_words(tc, key)[0]
+
+
+def _cap(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
+def default_reasoning(tc: TaskCtx, task: str, step: int, answer: dict, check: dict) -> str:
+    """The reasoning chain of a record whose generator wrote none: what the picture shows,
+    the rule, so the answer -- in visible terms, never an ordinal or an edge."""
+    if task == "V1":
+        counts: dict[str, int] = {}
+        for c in answer.get("components") or []:
+            counts[class_label(c["class"], tc.tax)] = counts.get(class_label(c["class"], tc.tax),
+                                                                 0) + 1
+        seen = _and([f"{n} {plural(label)}" if n > 1 else f"a {label}"
+                     for label, n in sorted(counts.items())])
+        return (f"The picture shows {seen}. Each visible part is listed with the box around "
+                f"what can be seen of it; the chassis holds everything and is not listed.")
+    if task == "V2" and "count" in answer:
+        role = str(check.get("role") or "").replace("_", " ")
+        n = int(answer["count"])
+        return (f"The {role} screws still in place are counted on the machine as it stands "
+                f"(a screw taken out leaves an empty hole): {n}. So the count is {n}.")
+    if task == "V3":
+        target = answer.get("target_instance") or answer.get("target")
+        words = _say(tc, target) if target else "a part"
+        old, new = tc.state(step - 1).get(target), tc.state(step).get(target)
+        how = (f": it was {old.state.replace('_', ' ')} and is now {new.state.replace('_', ' ')}"
+               if old is not None and new is not None and old.state != new.state else "")
+        return (f"Comparing the two moments, {words} changed{how}. So the action carried out "
+                f"was: {VERB_WORDS.get(answer.get('verb'), answer.get('verb'))} {words}.")
+    if task == "V8":
+        if "components" in answer:
+            n = len(answer["components"])
+            return (f"The picture shows {n} of the parts asked for; each is given by the box "
+                    f"around what can be seen of it.")
+        target = answer.get("instance")
+        words = _say(tc, target) if target in tc.ctx.instances else "the part"
+        return f"{_cap(words)} is the part that matches the description; its box is the answer."
+    if task == "V10":
+        done = _and([f"{VERB_WORDS.get(a['verb'], a['verb'])} {_say(tc, a['target'])}"
+                     for a in answer.get("done") or []][:8])
+        started = _and([f"{VERB_WORDS.get(a['verb'], a['verb'])} {_say(tc, a['target'])}"
+                        for a in answer.get("started") or []])
+        text = (f"Compared with the machine at the start, these are done: {done}."
+                if done else "Compared with the machine at the start, nothing is done yet.")
+        if started:
+            text += f" Begun but not finished: {started}."
+        return text + (f" That puts the teardown in the {answer.get('progress_bin')} % band of "
+                       f"its actions.")
+    if task == "V12":
+        if answer.get("changed"):
+            what = _and([_say(tc, e["target"]) for e in answer.get("events") or []][:4])
+            return (f"Comparing the two pictures, {what} changed between the two moments. "
+                    f"So yes, the machine changed.")
+        return ("Comparing the two pictures, every part is where and how it was; nothing a "
+                "picture can show changed. So no, the machine did not change.")
+    if task == "V15":
+        if "same_moment" in answer:
+            if answer["same_moment"]:
+                return ("Both pictures show the machine with the same parts in and out, in the "
+                        "same states. So they are the same moment.")
+            return ("The two pictures disagree about a large part: it is in one and gone or "
+                    "moved in the other. So they are not the same moment.")
+        target = check.get("instance")
+        words = _say(tc, target) if target else "the part"
+        return (f"The first view cannot see {words}; the second view shows it "
+                f"{str(answer.get('state')).replace('_', ' ')}. So its state is "
+                f"{answer.get('state')}, and the second view answers better.")
+    if task == "V5":
+        return "The actions listed are the ones the log shows can be done from here."
+    return "The answer follows from what the picture shows."
+
+
+def v2_state_text(label: str, many: bool, value: str, screw: bool) -> str:
+    """V2's reasoning in words: what the picture shows of the part, so its state."""
+    be = "are" if many else "is"
+    if screw:
+        seen = "still in its hole" if value == "present" else "gone, its hole empty"
+        if many:
+            seen = "still in their holes" if value == "present" else "gone, their holes empty"
+        return f"In the picture {label} {be} {seen}. So the answer is {value}."
+    return (f"In the picture {label} {be} {value.replace('_', ' ')}. "
+            f"So the state is {value}.")
 
 
 def frame_id(desktop: int, view: str, step: int) -> str:
@@ -1704,7 +1913,115 @@ def gen_v2(tc: TaskCtx, step: int) -> Iterator[dict]:
     if frame is None or not frame.verified:
         return
     yield from _v2_states(tc, frame)
+    yield from _v2_hidden(tc, frame)
     yield from _v2_counts(tc, frame)
+
+
+#: V2's extra answer (V14 merged into V2, owner 2026-11-04): this picture cannot tell.
+CANNOT_TELL = "cannot_tell"
+#: The visibilities of a part in its place that this image cannot judge.
+HIDDEN_VISIBILITY = ("occluded_full", "too_small", "out_of_view")
+#: Why a picture cannot tell, in words.
+HIDDEN_WORDS = {"occluded_full": "something covers it completely",
+                "too_small": "it is too small to make out", "out_of_view": "it is outside the picture"}
+#: A hidden-part question on about one frame in this many (a modest share of V2's states).
+V2_HIDDEN_EVERY = 3
+
+
+def v2_allowed(tc: TaskCtx, cls: str) -> list[str]:
+    """The answer space of a V2 state question: the class's states (present / removed for a
+    screw) and ``cannot_tell``."""
+    return ([*PRESENCE_STATES] if cls == "screw" else sorted(tc.tax.states_of(cls))) \
+        + [CANNOT_TELL]
+
+
+def hidden_why(row: dict) -> str:
+    if row.get("occluder") == "cable":
+        return "a cable hides it completely"
+    if row.get("occluder") == VIEWPOINT:
+        return UNSEEN_FROM_HERE
+    return HIDDEN_WORDS.get(str(row.get("visibility")), "it cannot be seen")
+
+
+def _v2_hidden(tc: TaskCtx, frame: FrameData) -> Iterator[dict]:
+    """"What state is <a part this view cannot see> in?" -- gold ``cannot_tell`` (V14 merged
+    into V2). The part is in its place and named in words (no mark: a box would say where
+    it is): a part alone of its class, or a part group every present member of which is
+    hidden. At most one per frame, on about one frame in :data:`V2_HIDDEN_EVERY`."""
+    seed = tc.seed(frame.step, "V2hidden")
+    if zlib.crc32(seed.encode("utf-8")) % V2_HIDDEN_EVERY:
+        return
+    state = tc.state(frame.step)
+    units: list[tuple[str, list[str]]] = []
+    seen: set[str] = set()
+    for key in sorted(frame.rows):
+        row = frame.rows[key]
+        cls = tc.ctx.cls_of(key)
+        if key in seen or cls is None or not tc.askable(key) or not state_is_askable(tc.tax, cls):
+            continue
+        if row.get("visibility") not in HIDDEN_VISIBILITY or not present(state, key):
+            continue
+        if is_captive_screw(tc.ctx, key) or row.get("placement") not in (None, "in_chassis"):
+            continue
+        group = tc.group_of(key)
+        if group is not None:
+            members = [m for m in group.members if present(state, m)]
+            if all((frame.rows.get(m) or {}).get("visibility") in HIDDEN_VISIBILITY
+                   for m in members) and len(members) >= 2:
+                units.append((group.gid, members))
+                seen.update(members)
+            continue
+        if unique_on_desktop(tc, key):
+            units.append((key, [key]))
+            seen.add(key)
+    if not units:
+        return
+    ident, members = stable_order(units, seed, lambda u: u[0])[0]
+    first = members[0]
+    cls = tc.ctx.cls_of(first)
+    screw = cls == "screw"
+    # outlined where its whole shape is known (a part wholly covered in its place: its
+    # amodal box), as every V2 question is -- else named in words
+    namer = Namer(tc, frame)
+    ref = namer.group(ident, members) if ident != first else namer.part(first)
+    words = (namer.say(ref) if ref is not None else
+             f"the {tc.group_by_id(ident).label}" if tc.group_by_id(ident) is not None
+             else asked_words(tc, first)[0])
+    many = len(members) > 1
+    rec_id = f"V2-{frame_id(tc.desktop, tc.view, frame.step)}-hidden-{ident}"
+    templates = ((V2_PRESENCE_QUESTIONS_MANY if many else V2_PRESENCE_QUESTIONS) if screw
+                 else (V2_STATE_QUESTIONS_MANY if many else V2_STATE_QUESTIONS))
+    index, template = pick(templates, rec_id)
+    check = {"type": "exact", "derive": "instance_state", "instance": ident, "class": cls,
+             "fields": ["state"], "allowed": v2_allowed(tc, cls), "hidden": True,
+             "visibility": {k: frame.rows[k].get("visibility") for k in members}}
+    if many:
+        check["members"] = list(members)
+    if screw:
+        check["state_space"] = "presence"
+    start = tc.state(0).get(first)
+    prior = visible_state(tc.ctx, first, start.state if start is not None
+                          else tc.tax.default_state(cls))
+    why = hidden_why(frame.rows[first])
+    if many:
+        why = why.replace(" it ", " them ").replace(" it.", " them.").replace(
+            "covers it", "covers them").replace("it is", "they are")
+    be = "are" if many else "is"
+    text = (f"{words[:1].upper() + words[1:]} {be} in place but not visible in this picture: "
+            f"{why}. A state has to be seen to be told, so it cannot be told from this image.")
+    yield record(
+        tc, "V2", rec_id, frame.step, [frame], template.format(label=words), index,
+        {"state": CANNOT_TELL}, check,
+        evidence({}, tc, {k: seen_as(frame.rows[k]) for k in members}),
+        dict(R.rationale([R.propagate_state(k, None) for k in members],
+                         R.abstain("; ".join(unseen_reason(k, frame.rows[k], tc.view)
+                                             for k in members))), text=text),
+        row_verified([frame.rows[k] for k in members], frame.verified),
+        negative="cannot_tell", extra={"class_prior_answer": prior},
+        terms=[cls], state_terms=[cls],
+        marks=namer.marks() if ref is not None else None,
+        mark_names=namer.names() if ref is not None else None,
+    )
 
 
 V2_STATE_QUESTIONS_MANY = (
@@ -1776,10 +2093,9 @@ def _v2_states(tc: TaskCtx, frame: FrameData) -> Iterator[dict]:
         templates = ((V2_PRESENCE_QUESTIONS_MANY if many else V2_PRESENCE_QUESTIONS) if screw
                      else (V2_STATE_QUESTIONS_MANY if many else V2_STATE_QUESTIONS))
         index, template = pick(templates, rec_id)
+        # the answer space has a "cannot tell from this image" (V14 merged into V2)
         check = {"type": "exact", "derive": "instance_state", "instance": ident,
-                 "class": cls, "fields": ["state"],
-                 "allowed": (list(PRESENCE_STATES) if screw
-                             else sorted(tc.tax.states_of(cls)))}
+                 "class": cls, "fields": ["state"], "allowed": v2_allowed(tc, cls)}
         if ident != first:
             check["members"] = list(members)
         if screw:
@@ -1798,10 +2114,11 @@ def _v2_states(tc: TaskCtx, frame: FrameData) -> Iterator[dict]:
             {"state": value}, check,
             evidence({k: frame.pointable[k][1] for k in members}, tc,
                      {k: seen_as(frame.pointable[k][0]) for k in members}),
-            R.rationale([R.observe(k, value, tc.view, frame.pointable[k][1],
-                                   frame.pointable[k][0].get("visibility"),
-                                   occluder=frame.pointable[k][0].get("occluder"))
-                         for k in members]),
+            dict(R.rationale([R.observe(k, value, tc.view, frame.pointable[k][1],
+                                        frame.pointable[k][0].get("visibility"),
+                                        occluder=frame.pointable[k][0].get("occluder"))
+                              for k in members]),
+                 text=v2_state_text(namer.say(ref), many, value, screw)),
             row_verified(rows, frame.verified),
             extra={"class_prior_answer": prior}, marks=namer.marks(), mark_names=namer.names(),
             terms=[cls], state_terms=[cls],
@@ -2248,6 +2565,10 @@ def _v4_record(tc: TaskCtx, frame: FrameData, verb: str, target: str,
         return None  # the graph forbids what the log did: say nothing
     if truth_source != DEMONSTRATED and not bad:
         return None
+    if truth_source in GRAPH_KINDS:
+        # what says "no" to the asked part or group as a whole: the graph, a part above, a
+        # loose part -- or several of them
+        truth_source = graph_kind(bad)
     blockers = blocker_ids(tc, [e.blocker for e in bad])
     rec_id = (f"V4-{frame_id(tc.desktop, tc.view, frame.step)}"
               f"-{truth_source}-{verb}-{ident}")
@@ -2270,7 +2591,8 @@ def _v4_record(tc: TaskCtx, frame: FrameData, verb: str, target: str,
     # why this answer is what it is, in what the picture shows (owner 2026-11-04): the
     # prerequisites now met, or what still holds it -- never the graph's words. The internal
     # code (an edge said no, or nothing did) stays in answer_check.reason_code
-    reason_code = None if feasible else (reason or "violates_edge")
+    reason_code = None if feasible else (reason or REASON_CODES.get(truth_source,
+                                                                     "violates_edge"))
     reason, why = feasibility_reason(tc, verb, ident, members, state, bad)
     raw_blockers = sorted({e.blocker for e in bad})
     bboxes = {k: frame.pointable[k][1]
@@ -2283,8 +2605,12 @@ def _v4_record(tc: TaskCtx, frame: FrameData, verb: str, target: str,
              "metric": "per_verb_accuracy_macro", "secondary_metric": "accuracy",
              "edges": [{"type": e.type, "target": e.target, "blocker": e.blocker,
                         "necessity": e.necessity, "mode": e.mode,
+                        "moment": e.source in MOMENT_SOURCES,
                         "required": sorted(required_states(e.type, e.mode))}
                        for e in sorted(bad, key=lambda e: (e.type, e.target, e.blocker))],
+             # the moment's own rules on the asked parts (never stored edges): what covers
+             # them in this frame, and the loose parts that come out first
+             "moment": moment_json(tc, members),
              # the blocker groups' members, for a grader that wants them
              "blocker_members": {b: sorted({e.blocker for e in bad
                                             if (tc.group_of(e.blocker).gid
@@ -2305,6 +2631,10 @@ def _v4_record(tc: TaskCtx, frame: FrameData, verb: str, target: str,
         marks=namer.marks(), mark_names=namer.names(), terms=[target_class(tc.ctx, target)],
         moment=tc.legend((frame.step, "now"), marked=True),
     )
+
+
+#: The internal code of a V4 "no" by what said it (label side only).
+REASON_CODES = {OCCLUSION_BLOCKED: "covered_now", LOOSE_FIRST: "loose_part_first"}
 
 
 def gen_v4(tc: TaskCtx, step: int) -> Iterator[dict]:
@@ -2328,8 +2658,16 @@ def gen_v4(tc: TaskCtx, step: int) -> Iterator[dict]:
     captive screw tightness is asked.
     """
     frame = tc.frame(step)
-    if frame is None or tc.excluded:
-        return
+    if frame is None or tc.excluded or not tc.stepwise:
+        return  # D66 (several parts at once) asks no step-ordered question
+    # the rules of this moment: the stored graph, what a part above still covers, and
+    # loose parts first (owner 2026-11-04)
+    with tc.at(step):
+        made = list(_gen_v4(tc, frame, step))
+    yield from made
+
+
+def _gen_v4(tc: TaskCtx, frame: FrameData, step: int) -> Iterator[dict]:
     shown = tc.demonstrated(step)
     if shown is None:
         return  # no demonstrated action here: nothing certain to be positive about
@@ -2464,226 +2802,555 @@ def gen_v5(tc: TaskCtx, step: int) -> Iterator[dict]:
 # --------------------------------------------------------------------------- #
 # V6 -- the next step
 # --------------------------------------------------------------------------- #
+#: The open form (owner 2026-11-04): every action possible now, not the one demonstrated.
 V6_QUESTIONS = (
-    "What is the next disassembly step? Answer with one verb and one target.",
-    "Looking at the machine in these pictures, which action would you perform next?",
-    "Name the single action to carry out next on this machine.",
+    "List every disassembly action that can be carried out now on this machine.",
+    "Looking at the machine in these pictures, which actions could be carried out right now? "
+    "List all of them.",
+    "Name every action that is possible on this machine as it stands, not only the one you "
+    "would pick.",
 )
-#: The multiple-choice form (W3b): a secondary record beside the open one.
+#: The multiple-choice form: exactly one option is possible now, the others are blocked.
 V6_MC_QUESTIONS = (
-    "Which of these is the next disassembly step?",
-    # the listed form shows the marked scanner image alone (owner 2026-11-03): one picture
-    "Looking at the machine in this picture, which of the following actions would you "
-    "perform next?",
-    "Pick the single action to carry out next on this machine.",
+    "Which of these actions can be carried out now?",
+    "Looking at the machine in these pictures, which one of the following actions is possible "
+    "right now?",
+    "Only one of these actions can be done on the machine as it stands. Which one?",
 )
-#: How many graph-permitted "unknown" distractors ride along, and how many
-#: certainly-wrong ones the options list needs before it is offered at all.
-V6_UNKNOWN_OPTIONS = 2
-V6_WRONG_OPTIONS = 2
+#: The constrained form: the same list, under one extra rule given in words.
+V6_CONSTRAINED_QUESTIONS = (
+    "List every disassembly action that can be carried out now on this machine, under this "
+    "rule: {rule}",
+    "Rule for this teardown: {rule} Under that rule, which actions could be carried out right "
+    "now? List all of them.",
+    "Name every action that is possible on this machine as it stands, keeping to this rule: "
+    "{rule}",
+)
+#: How many blocked distractors a multiple choice carries (at most), and how few it needs.
+V6_WRONG_OPTIONS = 3
+V6_MIN_WRONG = 2
+
+#: ``(class, state) -> the verbs the 66 logs use from there`` (the graph audit of
+#: 2026-11-04): the frontier only ever offers an action the teardowns actually do --
+#: no ``displace`` of a RAM stick, no ``remove`` of a plugged connector, no virtual
+#: ``cable:*`` node. ``displace`` is further limited to the parts this desktop's own log
+#: swings aside (R14: only a part that can be swung is hinged).
+LOG_VOCAB: dict[tuple[str, str], frozenset[str]] = {
+    ("cable_clip", "closed"): frozenset({"release"}),
+    ("card_latch", "closed"): frozenset({"open", "remove"}),
+    ("case_fan", "installed"): frozenset({"remove"}),
+    ("connector", "plugged"): frozenset({"disconnect"}),
+    ("cooler_bracket", "installed"): frozenset({"remove"}),
+    ("cooler_latch", "closed"): frozenset({"remove"}),
+    ("cover", "closed"): frozenset({"open", "remove"}),
+    ("cover", "open"): frozenset({"remove"}),
+    ("cpu", "installed"): frozenset({"remove"}),
+    ("cpu_cooler", "installed"): frozenset({"remove", "displace"}),
+    ("cpu_cooler", "displaced"): frozenset({"remove"}),
+    ("cpu_socket_lever", "closed"): frozenset({"open"}),
+    ("drive_cage", "installed"): frozenset({"remove", "displace"}),
+    ("drive_cage", "displaced"): frozenset({"remove"}),
+    ("drive_latch", "closed"): frozenset({"open"}),
+    ("expansion_card", "installed"): frozenset({"remove"}),
+    ("misc_part", "installed"): frozenset({"remove"}),
+    ("motherboard", "installed"): frozenset({"remove"}),
+    ("optical_drive", "installed"): frozenset({"remove"}),
+    ("psu", "installed"): frozenset({"remove", "displace"}),
+    ("psu", "displaced"): frozenset({"remove"}),
+    ("psu_latch", "closed"): frozenset({"remove"}),
+    ("ram_latch", "closed"): frozenset({"open"}),
+    ("ram_module", "installed"): frozenset({"remove"}),
+    ("screw", "fastened"): frozenset({"unscrew"}),
+    ("storage_drive", "installed"): frozenset({"remove", "displace"}),
+    ("storage_drive", "displaced"): frozenset({"remove"}),
+}
+#: Classes whose every possible action is **one** group, interchangeable and unordered
+#: (the rules' preamble: 插头和插头之间、内存卡扣和内存卡扣之间没有先后).
+ONE_GROUP = {"connector": "connectors", "ram_latch": "RAM latches", "ram_module": "RAM modules"}
+
+
+@dataclass
+class FrontierGroup:
+    """One group of the frontier: interchangeable actions possible now, no order among them."""
+
+    key: str
+    actions: list            # [(verb, target)], sorted
+    phrase: str = ""         # "unplug the connectors": how a person says the group
+    hidden: list = field(default_factory=list)  # targets a cable hides (named in words)
+
+    def as_json(self) -> dict:
+        return {"key": self.key, "phrase": self.phrase,
+                "actions": [{"verb": v, "target": t} for v, t in self.actions],
+                **({"hidden_by_cable": list(self.hidden)} if self.hidden else {})}
+
+
+def frontier_key(tc: TaskCtx, verb: str, key: str) -> str:
+    """The group an action belongs to: every plug one group, every RAM latch, every RAM
+    module; screws by the part they fasten; any other part by its part group (alternative
+    verbs on one part -- open or remove a cover -- are one group: the part is what is
+    "possible now")."""
+    rec = tc.ctx.instances.get(key)
+    if rec is None:
+        return f"part:{key}"
+    if rec.cls in ONE_GROUP:
+        return f"all:{rec.cls}"
+    if rec.cls == "screw":
+        return f"screws:{rec.fastens or rec.attrs.get('role') or key}"
+    group = tc.group_of(key)
+    return f"part:{group.gid}" if group is not None else f"part:{key}"
+
+
+def in_log_vocab(tc: TaskCtx, verb: str, key: str, state: FrameState) -> bool:
+    """Is ``verb`` on ``key`` an action the teardowns do from its present state (:data:`LOG_VOCAB`)?"""
+    rec = tc.ctx.instances.get(key)
+    inst = state.get(key)
+    if rec is None or inst is None:
+        return False
+    if verb not in LOG_VOCAB.get((rec.cls, inst.state), frozenset()):
+        return False
+    if verb == "displace" and key not in tc.displaced_in_log:
+        return False  # only a part this machine's log swings aside is hinged (R14)
+    if rec.cls == "ram_latch":
+        module = rec.attrs.get("of")
+        if module and not present(state, module):
+            return False  # a latch of an empty slot: opening it means nothing
+    return True
+
+
+def frontier_visible(frame: FrameData, key: str) -> Optional[str]:
+    """``"seen"`` when the scanner frame can point at ``key``, ``"cable"`` when only a cable
+    hides it (it stays, named in words), else ``None``."""
+    if key in frame.pointable:
+        return "seen"
+    row = frame.rows.get(key) or {}
+    if row.get("occluder") == "cable":
+        return "cable"
+    return None
+
+
+def frontier_parts(tc: TaskCtx, actions: Sequence[tuple[str, str]]) -> tuple[str, str]:
+    """``("unplug", "the connectors")``: the verb words and the part words of one group."""
+    verbs = sorted({v for v, _ in actions}, key=lambda v: (v != "open", v))
+    targets = sorted({t for _, t in actions})
+    return " or ".join(VERB_WORDS.get(v, v) for v in verbs), target_words(tc, targets)
+
+
+def frontier_phrase(tc: TaskCtx, actions: Sequence[tuple[str, str]]) -> str:
+    """How a person says one group of actions, no ordinal: "unplug the connectors",
+    "unscrew the PSU screws", "open or take out the side cover"."""
+    head, words = frontier_parts(tc, actions)
+    return f"{head} {words}"
+
+
+#: How a reason says a verb (the log's ``disconnect`` is "unplug" to a person).
+VERB_WORDS = {"disconnect": "unplug", "displace": "move aside", "remove": "take out"}
+
+
+def target_words(tc: TaskCtx, targets: Sequence[str]) -> str:
+    """"the PSU", "the connectors", "the PSU screws", "the RAM modules": parts in words."""
+    targets = sorted(set(targets))
+    if len(targets) == 1:
+        key = targets[0]
+        if tc.group_by_id(key) is not None:
+            return f"the {tc.group_by_id(key).label}"
+        return asked_words(tc, key)[0]
+    groups = {tc.group_of(t).gid if tc.group_of(t) else None for t in targets}
+    if len(groups) == 1 and None not in groups:
+        return f"the {tc.group_of(targets[0]).label}"
+    classes = {tc.ctx.cls_of(t) for t in targets}
+    if classes == {"screw"}:
+        held = {tc.ctx.instances[t].fastens for t in targets}
+        if len(held) == 1 and None not in held:
+            return f"the screws that fasten {asked_words(tc, next(iter(held)))[0]}"
+        return "the screws"
+    if len(classes) == 1:
+        cls = next(iter(classes))
+        if cls in ONE_GROUP:
+            return f"the {ONE_GROUP[cls]}"
+        return f"the {class_phrase(tc.ctx, targets[0], many=True)}"
+    return _and([asked_words(tc, t)[0] for t in targets])
+
+
+def captive_pending(tc: TaskCtx, state: FrameState) -> bool:
+    """Is some captive screw loosened while the part it holds is still in? (spec 6.6)
+
+    Its tightness is in no picture, and whether the cooler can come off rests on it: the
+    frontier of such a moment is not asked (``captive_tightness``)."""
+    for key, rec in tc.ctx.instances.items():
+        if not is_captive_screw(tc.ctx, key):
+            continue
+        inst = state.get(key)
+        if inst is not None and inst.state == "loosened" and rec.fastens \
+                and present(state, rec.fastens):
+            return True
+    return False
+
+
+def frontier(tc: TaskCtx, frame: FrameData, step: int,
+             extra: Sequence[Edge] = ()) -> list[FrontierGroup]:
+    """The V6 gold (owner 2026-11-04): every action possible now, grouped.
+
+    :func:`~tda.core.graph.legal_actions` with ``loose_first`` and this frame's dynamic
+    occlusion (and a constrained question's ``extra`` edges), restricted to the log's
+    vocabulary (:func:`in_log_vocab`), to parts a question may name, and to targets the
+    scanner frame can point at -- a target only a cable hides stays, named in words.
+    """
+    state = tc.state(step)
+    moment = tc.moment_at(step)
+    legal = legal_actions(tc.ctx.instances, [*tc.edges, *extra], state, tc.tax, strict=False,
+                          loose_first=True, occluded=moment.occluded)
+    buckets: dict[str, FrontierGroup] = {}
+    for verb, key in legal:
+        if key.startswith(CABLE_PREFIX) or not tc.askable(key):
+            continue
+        if not in_log_vocab(tc, verb, key, state):
+            continue
+        seen = frontier_visible(frame, key)
+        if seen is None:
+            continue
+        gk = frontier_key(tc, verb, key)
+        group = buckets.setdefault(gk, FrontierGroup(gk, []))
+        group.actions.append((verb, key))
+        if seen == "cable" and key not in group.hidden:
+            group.hidden.append(key)
+    out = []
+    for gk in sorted(buckets):
+        group = buckets[gk]
+        group.actions = sorted(set(group.actions))
+        group.hidden = sorted(group.hidden)
+        group.phrase = frontier_phrase(tc, group.actions)
+        out.append(group)
+    return out
+
+
+def blocked_frontier(tc: TaskCtx, frame: FrameData, step: int,
+                     groups: Sequence[FrontierGroup]) -> list[FrontierGroup]:
+    """Groups of actions certainly **not** possible now: rule-blocked (graph, occlusion, loose
+    parts), in the log's vocabulary, on a part present and visible, and no member of the
+    group possible at all (a member hidden but legal would make "it cannot be done" false).
+    Never an action already done or meaningless (a state-inapplicable one, an empty slot)."""
+    state = tc.state(step)
+    legal = set(tc.permitted(step))
+    keys = {g.key for g in groups}
+    buckets: dict[str, FrontierGroup] = {}
+    for c in tc.certainly_wrong(step):
+        if c.kind not in GRAPH_KINDS or not tc.askable(c.target):
+            continue
+        if not in_log_vocab(tc, c.verb, c.target, state) or c.target not in frame.pointable:
+            continue
+        gk = frontier_key(tc, c.verb, c.target)
+        if gk in keys:
+            continue
+        buckets.setdefault(gk, FrontierGroup(gk, [])).actions.append((c.verb, c.target))
+    out = []
+    for gk in sorted(buckets):
+        group = buckets[gk]
+        # every action of this kind on the group's parts must be blocked
+        # a legal action of the same group anywhere -- hidden from this camera, say -- would
+        # make "it cannot be done" false
+        if any(frontier_key(tc, v, t) == gk and in_log_vocab(tc, v, t, state)
+               for v, t in legal if not t.startswith(CABLE_PREFIX)):
+            continue
+        group.actions = sorted(set(group.actions))
+        group.phrase = frontier_phrase(tc, group.actions)
+        out.append(group)
+    return out
+
+
+def group_reason(tc: TaskCtx, state: FrameState, group: FrontierGroup) -> str:
+    """Why one frontier group is possible now, in what the picture shows."""
+    verb, key = group.actions[0]
+    members = sorted({t for v, t in group.actions if v == verb})
+    ident = key if len(members) == 1 else (tc.group_of(key).gid if tc.group_of(key) is not None
+                                           and set(tc.group_of(key).members) >= set(members)
+                                           else key)
+    text, _ = feasibility_reason(tc, verb, ident, members, state, [])
+    if len(members) > 1 and tc.group_by_id(ident) is None:
+        text = re.sub(r", so .* can be ([a-z ]+)$", r", so they can be \1", text)
+        text = re.sub(r"^nothing is in the way, so .*$", "nothing is in the way of any of them",
+                      text)
+    return text
+
+
+def blocked_reason(tc: TaskCtx, state: FrameState, group: FrontierGroup) -> str:
+    """Why a blocked group is not possible yet: what still holds it, in visible terms."""
+    verb, key = group.actions[0]
+    members = sorted({t for v, t in group.actions if v == verb})
+    bad = sorted({e for m in members for e in unmet_for(tc, verb, m, state)},
+                 key=lambda e: (e.type, e.target, e.blocker))
+    ident = key if len(members) == 1 else members[0]
+    text, _ = feasibility_reason(tc, verb, ident, members, state, bad)
+    return text
+
+
+def loose_sentence(tc: TaskCtx, step: int) -> str:
+    loose = tc.moment_at(step).loose
+    if not loose:
+        return ""
+    words = _and([asked_words(tc, k)[0] for k in loose])
+    be = "lie" if len(loose) > 1 else "lies"
+    return (f"{words[:1].upper() + words[1:]} {be} loose in the case, and a loose part comes out "
+            f"before anything else is done. ")
+
+
+def frontier_text(tc: TaskCtx, step: int, groups: Sequence[FrontierGroup],
+                  blocked: Sequence[FrontierGroup], rule: Optional[str] = None,
+                  forbidden: Sequence[FrontierGroup] = ()) -> str:
+    """The V6 reasoning chain: what the picture shows, which rule applies, so the answer."""
+    state = tc.state(step)
+    parts = [loose_sentence(tc, step)]
+    for group in groups:
+        reason = group_reason(tc, state, group)
+        hidden = (" (a cable hides some of them, but they are there)" if group.hidden else "")
+        parts.append(f"{group.phrase[:1].upper() + group.phrase[1:]}: {reason}{hidden}. ")
+    for group in blocked[:3]:
+        parts.append(f"Not yet {group.phrase}: {blocked_reason(tc, state, group)}. ")
+    if rule:
+        parts.append(f"The rule ({rule.rstrip('.')}) rules out "
+                     + _and([g.phrase for g in forbidden]) + " for now. ")
+    if groups:
+        parts.append("So the actions possible now are: " + "; ".join(g.phrase for g in groups)
+                     + ".")
+    else:
+        parts.append("So nothing can be done now.")
+    return "".join(parts).strip()
+
+
+def _frontier_answer(groups: Sequence[FrontierGroup], why: str) -> dict:
+    """One action per group (its first): the gold reply lists every group once."""
+    return {"actions": [{"verb": g.actions[0][0], "target": g.actions[0][1]} for g in groups],
+            "why": why}
+
+
+def v6_constraints(tc: TaskCtx, frame: FrameData, step: int,
+                   groups: Sequence[FrontierGroup]) -> list[dict]:
+    """The constrained form's candidate rules, each removing at least one frontier group.
+
+    * **until every connector is unplugged**: a part the frontier would take out must stay
+      in until every plug still in is pulled -- ``connected_to(part <- plug)`` per plug;
+    * **A before any B**: a large part still in (A) has to come out before a part the
+      frontier would take out (B) -- ``blocked_by(B <- A, contained)``: only A out frees B.
+      Only where A's own way out needs nothing of B.
+
+    No ordinal, no number: the rule names classes and parts in words.
+    """
+    state = tc.state(step)
+    if tc.moment_at(step).loose:
+        return []  # a loose part comes out first: a rule on top of that is not asked
+    plugged = sorted(k for k, rec in tc.ctx.instances.items()
+                     if rec.cls == "connector" and tc.askable(k)
+                     and (state.get(k) is not None and state[k].state == "plugged"))
+    out: list[dict] = []
+    # a rule holds back a part the frontier would take out -- a part, not a latch or lever
+    removable = [g for g in groups if g.key != "all:connector"
+                 and any(v == "remove" for v, _ in g.actions)
+                 and not any(str(tc.ctx.cls_of(t)).endswith(("latch", "lever"))
+                             for _, t in g.actions)]
+    for g in removable:
+        targets = sorted({t for v, t in g.actions if v == "remove"})
+        if not plugged or set(targets) & set(plugged):
+            continue
+        words = target_words(tc, targets)
+        many = len(targets) > 1
+        rule = (f"{words[:1].upper() + words[1:]} must not be taken out until every connector "
+                f"is unplugged.")
+        edges = [Edge(type="connected_to", target=t, blocker=c, source=CONSTRAINT_SOURCE,
+                      status="accepted", reason="the question's rule")
+                 for t in targets for c in plugged]
+        out.append({"kind": "until_connectors", "rule": rule, "held": targets,
+                    "until": plugged, "edges": edges, "many": many})
+    # A: a large part that comes out on its own way (never the board everything sits on)
+    bigs = sorted(k for k, rec in tc.ctx.instances.items()
+                  if rec.cls in RULE_FIRST_CLASSES
+                  and tc.askable(k) and present(state, k) and unique_on_desktop(tc, k))
+    for a in bigs:
+        plan = remaining_plan(tc.ctx.instances, tc.moment_at(step).edges, state, a, tc.tax)
+        if not plan:
+            continue
+        touched = {t for _, t in plan}
+        for g in removable:
+            targets = sorted({t for v, t in g.actions if v == "remove"})
+            if a in targets or touched & set(targets):
+                continue
+            if tc.ctx.cls_of(a) == tc.ctx.cls_of(targets[0]):
+                continue
+            words = target_words(tc, targets)
+            single = (f"before {words} is taken out" if len(targets) == 1 else
+                      f"before any {class_phrase(tc.ctx, targets[0])} is taken out")
+            rule = f"{asked_words(tc, a)[0][:1].upper() + asked_words(tc, a)[0][1:]} has to " \
+                   f"come out {single}."
+            edges = [Edge(type="blocked_by", target=t, blocker=a, mode="contained",
+                          source=CONSTRAINT_SOURCE, status="accepted",
+                          reason="the question's rule") for t in targets]
+            out.append({"kind": "before", "rule": rule, "held": targets, "until": [a],
+                        "edges": edges})
+    return out
+
+
+#: The parts a "before" rule may ask to come out first: large parts with a way out of their own.
+RULE_FIRST_CLASSES = frozenset({"psu", "drive_cage", "optical_drive", "cpu_cooler",
+                                "expansion_card", "storage_drive"})
+
+
+def constraint_json(c: dict) -> dict:
+    """A constraint as the label carries it: kind, words, the parts held, the condition, and
+    the edges a checker adds to the graph to replay it."""
+    return {"kind": c["kind"], "rule": c["rule"], "held": list(c["held"]),
+            "until": list(c["until"]),
+            "edges": [{"type": e.type, "target": e.target, "blocker": e.blocker,
+                       "mode": e.mode, "necessity": e.necessity, "source": e.source}
+                      for e in c["edges"]]}
 
 
 def gen_v6(tc: TaskCtx, step: int) -> Iterator[dict]:
-    """The demonstrated next action, graded on match and on blocked rate.
+    """Every action possible now (owner 2026-11-04), in three forms.
 
-    "Legal rate" was the wrong metric: the permitted set is an upper bound, so
-    an answer inside it has only failed to be *provably* wrong. What can be
-    measured exactly is the opposite -- how often an answer is one the graph
-    certainly forbids -- and that is what ``blocked_rate`` is.
+    * **open**: "list every action that can be carried out now" -- the gold is the
+      frontier (:func:`frontier`), graded by precision / recall / F1 over its groups;
+    * **mc**: options named directly (no mark, no ordinal), exactly one inside the frontier,
+      the others certainly blocked (:func:`blocked_frontier`) -- never one already done or
+      meaningless;
+    * **constrained**: the open question plus one rule in words that removes at least one
+      group (:func:`v6_constraints`); the gold is the frontier under graph + rule.
 
-    The options, when they are offered, are one demonstrated action, at least
-    two certainly-blocked ones and a couple of merely-permitted distractors. The
-    prompt does not say which is which; the label does, so an evaluator can
-    score the blocked ones as wrong and, if it chooses, ignore the unknowns.
+    Not asked: D66 (not stepwise), a desktop the graph cannot speak for, a moment whose
+    frontier rests on a captive screw's tightness, a frame with nothing possible.
     """
     frame = tc.frame(step)
-    if frame is None or tc.excluded:
+    if frame is None or tc.excluded or not tc.stepwise:
         return
-    shown = tc.demonstrated(step)
-    if shown is None:
-        return
-    nxt, action = shown
-    permitted = set(tc.permitted(step))
-    if (action.verb, action.target) not in permitted:
-        return  # an action the graph says was impossible is nobody's reference
+    with tc.at(step):
+        made = list(_gen_v6(tc, frame, step))
+    yield from made
 
-    seed = tc.seed(step, "V6")
-    blocked = [(v, t) for v, t, _ in tc.blocked(step)]
-    # group-equivalent matching (W3b): 60.7 % of steps have a second legal
-    # action with the demonstrated verb on an interchangeable part -- four
-    # unordered cooler screws -- and an answer naming .03 when the operator
-    # took .04 is right. The equivalent set is the demonstrated action plus
-    # every *permitted* sibling: same unordered group, or same verb and
-    # match class (:func:`match_class`)
-    equivalent = v6_siblings(tc, action.verb, action.target, permitted)
-    # the wrong options match the demonstrated verb wherever they can: "pick the
-    # option whose verb is never blocked" scored 45 % against 20 % random while
-    # the only certainly-wrong options were graph-blocked ones, and no edge
-    # gates a connector or a latch
-    every_wrong = tc.matched(prefer_graph(tc.certainly_wrong(step)), action.verb, None,
-                             seed + "|wrong")
-    # ... and, inside the verb, a part of *another* match class first: the
-    # certainly-wrong same-class ones are mostly the siblings already done
-    # (screws 1 and 2 out, 3 demonstrated), and "pick the highest ordinal"
-    # then answers without the picture
-    mine = match_class(tc.ctx, action.target)
-    # where another verb has to stand in, draw it in proportion to how often
-    # this teardown uses it (a seeded weighted order): `remove` applies to
-    # nearly everything, and filling every gap with it made "never pick remove"
-    # a shortcut of its own
-    verb_key = _verb_draw(tc, seed)
-    every_wrong = sorted(every_wrong, key=lambda c: (
-        c.verb != action.verb,
-        verb_key(c.verb) if c.verb != action.verb else 0.0,
-        match_class(tc.ctx, c.target) == mine))
-    # the distractors match the demonstrated verb too, or "which option has the
-    # verb that is usually right?" answers the question without the picture --
-    # but never a sibling of the demonstrated action: that one is also right.
-    # And **no two options are the same kind of action** (verb + match class):
-    # with the siblings gone, the demonstrated one was otherwise the odd one
-    # out among four motherboard screws, and "pick the option whose kind
-    # appears once" scored 49 % against 20 % random (W3b probe, D1-D12)
-    others = tc.matched([Candidate(v, t, "permitted_unknown")
-                         for v, t in sorted(permitted - set(equivalent)
-                                            - {(action.verb, action.target)})],
-                        action.verb, None, seed + "|unknown")
-    kinds_used = {(action.verb, mine)}
 
-    def take(pool, limit, verb_rule) -> list[Candidate]:
-        got: list[Candidate] = []
-        for c in pool:
-            if len(got) >= limit:
-                break
-            if not verb_rule(c):
-                continue
-            if mark_box(tc, frame, c.target) is None:
-                continue  # an option names its part by a mark (spec 3.2)
-            kind = (c.verb, match_class(tc.ctx, c.target))
-            if kind in kinds_used:
-                continue
-            kinds_used.add(kind)
-            got.append(c)
-        return got
-
-    wrong = take(every_wrong, V6_WRONG_OPTIONS, lambda c: True)
-    unknown = take(others, V6_UNKNOWN_OPTIONS, lambda c: c.verb == action.verb)
-    # a slot no same-verb permitted action can fill takes another certainly
-    # wrong one of that verb first, a permitted one of another verb last
-    room = V6_UNKNOWN_OPTIONS - len(unknown)
-    extra = take(every_wrong, room, lambda c: c.verb == action.verb)
-    wrong += extra
-    unknown += take(sorted(others, key=lambda c: verb_key(c.verb)),
-                    room - len(extra), lambda c: c.verb != action.verb)
-    # a frame with only one certainly-wrong action left is no multiple choice --
-    # so the question is asked open-ended instead of being dropped, and says so
+def _gen_v6(tc: TaskCtx, frame: FrameData, step: int) -> Iterator[dict]:
     state = tc.state(step)
-    blocked_set = set(blocked)
-    equivalent_set = set(equivalent)
-    # the demonstrated action as a **group action** where its group's remaining
-    # members are all equivalent to it (spec 3.1: "unscrew the motherboard screws")
-    shown_id, shown_members = group_action(
-        tc, state, action.verb, action.target, lambda m: (action.verb, m) in equivalent_set)
-    options: Optional[list[dict]] = None
-    namer = Namer(tc, frame)
-    if len(wrong) >= V6_WRONG_OPTIONS and mark_box(tc, frame, action.target) is not None:
-        listed = [{"verb": action.verb, "target": shown_id, "kind": DEMONSTRATED,
-                   "members": shown_members}]
-        for c in wrong:
-            ok = ((lambda m, c=c: (c.verb, m) in blocked_set) if c.kind in GRAPH_KINDS
-                  else (lambda m: False))
-            ident, members = group_action(tc, state, c.verb, c.target, ok)
-            listed.append({"verb": c.verb, "target": ident, "kind": c.kind,
-                           "members": members})
-        for c in unknown:
-            ident, members = group_action(
-                tc, state, c.verb, c.target,
-                lambda m, c=c: (c.verb, m) in permitted and (c.verb, m) not in equivalent_set)
-            listed.append({"verb": c.verb, "target": ident, "kind": "permitted_unknown",
-                           "members": members})
-        options = stable_order(listed, seed + "|order",
-                               lambda o: f"{o['verb']}|{o['target']}")
-        for option in options:
-            if option["target"] == option["members"][0]:
-                namer.part(option["target"])
-            else:
-                namer.group(option["target"], option["members"])
-        for option in options:
-            option["target_label"] = namer.say(option["target"])
-            if option["target"] == option["members"][0]:
-                del option["members"]
-
-    # two record types per frame sharing `v6_pair` (W3b ruling 2026-10-31):
-    # the **open** question is V6's headline, graded group-equivalently; the
-    # multiple choice is a secondary record, because a bigram over the
-    # previous action alone picks its demonstrated option 79.9 % of the time
+    if captive_pending(tc, state):
+        tc.skip("V6", "captive_tightness")
+        return
+    groups = frontier(tc, frame, step)
+    if not groups:
+        tc.skip("V6", "empty_frontier")
+        return
+    seed = tc.seed(step, "V6")
+    blocked = blocked_frontier(tc, frame, step, groups)
+    shown = tc.demonstrated(step)
+    demo = (shown[1].verb, shown[1].target) if shown is not None else None
+    in_front = {a: g.key for g in groups for a in g.actions}
+    demo_group = in_front.get(demo) if demo is not None else None
     stem = f"V6-{frame_id(tc.desktop, tc.view, step)}"
-    chain = [observed(action.target,
-                      state[action.target].state if action.target in state else None,
-                      tc, frame.pointable, step=step)]
-    answer = {"verb": action.verb, "target": shown_id,
-              "target_class": target_class(tc.ctx, action.target),
-              "tool": graded_tool(action.tool)}
-    fields = ["verb", "target"] + (["tool"] if answer["tool"] is not None else [])
-    # the reference is the answer: the group action where the answer is one (the
-    # multiple choice lists the group, not its member, so the grader and the gold
-    # reply must look for the group); the instance the log names stays in
-    # `demonstrated`, and the group action is equivalent to itself
-    grouped = shown_id != action.target
-    check = {"type": "next_action", "reference": [action.verb, shown_id],
-             "demonstrated": [action.verb, action.target],
-             "reference_step": nxt, "fields": fields,
-             "metric": "group_match_rate+blocked_rate",
-             # primary: the answer is the demonstrated action or one of its
-             # permitted siblings (same unordered group, or same verb + match
-             # class); secondary: the reference exactly (a group reference: the
-             # group or any member of it still to do)
-             "match": {"primary": "group_equivalent", "secondary": "instance_exact"},
-             "equivalent_actions": _actions_json(
-                 [*equivalent, *([(action.verb, shown_id)] if grouped else [])]),
-             "match_class": [action.verb, match_class(tc.ctx, action.target)],
-             "group_id": unordered_group(tc.ctx, action.target),
-             # the part group of the redesign (gid, or None) and its members still to do
-             "part_group": shown_id if grouped else None,
-             "part_group_members": shown_members,
-             # the asked group's members, as every group record says them
-             **({"members": list(shown_members)} if grouped else {}),
-             # `blocked_rate` is the share of answers the graph certainly
-             # forbids; on a frame where it forbids nothing the rate is
-             # undefined, not zero, and the scorer leaves the frame out of the
-             # blocked denominator
-             "blocked_rate_defined": bool(blocked),
-             "blocked_actions": _actions_json(blocked),
-             "permitted_upper_bound": _actions_json(sorted(permitted)),
-             # the protocol-prior reference reads this and nothing else (W3b)
-             "previous_action": previous_action(tc, step)}
-    evid = evidence({action.target: frame.pointable[action.target][1]}
-                    if action.target in frame.pointable else {}, tc)
-    # the reason in what the picture shows (owner 2026-11-04): why the next action can be done
-    why_now, _ = feasibility_reason(tc, action.verb, shown_id, shown_members, state, [])
-    rationale = dict(R.rationale(chain), text=(
-        f"Next the operator does: {verb_phrase(action.verb, asked_words(tc, shown_id)[0])}"
-        f" -- {why_now}."))
     pair = opaque_record_id(stem)
-    forms: list[tuple[str, str, Optional[list[dict]]]] = [("open", stem, None)]
-    if options is not None:
-        forms.append(("mc", stem + "-mc", options))
-    for form, rec_id, listed_options in forms:
-        index, question = pick(V6_QUESTIONS if form == "open" else V6_MC_QUESTIONS,
-                               rec_id)
-        mc = form == "mc"
-        # the listed form outlines its options' parts on the scanner image and shows that
-        # image alone; the open form names no part and keeps every camera
-        yield record(
-            tc, "V6", rec_id, step, tc.moment(step, marked=mc), question, index, answer,
-            dict(check, options_kind="listed" if mc else "open", form=form),
-            evid, rationale, frame.verified, options=listed_options,
-            extra={"v6_form": form, "v6_pair": pair}, view_confirmed=frame.confirmed,
-            marks=namer.marks() if mc else None,
-            mark_names=namer.names() if mc else None,
-            terms=([target_class(tc.ctx, (o.get("members") or [o["target"]])[0])
-                    for o in listed_options] if mc else None),
-            moment=tc.legend((step, "now"), marked=mc),
-        )
+    common = {"type": "frontier", "metric": "group_f1",
+              "groups": [g.as_json() for g in groups],
+              "blocked_groups": [g.as_json() for g in blocked],
+              "demonstrated": list(demo) if demo else None,
+              "demonstrated_group": demo_group,
+              "loose_parts": list(tc.moment_at(step).loose),
+              "moment": moment_json(tc),
+              "previous_action": previous_action(tc, step)}
+    text = frontier_text(tc, step, groups, blocked)
+    answer = _frontier_answer(groups, text)
+    targets = sorted({t for g in groups for _, t in g.actions})
+    evid = evidence({t: frame.pointable[t][1] for t in targets if t in frame.pointable}, tc)
+    chain = [observed(t, state[t].state, tc, frame.pointable, step=step) for t in targets[:4]]
+    rationale = dict(R.rationale(chain), text=text)
+    index, question = pick(V6_QUESTIONS, stem)
+    yield record(
+        tc, "V6", stem, step, tc.moment(step), question, index, answer,
+        dict(common, form="open", gold_groups=[g.key for g in groups]),
+        evid, rationale, frame.verified, extra={"v6_form": "open", "v6_pair": pair},
+        view_confirmed=frame.confirmed, moment=tc.legend((step, "now")),
+    )
+    # the multiple choice: one option inside the frontier, the rest certainly blocked
+    if len(blocked) >= V6_MIN_WRONG:
+        right = next((g for g in groups if g.key == demo_group), None)
+        if right is None:
+            right = stable_order(list(groups), seed + "|right", lambda g: g.key)[0]
+        wrong = stable_order(list(blocked), seed + "|wrong", lambda g: g.key)[:V6_WRONG_OPTIONS]
+        def option(g: FrontierGroup, kind: str) -> dict:
+            say_verb, words = frontier_parts(tc, g.actions)
+            # named directly, no mark, no tag, no ordinal: "unplug the connectors"
+            return {"verb": g.actions[0][0], "target": g.actions[0][1], "kind": kind,
+                    "group": g.key, "members": sorted({t for _, t in g.actions}),
+                    "actions": [list(a) for a in g.actions],
+                    "say_verb": say_verb, "target_label": words}
+
+        listed = [option(right, "frontier")]
+        listed += [option(g, graph_kind([e for v, t in g.actions
+                                          for e in unmet_for(tc, v, t, state)]))
+                   for g in wrong]
+        if len({(o["say_verb"], o["target_label"]) for o in listed}) == len(listed):
+            options = stable_order(listed, seed + "|order", lambda o: o["group"])
+            rec_id = stem + "-mc"
+            index, question = pick(V6_MC_QUESTIONS, rec_id)
+            mc_text = (frontier_text(tc, step, [right], wrong)
+                       .rsplit("So the actions possible now are:", 1)[0].strip()
+                       + f" So the one possible now is: {right.phrase}.")
+            yield record(
+                tc, "V6", rec_id, step, tc.moment(step), question, index,
+                {"verb": right.actions[0][0], "target": right.actions[0][1],
+                 "group": right.key},
+                dict(common, form="mc", options_kind="listed",
+                     reference=[right.actions[0][0], right.actions[0][1]],
+                     gold_groups=[right.key]),
+                evid, dict(R.rationale(chain), text=mc_text), frame.verified,
+                options=options, extra={"v6_form": "mc", "v6_pair": pair},
+                view_confirmed=frame.confirmed, moment=tc.legend((step, "now")),
+                terms=[tc.ctx.cls_of(o["target"]) for o in options],
+            )
+    else:
+        tc.skip("V6", "mc_too_few_blocked")
+    # the constrained form: one rule in words that removes at least one group
+    candidates = v6_constraints(tc, frame, step, groups)
+    for c in stable_order(candidates, seed + "|rule", lambda c: c["rule"]):
+        with tc.at(step, c["edges"]):
+            ruled = frontier(tc, frame, step, c["edges"])
+            keys = {g.key for g in ruled}
+            forbidden = [g for g in groups if g.key not in keys]
+            if not forbidden or not ruled:
+                continue
+            ctext = frontier_text(tc, step, ruled, blocked, rule=c["rule"], forbidden=forbidden)
+            rec_id = stem + "-constrained"
+            index, template = pick(V6_CONSTRAINED_QUESTIONS, rec_id)
+            yield record(
+                tc, "V6", rec_id, step, tc.moment(step), template.format(rule=c["rule"]), index,
+                _frontier_answer(ruled, ctext),
+                dict(common, form="constrained", gold_groups=[g.key for g in ruled],
+                     forbidden_groups=[g.key for g in forbidden],
+                     constraint=constraint_json(c),
+                     ruled_groups=[g.as_json() for g in ruled]),
+                evid, dict(R.rationale(chain), text=ctext), frame.verified,
+                extra={"v6_form": "constrained"}, view_confirmed=frame.confirmed,
+                moment=tc.legend((step, "now")),
+            )
+        break
+    else:
+        tc.skip("V6", "no_constraint")
+
+
+def moment_json(tc: TaskCtx, members: Optional[Sequence[str]] = None) -> dict:
+    """The active moment's own rules, compact, for a checker to rebuild its edges
+    (``vlm_check.moment_edges_of``): ``occluded`` ``{X: [Y, ...]}`` (``covered_by``), the
+    loose parts still in, and ``loose_scope`` -- the parts a loose part does not hold back
+    (its own way out). With ``members``, only what concerns those parts."""
+    m = tc._active if tc._active is not None else None
+    if m is None:
+        return {"occluded": {}, "loose": []}
+    # the occlusion edges the moment adds (a pair the graph already stores is not repeated)
+    occ: dict[str, list[str]] = {}
+    for e in m.extra:
+        if e.source == OCCLUSION_SOURCE and (members is None or e.target in set(members)):
+            occ.setdefault(e.target, []).append(e.blocker)
+    occ = {x: sorted(ys) for x, ys in sorted(occ.items())}
+    out: dict = {"occluded": occ, "loose": list(m.loose)}
+    if m.loose:
+        held = {e.target for e in m.extra if e.source == LOOSE_SOURCE}
+        state = tc.ctx.state_at(m.step)
+        nodes = (set(members) if members is not None else
+                 {k for k, inst in state.items() if inst.state != REMOVED})
+        out["loose_scope"] = sorted(k for k in nodes if k not in held)
+    return out
 
 
 def _verb_draw(tc: TaskCtx, seed: str) -> Callable[[str], float]:
@@ -3061,135 +3728,6 @@ def gen_v12(tc: TaskCtx, step: int) -> Iterator[dict]:
 
 
 # --------------------------------------------------------------------------- #
-# V14 -- can this view decide at all
-# --------------------------------------------------------------------------- #
-V14_QUESTIONS = (
-    "From this view alone, can you tell what state {label} is in? "
-    "Answer with the state, or say you cannot tell.",
-    "Can this image decide the state of {label}? If it can, give the state.",
-    "Does this single view settle the state of {label}? Say so, or give it.",
-)
-
-
-V14_QUESTIONS_MANY = (
-    "From this view alone, can you tell what state {label} are in? "
-    "Answer with the state, or say you cannot tell.",
-    "Can this image decide the state of {label}? If it can, give the state.",
-    "Does this single view settle the state of {label}? Say so, or give it.",
-)
-
-
-def _v14_units(tc: TaskCtx, frame: FrameData, state: FrameState
-               ) -> list[tuple[str, list[str], bool, Optional[str]]]:
-    """``(id, members, answerable, state)`` per match class the frame can be asked about.
-
-    No ordinal and no mark (a box would say the part is visible): a class is named in
-    words, so it is asked as a whole -- every part of it still on the machine -- and only
-    when every one of them gives the same answer (spec 6.3); else ``mixed_group``.
-    """
-    by_class: dict[str, list[str]] = {}
-    for key in sorted(tc.ctx.instances):
-        cls = tc.ctx.cls_of(key)
-        if cls is None or not tc.askable(key) or not state_is_askable(tc.tax, cls):
-            continue
-        if is_captive_screw(tc.ctx, key) or not present(state, key):
-            continue
-        by_class.setdefault(match_class(tc.ctx, key), []).append(key)
-    out = []
-    for mc, members in sorted(by_class.items()):
-        if not any(k in frame.rows for k in members):
-            continue
-        if not all(k in frame.rows for k in members):
-            tc.skip("V14", "mixed_group")
-            continue
-        answers = set()
-        for key in members:
-            ok = frame.rows[key].get("visibility") in ANSWERABLE
-            answers.add((ok, visible_state(tc.ctx, key, state[key].state) if ok else None))
-        if len(answers) != 1:
-            tc.skip("V14", "mixed_group")
-            continue
-        ok, shown = next(iter(answers))
-        # one part: its key; one part group: its id; several groups of one class: the
-        # class as a whole (`<match class>@*`)
-        groups = {tc.group_of(k).gid if tc.group_of(k) else k for k in members}
-        ident = (members[0] if len(members) == 1
-                 else next(iter(groups)) if len(groups) == 1 else f"{mc}@*")
-        out.append((ident, members, ok, shown))
-    return out
-
-
-def gen_v14(tc: TaskCtx, step: int) -> Iterator[dict]:
-    """The abstain task: an instance this view cannot see has no state to report.
-
-    Spec 8.2 principle 5. The truth is the compiled ``visibility`` and nothing
-    else: ``occluded_full`` and ``out_of_view`` -- and ``too_small`` /
-    ``motion_blur``, which are the same admission in other words -- mean the
-    honest answer is "not from here".
-
-    Both halves come off the same frame in equal numbers, drawn by the frame's
-    own seed, so the majority-class baseline is 50 % by construction and a frame
-    with nothing unanswerable contributes nothing rather than a run of easy
-    yeses. The redesign asks a class as a whole (:func:`_v14_units`).
-    """
-    frame = tc.frame(step)
-    if frame is None or not frame.verified:
-        return
-    state = tc.state(step)
-    seed = tc.seed(step, "V14")
-    # tightness is undecidable from any 2D view by construction (W3b): a captive
-    # screw has no visible state at all, so it is no V14 item either way, and
-    # a screw's state is asked as presence only
-    units = _v14_units(tc, frame, state)
-    blind = [u for u in units if not u[2]]
-    seen = [u for u in units if u[2]]
-    take = min(len(blind), len(seen), tc.budget)
-    if not take:
-        return
-    chosen = (stable_order(blind, seed, lambda it: it[0])[:take]
-              + stable_order(seen, seed + "|pos", lambda it: it[0])[:take])
-    for ident, members, answerable, shown in chosen:
-        rec_id = f"V14-{frame_id(tc.desktop, tc.view, step)}-{ident}"
-        many = len(members) > 1
-        index, template = pick(V14_QUESTIONS_MANY if many else V14_QUESTIONS, rec_id)
-        rows = [frame.rows[k] for k in members]
-        if answerable:
-            bboxes = {k: frame.pointable[k][1] for k in members if k in frame.pointable}
-            chain = R.rationale([R.observe(k, shown, tc.view, frame.pointable[k][1],
-                                           frame.rows[k].get("visibility"),
-                                           occluder=frame.rows[k].get("occluder"))
-                                 for k in members if k in frame.pointable])
-        else:
-            chain = R.rationale(
-                [R.propagate_state(k, None) for k in members],
-                R.abstain("; ".join(unseen_reason(k, frame.rows[k], tc.view)
-                                    for k in members)),
-            )
-            bboxes = {}
-        cls = tc.ctx.cls_of(members[0])
-        # the answer space the format line lists and the chance row sizes: the class's
-        # states in the glossary's order (the taxonomy's), or present / removed for a
-        # screw, asked on presence alone
-        check = {"type": "exact", "derive": "answerable", "instance": ident, "class": cls,
-                 "fields": ["answerable", "state"], "metric": "risk_coverage",
-                 "allowed": (list(PRESENCE_STATES) if cls == "screw"
-                             else list(tc.tax.states_of(cls))),
-                 **({"state_space": "presence"} if cls == "screw" else {})}
-        if many:
-            check["members"] = list(members)
-        yield record(
-            tc, "V14", rec_id, step, [frame],
-            template.format(label=class_words(tc, members)), index,
-            {"answerable": answerable, "state": shown if answerable else None},
-            check,
-            evidence(bboxes, tc, {k: seen_as(frame.rows[k]) for k in members}),
-            chain, row_verified(rows, frame.verified),
-            negative=None if answerable else "unanswerable",
-            terms=[cls], state_terms=[cls],
-        )
-
-
-# --------------------------------------------------------------------------- #
 # V15 -- two views of the same moment
 # --------------------------------------------------------------------------- #
 V15_CROSS_QUESTIONS = (
@@ -3444,19 +3982,22 @@ def _state_before(tc: TaskCtx, step: int, plan: Sequence[tuple[str, str]],
 
 
 def grouped_plan(tc: TaskCtx, state: FrameState,
-                 pairs: Sequence[tuple[str, str]]) -> list[tuple[str, str]]:
+                 pairs: Sequence[tuple[str, str]],
+                 keep: frozenset = frozenset()) -> list[tuple[str, str]]:
     """Member actions folded into **group actions** (spec 3.1, 6.1).
 
     One ``(verb, gid)`` at the place of the first member action, for a group with at
     least two members still to do in ``state``; the other members' actions go. The graph
-    orders interchangeable parts "unordered" already.
+    orders interchangeable parts "unordered" already. Parts of a class in ``keep`` stay one
+    step each (V7's constrained form counts the plugs one by one).
     """
     out: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for verb, key in pairs:
         group = tc.group_of(key)
         ident = key
-        if group is not None and len(to_do(tc.ctx, state, verb, group.members)) >= 2:
+        if group is not None and tc.ctx.cls_of(key) not in keep \
+                and len(to_do(tc.ctx, state, verb, group.members)) >= 2:
             ident = group.gid
         if (verb, ident) in seen:
             continue
@@ -3633,6 +4174,28 @@ def plan_reason(tc: TaskCtx, step: int, plan: Sequence[tuple[str, str]], words: 
     return f"{head} cannot be done: {what} {be} no longer there"
 
 
+def plan_steps_text(tc: TaskCtx, step: int, plan: Sequence[tuple[str, str]],
+                    words: Sequence[str], first_bad: Optional[int], bad_text: Optional[str]) -> str:
+    """V16's reasoning chain, step by step in visible terms: why each step can be done at
+    that point of the replay, up to the first that cannot (owner 2026-11-04)."""
+    parts = []
+    last = len(plan) if first_bad is None else first_bad
+    for i in range(last):
+        verb, target = plan[i]
+        sim = _state_before(tc, step, plan, i)
+        members = _group_members(tc, target)
+        members = list(to_do(tc.ctx, sim, verb, members) or members) if members else [target]
+        why, _ = feasibility_reason(tc, verb, target, members, sim, [])
+        parts.append(f"Step {i + 1} ({verb_phrase(verb, words[i])}): {why}.")
+    if first_bad is None:
+        parts.append("So every step can be carried out in this order.")
+    else:
+        parts.append(f"{bad_text[:1].upper() + bad_text[1:]}.")
+        parts.append(f"So the plan cannot be carried out: step {first_bad + 1} is the first "
+                     f"that breaks.")
+    return " ".join(parts)
+
+
 def _plan_record(tc: TaskCtx, frame: FrameData, plan: Sequence[tuple[str, str]],
                  first_bad: Optional[int], edges: Sequence[Edge], tag: str,
                  family: Optional[str] = None,
@@ -3662,13 +4225,17 @@ def _plan_record(tc: TaskCtx, frame: FrameData, plan: Sequence[tuple[str, str]],
                 chain.append(observed(m, state[m].state if m in state else None,
                                       tc, frame.pointable))
     labels = [e.label() for e in edges]
-    source = (DEMONSTRATED if first_bad is None
+    # validity is what a replay under the rules says -- the stored graph, this frame's
+    # occlusion, loose parts first -- never "it was demonstrated" (owner 2026-11-04)
+    source = (SIMULATED if first_bad is None
               else graph_kind(edges) if edges else STATE_INAPPLICABLE)
     # the reason in what the picture shows (owner 2026-11-04); the code stays label side
     text = plan_reason(tc, step, plan, words, first_bad, edges, reason)
+    members = sorted({m for _, t in plan for m in (_group_members(tc, t) or [t])})
     check = {"type": "plan", "plan": listed, "metric": "accuracy+localisation",
              "truth_source": source, "groups": plan_groups(tc, plan),
-             "reason_code": reason}
+             "reason_code": reason, "validity": "simulated",
+             "moment": moment_json(tc, members)}
     if family is not None:
         check["corruption"] = family
         check["corruption_tag"] = tag
@@ -3684,9 +4251,7 @@ def _plan_record(tc: TaskCtx, frame: FrameData, plan: Sequence[tuple[str, str]],
         check,
         evidence({t: frame.pointable[t][1] for t in shown if t in frame.pointable},
                  tc, plan_length=len(listed)),
-        dict(R.rationale(chain),
-             text=(f"No: {text}." if text else
-                   "Yes: every step can be carried out in this order (the operator did so).")),
+        dict(R.rationale(chain), text=plan_steps_text(tc, step, plan, words, first_bad, text)),
         frame.verified,
         negative=None if first_bad is None else family,
         truth_source=source, view_confirmed=frame.confirmed, marks=namer.marks(), mark_names=namer.names(),
@@ -3710,8 +4275,14 @@ def gen_v16(tc: TaskCtx, step: int) -> Iterator[dict]:
     the CPU cooler screws" stays in it until the cooler comes off (:func:`with_captive`).
     """
     frame = tc.frame(step)
-    if frame is None or tc.excluded:
-        return
+    if frame is None or tc.excluded or not tc.stepwise:
+        return  # D66 (several parts at once) asks no step-ordered question
+    with tc.at(step):
+        made = list(_gen_v16(tc, frame, step))
+    yield from made
+
+
+def _gen_v16(tc: TaskCtx, frame: FrameData, step: int) -> Iterator[dict]:
     state = tc.state(step)
     logged: list[tuple[str, str]] = []
     for candidate in tc.log_steps:
@@ -3735,7 +4306,10 @@ def gen_v16(tc: TaskCtx, step: int) -> Iterator[dict]:
         return
     first_bad, _, _ = _simulate(tc, step, plan)
     if first_bad is not None:
-        return  # the logged suffix does not replay cleanly: say nothing
+        # the logged suffix breaks a rule of this moment (an occlusion, a loose part): the
+        # rule, not the teardown, is what is in doubt there -- say nothing
+        tc.skip("V16", "log_breaks_rules")
+        return
 
     seed = tc.seed(step, "V16")
     corruption = None
@@ -3757,7 +4331,9 @@ def gen_v16(tc: TaskCtx, step: int) -> Iterator[dict]:
         break
     if corruption is None:
         return  # nothing about this suffix is certainly wrong: say nothing
-    true = _plan_record(tc, frame, plan, None, (), "true")
+    # the plan the log suggests, valid because its replay under the rules is clean (the
+    # record kind says so: `valid`, not `true`)
+    true = _plan_record(tc, frame, plan, None, (), "valid")
     if true is None:
         return
     family, tag, corrupted, bad_at, broken, reason = corruption
@@ -3882,24 +4458,31 @@ def _v7_goal_ok(tc: TaskCtx, goal: str) -> Optional[str]:
 
 
 def gen_v7(tc: TaskCtx, step: int) -> Iterator[dict]:
-    """The remaining CPU plan, from a frame where it is **in progress**.
+    """The plan to take the CPU out (owner 2026-11-04), in two forms.
 
-    From the first frame this is a generic recipe -- [open the shroud] ->
-    unscrew the cooler x4 -> lift the cooler -> open the lever -> lift the CPU
-    -- that a model writes without looking. Half-way it is not: two screws out
-    and the shroud open is something only the picture says. So a frame is asked
-    only when at least one action of the plan from the initial state has been
-    done and the CPU is still in.
+    * **free**: "plan the steps to remove the CPU" (outlined in red only where it is
+      visible). Valid = every step legal under the stored graph, this frame's occlusion
+      and loose parts first, and the goal reached; required = the minimal prerequisite
+      closure from those rules (:func:`required_actions`), never the demonstrated
+      sequence -- on a bare board: open the socket lever, take the CPU out. The gold is
+      the rules' shortest plan, same-kind actions folded into one step.
+    * **constrained**: the same, under one rule in words, no number ("every connector must
+      be unplugged before the CPU is taken out"): the plan must keep to it; the label
+      counts the plugs it has to unplug, so the scorer reports how many the answer unplugs.
 
-    The answer is graded on three things the incomplete graph makes certain
-    (``answer_check``): (a) no step violates an existing required edge, (b)
-    every :func:`required_actions` state change is in the plan, (c) the goal is
-    reached. **No redundancy penalty**: a plan that also takes out the drive
-    cage on its way may be exactly right and the graph would not know.
+    Asked only where the plan is visibly under way (a frame where one action of the plan
+    from the first frame is done and the CPU is still in: from the first frame it is a
+    recipe a model writes without looking). No redundancy penalty.
     """
     frame = tc.frame(step)
-    if frame is None or tc.excluded:
-        return
+    if frame is None or tc.excluded or not tc.stepwise:
+        return  # D66 (several parts at once) asks no step-ordered question
+    with tc.at(step):
+        made = list(_gen_v7(tc, frame, step))
+    yield from made
+
+
+def _gen_v7(tc: TaskCtx, frame: FrameData, step: int) -> Iterator[dict]:
     goals = sorted(k for k, rec in tc.ctx.instances.items()
                    if rec.cls == V7_GOAL_CLASS)
     for goal in goals:
@@ -3935,39 +4518,136 @@ def gen_v7(tc: TaskCtx, step: int) -> Iterator[dict]:
         if any(s in tc.illegal for s in tc.log_steps if step < s <= removal):
             tc.skip("V7", "illegal_step_ahead")
             continue
-        plan = remaining_plan(tc.ctx.instances, tc.edges, here, goal, tc.tax)
-        if not plan:
-            tc.skip("V7", "no_plan")
-            continue
         demonstrated = [(a.verb, a.target) for s in tc.log_steps
                         if step < s <= removal for a in tc.named_actions(s)
                         if (a.target in tc.ctx.instances
                             or a.target.startswith(CABLE_PREFIX))
                         and tc.changes_state(a)]
-        bad_at, _, _ = _simulate(tc, step, demonstrated)
-        if bad_at is not None:
-            tc.skip("V7", "demonstrated_does_not_replay")
+        made = _v7_form(tc, frame, goal, demonstrated, started, removal, None)
+        if made is None:
             continue
-        made = _v7_record(tc, frame, goal, plan, demonstrated, started, removal)
-        if made is not None:
-            yield made
+        yield made
+        for rule in v7_constraints(tc, step, goal, made["label"]["answer"]["plan"]):
+            with tc.at(step, rule["edges"]):
+                ruled = _v7_form(tc, frame, goal, demonstrated, started, removal, rule)
+            if ruled is not None:
+                yield ruled
+                break
+        else:
+            tc.skip("V7", "no_constraint")
 
 
-def _v7_record(tc: TaskCtx, frame: FrameData, goal: str,
-               plan: Sequence[tuple[str, str]],
-               demonstrated: Sequence[tuple[str, str]], started: Sequence[str],
-               removal: int) -> Optional[dict]:
+V7_CONSTRAINED_QUESTIONS = (
+    "Plan the steps to take {goal} out of this machine, starting from the machine as it is "
+    "now, under this rule: {rule} List the actions in order.{each}",
+    "Rule for this teardown: {rule} Keeping to it, which actions, in which order, get {goal} "
+    "out of this machine from this state?{each}",
+    "Write the sequence of disassembly actions that takes {goal} out of this machine from "
+    "this state. The plan must keep to this rule: {rule}{each}",
+)
+#: The constrained question asks the plugs one by one: how many the answer unplugs is
+#: what the scorer counts.
+EACH_CONNECTOR = " Give each connector you unplug a step of its own."
+
+
+def v7_constraints(tc: TaskCtx, step: int, goal: str,
+                   free_plan: Sequence[dict]) -> list[dict]:
+    """V7's candidate rules, in words and without a number, each changing the plan.
+
+    "Every connector must be unplugged before the CPU is taken out" where at least two
+    plugs are still in and the free plan leaves one of them in; else "the <A> has to come
+    out before the CPU is taken out" for a large part A still in whose own way out needs
+    nothing of the CPU and that the free plan does not touch.
+    """
+    state = tc.state(step)
+    if tc.moment_at(step).loose:
+        return []  # a loose part comes out first: a rule on top of that is not asked
+    goal_words = asked_words(tc, goal)[0]
+    plugged = sorted(k for k, rec in tc.ctx.instances.items()
+                     if rec.cls == "connector" and tc.askable(k)
+                     and state.get(k) is not None and state[k].state == "plugged")
+    planned = set()
+    for item in free_plan:
+        members = _group_members(tc, item["target"])
+        planned.update(members or [item["target"]])
+    out: list[dict] = []
+    if len(plugged) >= 2 and not set(plugged) <= planned:
+        edges = [Edge(type="connected_to", target=goal, blocker=c, source=CONSTRAINT_SOURCE,
+                      status="accepted", reason="the question's rule") for c in plugged]
+        out.append({"kind": "until_connectors",
+                    "rule": f"Every connector must be unplugged before {goal_words} is taken out.",
+                    "held": [goal], "until": plugged, "edges": edges, "count": len(plugged)})
+    bigs = sorted(k for k, rec in tc.ctx.instances.items()
+                  if rec.cls in RULE_FIRST_CLASSES
+                  and tc.askable(k) and present(state, k) and unique_on_desktop(tc, k)
+                  and k not in planned)
+    for a in bigs:
+        plan = remaining_plan(tc.ctx.instances, tc.cur_edges, state, a, tc.tax)
+        if not plan or any(t == goal for _, t in plan):
+            continue
+        words = asked_words(tc, a)[0]
+        edges = [Edge(type="blocked_by", target=goal, blocker=a, mode="contained",
+                      source=CONSTRAINT_SOURCE, status="accepted", reason="the question's rule")]
+        out.append({"kind": "before",
+                    "rule": f"{words[:1].upper() + words[1:]} has to come out before "
+                            f"{goal_words} is taken out.",
+                    "held": [goal], "until": [a], "edges": edges})
+    return out
+
+
+def plan_words(tc: TaskCtx, state: FrameState, plan: Sequence[tuple[str, str]]) -> list[str]:
+    """Each step of a plan said in words, no ordinal: "unplug the connectors"."""
+    sim = _copy_state(state)
+    out = []
+    for verb, target in plan:
+        members = _group_members(tc, target)
+        targets = (to_do(tc.ctx, sim, verb, members) or list(members)) if members else [target]
+        if target.startswith(CABLE_PREFIX):
+            words = cable_words(target)
+        elif members:
+            words = f"the {tc.group_by_id(target).label}"
+        else:
+            words = target_words(tc, targets)
+        out.append(f"{VERB_WORDS.get(verb, verb)} {words}")
+        for m in targets:
+            _apply_effect(tc.tax, tc.ctx.instances, sim, m, verb)
+    return out
+
+
+def _v7_form(tc: TaskCtx, frame: FrameData, goal: str,
+             demonstrated: Sequence[tuple[str, str]], started: Sequence[str], removal: int,
+             rule: Optional[dict]) -> Optional[dict]:
+    """One V7 record (free when ``rule`` is ``None``), under the active moment's rules."""
     step = frame.step
     state = tc.state(step)
-    # the goal is outlined (spec 3.2): "the CPU outlined in red", under its cooler by
-    # its amodal box; a CPU that cannot be outlined is not asked about
-    namer = Namer(tc, frame)
-    if namer.part(goal) is None:
-        tc.skip("V7", "unmarkable_part")
+    plan = remaining_plan(tc.ctx.instances, tc.cur_edges, state, goal, tc.tax)
+    if not plan:
+        tc.skip("V7", "no_plan")
         return None
+    keep = frozenset({"connector"}) if rule and rule["kind"] == "until_connectors" \
+        else frozenset()
+    gold = with_captive(tc, state, grouped_plan(tc, state, plan, keep=keep))
+    bad_at, _, _ = _simulate(tc, step, gold)
+    if bad_at is not None:
+        tc.skip("V7", "gold_plan_fails")
+        return None
+    # the goal is outlined only where it can be seen (owner 2026-11-04); a CPU under its
+    # cooler is named in words, and the question then shows every camera
+    namer = Namer(tc, frame)
+    marked = goal in frame.pointable and namer.part(goal) is not None
+    goal_words = namer.say(goal) if marked else asked_words(tc, goal)[0]
     required = required_actions(tc, state, goal)
-    rec_id = f"V7-{frame_id(tc.desktop, tc.view, step)}-{goal}"
-    index, template = pick(V7_QUESTIONS, rec_id)
+    form = "free" if rule is None else "constrained"
+    rec_id = f"V7-{frame_id(tc.desktop, tc.view, step)}-{goal}" + ("" if rule is None
+                                                                  else "-constrained")
+    if rule is None:
+        index, template = pick(V7_QUESTIONS, rec_id)
+        question = template.format(goal=goal_words)
+    else:
+        index, template = pick(V7_CONSTRAINED_QUESTIONS, rec_id)
+        question = template.format(goal=goal_words, rule=rule["rule"],
+                                   each=EACH_CONNECTOR if rule["kind"] == "until_connectors"
+                                   else "")
     chain: list[dict] = [observed(goal, state[goal].state, tc, frame.pointable)]
     for req in required[1:1 + tc.budget]:
         edge = req.via[-1]
@@ -3975,57 +4655,74 @@ def _v7_record(tc: TaskCtx, frame: FrameData, goal: str,
         chain.append(R.recall_relation(edge.type, edge.target, edge.blocker,
                                        edge.necessity, edge.mode))
         chain.append(observed(req.target, current, tc, frame.pointable))
-        chain.append(R.check_precondition(req.target, sorted(req.states), current,
-                                          False))
+        chain.append(R.check_precondition(req.target, sorted(req.states), current, False))
     pixel = any(r.pixel_only for r in required)
-    # the reason in what the picture shows (owner 2026-11-04): what still holds the CPU, and
-    # what holds those -- captive screws as their group while the part they hold is in (6.6)
+    text = v7_text(tc, state, goal, required, gold, rule)
+    groups = plan_groups(tc, gold)
+    check = {"type": "goal_plan", "form": form, "goal": goal, "goal_state": REMOVED,
+             "start_step": step, "goal_removed_at": removal,
+             "metric": "violation_free+required_recall+goal_reached",
+             "any_legal_plan_scores": True, "validity": "simulated",
+             "redundancy_penalty": False, "necessity": "required",
+             "required_actions": required_json(tc, state, required),
+             "reference_shortest": _actions_seq(plan),
+             "demonstrated_remainder": _actions_seq(demonstrated),
+             "plan_groups": groups,
+             "plan_length": len(plan), "gold_length": len(gold),
+             "demonstrated_length": len(demonstrated),
+             "started": sorted(set(started)),
+             "start_state": {k: v.state for k, v in sorted(state.items())},
+             # the moment's own rules (occlusion, loose parts first), for the scorer's replay
+             "moment": moment_json(tc),
+             "previous_action": previous_action(tc, step)}
+    if rule is not None:
+        check["constraint"] = constraint_json(rule)
+        if rule["kind"] == "until_connectors":
+            # how many plugs the answer has to unplug: the count the scorer compares
+            check["count"] = {"class": "connector", "verb": "disconnect",
+                              "present": int(rule["count"]), "members": list(rule["until"])}
+    return record(
+        tc, "V7", rec_id, step, tc.moment(step, marked=marked), question, index,
+        {"plan": _actions_seq(gold), "goal": goal}, check,
+        evidence({r.target: frame.pointable[r.target][1] for r in required
+                  if r.target in frame.pointable}, tc, plan_length=len(gold)),
+        dict(R.rationale(chain), text=text), frame.verified,
+        truth_source=GRAPH_BLOCKED_PIXELS if pixel else GRAPH_BLOCKED,
+        view_confirmed=frame.confirmed,
+        marks=namer.marks() if marked else None,
+        mark_names=namer.names() if marked else None, terms=[V7_GOAL_CLASS],
+        extra={"v7_form": form},
+        moment=tc.legend((step, "now"), marked=marked),
+    )
+
+
+def v7_text(tc: TaskCtx, state: FrameState, goal: str, required: Sequence[Requirement],
+            gold: Sequence[tuple[str, str]], rule: Optional[dict]) -> str:
+    """V7's reasoning chain: what still holds the goal (and what holds those), the rule if
+    any, then the plan step by step -- in what the picture shows."""
     pending = {g.gid: g for g in pending_captive(tc, state)}
     held_by_captive = {tc.ctx.instances[g.members[0]].fastens: g for g in pending.values()}
-    via = [r.via[-1] for r in required if r.via and not is_captive_screw(tc.ctx, r.target)]
+    via = [r.via[-1] for r in required
+           if r.via and not is_captive_screw(tc.ctx, r.target)
+           and r.via[-1].source != CONSTRAINT_SOURCE]
     clauses = reason_clauses(tc, via, state, met=False, asked=(goal, [goal]))
     for held, group in sorted(held_by_captive.items(), key=lambda kv: str(kv[0])):
         if any(r.target == held for r in required):
             clauses.append(f"the {group.label} still hold {asked_words(tc, held)[0]}")
     goal_words = asked_words(tc, goal)[0]
-    text = (f"To take {goal_words} out: {_and(clauses)}." if clauses
-            else f"To take {goal_words} out: nothing else holds it.")
-    shortest = _actions_seq(plan)
-    shown = _actions_seq(demonstrated)
-    # the answer is the demonstrated remainder told in group actions (spec 3.1): one
-    # "unscrew the CPU cooler screws" for the members still to do -- and, while the
-    # cooler is in, whatever the log says about each of them (spec 6.6)
-    grouped = with_captive(tc, state, grouped_plan(tc, state, demonstrated))
-    groups = plan_groups(tc, grouped)
-    # the answer is the **demonstrated** remainder: the one plan known to work.
-    # The graph's shortest plan is only an upper-bound construction (the graph
-    # is incomplete), so it is a reference, not the answer; and the check
-    # accepts any plan at all that breaks no edge, contains every required
-    # action and reaches the goal (review M, 2026-10-31)
-    return record(
-        tc, "V7", rec_id, step, tc.moment(step, marked=True),
-        template.format(goal=namer.say(goal)),
-        index,
-        {"plan": _actions_seq(grouped), "goal": goal},
-        {"type": "goal_plan", "goal": goal, "goal_state": REMOVED,
-         "start_step": step, "goal_removed_at": removal,
-         "metric": "violation_free+required_recall+goal_reached",
-         "any_legal_plan_scores": True,
-         "redundancy_penalty": False, "necessity": "required",
-         "required_actions": required_json(tc, state, required),
-         "reference_shortest": shortest, "demonstrated_remainder": shown,
-         "plan_groups": groups,
-         "plan_length": len(shortest), "demonstrated_length": len(demonstrated),
-         "started": sorted(set(started)),
-         "start_state": {k: v.state for k, v in sorted(state.items())},
-         "previous_action": previous_action(tc, step)},
-        evidence({r.target: frame.pointable[r.target][1] for r in required
-                  if r.target in frame.pointable}, tc, plan_length=len(grouped)),
-        dict(R.rationale(chain), text=text), frame.verified,
-        truth_source=GRAPH_BLOCKED_PIXELS if pixel else GRAPH_BLOCKED,
-        view_confirmed=frame.confirmed, marks=namer.marks(), mark_names=namer.names(), terms=[V7_GOAL_CLASS],
-        moment=tc.legend((step, "now"), marked=True),
-    )
+    parts = [loose_sentence(tc, tc._active.step if tc._active is not None else 0).strip()]
+    parts.append(f"To take {goal_words} out: {_and(clauses)}." if clauses
+                 else f"To take {goal_words} out: nothing else holds it.")
+    if rule is not None:
+        parts.append(f"The rule says: {rule['rule']}")
+        if rule["kind"] == "until_connectors":
+            n = int(rule["count"])
+            parts.append(f"{n} connectors are still plugged in, so the plan unplugs each of "
+                         f"them before {goal_words} comes out.")
+    steps = plan_words(tc, state, gold)
+    parts.append("So the plan: " + "; ".join(f"{i + 1}. {w}" for i, w in enumerate(steps))
+                 + ".")
+    return " ".join(p for p in parts if p)
 
 
 def required_json(tc: TaskCtx, state: FrameState,
@@ -4075,5 +4772,5 @@ def _actions_seq(pairs: Sequence[tuple[str, str]]) -> list[dict]:
 GENERATORS: dict[str, Callable[[TaskCtx, int], Iterator[dict]]] = {
     "V1": gen_v1, "V2": gen_v2, "V3": gen_v3, "V4": gen_v4, "V5": gen_v5,
     "V6": gen_v6, "V7": gen_v7, "V8": gen_v8, "V10": gen_v10, "V12": gen_v12,
-    "V14": gen_v14, "V15": gen_v15, "V16": gen_v16,
+    "V15": gen_v15, "V16": gen_v16,
 }

@@ -35,13 +35,14 @@ from tda.core.graph_rules import (
     active_edges,
     cable_nodes,
     gated_verbs,
+    is_loose,
     is_provisional,
     required_states,
     verb_applies,
     verb_effect,
 )
 from tda.core.model import InstanceRec
-from tda.core.states import FrameState, initial_state
+from tda.core.states import FrameState, InstState, initial_state
 from tda.core.taxonomy import Taxonomy
 
 __all__ = ["DeadEnd", "Deadlock", "Plan", "clearing_actions", "find_dead_ends",
@@ -249,6 +250,8 @@ def remaining_plan(
     state: FrameState,
     goal: str,
     tax: Taxonomy,
+    *,
+    loose_first: bool = True,
 ) -> Optional[list[VerbTarget]]:
     """A shortest legal sequence from ``state`` that ends with ``goal`` removed.
 
@@ -264,6 +267,13 @@ def remaining_plan(
     unscrewed, a plug is pulled before its cable is taken out, and a captive
     screw is planned as the removal of the parent it can never leave without.
 
+    **Loose parts first** (R16, ``loose_first``, on by default): while a part
+    marked ``attrs.loose`` is still in the machine, nothing else may be done
+    (:func:`tda.core.graph.legal_actions`), so the plan starts by taking every
+    loose part out -- each through its own removal plan (a loose fan's lead
+    unplugged first), in key order -- and plans the goal from the state that
+    leaves. A desktop without loose parts is unchanged.
+
     Recommended edges are honoured when they can be; when they cannot, they are
     dropped rather than allowed to fail the plan (:func:`plan_removal` says
     which, and is the call to make when that matters). Returns ``[]`` when the
@@ -273,8 +283,50 @@ def remaining_plan(
     state the edge accepts (a dead end), or the required constraints deadlock
     (spec 7.4 forbids that, and :func:`find_deadlocks` names the offenders).
     """
-    plan = plan_removal(instances, edges, state, goal, tax)
-    return None if plan is None else list(plan.actions)
+    loose = []
+    if loose_first:
+        loose = [k for k in sorted(instances) if k != goal and is_loose(instances[k])
+                 and state.get(k) is not None and state[k].state != REMOVED]
+    current = state.get(goal)
+    if not loose or current is None or current.state == REMOVED:
+        plan = plan_removal(instances, edges, state, goal, tax)
+        return None if plan is None else list(plan.actions)
+    sim = {k: InstState(state=v.state, placement=v.placement) for k, v in state.items()}
+    prefix: list[VerbTarget] = []
+    for key in loose:
+        if sim[key].state == REMOVED:
+            continue
+        part = plan_removal(instances, edges, sim, key, tax)
+        if part is None:
+            return None
+        for action in part.actions:
+            if action not in prefix:
+                prefix.append(action)
+                _apply_plan_action(instances, sim, action, tax)
+    rest = plan_removal(instances, edges, sim, goal, tax)
+    if rest is None:
+        return None
+    return prefix + [a for a in rest.actions if a not in prefix]
+
+
+def _apply_plan_action(instances: dict[str, InstanceRec], sim: dict, action: VerbTarget,
+                       tax: Taxonomy) -> None:
+    """Fold one planned ``(verb, target)`` into a :data:`FrameState` copy (the attached
+    cascade of spec 3.3 included)."""
+    verb, key = action
+    rec = instances.get(key)
+    cls = rec.cls if rec is not None else ("cable" if key.startswith(CABLE_PREFIX) else None)
+    if cls is None:
+        return
+    new = verb_effect(tax, cls, rec.attrs if rec is not None else {}, verb)
+    if new is None:
+        return
+    inst = sim.get(key)
+    sim[key] = InstState(state=new, placement=inst.placement if inst else "in_chassis")
+    if new == REMOVED and cls != "connector":
+        for child, crec in instances.items():
+            if crec.attached and crec.parent == key and child in sim:
+                sim[child] = InstState(state=REMOVED, placement=sim[child].placement)
 
 
 def _plan_once(
