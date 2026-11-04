@@ -262,12 +262,46 @@ def test_the_sheet_shows_the_gold_answer_evidence_and_rationale(scene, audit_she
         boxes = S.boxes_of(v8, world)
         assert boxes[0]["bbox"] == [float(v) for v in v8["label"]["answer"]["bbox"]]
         assert boxes[0]["kind"] == "answer"
-        assert boxes[0]["label"] == world.instances[v8["label"]["answer"]["instance"]]["label"]
-    # instance keys are spelled the way the oracle labels them
+        # a box label names the class, never an ordinal (owner 2026-11-04)
+        label = world.instances[v8["label"]["answer"]["instance"]]["label"]
+        assert boxes[0]["label"] == re.sub(r"\s+\d+$", "", label) != label
+    # parts are named without an ordinal: the oracle's name, never the key nor "X 1"
     v3 = next(r for r in scene["audit"] if r["prompt"]["task"] == "V3")
     lines = dict(S.gold_lines(v3, world))
     key = v3["label"]["answer"]["target_instance"]
-    assert world.instances[key]["label"] in lines["action"] and key not in lines["action"]
+    assert world.plain_name(key) in lines["action"] and key not in lines["action"]
+    assert world.instances[key]["label"] not in lines["action"]
+
+
+def test_no_ordinal_in_anything_the_sheet_says(scene, audit_sheet):
+    """Owner 2026-11-04 (#97 "CPU 1", "CPU socket lever 1", "connector 3", "motherboard 1"): the
+    gold lines, the rationale, the evidence line and the box labels of every item carry no
+    ordinal -- a part alone of its class is its class, a marked part "part A", a group its label."""
+    _, worlds = S.load_context(scene["exports"])
+    world = worlds[W.DESKTOP]
+    labels = {inst["label"] for inst in world.instances.values() if re.search(r"\d$", inst["label"])}
+    assert labels
+    for r in scene["audit"]:
+        texts = [v for _, v in S.gold_lines(r, world)] + S.rationale_lines(r, world)
+        texts += [b["label"] for b in S.boxes_of(r, world)]
+        for text in texts:
+            for lab in labels:
+                assert not re.search(rf"\b{re.escape(lab)}\b", text), (r["label"]["readable_id"], text)
+    # the three rules, one by one
+    unique = next(k for k, i in world.instances.items()
+                  if sum(1 for j in world.instances.values()
+                         if j.get("match_class") == i.get("match_class")) == 1)
+    assert world.plain_name(unique) == world.instances[unique]["name"]
+    assert not re.search(r"\d", world.plain_name(unique))
+    gid = next(iter(world.groups))
+    assert S.display_name(gid, world) == world.groups[gid]["label"]
+    marked = next(r for r in scene["audit"] if r["label"].get("mark_names")
+                  and any(len(e["parts"]) == 1 for e in r["label"]["mark_names"].values()))
+    tag, entry = next((t, e) for t, e in marked["label"]["mark_names"].items()
+                      if len(e["parts"]) == 1)
+    assert S.display_name(entry["parts"][0], world, marked) == f"part {tag}"
+    # no oracle at all: the key's words, without its ordinal
+    assert S.display_name("cpu_socket_lever.01", None) == "cpu socket lever"
 
 
 def test_the_sheet_is_static_fillable_and_deterministic(scene, audit_sheet, tmp_path):

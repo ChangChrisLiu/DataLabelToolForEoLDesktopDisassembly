@@ -322,6 +322,30 @@ def _gnorm(text: Any) -> str:
     return " ".join(_singular(w) for w in _norm(text).split())
 
 
+def _class_words(label: str) -> str:
+    """An instance label without its ordinal, lower case but for initialisms:
+    "Motherboard screw 7" -> "motherboard screw", "CPU 1" -> "CPU"."""
+    words = re.sub(r"\s+\d+$", "", str(label)).split(" ")
+    if words and words[0][1:2].islower():
+        words[0] = words[0][:1].lower() + words[0][1:]
+    return " ".join(words)
+
+
+def _plural(phrase: str) -> str:
+    """``"RAM latch"`` -> ``"RAM latches"`` (``vlm_groups.plural``, which is not vendored)."""
+    words = phrase.split(" ")
+    last, low = words[-1], words[-1].lower()
+    if last.isupper():
+        words[-1] = last + "s"
+    elif low.endswith(("s", "x", "ch", "sh")):
+        words[-1] = last + "es"
+    elif low.endswith("y") and len(low) > 1 and low[-2] not in "aeiou":
+        words[-1] = last[:-1] + "ies"
+    else:
+        words[-1] = last + "s"
+    return " ".join(words)
+
+
 @dataclass
 class World:
     """One desktop's oracle line: instances, active edges, log (W3b sidecar).
@@ -383,6 +407,30 @@ class World:
             return self.groups[target].get("label") or target
         inst = self.instances.get(target)
         return (inst.get("label") or target) if inst else target
+
+    def plain_name(self, target: Optional[str]) -> str:
+        """How a person reads a target **without an ordinal** (owner 2026-11-04): a group by its
+        label, a part alone of its class on the desktop by its class ("CPU socket lever"), a
+        part with an unordered locator by it (``instances[*].name``, written by the export:
+        "screw that fastens the PSU"), any other part as "one of the N <class>" -- never
+        "CPU 1". An old oracle line without ``name`` gets the class / "one of" reading."""
+        if target is None:
+            return "-"
+        if target in self.groups:
+            return self.groups[target].get("label") or target
+        if target.startswith(CABLE_PREFIX):
+            owner = ".".join(p for p in target[len(CABLE_PREFIX):].split(".") if not p.isdigit())
+            return f"{owner.replace('_', ' ')} cable".strip()
+        inst = self.instances.get(target)
+        if inst is None:
+            return target
+        if inst.get("name"):
+            return str(inst["name"])
+        base = _class_words(inst.get("label") or target)
+        mclass = inst.get("match_class") or inst.get("class")
+        peers = sum(1 for i in self.instances.values()
+                    if (i.get("match_class") or i.get("class")) == mclass)
+        return base if peers <= 1 else f"one of the {peers} {_plural(base)}"
 
     def rec(self, key: str) -> Optional[InstanceRec]:
         inst = self.instances.get(key)

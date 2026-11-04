@@ -22,9 +22,10 @@ and the pack's own files, what a reviewer fills in:
 
 Image paths are **relative to the page** (``../../images/<view>/D<nn>/s<nn>.png``
 for a page in ``eval_v1/audit/``), so the pack can be zipped and sent whole;
-the page itself opens from the file system. Instance keys are written the way
-the oracle labels them ("Motherboard screw 7", never ``screw.motherboard.07``
-alone). The sheet is deterministic: no clock, no machine path, so two pack
+the page itself opens from the file system. Parts are named without an ordinal
+(:func:`display_name`, owner 2026-11-04): "part A" for a part the question
+outlines, a group by its label, a part alone of its class by its class, any other
+"one of the N <class>" -- never ``screw.motherboard.07``, never "Motherboard screw 7". The sheet is deterministic: no clock, no machine path, so two pack
 builds are byte-identical. ``scripts/vlm_audit_summary.py`` reads the filled
 CSVs back.
 
@@ -39,6 +40,7 @@ import html
 import io
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
@@ -52,7 +54,8 @@ from vlm_to_chat import (VIEW_NAMES, image_legend, legend_line, marks_line,  # n
 from tda.core.export.vlm_check import LETTERS, World, format_key, reference_option  # noqa: E402
 
 __all__ = ["CSV_COLUMNS", "VERDICTS", "boxes_of", "build", "csv_skeleton", "frames_html",
-           "gold_lines", "item_html", "load_context", "main", "marks_of", "name_of", "page",
+           "display_name", "gold_lines", "item_html", "load_context", "main", "marks_of",
+           "name_of", "page",
            "rationale_lines", "rel_image"]
 
 #: Columns of the skeleton and of the page's export, in this order.
@@ -85,8 +88,45 @@ def load_context(exports: Sequence) -> tuple[dict[str, dict], dict[int, World]]:
     return manifest, worlds
 
 
+def display_name(key: Optional[str], world: Optional[World], record: Optional[dict] = None,
+                 *, short: bool = False) -> str:
+    """How the sheet names a part a person reads -- **no ordinal** (owner 2026-11-04).
+
+    A part a record outlines under a tag of its own is "part A"; a group is its group label
+    (with its tag where it is outlined, "CPU cooler screws (parts B)"); any other part is the
+    oracle's ordinal-free name (:meth:`World.plain_name`: its class when it is the only one,
+    "one of the 4 RAM modules" when it is not). ``short`` (a box label: the box already says
+    which one) is the class alone. Never an instance key, never "CPU 1".
+    """
+    if key is None:
+        return "-"
+    key = str(key)
+    tags = ((record or {}).get("label") or {}).get("mark_names") or {}
+    if world is not None and world.is_group(key):
+        label = world.plain_name(key)
+        members = set(world.members(key))
+        tag = next((t for t, e in sorted(tags.items())
+                    if len(e.get("parts") or []) > 1 and set(e["parts"]) <= members), None)
+        return f"{label} (parts {tag})" if tag and not short else label
+    if not short:
+        tag = next((t for t, e in sorted(tags.items()) if (e.get("parts") or []) == [key]), None)
+        if tag:
+            return f"part {tag}"
+    if world is None:
+        # no oracle: the key's words, its ordinal dropped ("cpu_cooler.01" -> "cpu cooler")
+        return " ".join(p.replace("_", " ") for p in key.replace(":", ".").split(".")
+                        if p and not p.isdigit()) or key
+    if short and key in world.instances:
+        inst = world.instances[key]
+        return re.sub(r"\s+\d+$", "", str(inst.get("label") or key)) if inst.get("label") \
+            else world.plain_name(key)
+    return world.plain_name(key)
+
+
 def name_of(key: Optional[str], world: Optional[World]) -> str:
-    """The oracle's label of an instance key (``Motherboard screw 7``), else the key."""
+    """The oracle's label of an instance key (``Motherboard screw 7``), else the key -- the
+    **grader's** wording (a reply naming it grounds back to the key), for the human-baseline
+    self-test; nothing a reviewer reads uses it (:func:`display_name`)."""
     if key is None:
         return "-"
     if world is not None:
@@ -108,8 +148,8 @@ def rel_image(image_root, rel_path: str, out_dir) -> str:
 # --------------------------------------------------------------------------- #
 # the gold answer in words
 # --------------------------------------------------------------------------- #
-def _action(item: dict, world) -> str:
-    return f"{item.get('verb', '?')} {name_of(item.get('target'), world)}"
+def _action(item: dict, world, record: Optional[dict] = None) -> str:
+    return f"{item.get('verb', '?')} {display_name(item.get('target'), world, record)}"
 
 
 def _yes(value) -> str:
@@ -122,6 +162,9 @@ def gold_lines(record: dict, world: Optional[World] = None) -> list[tuple[str, s
     answer = label["answer"]
     check = label.get("answer_check") or {}
     key = format_key(record)
+
+    def name(k):
+        return display_name(k, world, record)
     task = record["prompt"]["task"]
     out: list[tuple[str, str]] = []
     if key == "V1":
@@ -129,7 +172,7 @@ def gold_lines(record: dict, world: Optional[World] = None) -> list[tuple[str, s
         out.append(("visible parts", f"{len(comps)}"))
         for c in comps:
             out.append((c.get("class", "?"),
-                        f"{name_of(c.get('instance'), world)} box {c.get('bbox')}"))
+                        f"{name(c.get('instance'))} box {c.get('bbox')}"))
     elif key == "V2.count":
         out.append(("count", str(answer.get("count"))))
         out.append(("screws", f"{check.get('role', '?')} screws still {check.get('state', 'present')}"))
@@ -138,16 +181,16 @@ def gold_lines(record: dict, world: Optional[World] = None) -> list[tuple[str, s
         if check.get("allowed"):
             out.append(("allowed", ", ".join(check["allowed"])))
     elif task == "V3":
-        out.append(("action", f"{answer.get('verb')} {name_of(answer.get('target_instance'), world)}"))
+        out.append(("action", f"{answer.get('verb')} {name(answer.get('target_instance'))}"))
         out.append(("class", str(answer.get("target_class"))))
         out.append(("tool", str(answer.get("tool"))))
         # no "also accepted" line: the part acted on is the only answer (owner 2026-11-03),
         # whatever an older record's `accept_targets` lists beside it
     elif task == "V4":
         out.append(("feasible", _yes(answer.get("feasible"))))
-        out.append(("action", f"{check.get('verb')} {name_of(check.get('target'), world)}"))
+        out.append(("action", f"{check.get('verb')} {name(check.get('target'))}"))
         if answer.get("blockers"):
-            out.append(("blockers", "; ".join(name_of(b, world) for b in answer["blockers"])))
+            out.append(("blockers", "; ".join(name(b) for b in answer["blockers"])))
         if answer.get("reason"):
             out.append(("reason", str(answer["reason"])))
         out.append(("truth source", str(label.get("truth_source"))))
@@ -155,56 +198,56 @@ def gold_lines(record: dict, world: Optional[World] = None) -> list[tuple[str, s
         options = label.get("options") or []
         index = reference_option(label)
         letter = LETTERS[index] if index is not None else "?"
-        out.append(("choice", f"{letter}: {_action(answer, world)}"))
+        out.append(("choice", f"{letter}: {_action(answer, world, record)}"))
         kinds = ", ".join(f"{LETTERS[i]} {o.get('kind', '?')}" for i, o in enumerate(options))
         if kinds:
             out.append(("option kinds", kinds))
     elif key == "V6.open":
-        out.append(("next action", _action(answer, world)))
+        out.append(("next action", _action(answer, world, record)))
         eq = check.get("equivalent_actions") or []
         if len(eq) > 1:
-            out.append(("equivalent", "; ".join(_action(a, world) for a in eq)))
+            out.append(("equivalent", "; ".join(_action(a, world, record) for a in eq)))
         if check.get("blocked_actions"):
-            out.append(("blocked", "; ".join(_action(a, world) for a in check["blocked_actions"][:8])
+            out.append(("blocked", "; ".join(_action(a, world, record) for a in check["blocked_actions"][:8])
                         + (" ..." if len(check["blocked_actions"]) > 8 else "")))
     elif task == "V7":
         plan = answer.get("plan") or []
-        out.append(("plan", f"{len(plan)} steps to remove {name_of(answer.get('goal'), world)}"))
+        out.append(("plan", f"{len(plan)} steps to remove {name(answer.get('goal'))}"))
         for i, a in enumerate(plan, start=1):
-            out.append((f"{i}", _action(a, world)))
+            out.append((f"{i}", _action(a, world, record)))
         if check.get("required_actions"):
             out.append(("required", "; ".join(
-                f"{name_of(r.get('target'), world)} -> {'/'.join(r.get('states') or [])}"
+                f"{name(r.get('target'))} -> {'/'.join(r.get('states') or [])}"
                 for r in check["required_actions"])))
     elif task == "V8" and "components" in answer:  # every visible part of one class / group
         comps = answer.get("components") or []
         out.append(("visible parts", f"{len(comps)} ({check.get('class_filter', '?')})"))
         for c in comps:
             out.append((c.get("class", "?"),
-                        f"{name_of(c.get('instance'), world)} box {c.get('bbox')}"))
+                        f"{name(c.get('instance'))} box {c.get('bbox')}"))
     elif task == "V8":
-        out.append(("part", name_of(answer.get("instance"), world)))
+        out.append(("part", name(answer.get("instance"))))
         out.append(("box", str(answer.get("bbox"))))
     elif task == "V10":
         done = answer.get("done") or []
         out.append(("progress", f"{_BIN_LABELS.get(str(answer.get('progress_bin')), answer.get('progress_bin'))} "
                                 f"({check.get('done_actions', len(done))} of {check.get('total_actions', '?')} actions done)"))
         for i, a in enumerate(done, start=1):
-            out.append((f"done {i}", _action(a, world)))
+            out.append((f"done {i}", _action(a, world, record)))
         for i, a in enumerate(answer.get("started") or [], start=1):
-            out.append((f"started {i}", _action(a, world)))
+            out.append((f"started {i}", _action(a, world, record)))
     elif task == "V12":
         out.append(("changed", _yes(answer.get("changed"))))
         for ev in answer.get("events") or []:
-            out.append(("event", f"{name_of(ev.get('target'), world)}: {ev.get('old')} -> {ev.get('new')}"))
+            out.append(("event", f"{name(ev.get('target'))}: {ev.get('old')} -> {ev.get('new')}"))
         for ev in check.get("hidden_events") or []:
             out.append(("hidden (no visible change)",
-                        f"{name_of(ev.get('target'), world)}: {ev.get('old')} -> {ev.get('new')}"))
+                        f"{name(ev.get('target'))}: {ev.get('old')} -> {ev.get('new')}"))
         if label.get("negative"):
             out.append(("negative kind", str(label["negative"])))
     elif task == "V14":
         out.append(("answerable", _yes(answer.get("answerable"))))
-        out.append(("part", name_of(check.get("instance"), world)))
+        out.append(("part", name(check.get("instance"))))
         if answer.get("answerable"):
             out.append(("state", str(answer.get("state"))))
     elif key == "V15.moment":
@@ -232,14 +275,19 @@ def gold_lines(record: dict, world: Optional[World] = None) -> list[tuple[str, s
 
 
 def rationale_lines(record: dict, world: Optional[World] = None) -> list[str]:
-    """The rationale chain, one line per step."""
-    steps = ((record["label"].get("rationale") or {}).get("steps")) or []
+    """The rationale, readable: ``rationale.text`` (the reason in what the picture shows, owner
+    2026-11-04 -- no graph vocabulary) where the record has one; else the chain, one line per
+    step, every part named without an ordinal."""
+    rationale = record["label"].get("rationale") or {}
+    if rationale.get("text"):
+        return [str(rationale["text"])]
+    steps = rationale.get("steps") or []
     out = []
     for s in steps:
         op = s.get("op", "?")
         bits = [op]
         if s.get("target"):
-            bits.append(name_of(s["target"], world))
+            bits.append(display_name(s["target"], world, record))
         if s.get("value") is not None:
             bits.append(f"= {s['value']}")
         if s.get("frames"):
@@ -257,10 +305,15 @@ def rationale_lines(record: dict, world: Optional[World] = None) -> list[str]:
 
 
 def boxes_of(record: dict, world: Optional[World] = None) -> list[dict]:
-    """The boxes to draw: ``[{"label", "bbox", "kind"}]`` -- evidence, V1 parts, V8 answer."""
+    """The reviewer's boxes: ``[{"label", "bbox", "kind"}]`` -- evidence, V1 parts, V8 answer.
+    Labelled by class (:func:`display_name` ``short``): never an ordinal, and the model never
+    sees them (the page draws them on their own layer, hidden by default)."""
     label = record["label"]
     out: list[dict] = []
     seen: set[tuple] = set()
+
+    def name(k):
+        return display_name(k, world, record, short=True)
 
     def add(text, bbox, kind):
         if not bbox or len(bbox) != 4:
@@ -273,14 +326,14 @@ def boxes_of(record: dict, world: Optional[World] = None) -> list[dict]:
 
     if record["prompt"]["task"] == "V1":
         for c in label["answer"].get("components") or []:
-            add(name_of(c.get("instance"), world), c.get("bbox"), "answer")
+            add(name(c.get("instance")), c.get("bbox"), "answer")
     if record["prompt"]["task"] == "V8":
         for c in label["answer"].get("components") or []:
-            add(name_of(c.get("instance"), world), c.get("bbox"), "answer")
-        add(name_of(label["answer"].get("instance"), world), label["answer"].get("bbox"), "answer")
+            add(name(c.get("instance")), c.get("bbox"), "answer")
+        add(name(label["answer"].get("instance")), label["answer"].get("bbox"), "answer")
     ev = label.get("evidence") or {}
     for key, bbox in (ev.get("bboxes") or {}).items():
-        add(name_of(key, world), bbox, "evidence")
+        add(name(key), bbox, "evidence")
     return out
 
 
@@ -612,7 +665,7 @@ def item_html(index: int, record: dict, manifest: dict, world: Optional[World], 
                       + "</ul>") if rationale else ""
     ev = (label.get("evidence") or {}).get("instances") or []
     ev_html = (f'<div class="hint">evidence parts: '
-               f'{esc("; ".join(name_of(k, world) for k in ev))}</div>') if ev else ""
+               f'{esc("; ".join(display_name(k, world, record) for k in ev))}</div>') if ev else ""
     flags = [f"template {label.get('template_id', '?')}"]
     if label.get("negative"):
         flags.append(f"negative: {label['negative']}")
@@ -681,7 +734,8 @@ rests on), then pick one verdict and, for anything but 正确, write why.<br>
 frame, part not there, mislabelled).
 <b>存疑 doubtful</b> -- cannot be decided from the picture (hidden part, captive screw, blur), or
 only partly right.<br>
-Instance names are the dataset's ("Motherboard screw 7"); a two-image question shows both frames
+Parts are named without ordinals: "part A" is the part outlined with tag A, a part alone of its
+class is named by its class, "one of the 4 RAM modules" is one of several; a two-image question shows both frames
 in the order asked. Your answers are kept in this browser; press <b>Export answers</b> when the
 page is done and send the CSV. <code>tools/vlm_audit_summary.py</code> reads it.
 """

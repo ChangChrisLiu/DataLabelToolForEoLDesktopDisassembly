@@ -148,6 +148,7 @@ __all__ = [
     "instance_label",
     "match_class",
     "opaque_image_id",
+    "plain_name",
     "record",
     "required_actions",
     "row_verified",
@@ -1355,6 +1356,36 @@ def unique_on_desktop(tc: TaskCtx, key: str) -> bool:
 def class_words(tc: TaskCtx, keys: Sequence[str]) -> str:
     """"the PSU" / "the motherboard screws": a class named in words, no mark, no ordinal."""
     return f"the {class_phrase(tc.ctx, keys[0], many=len(keys) > 1)}"
+
+
+def plain_name(tc: TaskCtx, key: str) -> str:
+    """How anything a person or a model reads names a part: **never an ordinal** (owner
+    2026-11-04, "CPU 1", "connector 3" name nothing a viewer can find).
+
+    A group id is its group label ("CPU cooler screws"); a part alone of its match class on
+    the desktop is its class ("CPU socket lever"); a part an unordered locator singles out
+    (:func:`_referring`: "screw that fastens the PSU") is that; a member of a group is "one of
+    the <group label>"; any other part "one of the N <class>" -- it is one of several and no
+    word tells which. A ``cable:*`` node is its cable ("PSU cable"). The oracle carries it as
+    ``instances[*].name``; a mark tag ("part A") is the reader's business, not this one's.
+    """
+    group = tc.group_by_id(key)
+    if group is not None:
+        return group.label
+    if key.startswith(CABLE_PREFIX):
+        return cable_words(key)[len("the "):]
+    if key not in tc.ctx.instances:
+        return key
+    referring = _referring(tc, key)
+    if referring is not None:
+        phrase = referring[0]
+        return phrase[len("the "):] if phrase.startswith("the ") else phrase
+    group = tc.group_of(key)
+    if group is not None:
+        return f"one of the {group.label}"
+    mc = match_class(tc.ctx, key)
+    peers = sum(1 for k in tc.ctx.instances if match_class(tc.ctx, k) == mc)
+    return f"one of the {peers} {class_phrase(tc.ctx, key, many=True)}"
 
 
 def state_is_askable(tax: Taxonomy, cls: str) -> bool:
