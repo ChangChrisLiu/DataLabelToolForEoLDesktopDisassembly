@@ -395,6 +395,101 @@ class Checker:
     def planning_actions(self, step: int) -> list:
         return [a for a in self.named(step) if self.changes_state(a)]
 
+    # -- part groups (redesign 2026-11-03), re-derived by hand --------------- #
+    def _match_class(self, key: str) -> Optional[str]:
+        rec = self.instances.get(key)
+        if rec is None:
+            return None
+        if rec.cls == "screw" and rec.attrs.get("role"):
+            return f"screw.{rec.attrs['role']}"
+        if rec.cls in ("cpu_cooler", "connector") and rec.attrs.get("kind"):
+            return f"{rec.cls}.{rec.attrs['kind']}"
+        return rec.cls
+
+    def _anchor(self, key: str) -> str:
+        rec = self.instances[key]
+        if rec.cls == "screw":
+            return rec.fastens or "-"
+        if rec.cls == "connector":
+            if not rec.socket_host and not rec.cable:
+                return "-"
+            return f"{rec.socket_host or '-'}|{rec.cable or '-'}"
+        of = rec.attrs.get("of")
+        return of if isinstance(of, str) and of in self.instances else "-"
+
+    @property
+    def groups(self) -> dict[str, list[str]]:
+        """``gid -> members``: same match class and anchor, at least two real parts."""
+        if getattr(self, "_groups", None) is None:
+            buckets: dict[str, list[str]] = {}
+            for key in sorted(self.instances):
+                rec = self.instances[key]
+                if rec.attrs.get("implied") or rec.cls not in self.tax.classes:
+                    continue
+                buckets.setdefault(f"{self._match_class(key)}@{self._anchor(key)}",
+                                   []).append(key)
+            self._groups = {g: m for g, m in buckets.items() if len(m) >= 2}
+        return self._groups
+
+    def group_of(self, key: str) -> Optional[str]:
+        return next((g for g, m in self.groups.items() if key in m), None)
+
+    def captive(self, key: str) -> bool:
+        rec = self.instances.get(key)
+        return bool(rec is not None and rec.cls == "screw" and rec.attrs.get("captive"))
+
+    @staticmethod
+    def present(frame: dict, key: str) -> bool:
+        slot = frame.get(key)
+        return slot is not None and slot["state"] != REMOVED
+
+    def todo(self, frame: dict, verb: str, members: Iterable[str]) -> list[str]:
+        """Members still in the asked situation; captive screws while their part is in."""
+        out = []
+        for key in members:
+            if not self.present(frame, key):
+                continue
+            if verb == "unscrew" and self.captive(key):
+                held = self.instances[key].fastens
+                if held is None or self.present(frame, held):
+                    out.append(key)
+                continue
+            if self.applies(key, verb, frame):
+                out.append(key)
+        return out
+
+    def expand(self, frame: dict, verb: str, target: str) -> list[str]:
+        """A group action's members still to do, or the part itself."""
+        if target in self.groups:
+            return self.todo(frame, verb, self.groups[target])
+        return [target]
+
+    def as_group(self, frame: dict, verb: str, key: str) -> str:
+        """``key``'s group id when two or more members are still to do, else ``key``."""
+        gid = self.group_of(key)
+        if gid is not None and len(self.todo(frame, verb, self.groups[gid])) >= 2:
+            return gid
+        return key
+
+    def grouped(self, frame: dict, pairs) -> list[tuple[str, str]]:
+        out, seen = [], set()
+        for verb, key in pairs:
+            item = (verb, self.as_group(frame, verb, key))
+            if item not in seen:
+                seen.add(item)
+                out.append(item)
+        return out
+
+    def with_captive(self, frame: dict, plan: list) -> list:
+        pending = sorted({g for g, m in self.groups.items()
+                          if all(self.captive(k) for k in m)
+                          and self.todo(frame, "unscrew", m)})
+        for gid in reversed(pending):
+            held = self.instances[self.groups[gid][0]].fastens
+            if ("unscrew", gid) not in plan and any(t == held for _, t in plan):
+                plan = [("unscrew", gid), *plan]
+        return plan
+
     def demonstrated(self, after: int) -> Optional[tuple[int, Any]]:
         for step in self.log_steps():
             if step > after and self.named(step):
@@ -425,8 +520,21 @@ class Checker:
         if set(record) != {"id", "prompt", "label"}:
             _fail(record, f"a record is id/prompt/label, not {sorted(record)}")
         prompt, label = record["prompt"], record["label"]
-        if set(prompt) - {"task", "images", "question", "options"}:
+        if set(prompt) - {"task", "images", "question", "options", "marks", "terms",
+                          "state_terms", "image_legend"}:
             _fail(record, f"the prompt side carries {sorted(prompt)}")
+        if prompt.get("marks") and prompt["task"] in ("V1", "V8", "V14"):
+            _fail(record, "a mark on a task whose box is the answer")
+        for mark in prompt.get("marks") or []:
+            if not 0 <= int(mark["image"]) < len(prompt["images"]):
+                _fail(record, f"mark on image {mark['image']} of {len(prompt['images'])}")
+            if len(mark["bbox"]) != 4 or not re.fullmatch(r"[A-Z]", str(mark["tag"])):
+                _fail(record, f"a malformed mark {mark}")
+        if prompt.get("image_legend") is not None:
+            if len(prompt["image_legend"]) != len(prompt["images"]):
+                _fail(record, "the image legend and the images disagree")
+            if label.get("views") != [e["view"] for e in prompt["image_legend"]]:
+                _fail(record, "label.views is not the legend's views")
         for field in ("readable_id", "answer", "answer_check", "evidence",
                       "rationale", "desktop", "step", "view", "layer",
                       "template_id", "tier", "verified", "graph_version",
@@ -475,6 +583,28 @@ class Checker:
             if seen != expect:
                 _fail(record, f"component set {sorted(seen)} != {sorted(expect)}")
 
+    # V8 on a class with several instances: every visible member of that class
+    def _check_components(self, record: dict, spec: dict) -> None:
+        label = record["label"]
+        rows = self.rows(label["view"], label["step"])
+        mc = spec["class_filter"]
+        seen = set()
+        for item in self._answer(record)["components"]:
+            key = item["instance"]
+            seen.add(key)
+            if self._match_class(key) != mc:
+                _fail(record, f"{key} is not a {mc}")
+            if key not in rows or rows[key].get("visibility") not in ANSWERABLE:
+                _fail(record, f"{key} cannot be pointed at in this view")
+            if _iou(_row_box(rows[key]), item["bbox"]) < 0.999:
+                _fail(record, f"{key}: box {item['bbox']} is not its row's")
+        expect = {k for k, r in rows.items() if r.get("visibility") in ANSWERABLE
+                  and _row_box(r) is not None and self._match_class(k) == mc}
+        if seen != expect:
+            _fail(record, f"component set {sorted(seen)} != {sorted(expect)}")
+        if sum(1 for k in self.instances if self._match_class(k) == mc) < 2:
+            _fail(record, "the set form on a class with one part")
+
     # V2 states and counts, V3, V12, V14, V15
     def _check_exact(self, record: dict, spec: dict) -> None:
         answer = self._answer(record)
@@ -497,10 +627,17 @@ class Checker:
         step, view = int(label["step"]), label["view"]
         presence = spec.get("state_space") == "presence"
         if kind == "instance_state":
-            key = spec["instance"]
-            if presence and self.instances[key].attrs.get("captive"):
-                _fail(record, "a captive screw has no state a picture shows (W3b)")
-            return {"state": self._shown(self.state_at(step)[key]["state"], presence)}
+            keys = spec.get("members") or [spec["instance"]]
+            if spec.get("members") and self.group_of(keys[0]) != spec["instance"]:
+                _fail(record, "members of a group asked under another id")
+            shown = set()
+            for key in keys:
+                if presence and self.instances[key].attrs.get("captive"):
+                    _fail(record, "a captive screw has no state a picture shows (W3b)")
+                shown.add(self._shown(self.state_at(step)[key]["state"], presence))
+            if len(shown) != 1:
+                _fail(record, f"a group asked as one whose members differ: {shown}")
+            return {"state": shown.pop()}
         if kind == "screw_count":
             role, state = spec["role"], spec["state"]
             frame = self.state_at(step)
@@ -548,13 +685,18 @@ class Checker:
                 return {"changed": False, "events": []}
             return {"changed": bool(events), "events": events}
         if kind == "answerable":
-            row = self.rows(view, step).get(spec["instance"])
-            if row is None:
-                _fail(record, f"{spec['instance']} has no compiled row here")
-            ok = row.get("visibility") in ANSWERABLE
-            return {"answerable": ok,
-                    "state": (self._shown(self.state_at(step)[spec["instance"]]["state"],
-                                          presence) if ok else None)}
+            answers = set()
+            for key in spec.get("members") or [spec["instance"]]:
+                row = self.rows(view, step).get(key)
+                if row is None:
+                    _fail(record, f"{key} has no compiled row here")
+                ok = row.get("visibility") in ANSWERABLE
+                answers.add((ok, self._shown(self.state_at(step)[key]["state"], presence)
+                             if ok else None))
+            if len(answers) != 1:
+                _fail(record, f"a class asked as one whose members differ: {answers}")
+            ok, state = answers.pop()
+            return {"answerable": ok, "state": state}
         if kind == "cross_view":
             row = self.rows(spec["answer_view"], step).get(spec["instance"])
             if row is None or row.get("visibility") not in ANSWERABLE:
@@ -586,10 +728,28 @@ class Checker:
             # beside the point and, on a desktop with a log gap, is noise
             self._check_inapplicable(record, spec, frame, step, verb, target)
             return
-        if not self.applies(target, verb, frame):
-            _fail(record, f"{verb} {target} does not apply in this state at all")
-        bad = self.unmet(verb, target, frame)
-        blockers = sorted({e["blocker"] for e in bad})
+        members = self.expand(frame, verb, target)
+        if target in self.groups:
+            if sorted(spec.get("members") or []) != sorted(members) or len(members) < 2:
+                _fail(record, f"group members {spec.get('members')} != {members}")
+        bad = []
+        shapes = set()
+        for member in members:
+            if not self.applies(member, verb, frame):
+                _fail(record, f"{verb} {member} does not apply in this state at all")
+            if self.captive(member):
+                _fail(record, "an answer resting on a captive screw's tightness")
+            mine = self.unmet(verb, member, frame)
+            for edge in mine:
+                if self.captive(edge["blocker"]):
+                    _fail(record, "an answer resting on a captive screw's tightness")
+            shapes.add(tuple(sorted({self.group_of(e["blocker"]) or e["blocker"]
+                                     for e in mine})))
+            bad.extend(mine)
+        if len(shapes) > 1:
+            _fail(record, f"a group asked as one whose members differ: {shapes}")
+        # blockers are blocker groups (redesign 2026-11-03)
+        blockers = sorted({self.group_of(e["blocker"]) or e["blocker"] for e in bad})
         if sorted(answer.get("blockers") or []) != blockers:
             _fail(record, f"blockers {answer.get('blockers')} != {blockers}")
 
@@ -599,7 +759,7 @@ class Checker:
         if source == "demonstrated":
             # a "yes" is only ever the action the log went on to perform
             shown = self.demonstrated(step)
-            if shown is None or (shown[1].verb, shown[1].target) != (verb, target):
+            if shown is None or shown[1].verb != verb or shown[1].target not in members:
                 _fail(record, f"{verb} {target} is not what the log demonstrates here")
             if answer["feasible"] is not True:
                 _fail(record, "a demonstrated action must be feasible")
@@ -613,7 +773,7 @@ class Checker:
             if source == "failed_attempt":
                 attempts = [a for a in self.actions
                             if a.step == step + 1 and a.result != "success"
-                            and (a.verb, a.target) == (verb, target)]
+                            and a.verb == verb and a.target in members]
                 if not attempts:
                     _fail(record, "no failed attempt at the next step says this")
         else:
@@ -708,8 +868,16 @@ class Checker:
         nxt, action = shown
         if int(spec["reference_step"]) != nxt:
             _fail(record, f"reference step {spec['reference_step']} != {nxt}")
-        if (answer["verb"], answer["target"]) != (action.verb, action.target):
+        frame = self.state_at(step)
+        if answer["verb"] != action.verb or answer["target"] not in (
+                action.target, self.group_of(action.target)):
             _fail(record, "the answer is not the action the log performed")
+        if answer["target"] != action.target:
+            # a group action: every member still to do is a permitted sibling
+            todo = self.todo(frame, action.verb, self.groups[answer["target"]])
+            if action.target not in todo or len(todo) < 2 or any(
+                    (action.verb, m) not in self.permitted(step) for m in todo):
+                _fail(record, "a group answer whose members are not all equivalent")
         if tuple(spec["reference"]) != (action.verb, action.target):
             _fail(record, "the reference and the answer disagree")
         if answer.get("tool") in UNGRADED_TOOLS and "tool" in spec.get("fields", ()):
@@ -723,20 +891,28 @@ class Checker:
         if options is None:
             return
         kinds: dict[str, int] = {}
-        frame = self.state_at(step)
         for option in options:
-            pair = (option["verb"], option["target"])
             kind = option["kind"]
             kinds[kind] = kinds.get(kind, 0) + 1
-            if kind == "demonstrated" and pair != (action.verb, action.target):
-                _fail(record, f"option {pair} is not the demonstrated one")
-            if kind in ("graph_blocked", "graph_blocked_pixels") and pair not in blocked:
-                _fail(record, f"option {pair} is not blocked")
-            if kind == "state_inapplicable" and self.applies(pair[1], pair[0], frame):
-                _fail(record, f"option {pair} applies after all")
-            if kind == "permitted_unknown" and (pair not in permitted
-                                                or pair == (action.verb, action.target)):
-                _fail(record, f"option {pair} is not a permitted distractor")
+            targets = self.expand(frame, option["verb"], option["target"])
+            if option["target"] in self.groups and (
+                    sorted(targets) != sorted(option.get("members") or []) or len(targets) < 2):
+                _fail(record, f"option {option['target']} lists other members")
+            for target in targets:
+                pair = (option["verb"], target)
+                if kind == "demonstrated" and (
+                        pair[0] != action.verb or (pair[1] != action.target
+                                                   and pair not in permitted)):
+                    _fail(record, f"option {pair} is not the demonstrated one")
+                if kind in ("graph_blocked", "graph_blocked_pixels") and pair not in blocked:
+                    _fail(record, f"option {pair} is not blocked")
+                if kind == "state_inapplicable" and self.applies(pair[1], pair[0], frame):
+                    _fail(record, f"option {pair} applies after all")
+                if kind == "permitted_unknown" and (pair not in permitted
+                                                    or pair == (action.verb, action.target)):
+                    _fail(record, f"option {pair} is not a permitted distractor")
+            if kind == "demonstrated" and action.target not in targets:
+                _fail(record, "the demonstrated option does not cover the demonstrated part")
         if kinds.get("demonstrated") != 1:
             _fail(record, "an options list needs exactly one demonstrated action")
         wrong = (kinds.get("graph_blocked", 0) + kinds.get("graph_blocked_pixels", 0)
@@ -762,11 +938,27 @@ class Checker:
                for s in log for a in self.successful_actions(s)):
             _fail(record, "an exhaustive history on a log with unresolved targets")
         happened = [a for s in log if s <= step for a in self.named(s)]
-        done = {(a.verb, a.target) for a in happened}
+        frame = self.state_at(step)
+        done, started = set(), set()
+        for verb, target in {(a.verb, a.target) for a in happened}:
+            gid = self.group_of(target)
+            if gid is None:
+                done.add((verb, target))
+            elif verb == "unscrew" and self.captive(target):
+                held = self.instances[target].fastens
+                if held is None or not self.present(frame, held):
+                    done.add((verb, gid))
+            elif self.todo(frame, verb, self.groups[gid]):
+                started.add((verb, gid))
+            else:
+                done.add((verb, gid))
+        started -= done
         got = _pairs(answer["done"])
         if got != done:
             _fail(record, f"history differs: missing {sorted(done - got)}, "
                           f"extra {sorted(got - done)}")
+        if _pairs(answer.get("started") or []) != started:
+            _fail(record, f"started {answer.get('started')} != {sorted(started)}")
         total = sum(len(self.named(s)) for s in log)
         remaining = total - len(happened)
         if answer["remaining_actions"] != remaining:
@@ -784,6 +976,19 @@ class Checker:
         first_bad, violated, reason = None, [], None
         for i, item in enumerate(spec["plan"]):
             verb, target = item["verb"], item["target"]
+            if target in self.groups:
+                # a group action: the verb on every member still to do (redesign)
+                todo = self.todo(frame, verb, self.groups[target])
+                bad = [e for m in todo for e in self.unmet(verb, m, frame)]
+                if not todo or bad:
+                    first_bad = i
+                    violated = sorted({_edge_label(e) for e in bad})
+                    reason = "violates_edge" if bad else "not_present"
+                    break
+                for m in todo:
+                    if self.applies(m, verb, frame):
+                        self._apply(frame, m, verb)
+                continue
             bad = self.unmet(verb, target, frame)
             if bad or not self.applies(target, verb, frame):
                 first_bad = i
@@ -804,7 +1009,9 @@ class Checker:
             logged = [(a.verb, a.target) for s in self.log_steps()
                       if s > int(label["step"]) for a in self.planning_actions(s)]
             wanted = [(i["verb"], i["target"]) for i in spec["plan"]]
-            if logged[:len(wanted)] != wanted:
+            start = self.state_at(int(label["step"]))
+            told = self.with_captive(start, self.grouped(start, logged))
+            if told[:len(wanted)] != wanted:
                 _fail(record, "a valid plan that the log never carried out")
             if answer.get("violated_edges"):
                 _fail(record, "a valid plan that names a violated edge")
@@ -861,8 +1068,9 @@ class Checker:
                   for a in self.planning_actions(s)]
         if [(i["verb"], i["target"]) for i in spec["demonstrated_remainder"]] != logged:
             _fail(record, "the demonstrated remainder is not the logged suffix")
-        if record["label"]["answer"]["plan"] != spec["demonstrated_remainder"]:
-            _fail(record, "V7's answer is not the demonstrated remainder")
+        told = self.with_captive(self.state_at(step), self.grouped(self.state_at(step), logged))
+        if [(i["verb"], i["target"]) for i in record["label"]["answer"]["plan"]] != told:
+            _fail(record, "V7's answer is not the demonstrated remainder in group actions")
         if spec.get("redundancy_penalty") is not False or not spec.get("any_legal_plan_scores"):
             _fail(record, "V7 must score any legal plan and not penalise redundant steps")
         if int(spec["plan_length"]) != len(spec["reference_shortest"]):

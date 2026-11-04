@@ -79,7 +79,11 @@ def test_the_answer_is_the_remaining_legal_plan_and_its_requirements(scene):
     assert plan[-1] == ("remove", W.CPU)
     assert check["plan_length"] == len(plan)
     # the answer is the demonstrated remainder; any legal plan scores
-    assert first["label"]["answer"]["plan"] == check["demonstrated_remainder"]
+    # ... told in group actions (redesign 2026-11-03): one "unscrew the CPU cooler screws"
+    gid = f"screw.cpu_cooler@{W.COOLER}"
+    assert [(a["verb"], a["target"]) for a in first["label"]["answer"]["plan"]] == [
+        W.LOG[3], ("unscrew", gid), *(W.LOG[s] for s in range(8, 12))]
+    assert check["plan_groups"] == {gid: list(W.SCREWS)}
     assert check["any_legal_plan_scores"] is True
     required = {r["target"]: r for r in check["required_actions"]}
     # the cooler's screws (fastened_by gates both ways of moving it), the
