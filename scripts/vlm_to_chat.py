@@ -63,8 +63,10 @@ from vlm_glossary import glossary_text, is_presence  # noqa: E402
 from tda.core.export.vlm_check import LETTERS, format_instruction  # noqa: E402
 
 #: Bumped whenever the wording around the question changes (chat-v2: marks, image legend,
-#: glossary; chat-v3: the V6 multiple choice speaks of its one picture).
-CHAT_FORMAT_ID = "chat-v3"
+#: glossary; chat-v3: the V6 multiple choice speaks of its one picture; chat-v4: V3's two
+#: forms -- the free question also asks the region, the roi one shows a yellow hint box -- and
+#: the dashed mark-v2 outlines).
+CHAT_FORMAT_ID = "chat-v4"
 SYSTEM = ("You are shown photographs of a desktop PC being disassembled on a bench. "
           "Answer exactly in the JSON format asked for.")
 #: The crops a run may use: none, or the view's fixed chassis ROI.
@@ -153,6 +155,16 @@ def shown_marks(record: dict) -> list[dict]:
     if prompt.get("task") in UNMARKED_TASKS:
         return []
     return list(prompt.get("marks") or [])
+
+
+def shown_hints(record: dict) -> list[dict]:
+    """The ``prompt.hint_regions`` (V3's ``roi`` form), as marks of ``style = "hint"``: a dashed
+    box in :data:`HINT_RGB`, no tag (none on V1 / V8 / V14)."""
+    prompt = record["prompt"]
+    if prompt.get("task") in UNMARKED_TASKS:
+        return []
+    return [{"image": int(h.get("image", 0)), "bbox": list(h["bbox"]), "style": "hint"}
+            for h in prompt.get("hint_regions") or [] if h.get("bbox")]
 
 
 def marks_line(record: dict) -> str:
@@ -333,6 +345,12 @@ def mark_outlines(marks, crop, scale: float, size: tuple) -> list[tuple[dict, tu
         x1, y1 = (x + w - crop[0]) * scale, (y + h - crop[1]) * scale
         if x1 <= 0 or y1 <= 0 or x0 >= W or y0 >= H:
             continue  # outside the crop: nothing of it is shown
+        if m.get("style") == "hint":
+            # a hint region outlines no part: drawn just inside its box, so one that reaches
+            # the picture's edge (it is clipped to the image) keeps every side visible
+            out.append((m, (max(0, round(x0)), max(0, round(y0)),
+                            min(W - 1, round(x1) - 1), min(H - 1, round(y1) - 1))))
+            continue
         out.append((m, (round(x0) - lw, round(y0) - lw, round(x1) + lw - 1, round(y1) + lw - 1)))
     return out
 
@@ -499,7 +517,7 @@ def convert(record: dict, manifest: dict, images: Images, fmt: str, *,
                          f"from a record's evidence would show its answer")
     shown: list[Path] = []
     transforms: list[dict] = []
-    marks = shown_marks(record)
+    marks = shown_marks(record) + shown_hints(record)
     for index, image_id in enumerate(record["prompt"].get("images") or []):
         entry = manifest[image_id]
         box = tuple(entry["roi"]) if roi == "view" and entry.get("roi") else None

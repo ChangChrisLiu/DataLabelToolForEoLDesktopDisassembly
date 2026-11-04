@@ -184,6 +184,13 @@ def gold_lines(record: dict, world: Optional[World] = None) -> list[tuple[str, s
         out.append(("action", f"{answer.get('verb')} {name(answer.get('target_instance'))}"))
         out.append(("class", str(answer.get("target_class"))))
         out.append(("tool", str(answer.get("tool"))))
+        if label.get("v3_form"):
+            out.append(("form", "free (no hint; also asks the region)" if label["v3_form"] == "free"
+                        else "roi (a yellow dashed hint box is drawn)"))
+        if check.get("region"):
+            out.append(("region (scanner)", str(check["region"])))
+        if check.get("hint_region"):
+            out.append(("hint box (scanner)", str(check["hint_region"])))
         # no "also accepted" line: the part acted on is the only answer (owner 2026-11-03),
         # whatever an older record's `accept_targets` lists beside it
     elif task == "V4":

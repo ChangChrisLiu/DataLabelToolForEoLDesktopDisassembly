@@ -130,16 +130,21 @@ def test_mark_label_never_sits_on_the_part(tmp_path):
 
 
 def test_hint_region_is_a_dashed_box_without_tag(tmp_path):
-    """V3's ``roi`` hint (``style = "hint"``): the same dashed box in yellow, no label."""
+    """V3's ``roi`` hint (``style = "hint"``): the same dashed box in yellow, no label -- drawn
+    just inside its box (it outlines no part), so a hint clipped to the picture keeps its sides."""
     from PIL import Image
 
     img = Image.new("RGB", (320, 320), GREY)
     shown = C.draw_marks(img.copy(), [{"image": 0, "bbox": [50, 50, 200, 200], "style": "hint"}])
     px = shown.load()
     yellow = lambda p: p[0] > 150 and p[1] > 130 and p[2] < 90  # noqa: E731
-    assert yellow(px[48, 50]) and not yellow(px[48, 66]) and not yellow(px[150, 150])
+    assert yellow(px[50, 52]) and yellow(px[51, 52]) and not yellow(px[48, 52])
+    assert not yellow(px[50, 57]) and not yellow(px[150, 150])  # a gap; the inside
     assert _red_box(shown) is None  # nothing red: no tag, no red outline
     assert C.HINT_RGB != C.MARK_RGB
+    whole = C.draw_marks(img.copy(), [{"image": 0, "bbox": [0, 0, 320, 320], "style": "hint"}])
+    px = whole.load()
+    assert yellow(px[0, 2]) and yellow(px[319, 2]) and yellow(px[2, 319])
 
 
 def test_pack_image_untouched(tmp_path):
@@ -342,7 +347,7 @@ def test_multiview_legend_lists_present_views():
     blind = _multi(VIEWS)
     blind["prompt"]["images"] = []
     assert "Image" not in C.user_text(blind).split("\n")[0] and "Outlined" not in C.user_text(blind)
-    assert C.CHAT_FORMAT_ID == "chat-v3"
+    assert C.CHAT_FORMAT_ID == "chat-v4"
 
 
 def test_glossary_has_class_and_states():

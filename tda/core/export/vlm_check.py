@@ -82,6 +82,11 @@ RESPONSE_FORMATS = {
     "V2.count": 'Answer with JSON only: {"count": <integer>}.',
     "V3": 'Answer with JSON only: {"verb": "<one of: ' + ", ".join(VERBS) + '>", '
           '"target": "<the part acted on>", "tool": "<tool, or null>"}.',
+    # V3's free form (owner 2026-11-04): the action and where the machine changed
+    "V3.region": 'Answer with JSON only: {"verb": "<one of: ' + ", ".join(VERBS) + '>", '
+                 '"target": "<the part acted on>", "tool": "<tool, or null>", '
+                 '"region": [x, y, width, height]} (region: where the machine changed, in '
+                 'pixel coordinates of the top-down scanner image, {scanner}).',
     "V4": 'Answer with JSON only: {"feasible": true or false, "blockers": '
           '["<part that has to be dealt with first>", ...]}.',
     "V5": 'Answer with JSON only: {"actions": [{"verb": "<verb>", "target": '
@@ -121,6 +126,8 @@ def format_key(record: dict) -> str:
     check = record["label"]["answer_check"]
     if task == "V2":
         return "V2.count" if check.get("derive") == "screw_count" else "V2.state"
+    if task == "V3" and check.get("region"):
+        return "V3.region"
     if task == "V6":
         return "V6.options" if record["prompt"].get("options") else "V6.open"
     if task == "V15":
@@ -134,6 +141,14 @@ def format_instruction(record: dict) -> str:
     """The answer-format sentence a chat prompt appends to the question."""
     key = format_key(record)
     text = RESPONSE_FORMATS[key]
+    if "{scanner}" in text:
+        shown = [int(i) + 1 for i in record["label"]["answer_check"].get("region_images") or [0]]
+        if len(shown) == 1:
+            where = f"image {shown[0]}"
+        else:
+            where = "images " + ", ".join(str(i) for i in shown[:-1]) + f" and {shown[-1]}" \
+                + (": the same camera" if len(shown) == 2 else "")
+        text = text.replace("{scanner}", where)
     if "{allowed}" in text:
         allowed = record["label"]["answer_check"].get("allowed") or []
         if not allowed and record["label"]["answer_check"].get("state_space") == "presence":
@@ -817,6 +832,13 @@ def _g_v3(record, answer, world, tax, transform) -> Grade:
             best_rank, best, best_index = rank, metrics, i
     if len(sets) > 1:
         best = {**best, "matched_action": best_index}
+    if check.get("region"):
+        # the free form (owner 2026-11-04): where the machine changed, graded beside the
+        # action and never in its score -- IoU with the gold region, a hit at the threshold;
+        # a box on a cropped / scaled picture is mapped back like V1 / V8's
+        iou = _iou(_box(answer.get("region"), transform), check["region"])
+        best = {**best, "region_iou": iou,
+                "region_hit": iou >= float(check.get("region_iou_threshold", 0.5))}
     return Grade(True, best_rank[0], best)
 
 
@@ -1336,6 +1358,8 @@ def gold_reply(record: dict, world: Optional[World] = None) -> str:
     elif task == "V3":
         out = {"verb": answer["verb"], "target": name(answer["target_instance"]),
                "tool": answer.get("tool")}
+        if label["answer_check"].get("region"):
+            out["region"] = label["answer_check"]["region"]
     elif task == "V4":
         out = {"feasible": answer["feasible"], "blockers": [name(b) for b in answer["blockers"]]}
     elif task == "V5":

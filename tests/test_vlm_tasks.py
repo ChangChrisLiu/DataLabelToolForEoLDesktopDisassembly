@@ -117,7 +117,9 @@ def test_every_record_carries_the_contract_fields(scene, tmp_path: Path):
         assert label["tier"] == "gold"
         assert label["model_family"] == "EliteDesk 800 G2 TWR"
         assert label["chassis_type"] == "twr"
-        assert label["template_id"].startswith(record["prompt"]["task"] + ".")
+        # V3's roi form has templates of its own (owner 2026-11-04)
+        family = record["prompt"]["task"] + ("-roi" if label.get("v3_form") == "roi" else "")
+        assert label["template_id"].startswith(family + ".")
         assert label["answer_check"]["type"]
         assert isinstance(label["verified"], bool)
 
@@ -193,9 +195,10 @@ def test_the_prompt_side_shows_the_model_nothing_it_must_infer(scene, tmp_path: 
     records = _run(db, tax, tmp_path / "v.jsonl")
     assert not scan_prompt_leaks(records)
     for record in records:
-        # the redesign's prompt fields (2026-11-03): marks, glossary terms, image legend
+        # the redesign's prompt fields (2026-11-03): marks, glossary terms, image legend;
+        # V3's roi form adds its hint region (2026-11-04)
         assert set(record["prompt"]) <= {"task", "images", "question", "options", "marks",
-                                         "terms", "state_terms", "image_legend"}
+                                         "terms", "state_terms", "image_legend", "hint_regions"}
         for image in record["prompt"]["images"]:
             assert image.startswith("img_") and len(image) == 20
             assert "scan" not in image and "D07" not in image

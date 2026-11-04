@@ -385,6 +385,9 @@ class FrameData:
     confirmed: bool = True
     #: ``frame.ts`` in seconds, when the frame row has one (V15-moment's check).
     ts: Optional[float] = None
+    #: ``(H, W)`` of the picture (V3's ``roi`` hint region is clipped to it); ``None`` when
+    #: the export did not say, and then the view's nominal size is used.
+    hw: Optional[tuple[int, int]] = None
 
 
 def slim_row(row: dict) -> dict:
@@ -1403,7 +1406,8 @@ def record(tc: TaskCtx, task: str, rec_id: str, step: int,
            mark_names: Optional[dict] = None,
            terms: Optional[Sequence[str]] = None,
            state_terms: Optional[Sequence[str]] = None,
-           moment: Optional[Sequence[tuple[str, str, int]]] = None) -> dict:
+           moment: Optional[Sequence[tuple[str, str, int]]] = None,
+           hints: Optional[Sequence[dict]] = None) -> dict:
     """One JSONL record, split into what the model sees and what grades it.
 
     ``prompt`` is everything a model may be shown: the task id, the **opaque**
@@ -1440,6 +1444,11 @@ def record(tc: TaskCtx, task: str, rec_id: str, step: int,
                              for o in options]
     if marks:
         prompt["marks"] = [dict(m) for m in marks]
+    if hints:
+        # V3's roi form (owner 2026-11-04): a dashed box, another colour than the marks, no
+        # tag -- "the change happened inside it"; drawn by the converter like a mark
+        prompt["hint_regions"] = [{"image": int(h["image"]), "bbox": list(h["bbox"])}
+                                  for h in hints]
     if terms:
         prompt["terms"] = sorted(set(terms))
     if state_terms:
@@ -2026,24 +2035,130 @@ def gen_v3(tc: TaskCtx, step: int) -> Iterator[dict]:
     # of interchangeable parts stands for it (`target_group`)
     group = tc.group_of(target)
 
-    rec_id = f"V3-{frame_id(tc.desktop, tc.view, step)}"
-    index, question = pick(V3_QUESTIONS, rec_id)
+    stem = f"V3-{frame_id(tc.desktop, tc.view, step)}"
     chain = [R.compare_frames([step - 1, step], tc.view),
              observed(target, answer["verb"], tc, source, step=source_step)]
+    frames = [*tc.moment(step - 1), *tc.moment(step)]
+    moment = tc.legend((step - 1, "before"), (step, "after"))
+    # the two forms of one step (owner 2026-11-04, "两个都要"), paired like V6's: `free` (the
+    # question as it was, now also asking where the machine changed) keeps the record id the
+    # eval subset knows; `roi` draws a larger hint box around that place and asks the action
+    # (the region is a box on the top-down scanner image: a unit of another camera asks none)
+    region = (v3_region(tc, before, frame, [a.target for a in named], group)
+              if tc.own_view == VIEWS[0] else None)
+    scanner = [i for i, f in enumerate(frames) if f is before or f is frame]
+    pair = opaque_record_id(stem)
+    check = {"type": "exact", "derive": "action_slots", "fields": fields,
+             "visible_only": True, "accept_targets": [target],
+             "target_group": group.gid if group is not None else None}
+    verified = row_verified([source[target][0]] if target in source else [],
+                            (before if source_step == step - 1 else frame).verified)
+    free_answer = dict(answer)
+    free_check = dict(check, form="free")
+    if region is not None:
+        # where the machine changed: the changed part's scanner box before and after, as one
+        # box; graded beside the action (region IoU, region hit at IoU >= 0.5), never in it
+        free_answer["region"] = region
+        free_check.update(region=region, region_iou_threshold=V3_REGION_IOU,
+                          region_images=scanner)
+    index, question = pick(V3_QUESTIONS, stem)
+    if region is not None:
+        question = f"{question} {V3_REGION_ASK}"
     yield record(
-        tc, "V3", rec_id, step, [*tc.moment(step - 1), *tc.moment(step)], question, index,
-        answer,
-        {"type": "exact", "derive": "action_slots", "fields": fields,
-         "visible_only": True, "accept_targets": [target],
-         "target_group": group.gid if group is not None else None},
+        tc, "V3", stem, step, frames, question, index, free_answer, free_check,
         evidence(bboxes, tc, from_step=source_step), R.rationale(chain),
         # the grade follows the frame the answer was actually read off, which
         # for a V3 pair is usually the earlier one: the part is gone from the later
-        row_verified([source[target][0]] if target in source else [],
-                     (before if source_step == step - 1 else frame).verified),
-        view_confirmed=confirmed, extra={"big_change": big},
-        moment=tc.legend((step - 1, "before"), (step, "after")),
+        verified, view_confirmed=confirmed,
+        extra={"big_change": big, "v3_form": "free", "v3_pair": pair},
+        moment=moment,
     )
+    if region is None:
+        tc.skip("V3", "roi_without_region")
+        return
+    hint = v3_hint(region, before.hw or frame.hw or _nominal_hw(tc.own_view))
+    rec_id = f"{stem}-roi"
+    index, question = pick(V3_ROI_QUESTIONS, rec_id)
+    yield record(
+        tc, "V3", rec_id, step, frames, question, index, dict(answer),
+        dict(check, form="roi", hint_region=hint),
+        evidence(bboxes, tc, from_step=source_step), R.rationale(chain), verified,
+        view_confirmed=confirmed,
+        extra={"big_change": big, "v3_form": "roi", "v3_pair": pair,
+               "template_id": f"V3-roi.{index + 1}"},
+        moment=moment, hints=[{"image": i, "bbox": list(hint)} for i in scanner],
+    )
+
+
+#: The region a V3 ``free`` answer gives is a hit at this IoU with the gold region.
+V3_REGION_IOU = 0.5
+#: What the ``free`` form adds to its question (owner 2026-11-04).
+V3_REGION_ASK = ("Also say where the machine changed: give that region as a box on the "
+                 "top-down scanner image.")
+V3_ROI_QUESTIONS = (
+    "The change happened inside the yellow dashed box drawn on the scanner images. "
+    "What action was carried out between the pictures before and the pictures after?",
+    "Look inside the yellow dashed box on the scanner images: something there changed "
+    "between before and after. Which action was carried out?",
+    "Between the moment before and the moment after, the operator acted on something inside "
+    "the yellow dashed box drawn on the scanner images. What did the operator do?",
+)
+#: The ``roi`` hint: the gold region grown this many times around its centre ...
+V3_HINT_SCALE = 2.5
+#: ... and never smaller than this many pixels a side (clipped to the image).
+V3_HINT_MIN = 300
+
+
+def _box_union(boxes: Sequence[Sequence[float]]) -> Optional[list]:
+    boxes = [b for b in boxes if b is not None and len(b) == 4]
+    if not boxes:
+        return None
+    x0 = min(float(b[0]) for b in boxes)
+    y0 = min(float(b[1]) for b in boxes)
+    x1 = max(float(b[0]) + float(b[2]) for b in boxes)
+    y1 = max(float(b[1]) + float(b[3]) for b in boxes)
+    return [round(x0, 1), round(y0, 1), round(x1 - x0, 1), round(y1 - y0, 1)]
+
+
+def v3_region(tc: TaskCtx, before: FrameData, after: FrameData, targets: Sequence[str],
+              group: Optional[PartGroup]) -> Optional[list]:
+    """V3's gold region: where the machine changed, ``[x, y, w, h]`` on the scanner image.
+
+    The union of the changed parts' scanner boxes before and after (a part gone from the
+    later frame keeps its earlier box); where no part acted on has a box on either frame, its
+    group's (the screw too small to point at, its fan's other screws are where it was).
+    ``None`` on frames without confirmed rows -- no box, no region question.
+    """
+    def boxes(keys):
+        return [f.pointable[k][1] for f in (before, after) for k in keys if k in f.pointable]
+
+    found = boxes(list(dict.fromkeys(targets)))
+    if not found and group is not None:
+        found = boxes(group.members)
+    return _box_union(found)
+
+
+def v3_hint(region: Sequence[float], hw: tuple[int, int]) -> list:
+    """V3's ``roi`` hint box: ``region`` grown :data:`V3_HINT_SCALE` times about its centre, at
+    least :data:`V3_HINT_MIN` px a side, moved inside the image where it would cross an edge
+    and clipped to it (an image smaller than the box)."""
+    H, W = int(hw[0]), int(hw[1])
+    x, y, w, h = (float(v) for v in region)
+    cx, cy = x + w / 2, y + h / 2
+    bw = min(float(W), max(V3_HINT_SCALE * w, float(V3_HINT_MIN)))
+    bh = min(float(H), max(V3_HINT_SCALE * h, float(V3_HINT_MIN)))
+    x0 = min(max(0.0, cx - bw / 2), W - bw)
+    y0 = min(max(0.0, cy - bh / 2), H - bh)
+    return [round(x0, 1), round(y0, 1), round(bw, 1), round(bh, 1)]
+
+
+def _nominal_hw(view: str) -> tuple[int, int]:
+    from tda.core.truth_inputs import infer_hw
+
+    try:
+        return infer_hw(view)
+    except ValueError:
+        return (1600, 1600)
 
 
 # --------------------------------------------------------------------------- #

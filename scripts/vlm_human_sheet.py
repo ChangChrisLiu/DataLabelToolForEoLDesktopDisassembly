@@ -68,6 +68,8 @@ CANNOT_TELL = "cannot_tell"
 FIELDS = {
     "V1": ("boxes",), "V2.state": ("state",), "V2.count": ("count",),
     "V3": ("verb", "target", "tool"), "V4": ("feasible", "blockers"),
+    # V3's free form also asks the model for a region; a person answers the action alone
+    "V3.region": ("verb", "target", "tool"),
     "V6.open": ("verb", "target"), "V6.options": ("choice",), "V7": ("plan",),
     "V8": ("boxes",), "V10": ("done", "progress"), "V12": ("changed",), "V14": ("state",),
     "V15.moment": ("same_moment",), "V15.cross": ("state", "best_view"),
@@ -159,24 +161,24 @@ def fields_html(record: dict) -> str:
     elif key == "V2.count":
         rows.append('<div class="row">count: <input type="number" min="0" step="1" '
                     'data-field="count" style="width:6em"></div>')
-    elif key == "V3":
+    elif key in ("V3", "V3.region"):
         rows.append(f'<div class="row">{_verb_select("verb")} '
-                    f'{_text("target", "the part acted on, e.g. Motherboard screw 2")} '
+                    f'{_text("target", "the part acted on, e.g. a motherboard screw")} '
                     f'tool: {_text("tool", "tool, or leave empty", 14)}</div>')
     elif key == "V4":
         rows.append(f'<div class="row">feasible now? {_yes_no(rid, "feasible")}</div>'
                     f'<div class="row">blockers (if not; separate with ;): '
-                    f'{_text("blockers", "e.g. CPU cooler 1; Fan connector 1", 50)}</div>')
+                    f'{_text("blockers", "e.g. the CPU cooler; the fan connector", 50)}</div>')
     elif key == "V6.open":
         rows.append(f'<div class="row">{_verb_select("verb")} '
-                    f'{_text("target", "the part, e.g. PSU 1")}</div>')
+                    f'{_text("target", "the part, e.g. the PSU")}</div>')
     elif key == "V6.options":
         n = len(record["prompt"].get("options") or [])
         rows.append('<div class="row">choice: ' + _radio(rid, "choice", [(L, L) for L in LETTERS[:n]])
                     + "</div>")
     elif key == "V7":
         rows.append('<div class="row">the remaining plan, one action per line as "verb part" '
-                    '(e.g. <code>unscrew Motherboard screw 2</code>), in order, ending with the '
+                    '(e.g. <code>unscrew the motherboard screws</code>), in order, ending with the '
                     'removal asked for:<br><textarea data-field="plan" rows="6"></textarea></div>')
     elif key == "V10":
         rows.append('<div class="row">actions already done, one per line as "verb part":<br>'
@@ -487,7 +489,7 @@ def to_answer(key: str, fields: dict) -> Optional[dict]:
             return {"count": int(float(str(f.get("count")).strip()))}
         except (TypeError, ValueError):
             return None
-    if key == "V3":
+    if key in ("V3", "V3.region"):
         tool = str(f.get("tool", "")).strip()
         return {"verb": str(f.get("verb", "")).strip().lower(), "target": str(f.get("target", "")).strip(),
                 "tool": tool or None}
@@ -552,7 +554,7 @@ def gold_fields(record: dict, world: Optional[World] = None) -> dict:
         return {"state": answer["state"]}
     if key == "V2.count":
         return {"count": str(answer["count"])}
-    if key == "V3":
+    if key in ("V3", "V3.region"):
         return {"verb": answer["verb"], "target": name(answer["target_instance"]),
                 "tool": answer.get("tool") or ""}
     if key == "V4":
