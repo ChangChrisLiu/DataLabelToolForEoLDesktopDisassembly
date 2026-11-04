@@ -11,9 +11,11 @@ and the pack's own files, what a reviewer fills in:
 * ``<name>.sheet.b01.html``, ``b02`` ... -- one **static HTML page per batch**
   of ``--batch`` items (plain HTML + inline JS + inline CSS; no server, no
   network, no CDN script). Every item shows the frame (both frames of a
-  two-image question: V3, V12, V15), the question with its lettered options,
-  the gold answer in words and as the raw JSON, its evidence (boxes drawn over
-  the frame, switchable) and the rationale chain, then three radio buttons
+  two-image question: V3, V12, V15) **as the model gets it** -- only its red
+  dashed marks (and V3's yellow hint box), drawn the converter's way --, the
+  question with its lettered options, the gold answer in words and as the raw
+  JSON, its evidence (a separate reviewer layer, hidden until "show reviewer
+  boxes / 显示审核框" is ticked; the model never sees it) and the rationale, then three radio buttons
   正确 / 错误 / 存疑 (correct / wrong / doubtful) and a free-text note. The
   page keeps what is typed in the browser's ``localStorage`` (a reload loses
   nothing) and its **export button downloads a CSV** of the answers; a
@@ -49,8 +51,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vlm_io as IO  # noqa: E402
 from vlm_glossary import glossary_text, is_presence  # noqa: E402
+import vlm_to_chat as CHAT  # noqa: E402
 from vlm_to_chat import (VIEW_NAMES, image_legend, legend_line, marks_line,  # noqa: E402
-                         shown_marks)
+                         shown_hints, shown_marks)
 from tda.core.export.vlm_check import LETTERS, World, format_key, reference_option  # noqa: E402
 
 __all__ = ["CSV_COLUMNS", "VERDICTS", "boxes_of", "build", "csv_skeleton", "frames_html",
@@ -345,12 +348,17 @@ def boxes_of(record: dict, world: Optional[World] = None) -> list[dict]:
 
 
 def marks_of(record: dict, index: int) -> list[dict]:
-    """The ``prompt.marks`` of image ``index`` as boxes (``kind = "mark"``, the tag as label):
-    what the model sees drawn in red on that image (none on V1 / V8 / V14)."""
-    return [{"label": str(m.get("tag") or ""), "bbox": [float(v) for v in m["bbox"]],
-             "kind": "mark"}
-            for m in shown_marks(record)
-            if int(m.get("image", 0)) == index and m.get("bbox") and len(m["bbox"]) == 4]
+    """What the model sees drawn on image ``index``: the ``prompt.marks`` (``kind = "mark"``,
+    the tag as label; red, dashed) and V3's ``prompt.hint_regions`` (``kind = "hint"``, no
+    label; yellow, dashed). None on V1 / V8 / V14."""
+    marks = [{"label": str(m.get("tag") or ""), "bbox": [float(v) for v in m["bbox"]],
+              "kind": "mark"}
+             for m in shown_marks(record)
+             if int(m.get("image", 0)) == index and m.get("bbox") and len(m["bbox"]) == 4]
+    hints = [{"label": "", "bbox": [float(v) for v in h["bbox"]], "kind": "hint"}
+             for h in shown_hints(record)
+             if int(h.get("image", 0)) == index and len(h["bbox"]) == 4]
+    return marks + hints
 
 
 def _image_views(record: dict, manifest: dict) -> list[Optional[str]]:
@@ -365,9 +373,11 @@ def frames_html(record: dict, manifest: dict, image_root, out_dir, *, evidence: 
                 marks: bool = True, where: bool = True) -> str:
     """The record's images: one row, or a before row and an after row (V3 / V12 multi-view).
 
-    Each figure carries its own marks (red, tagged; only on its image index) and, where the
-    picture shows it, the ``evidence`` boxes: every image of a single-view record, the scanner
-    images of a multi-view one (the evidence is read off the scanner frame). ``where=False``
+    **The model's view first** (owner 2026-11-04): each figure shows exactly what the model
+    gets -- the picture and its own marks (red dashed, tagged; V3's yellow dashed hint), drawn
+    the way the converter draws them. The ``evidence`` boxes -- every image of a single-view
+    record, the scanner images of a multi-view one (the evidence is read off the scanner
+    frame) -- go on a separate reviewer layer the page hides until asked. ``where=False``
     keeps the step and the desktop out of the captions (the human form).
     """
     label = record["label"]
@@ -450,19 +460,35 @@ figure.frame { margin: 0; position: relative; display: inline-block; max-width: 
                flex: 1 1 420px; }
 figure.frame .imgbox { position: relative; display: block; border: 1px solid var(--line); }
 figure.frame img { display: block; width: 100%; height: auto; background: #eee; }
-figure.frame svg.boxes { position: absolute; left: 0; top: 0; width: 100%; height: 100%;
-                         pointer-events: none; }
+figure.frame svg.boxes, figure.frame svg.review { position: absolute; left: 0; top: 0;
+                         width: 100%; height: 100%; pointer-events: none; }
 .frames.multi figure.frame { flex: 1 1 300px; }
 .frames .rowlabel { flex: 0 0 100%; font-size: 13px; color: var(--muted); font-weight: bold; }
-body.no-boxes svg.boxes rect:not(.mark), body.no-boxes svg.boxes text:not(.mark) { display: none; }
-svg.boxes rect { fill: none; stroke-width: 3; vector-effect: non-scaling-stroke; }
-svg.boxes rect.answer { stroke: #ffeb3b; }
-svg.boxes rect.evidence { stroke: #00e5ff; }
-svg.boxes rect.mark { stroke: #ff1744; }
-svg.boxes rect.draft { stroke: #ff4081; stroke-dasharray: 6 4; }
-svg.boxes text { fill: #fff; paint-order: stroke; stroke: #000; stroke-width: 3px;
-                 font-weight: bold; }
-svg.boxes text.mark { stroke: #ff1744; stroke-width: 4px; }
+/* the model's layer (svg.boxes): the marks exactly as the converter draws them (mark-v2) */
+svg.boxes line.mark { stroke: #ff1744; }
+svg.boxes line.hint { stroke: #ffd600; }
+svg.boxes rect.marktag { fill: #ff1744; stroke: none; }
+svg.boxes text.marktag { fill: #fff; font-family: sans-serif; }
+/* the reviewer's layer (svg.review): evidence and answer boxes, never shown to the model,
+   hidden until "show reviewer boxes" is ticked */
+body:not(.show-review) svg.review { display: none; }
+svg.review rect { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; }
+svg.review rect.answer { stroke: #00e676; }
+svg.review rect.evidence { stroke: #00e5ff; }
+svg.review text { fill: #fff; paint-order: stroke; stroke: #000; stroke-width: 3px;
+                  font-weight: bold; }
+/* the human form's own boxes, drawn on the picture by the participant */
+svg.boxes rect.human-box { fill: none; stroke: #00e676; stroke-width: 3;
+                           vector-effect: non-scaling-stroke; }
+svg.boxes text.human-box { fill: #fff; paint-order: stroke; stroke: #000; stroke-width: 3px;
+                           font-weight: bold; }
+svg.boxes rect.draft { fill: none; stroke: #ff4081; stroke-width: 3; stroke-dasharray: 6 4;
+                       vector-effect: non-scaling-stroke; }
+.legend-line { font-size: 13px; color: var(--muted); flex-basis: 100%; }
+.legend-line .red { color: #ff1744; font-weight: bold; }
+.legend-line .yel { color: #b8860b; font-weight: bold; }
+.legend-line .cyan { color: #00838f; font-weight: bold; }
+.legend-line .green { color: #2e7d32; font-weight: bold; }
 .prompt-line { color: var(--muted); margin: 4px 0; white-space: pre-wrap; }
 figure.frame figcaption { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .question { font-size: 16px; margin: 6px 0; white-space: pre-wrap; }
@@ -515,25 +541,82 @@ const REVIEWER_KEY = 'tda-sheet-reviewer';
 function reviewer() { return (document.getElementById('reviewer').value || '').trim(); }
 function nowIso() { return new Date().toISOString(); }
 function safeName(s) { return (s || 'anon').replace(/[^A-Za-z0-9_\-一-鿿]+/g, '_'); }
+const SVGNS = 'http://www.w3.org/2000/svg';
+function el(name, attrs, parent) {
+  const n = document.createElementNS(SVGNS, name);
+  Object.keys(attrs).forEach(k => n.setAttribute(k, attrs[k]));
+  if (parent) parent.appendChild(n);
+  return n;
+}
+/* the converter's mark-v2, transcribed (vlm_to_chat.draw_marks): a thin dashed outline just
+   outside the box at MARK.opacity, each side starting with a dash at its corner; one filled
+   label per tag outside the tag's top-most outline (label_place); a hint drawn inside its box */
+function markWidth(W) { return Math.max(2, Math.round(2 * W / 1600)); }
+function markDash(W) { return [Math.max(6, Math.round(14 * W / 1600)), Math.max(4, Math.round(8 * W / 1600))]; }
+function labelFont(W) { return Math.max(12, Math.round(18 * W / 1600)); }
+function labelPlace(o, tw, th, W, H) {
+  const gap = 1, lx = Math.min(Math.max(0, o[0]), Math.max(0, W - tw));
+  if (o[1] - gap - th >= 0) return [lx, o[1] - gap - th];
+  if (o[3] + gap + th <= H - 1) return [lx, o[3] + gap];
+  const ly = Math.min(Math.max(0, o[1]), Math.max(0, H - th));
+  if (o[0] - gap - tw >= 0) return [o[0] - gap - tw, ly];
+  if (o[2] + gap + tw <= W - 1) return [o[2] + gap, ly];
+  return [0, 0];
+}
+function drawModel(svg, boxes, W, H) {
+  const lw = markWidth(W), dash = markDash(W), tags = {}, order = [];
+  const g = el('g', {opacity: MARK.opacity, class: 'gold-box'}, svg);
+  boxes.forEach(b => {
+    const hint = b.kind === 'hint', x = b.bbox[0], y = b.bbox[1], w = b.bbox[2], h = b.bbox[3];
+    if (x + w <= 0 || y + h <= 0 || x >= W || y >= H) return;
+    const o = hint ? [Math.max(0, Math.round(x)), Math.max(0, Math.round(y)),
+                      Math.min(W - 1, Math.round(x + w) - 1), Math.min(H - 1, Math.round(y + h) - 1)]
+                   : [Math.round(x) - lw, Math.round(y) - lw, Math.round(x + w) + lw - 1,
+                      Math.round(y + h) + lw - 1];
+    const half = lw / 2, cls = hint ? 'hint' : 'mark';
+    [[o[0], o[1] + half, o[2] + 1, o[1] + half], [o[0], o[3] + 1 - half, o[2] + 1, o[3] + 1 - half],
+     [o[0] + half, o[1], o[0] + half, o[3] + 1], [o[2] + 1 - half, o[1], o[2] + 1 - half, o[3] + 1]]
+      .forEach(s => el('line', {x1: s[0], y1: s[1], x2: s[2], y2: s[3], class: cls,
+                                'stroke-width': lw, 'stroke-dasharray': dash[0] + ' ' + dash[1],
+                                'stroke-linecap': 'butt'}, g));
+    if (!hint && b.label) {
+      if (!tags[b.label]) { tags[b.label] = []; order.push(b.label); }
+      tags[b.label].push(o);
+    }
+  });
+  const fs = labelFont(W), pad = Math.max(2, lw);
+  order.forEach(tag => {
+    const o = tags[tag].reduce((a, c) => (c[1] < a[1] || (c[1] === a[1] && c[0] < a[0])) ? c : a);
+    const tw = Math.ceil(fs * 0.62 * tag.length) + 2 * pad, th = Math.ceil(fs * 0.8) + 2 * pad;
+    const p = labelPlace(o, tw, th, W, H);
+    el('rect', {x: p[0], y: p[1], width: tw, height: th, class: 'gold-box marktag'}, svg);
+    const t = el('text', {x: p[0] + pad, y: p[1] + th - pad, 'font-size': fs,
+                          class: 'gold-box marktag'}, svg);
+    t.textContent = tag;
+  });
+}
+function drawReview(svg, boxes, W) {
+  const fs = Math.max(12, Math.round(W / 70));
+  boxes.forEach(b => {
+    el('rect', {x: b.bbox[0], y: b.bbox[1], width: b.bbox[2], height: b.bbox[3],
+                class: 'gold-box ' + b.kind}, svg);
+    const t = el('text', {x: b.bbox[0] + 4, y: Math.max(fs, b.bbox[1] - 4), 'font-size': fs,
+                          class: 'gold-box ' + b.kind}, svg);
+    t.textContent = b.label;
+  });
+}
 function drawBoxes(fig) {
-  const img = fig.querySelector('img'), svg = fig.querySelector('svg.boxes');
+  const img = fig.querySelector('img'), svg = fig.querySelector('svg.boxes'),
+        review = fig.querySelector('svg.review');
   if (!img || !svg || !img.naturalWidth) return;
-  svg.setAttribute('viewBox', '0 0 ' + img.naturalWidth + ' ' + img.naturalHeight);
-  svg.setAttribute('preserveAspectRatio', 'none');
+  const W = img.naturalWidth, H = img.naturalHeight;
+  [svg, review].forEach(s => { if (!s) return;
+    s.setAttribute('viewBox', '0 0 ' + W + ' ' + H); s.setAttribute('preserveAspectRatio', 'none');
+    s.querySelectorAll('.gold-box').forEach(n => n.remove()); });
   let boxes = [];
   try { boxes = JSON.parse(img.dataset.boxes || '[]'); } catch (e) {}
-  const fs = Math.max(12, Math.round(img.naturalWidth / 70));
-  svg.querySelectorAll('.gold-box').forEach(n => n.remove());
-  boxes.forEach(b => {
-    const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    r.setAttribute('x', b.bbox[0]); r.setAttribute('y', b.bbox[1]);
-    r.setAttribute('width', b.bbox[2]); r.setAttribute('height', b.bbox[3]);
-    r.setAttribute('class', 'gold-box ' + b.kind); svg.appendChild(r);
-    const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    t.setAttribute('x', b.bbox[0] + 4); t.setAttribute('y', Math.max(fs, b.bbox[1] - 4));
-    t.setAttribute('font-size', fs); t.setAttribute('class', 'gold-box ' + b.kind);
-    t.textContent = b.label; svg.appendChild(t);
-  });
+  drawModel(svg, boxes.filter(b => b.kind === 'mark' || b.kind === 'hint'), W, H);
+  if (review) drawReview(review, boxes.filter(b => b.kind !== 'mark' && b.kind !== 'hint'), W);
 }
 document.addEventListener('DOMContentLoaded', () => {
   const rv = document.getElementById('reviewer');
@@ -546,10 +629,16 @@ document.addEventListener('DOMContentLoaded', () => {
     img.addEventListener('error', () => { const c = fig.querySelector('figcaption');
       if (c) c.textContent = 'image not found: ' + img.getAttribute('src') + ' -- ' + c.textContent; });
   });
-  const tb = document.getElementById('toggle-boxes');
-  if (tb) tb.addEventListener('change', () => document.body.classList.toggle('no-boxes', !tb.checked));
+  const tr = document.getElementById('toggle-review');
+  if (tr) { tr.checked = false;
+    tr.addEventListener('change', () => document.body.classList.toggle('show-review', tr.checked)); }
 });
 """
+#: The converter's mark style, handed to the page's script (the marks a reviewer sees are drawn
+#: with the model's parameters, not a look-alike).
+JS_COMMON = ("const MARK = " + json.dumps({"opacity": CHAT.MARK_OPACITY,
+                                           "style": CHAT.MARK_STYLE_VERSION}) + ";\n"
+             + JS_COMMON)
 
 JS_AUDIT = r"""
 const SHEET = document.body.dataset.sheet;
@@ -605,7 +694,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
 def figure_html(image_id: str, manifest: dict, image_root, out_dir, boxes: list[dict],
                 caption: str, *, index: int = 0) -> str:
-    """One frame: the ``<img>`` with its boxes as a data attribute and an SVG overlay."""
+    """One frame: the ``<img>`` with its boxes as a data attribute and two SVG overlays -- the
+    model's layer (``svg.boxes``: the marks, as the converter draws them) and the reviewer's
+    (``svg.review``: evidence and answer boxes, hidden until asked; owner 2026-11-04)."""
     entry = manifest.get(image_id) or {}
     rel = entry.get("path", image_id)
     src = rel_image(image_root, rel, out_dir)
@@ -614,7 +705,8 @@ def figure_html(image_id: str, manifest: dict, image_root, out_dir, boxes: list[
     # vertically and every box was drawn too low (owner, 2026-11-03)
     return (f'<figure class="frame" data-index="{index}"><span class="imgbox"><img src="{esc(src)}" '
             f'alt="{esc(rel)}" loading="lazy" data-boxes="{data}"><svg class="boxes" viewBox="0 0 1 1">'
-            f'</svg></span><figcaption>{esc(caption)}</figcaption></figure>')
+            f'</svg><svg class="review" viewBox="0 0 1 1"></svg></span>'
+            f'<figcaption>{esc(caption)}</figcaption></figure>')
 
 
 def question_html(record: dict, *, gold_letter: Optional[str] = None) -> str:
@@ -700,6 +792,19 @@ def item_html(index: int, record: dict, manifest: dict, world: Optional[World], 
 </article>"""
 
 
+#: The header's switch for the reviewer layer (unticked: the page opens on the model's view) and
+#: the one-line legend saying what is and is not shown to the model (owner 2026-11-04: the
+#: reviewer boxes, cyan and yellow beside the red marks, were taken for marks the model sees).
+REVIEW_TOGGLE = (
+    '<label><input type="checkbox" id="toggle-review"> show reviewer boxes / 显示审核框</label>'
+    '<span class="legend-line">The pictures show exactly what the model gets: '
+    '<span class="red">red dashed outlines</span> (tagged A, B, ...) and, on V3\'s hinted form, '
+    'a <span class="yel">yellow dashed box</span>. Reviewer boxes '
+    '(<span class="cyan">cyan</span> = evidence, <span class="green">green</span> = answer) are '
+    '<b>not shown to the model</b>. / 图上就是模型看到的：红色虚线框（字母标签）和 V3 提示题的黄色虚线框；'
+    '审核框（青色＝证据，绿色＝答案）<b>模型看不到</b>。</span>')
+
+
 def page(title: str, body: str, *, sheet: str, js: str, columns: Sequence[str],
          guide: str, extra_bar: str = "") -> str:
     """A complete static page: sticky bar (reviewer, progress, export), guide, items."""
@@ -713,7 +818,7 @@ def page(title: str, body: str, *, sheet: str, js: str, columns: Sequence[str],
 <body data-sheet="{esc(sheet)}" data-columns="{cols}">
 <header class="bar"><h1>{esc(title)}</h1>
 <label>reviewer / 审核人 <input type="text" id="reviewer" placeholder="your name"></label>
-<label><input type="checkbox" id="toggle-boxes" checked> boxes / 显示框</label>
+{REVIEW_TOGGLE}
 {extra_bar}
 <span class="spacer"></span>
 <span>answered <b id="progress">0 / 0</b></span>
@@ -733,9 +838,11 @@ Static page: no server, no network.</footer>
 
 
 AUDIT_GUIDE = """
-<b>What to do.</b> For every item look at the picture(s), read the question and the gold answer
-(the boxes drawn on the frame are its evidence: yellow = the answer's parts, cyan = the parts it
-rests on), then pick one verdict and, for anything but 正确, write why.<br>
+<b>What to do.</b> For every item look at the picture(s) -- they show exactly what the model is
+shown: the red dashed outlines the question names (part A, B, ...) and, on V3's hinted form, a
+yellow dashed box -- read the question and the gold answer, then pick one verdict and, for
+anything but 正确, write why. Tick <b>show reviewer boxes</b> to see the answer's evidence
+(cyan = the parts it rests on, green = the answer's parts); the model never sees those.<br>
 <b>正确 correct</b> -- the answer is right for this picture and this question.
 <b>错误 wrong</b> -- the answer is wrong, or the question cannot be asked of this picture (wrong
 frame, part not there, mislabelled).

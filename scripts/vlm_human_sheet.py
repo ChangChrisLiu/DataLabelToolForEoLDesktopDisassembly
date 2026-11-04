@@ -416,8 +416,8 @@ def build(records: Sequence[dict], exports: Sequence, image_root, out_dir, *,
                       guide=HUMAN_GUIDE)
         text = text.replace("<body ", "<body data-classes=\""
                             + S.esc(json.dumps(classes, separators=(",", ":"))) + "\" ", 1)
-        text = text.replace('<label><input type="checkbox" id="toggle-boxes" checked> '
-                            'boxes / 显示框</label>', "", 1)
+        # a participant sees the model's view and nothing else: no reviewer layer, no switch
+        text = text.replace(S.REVIEW_TOGGLE, "", 1)
         (out / f"{sheet}.html").write_text(text, encoding="utf-8", newline="\n")
         files.append(f"{sheet}.html")
     (out / f"{name}.ids.txt").write_text("".join(r["id"] + "\n" for r in records),
