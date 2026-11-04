@@ -91,7 +91,9 @@ def test_the_question_carries_the_readable_label(db, tax, tmp_path: Path):
     # the record id is hashed now; the readable one is label-side
     states = [r for r in _records(out) if "-state-" in r["readable_id"]]
     assert states
-    assert any("PSU 1" in r["question"] for r in states)
+    # redesign 2026-11-03: the class phrase and a red mark, never an ordinal
+    assert any("the PSU outlined in red" in r["question"] for r in states)
+    assert not any("PSU 1" in r["question"] for r in states)
 
 
 def test_the_structured_fields_keep_the_ids(db, tax, tmp_path: Path):

@@ -47,8 +47,9 @@ def test_an_unlabelled_view_reads_nothing_of_its_own_annotation(scene):
     summary = export_vlm(db, tax, [W.DESKTOP], W.OTHER, str(out))
     records = _read(out)
     tasks = {r["prompt"]["task"] for r in records}
-    assert {"V6", "V10", "V16"} <= tasks
-    assert not tasks & {"V1", "V2", "V8", "V14"}
+    assert {"V6", "V10"} <= tasks
+    # V4 / V16 name their parts by a mark on a confirmed frame (redesign 2026-11-03)
+    assert not tasks & {"V1", "V2", "V8", "V14", "V4", "V16"}
     assert summary["unlabelled_view_desktops"] == [W.DESKTOP]
     for r in records:
         assert r["label"]["view_confirmed"] is False
@@ -95,7 +96,8 @@ def test_v6_v10_v16_take_the_image_from_any_view(scene):
         return {r["label"]["readable_id"].replace(f"-{r['label']['view']}-", "-"):
                 r["label"]["answer"] for r in _of(_read(path), task)}
 
-    for task in ("V6", "V10", "V16"):
+    # V16 names its parts by marks, which only a confirmed frame carries (redesign)
+    for task in ("V6", "V10"):
         here, there = keyed(a, task), keyed(b, task)
         common = set(here) & set(there)
         assert common
