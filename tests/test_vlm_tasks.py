@@ -416,6 +416,9 @@ def test_v4_negatives_match_their_positive_and_cannot_be_read_off_the_verb(
         want_verb = yes[0]["answer_check"]["verb"]
         want_cls = yes[0]["answer_check"]["target_class"]
         assert no[0]["answer_check"]["verb"] == want_verb, step
+        # final review I1: a group against a group, a single part against a single part
+        assert ("members" in no[0]["answer_check"]) == ("members" in yes[0]["answer_check"])
+        assert no[0]["answer_check"]["match_class"] and yes[0]["answer_check"]["match_class"]
         available = {p: k for p, k in checker.certainly_wrong(step).items()
                      if k != "state_inapplicable" and p[0] == want_verb}
         chosen = (no[0]["answer_check"]["verb"], no[0]["answer_check"]["target"])
@@ -1084,8 +1087,10 @@ def test_the_summary_file_reports_the_counts_and_the_shortcuts(
     assert set(written["v16_corruptions"]) <= {"swap", "move", "substitute"}
     assert set(written["v6_options"]) <= {"listed", "open"}
     for task, row in written["shortcuts"].items():
+        # V4 also says what the target's group-ness and refined class give away
+        extra = {"group", "match_class", "group_class", "group_records"} if task == "V4" else set()
         assert set(row) == {"records", "labels", "majority", "verb", "class",
-                            "verb_class", "template"}
+                            "verb_class", "template"} | extra
         for key in ("majority", "verb", "class", "verb_class", "template"):
             assert 0.0 <= row[key] <= 1.0
             # every classifier is fitted to the file, so none can do worse

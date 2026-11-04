@@ -1892,6 +1892,7 @@ def _v4_record(tc: TaskCtx, frame: FrameData, verb: str, target: str,
               for k in [*members, *raw_blockers] if k in frame.pointable}
     check = {"type": "feasibility", "verb": verb, "target": ident,
              "target_class": tc.ctx.cls_of(target),
+             "match_class": match_class(tc.ctx, target),
              "state_after": frame.step, "truth_source": truth_source,
              "metric": "per_verb_accuracy_macro", "secondary_metric": "accuracy",
              "edges": [{"type": e.type, "target": e.target, "blocker": e.blocker,
@@ -1972,14 +1973,22 @@ def _v4_pair(tc: TaskCtx, frame: FrameData, step: int, action: ActionRec,
         return  # the demonstrated part cannot be asked about: no pair here
     matched = tc.matched(candidates, action.verb,
                          target_class(tc.ctx, action.target), tc.seed(step, "V4"))
+    # the negative names its part the way the positive does -- a group (the outlines of
+    # one group) against a group, a single part against a single part -- or "is it a
+    # group?" answers the question (final review I1: a group target was "yes" 133 of 178
+    # times); and inside that the same match class first (motherboard: 51 of 56 "no")
+    mine = match_class(tc.ctx, action.target)
+    matched = sorted(matched, key=lambda c: match_class(tc.ctx, c.target) != mine)
+    pos_check = positive["label"]["answer_check"]
     negative = None
     for candidate in matched:
         negative = _v4_record(tc, frame, candidate.verb, candidate.target, V4_QUESTIONS,
                               candidate.kind)
-        if negative is not None and \
-                negative["label"]["answer_check"]["target"] != \
-                positive["label"]["answer_check"]["target"]:
-            break
+        if negative is not None:
+            check = negative["label"]["answer_check"]
+            if check["target"] != pos_check["target"] and \
+                    ("members" in check) == ("members" in pos_check):
+                break
         negative = None
     if negative is None:
         tc.skip("V4", "no_same_verb_negative")
