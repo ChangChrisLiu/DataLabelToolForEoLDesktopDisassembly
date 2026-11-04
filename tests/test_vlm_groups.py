@@ -371,6 +371,26 @@ def test_v10_captive_screws_stay_to_do_until_the_cooler_is_out(tmp_path):
     assert group in by_step[9]["done"]
 
 
+# --------------------------------------------------------------------------- #
+# A6: the oracle carries the groups
+# --------------------------------------------------------------------------- #
+def test_oracle_carries_groups(tmp_path):
+    from tda.core.export.vlm import oracle_path
+
+    db = Db(str(tmp_path / "w.sqlite"))
+    tax = W.build(db)
+    out = tmp_path / "v.jsonl"
+    export_vlm(db, tax, [W.DESKTOP], W.VIEW, str(out))
+    world = next(json.loads(x) for x in oracle_path(str(out)).read_text(
+        encoding="utf-8").splitlines() if json.loads(x)["type"] == "desktop")
+    assert world["groups"] == {GID: {"members": list(W.SCREWS),
+                                     "match_class": "screw.cpu_cooler",
+                                     "anchor": W.COOLER, "label": "CPU cooler screws"}}
+    for key, inst in world["instances"].items():
+        assert inst["group"] == (GID if key in W.SCREWS else None), key
+    db.close()
+
+
 @pytest.mark.parametrize("which", ["vlm", "w3b"])
 def test_no_ordinal_in_any_question(tmp_path, which):
     db = Db(str(tmp_path / f"{which}.sqlite"))

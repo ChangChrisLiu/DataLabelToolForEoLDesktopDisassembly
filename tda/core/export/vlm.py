@@ -368,12 +368,15 @@ def _dumps(value) -> str:
 
 
 def _desktop_world(tc: TaskCtx) -> dict:
-    """The oracle's per-desktop line: instances, active edges, named log (W3b)."""
+    """The oracle's per-desktop line: instances, active edges, named log (W3b),
+    and the part groups of the redesign (``groups``, ``instances[*].group``)."""
     ctx = tc.ctx
     instances = {}
+    part_groups = tc.groups
     for key, rec in sorted(ctx.instances.items()):
         if ctx.cls_of(key) is None:
             continue
+        group = part_groups.get(key)
         instances[key] = {
             "class": rec.cls, "label": instance_label(key, rec, ctx.tax),
             "match_class": match_class(ctx, key),
@@ -381,7 +384,12 @@ def _desktop_world(tc: TaskCtx) -> dict:
                       if k in rec.attrs},
             "parent": rec.parent, "attached": bool(rec.attached),
             "group_id": rec.group_id, "group_order": rec.group_order,
+            "group": group.gid if group is not None else None,
         }
+    groups = {g.gid: {"members": list(g.members), "match_class": g.match_class,
+                      "anchor": g.anchor, "label": g.label}
+              for g in sorted({g.gid: g for g in part_groups.values()}.values(),
+                              key=lambda g: g.gid)}
     edges = [{"type": e.type, "target": e.target, "blocker": e.blocker,
               "necessity": e.necessity, "mode": e.mode, "source": e.source,
               "status": e.status}
@@ -397,7 +405,7 @@ def _desktop_world(tc: TaskCtx) -> dict:
                         "changes_state": tc.changes_state(action)})
     return {"type": "desktop", "desktop": int(tc.desktop),
             "model_family": tc.meta.get("model_family"), "instances": instances,
-            "edges": edges, "log": log}
+            "groups": groups, "edges": edges, "log": log}
 
 
 def _frame_table(tc: TaskCtx, view: str, data: FrameData) -> dict:
