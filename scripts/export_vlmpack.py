@@ -1032,7 +1032,8 @@ def _references_text(summary: dict) -> str:
         "prints itself). **chance** is the expected score of a uniform guess over the "
         "record's answer space (binary tasks 0.5, `V6-mc` 1/|options|, V2 1/|allowed|, V14 "
         "0.5 x 1/|states| when answerable, open tasks 0; the rule per task is printed under "
-        "the score table). **frequency** is the most frequent gold reply over the truth "
+        "the score table). V14's |states| counts every state of the part's class, "
+        "`removed` included. **frequency** is the most frequent gold reply over the truth "
         "file's `train` desktops (`label.split`; for `V6-mc` the most frequent letter) given "
         "as the answer to every record and graded like a model -- the floor a model has to "
         "clear to have read anything at all. **blind** is the record without its picture "
@@ -1308,7 +1309,7 @@ the glossary).
 * `label.answer` -- the structured truth (per task, see *Answer formats*).
 * `label.answer_check` -- how the checker re-derives and grades the answer
   (type, fields, metric, the eligible set for V6, the plan for V16, the
-  accepted targets for V3, ...). `tools/vlm_score.py` implements it; nothing
+  target for V3, ...). `tools/vlm_score.py` implements it; nothing
   here is shown to a model.
 * `label.evidence` / `label.rationale` -- boxes of the parts the answer rests
   on and the reasoning chain (`observe` / `recall_relation` /

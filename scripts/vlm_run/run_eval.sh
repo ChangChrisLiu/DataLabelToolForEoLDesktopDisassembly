@@ -5,8 +5,9 @@
 # templates, an interactive node and a laptop:
 #
 #   PACK        the vlmpack copy (required)              e.g. $SCRATCH/vlmpack_2026-11-02
-#   VIEW        scan | oak1 | oak2 | rs | multi (required; multi = the action tasks, every
-#               camera of a moment in one request, up to 8 images)
+#   VIEW        scan | oak1 | oak2 | rs | multi (required; multi = the action tasks: every
+#               camera of a moment in one request, up to 8 images, or the marked
+#               scanner image alone for V4, V6 multiple choice, V7 and V16)
 #   BACKEND     gold | openai | vllm | transformers      (default vllm)
 #   MODEL       model id: HF id / local path / API name  (required unless gold)
 #   MODEL_TAG   directory name for the model             (default: MODEL with / -> _)
@@ -64,7 +65,8 @@ MAX_TOKENS="${MAX_TOKENS:-2048}"
 REPEAT="${REPEAT:-1}"
 PYTHON="${PYTHON:-python}"
 RUN_ARGS="${RUN_ARGS:-}"
-# a multi request carries every camera of a moment (V3 / V12: of two moments): up to 8 images
+# a multi request carries every camera of a moment (V3 / V12: of two moments): up to 8 images;
+# a marked one (V4, V6 multiple choice, V7, V16) the scanner image alone
 if [[ "$VIEW" == "multi" && "$BACKEND" == "vllm" && "$RUN_ARGS" != *--max-images* ]]; then
   RUN_ARGS="$RUN_ARGS --max-images 8"
 fi
