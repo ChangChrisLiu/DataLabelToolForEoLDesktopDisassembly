@@ -352,6 +352,64 @@ def test_v3_accept_targets(world):
         assert g.score == 1.0 and g.metrics["target_instance"], name
 
 
+def test_v3_compound_step_any_action(world):
+    """Controller 2026-11-03: every action of a compound step was carried out, so an
+    answer matching any one of them -- by the first one's rules -- scores."""
+    first = {"verb": "remove", "target_class": "cpu_cooler", "target_instance": COOLER,
+             "tool": None}
+    second = {"verb": "disconnect", "target_class": "connector", "target_instance": FAN,
+              "tool": None}
+    third = {"verb": "open", "target_class": "ram_latch",
+             "target_instance": G_LATCH[RAMS[0]], "tool": None}
+    r = _v3("remove", COOLER, "cpu_cooler", accept=[COOLER])
+    r["label"]["answer"]["actions"] = [first, second, third]
+    for verb, name, matched in (("remove", "the CPU cooler", 0),
+                                ("disconnect", "the fan connector", 1),
+                                ("disconnect", FAN, 1),
+                                ("open", "the RAM latches", 2),
+                                ("open", "RAM latch 2", 2)):
+        g = grade(r, _reply(verb=verb, target=name), world)
+        assert g.score == 1.0 and g.metrics["target_instance"], (verb, name)
+        assert g.metrics["matched_action"] == matched, (verb, name)
+    # a verb of one action on the part of another, or a part attached to one, is no action
+    for verb, name in (("remove", "the fan connector"), ("disconnect", "the CPU cooler"),
+                       ("remove", "the cover"), ("remove", SHROUD),
+                       ("remove", "CPU cooler screw 1"), ("disconnect", "the CPU")):
+        g = grade(r, _reply(verb=verb, target=name), world)
+        assert g.score == 0.0, (verb, name)
+    # the other module's latches: the class of an action, not its part
+    g = grade(r, _reply(verb="open", target="RAM latch 3"), world)
+    assert g.score == 1.0 and not g.metrics["target_instance"]
+    # without the list only the top-level action counts
+    single = _v3("remove", COOLER, "cpu_cooler", accept=[COOLER])
+    assert grade(single, _reply(verb="disconnect", target="the fan connector"),
+                 world).score == 0.0
+    assert "matched_action" not in grade(single, _reply(verb="remove", target=COOLER),
+                                         world).metrics
+
+
+def test_v3_group_member_is_the_target(world):
+    """A member of the target's own group of interchangeable parts names the target
+    (``target_group``); a member of another group of the class, or an attached part,
+    does not."""
+    latch, other, far = LATCHES[RAMS[0]][0], LATCHES[RAMS[0]][1], LATCHES[RAMS[1]][0]
+    r = _v3("open", latch, "ram_latch", accept=[latch])
+    r["label"]["answer_check"]["target_group"] = G_LATCH[RAMS[0]]
+    for name in ("RAM latch 1", latch, "RAM latch 2", other, "a RAM latch"):
+        g = grade(r, _reply(verb="open", target=name), world)
+        assert g.score == 1.0 and g.metrics["target_instance"], name
+    g = grade(r, _reply(verb="open", target=far), world)
+    assert g.score == 1.0 and not g.metrics["target_instance"]
+    # an old record without `target_group` reads the world's group of the target
+    del r["label"]["answer_check"]["target_group"]
+    assert grade(r, _reply(verb="open", target=other), world).metrics["target_instance"]
+    # the motherboard's attached latch is still no motherboard
+    board = _v3("remove", BOARD, "motherboard", accept=[BOARD])
+    for name in ("RAM latch 1", LEVER, "the CPU socket lever"):
+        g = grade(board, _reply(verb="remove", target=name), world)
+        assert g.score == 0.0 and not g.metrics["target_instance"], name
+
+
 SCREW_BOXES = [[10, 10, 4, 4], [30, 10, 4, 4], [10, 30, 4, 4], [30, 30, 4, 4]]
 
 
