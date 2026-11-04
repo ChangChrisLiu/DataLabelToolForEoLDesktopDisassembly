@@ -1037,9 +1037,10 @@ def _references_text(summary: dict) -> str:
         "as the answer to every record and graded like a model -- the floor a model has to "
         "clear to have read anything at all. **blind** is the record without its picture "
         "(question and options only; like the state oracle it drops the mark wording -- "
-        "\"the RAM module outlined in red\" becomes \"the RAM module\" -- and leaves out a "
-        "question that names a part by its mark tag alone): what it scores is template "
-        "leakage, and the export's "
+        "\"the RAM module outlined in red\" becomes \"the RAM module\" -- and a part named "
+        "by its mark tag alone keeps the tag with its class phrase beside it, \"part A (a RAM "
+        "module)\", the state oracle's table tagging that part's rows): what it scores is "
+        "template leakage, and the export's "
         "*text-only upper bound (in-sample)* is the ceiling of the same thing. "
         "**protocol_prior** answers V6 / V7 / V16 from nothing but the previous demonstrated "
         "action, by a bigram fitted on the other desktops (leave-one-desktop-out): the line a "
@@ -1463,7 +1464,8 @@ python tools/vlm_score.py --truth {ev_name}/{ref_unit}.jsonl --pred runs/refs/{r
 `vlm_score.py` writes `<name>.score.json` and `<name>.score.md`: per task, per
 layer and per question template, strict and lenient, 95 % cluster-bootstrap
 intervals over desktops, the text-only upper bound beside each task, V6 open
-(headline) and `V6-mc`, V2 (headline: every V2 question) and `V2-prior-wrong`, V7's violation-free /
+(headline, group-equivalent; its `exact` metric is the reference itself -- on a group
+step, any member still to do) and `V6-mc`, V2 (headline: every V2 question) and `V2-prior-wrong`, V7's violation-free /
 required-recall / goal-reached, V4's blockers F1, V10's bin accuracy. Score the
 units separately (each truth file has its own oracle) and pool in your
 analysis; `{ev_name}/ids.txt` is the subset. The model driver (`tools/vlm_run/vlm_run.py`:
