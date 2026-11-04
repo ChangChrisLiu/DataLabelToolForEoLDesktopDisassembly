@@ -6,8 +6,10 @@ network, no real database.
 """
 from __future__ import annotations
 
+import codecs
 import hashlib
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -37,6 +39,12 @@ STAND_INS = {
                        'def glossary_text(terms, state_terms):\n    return ""\n',
     "vlm_audit_carry.py": '"""Stand-in (test tree only)."""\n\n\ndef main(argv=None):\n    return 0\n',
 }
+
+
+# No venue is named in the public pack or in this public repository (owner rule), so the
+# names the guard looks for are stored rot13 and decoded here.
+VENUES = r"\b(" + "|".join(codecs.decode(v, "rot_13") for v in (
+    "PICE", "VPPI", "RPPI", "ArheVCF", "VPYE", "VPZY", "VPEN", "VEBF", "PbEY", "EFF", "NNNV", "JNPI", "OZIP")) + r")\b"
 
 
 def pack_repo(root: Path) -> Path:
@@ -498,7 +506,7 @@ def test_pack_has_multi_and_eval_v2(built):
                    "vlm_audit_carry.py", "refuse an `eval_v1` path", "--max-images 8"):
         assert needle in text, needle
     assert "eval_v1/" not in text
-    venues = r"\b(CVPR|ICCV|ECCV|NeurIPS|ICLR|ICML|ICRA|IROS|CoRL|RSS|AAAI|WACV|BMVC)\b"
+    venues = VENUES
     for rel in ("README.md", "eval_v2/table.md", "tools/vlm_eval_set.py",
                 "tools/vlm_selfcheck.py", "tools/vlm_references.py", "tools/vlm_run/run_eval.sh"):
         assert not re.search(venues, (pack / rel).read_text(encoding="utf-8")), rel
@@ -546,8 +554,7 @@ def test_the_card_runs_the_references_on_multi_and_states_the_review_notes(built
     guide = (built["pack"] / "docs" / "vlm_run_hprc.md").read_text(encoding="utf-8")
     assert "eval_v2/audit/audit.ids.txt" in guide and "pack_units.sh" in guide
     assert "eval_v1/" not in guide and "四个视角" not in guide
-    for venue in ("CVPR", "ECCV", "ICCV", "NeurIPS"):
-        assert venue not in guide and venue not in text
+    assert not re.search(VENUES, guide) and not re.search(VENUES, text)
 
 
 def test_the_card_describes_the_blind_variant_and_v6_exact_as_they_are(built):
