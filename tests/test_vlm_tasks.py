@@ -117,7 +117,9 @@ def test_every_record_carries_the_contract_fields(scene, tmp_path: Path):
         assert label["tier"] == "gold"
         assert label["model_family"] == "EliteDesk 800 G2 TWR"
         assert label["chassis_type"] == "twr"
-        assert label["template_id"].startswith(record["prompt"]["task"] + ".")
+        # V3's roi form has templates of its own (owner 2026-11-04)
+        family = record["prompt"]["task"] + ("-roi" if label.get("v3_form") == "roi" else "")
+        assert label["template_id"].startswith(family + ".")
         assert label["answer_check"]["type"]
         assert isinstance(label["verified"], bool)
 
@@ -193,9 +195,10 @@ def test_the_prompt_side_shows_the_model_nothing_it_must_infer(scene, tmp_path: 
     records = _run(db, tax, tmp_path / "v.jsonl")
     assert not scan_prompt_leaks(records)
     for record in records:
-        # the redesign's prompt fields (2026-11-03): marks, glossary terms, image legend
+        # the redesign's prompt fields (2026-11-03): marks, glossary terms, image legend;
+        # V3's roi form adds its hint region (2026-11-04)
         assert set(record["prompt"]) <= {"task", "images", "question", "options", "marks",
-                                         "terms", "state_terms", "image_legend"}
+                                         "terms", "state_terms", "image_legend", "hint_regions"}
         for image in record["prompt"]["images"]:
             assert image.startswith("img_") and len(image) == 20
             assert "scan" not in image and "D07" not in image
@@ -446,7 +449,45 @@ def test_v4_has_no_state_inapplicable(scene, tmp_path: Path):
     for record in records:
         if not record["answer"]["feasible"]:
             assert record["answer"]["blockers"]
-            assert record["answer"]["reason"] == "violates_edge"
+            # the code is label side; the reason is words (owner 2026-11-04)
+            assert record["answer_check"]["reason_code"] == "violates_edge"
+            assert "violates" not in record["answer"]["reason"]
+
+
+def test_v4_reasons_say_what_the_picture_shows(scene, tmp_path: Path):
+    """Owner 2026-11-04: a model never sees the graph, so V4's reason is what the picture shows.
+    A "yes" names the prerequisites now met; a "no" what still holds the part; the internal
+    code (``violates_edge``) is label side only; ``why`` is the machine-readable twin."""
+    db, tax = scene
+    records = _of(_run(db, tax, tmp_path / "v.jsonl"), "V4")
+    psu = next(r for r in records if r["answer_check"]["target"] == S.PSU
+               and r["answer"]["feasible"])
+    assert psu["answer"]["reason"] == ("the PSU screw is out and the ATX 24PIN connector is "
+                                       "unplugged, so the PSU can be taken out")
+    assert psu["answer_check"]["reason_code"] is None
+    assert {w["relation"] for w in psu["answer"]["why"]} == {"fastens", "is plugged into"}
+    assert {w["state"] for w in psu["answer"]["why"]} == {"removed", "unplugged"}
+    ram = next(r for r in records if r["answer_check"]["target"] == S.RAM
+               and not r["answer"]["feasible"])
+    assert ram["answer"]["reason"] == "the RAM latch still locks the RAM module"
+    for r in records:
+        shown = json.dumps([r["answer"]["reason"], r["answer"]["why"], r["rationale"]["text"]])
+        for word in ("violates", "_by", "locked", "recall", "edge", "precondition"):
+            assert word not in shown, (r["readable_id"], shown)
+        assert r["rationale"]["text"] == ("Yes: " if r["answer"]["feasible"] else "No: ") \
+            + r["answer"]["reason"] + "."
+
+
+def test_the_reason_table_says_every_edge_type_in_plain_words():
+    """The edge type -> sentence table the reason texts are built from: no graph vocabulary."""
+    from tda.core.export import vlm_tasks as T
+    from tda.core.graph_rules import BLOCKED_MODES, HARD_TYPES
+
+    for etype in HARD_TYPES:
+        assert etype in T.RELATION_WORDS and "_" not in T.RELATION_WORDS[etype]
+    for mode in BLOCKED_MODES:
+        assert mode in T.BLOCKED_RELATION_WORDS and "_" not in T.BLOCKED_RELATION_WORDS[mode]
+    assert T._and(["a", "b", "c"]) == "a, b and c" and T._and(["a"]) == "a"
 
 
 def test_a_never_applicable_action_is_never_a_state_negative(scene, tmp_path: Path):
@@ -580,8 +621,16 @@ def test_v4_explains_the_failed_attempt_with_the_edge_that_caused_it(
     assert len(failed) == 1
     record = failed[0]
     assert record["step"] == 5           # the frame before the attempt at step 6
-    assert record["answer"] == {"feasible": False, "blockers": [S.LATCH],
-                                "reason": "violates_edge"}
+    answer = record["answer"]
+    assert (answer["feasible"], answer["blockers"]) == (False, [S.LATCH])
+    assert record["answer_check"]["reason_code"] == "violates_edge"
+    # the reason a person reads: what still holds it, in plain words (owner 2026-11-04)
+    assert answer["reason"].endswith(" still locks the " + record["answer_check"]["target_class"]
+                                     .replace("_", " ").replace("psu", "PSU")) \
+        or " still lock" in answer["reason"], answer["reason"]
+    assert answer["why"] and all(set(w) == {"part", "state", "relation"} for w in answer["why"])
+    assert answer["why"][0]["relation"] == "locks"
+    assert record["rationale"]["text"] == f"No: {answer['reason']}."
     assert [e["type"] for e in record["answer_check"]["edges"]] == ["locked_by"]
     ops = [s["op"] for s in record["rationale"]["steps"]]
     assert ops.count("recall_relation") == 1 and ops.count("check_precondition") == 1

@@ -156,7 +156,9 @@ Pillow>=10.0
 TASK_MEANINGS = {
     "V1": "which parts are visible, and where (class + box for every visible part)",
     "V2": "the state of a named part, or how many screws of a role are still in place",
-    "V3": "what the operator just did between two frames (verb, target, tool)",
+    "V3": "what the operator just did between two frames (verb, target, tool): free form "
+          "(headline, no hint; also asks the region where the machine changed) and roi form "
+          "(secondary, a yellow dashed hint box drawn there; same step, `v3_pair`)",
     "V4": "can this action be done to this part right now; if not, what blocks it",
     "V5": "(not in the default set) every action that is legal now",
     "V6": "the next action to carry out: open form (headline) and multiple choice (secondary, same frame, `v6_pair`)",
@@ -1030,7 +1032,8 @@ def _references_text(summary: dict) -> str:
         "Every model row is read against reference lines, none of which is a model "
         "(`tools/vlm_references.py`, `tools/vlm_overlay.py`, and two rows the scorer "
         "prints itself). **chance** is the expected score of a uniform guess over the "
-        "record's answer space (binary tasks 0.5, `V6-mc` 1/|options|, V2 1/|allowed|, V14 "
+        "record's answer space (binary tasks 0.5, `V6-mc` 1/|options|, V2 1/|allowed| -- its "
+        "count form (1 + 0.8 k)/(n+1) over the guesses 0..n, k the gold's neighbours --, V14 "
         "0.5 x 1/|states| when answerable, open tasks 0; the rule per task is printed under "
         "the score table). V14's |states| counts every state of the part's class, "
         "`removed` included. **frequency** is the most frequent gold reply over the truth "
@@ -1211,7 +1214,7 @@ tools/
   vlm_sample.py           stratified seeded samples (audit / repeat)
   vlm_eval_set.py         the procedure that drew {ev_name} (re-runnable, byte-identical)
   vlm_selfcheck.py        gold replies must score 1.0 everywhere -- run it first
-  vlm_audit_sheet.py      the fillable audit pages (gold shown, marks drawn) + CSV skeleton
+  vlm_audit_sheet.py      the fillable audit pages (model view first, reviewer boxes on request) + CSV
   vlm_audit_summary.py    filled audit CSVs -> error rates with Wilson 95 % intervals, flagged items
   vlm_audit_carry.py      carries audit verdicts over to a re-drawn subset where the item is unchanged
   vlm_human_sheet.py      a timed answer form without answers (not part of the evaluation plan)
@@ -1259,7 +1262,11 @@ part it is about is outlined on the scanner image. `prompt.marks` lists
 `{{"image", "bbox": [x, y, w, h], "tag"}}` (the image's index in
 `prompt.images`, the box in that image's native pixels, the tag `A`, `B`, ...);
 the question says "the RAM module outlined in red" or "part A". The converter
-draws the boxes in red on a copy of the picture (scaled with it), written under
+draws each box as a thin **dashed** red outline at 60 % opacity, just outside the
+box, so the part under it stays visible; the tag sits in a small filled label
+**outside** the outline (above its top-left corner, or below it where there is no
+room), never on the part, one label per tag and image (a group's label beside its
+top-most outline). It draws on a copy of the picture (scaled with it), written under
 `--assets` (`tools/vlm_run/run_eval.sh` passes one) or, without it, under
 `<out dir>/<out stem>_marked/` beside the chat file; the files under `images/`
 are never changed. The box is the part's visible-mask box on
@@ -1291,6 +1298,7 @@ One JSON object per line:
  "prompt": {{"task": "V4", "images": ["img_<16 hex>", ...], "question": "...",
             "options": [{{"verb", "target_label"}}, ...],     # V6 multiple choice only
             "marks": [{{"image", "bbox", "tag"}}, ...],         # parts outlined in red
+            "hint_regions": [{{"image", "bbox"}}, ...],         # V3 roi form: yellow dashed box
             "image_legend": [{{"view", "moment"}}, ...],        # multi-view records only
             "terms": [...], "state_terms": [...]               # glossary entries
            }},
@@ -1313,7 +1321,16 @@ the glossary).
   here is shown to a model.
 * `label.evidence` / `label.rationale` -- boxes of the parts the answer rests
   on and the reasoning chain (`observe` / `recall_relation` /
-  `check_precondition` / ... steps); label side only.
+  `check_precondition` / ... steps); label side only. V4 / V6 / V7 / V16 also carry
+  `rationale.text`, the reason in what the picture shows ("No: the CPU socket lever
+  still locks the CPU.").
+* V4's `answer.reason` is that reason in words -- the prerequisites now met ("both its RAM
+  latches are open, so the RAM module can be taken out") or what still holds the part --,
+  `answer.why` its machine-readable list (`{"part", "state", "relation"}`, a plain verb:
+  "locks", "covers", "fastens", "is plugged into", "is mounted on", ...), and
+  `answer_check.reason_code` the internal code (`violates_edge`, or none on a "yes"). V16's
+  `answer.reason` is the first broken step in words, its code in `answer_check.reason_code`.
+  Parts are named without ordinals everywhere a person or a model reads them.
 * `label.truth_source` (V4, V7, V16) -- where an answer's "yes" or "no" comes
   from: `{'`, `'.join(TRUTH_SOURCES)}`. `demonstrated`: the operator did it
   next. `graph_blocked`: a constraint edge forbids it. `graph_blocked_pixels`:
@@ -1344,6 +1361,19 @@ the glossary).
   question; `V2-prior-wrong` is the `false` subset, a shortcut check.
 * `label.v6_form` / `label.v6_pair` (V6) -- `open` or `mc`; the two forms of
   one step share the pair id.
+* `label.v3_form` / `label.v3_pair` (V3, owner 2026-11-04) -- two questions about one step,
+  scored as the rows `V3` and `V3-roi`. **`free`** is the question with no hint; it also asks
+  `"region": [x, y, width, height]`, where the machine changed, in pixels of the top-down
+  scanner image (its before and after pictures, `answer_check.region_images`). The gold
+  region (`answer.region` = `answer_check.region`) is the union of the changed part's scanner
+  boxes before and after (its group's where the part itself has none); the score stays verb +
+  target, and region IoU / region hit (IoU >= 0.5) are extra rows -- a box on a cropped or
+  scaled picture maps back like V1 / V8's. **`roi`** draws a yellow dashed box with no tag
+  (`prompt.hint_regions`, `answer_check.hint_region`) on both scanner pictures -- the gold
+  region grown 2.5 times about its centre, at least 300 px a side, kept inside and clipped to
+  the image -- says the change happened inside it, and asks the action as before (no region).
+  A step without a gold region (no confirmed scanner box) is asked free, without the region,
+  and has no roi partner. `v3_pair` is the free record's own id.
 * `label.image_undecidable` -- the truth rests on a captive screw's tightness.
 * `label.views` -- V15: the two views of the pair; `{MULTI_VIEW}`: the views
   shown, in `prompt.images` order.
@@ -1383,7 +1413,9 @@ Drawn once over all {n_desktops} desktops (zero-shot; the split is not used),
 seed {ev['seed']}, by `tools/vlm_eval_set.py`: per task at least {ev['targets']['binary']}
 records for the yes / no tasks ({', '.join(ev['targets']['binary_tasks'])}) and
 {ev['targets']['other']} for the others where the pool allows; V6 is drawn as pairs
-(300 pairs = 600 records). Perception is drawn from the camera units, the action
+(300 pairs = 600 records), and V3 as its free record with its roi partner (the unit is
+keyed by the free record's id, so the V3 ids drawn are the free form's alone; the audit
+sample draws free records only). Perception is drawn from the camera units, the action
 tasks from `{MULTI_VIEW}`; a task found in several units is allocated over them in
 proportion to the export, then equally over the task's strata (V4 feasible /
 infeasible then `truth_source`; V2 `prior_is_correct` then class; V12 changed /
@@ -1407,9 +1439,12 @@ The strata counts are in `{ev_name}/table.md`. {audit_line}
 The error rate of the generated truth. Open `{ev_name}/audit/audit.sheet.b01.html`
 (and the following pages) in a browser from the pack directory -- plain HTML
 with inline script, no server, no network; the frames are loaded by relative
-path (`../../images/...`). Every item shows the picture(s) with the marks drawn,
-the question, the gold answer in words and as JSON, its evidence boxes drawn on
-the frame and the rationale chain; the reviewer marks 正确 / 错误 / 存疑
+path (`../../images/...`). Every item shows the picture(s) exactly as the model gets
+them -- the red dashed marks (and V3's yellow dashed hint box) drawn the converter's way,
+nothing else --, the question, the gold answer in words (no ordinals) and as JSON, and
+the rationale (the reason in what the picture shows); the evidence and answer boxes are a
+separate reviewer layer, hidden until **show reviewer boxes / 显示审核框** is ticked, and a
+legend line says the model never sees them. The reviewer marks 正确 / 错误 / 存疑
 (correct / wrong / doubtful) and may leave a note. Answers stay in the browser
 until **Export answers** downloads a CSV (`id, task, readable_id, desktop, view,
 step, batch, verdict, note, reviewer, answered_at`); `audit.sheet.csv` is the
@@ -1479,7 +1514,10 @@ python tools/vlm_score.py --truth {ev_name}/{ref_unit}.jsonl --pred runs/refs/{r
 layer and per question template, strict and lenient, 95 % cluster-bootstrap
 intervals over desktops, the text-only upper bound beside each task, V6 open
 (headline, group-equivalent; its `exact` metric is the reference itself -- on a group
-step, any member still to do) and `V6-mc`, V2 (headline: every V2 question) and `V2-prior-wrong`, V7's violation-free /
+step, any member still to do) and `V6-mc`, V3 (headline: the free form; extra rows region_iou /
+region_hit) and `V3-roi` (the hinted form), V2 (headline: every V2 question) and `V2-prior-wrong`
+(V2's count form, `derive = screw_count`, scores the exact count 1.0, one off 0.8 and anything
+else 0; the extra row `exact` is the exact matches alone, `count_exact` those of the counts), V7's violation-free /
 required-recall / goal-reached, V4's blockers F1, V10's bin accuracy. Score the
 units separately (each truth file has its own oracle) and pool in your
 analysis; `{ev_name}/ids.txt` is the subset. The model driver (`tools/vlm_run/vlm_run.py`:
