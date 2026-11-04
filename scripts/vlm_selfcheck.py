@@ -1,7 +1,7 @@
 """The pack's self-check: the gold replies score 1.0 on every task (W4-A).
 
-``python tools/vlm_selfcheck.py --truth <eval_v1/scan.jsonl> [<eval_v1/oak1.jsonl> ...]
---out <dir> [--resamples 50]``
+``python tools/vlm_selfcheck.py --truth <eval_v2/scan.jsonl> [<eval_v2/oak1.jsonl> ...
+<eval_v2/multi.jsonl>] --out <dir> [--resamples 50]``
 
 For each truth file this writes the reply a perfect model would give to every
 record (:func:`tda.core.export.vlm_check.gold_reply`, instance keys spelled
@@ -10,7 +10,9 @@ the way the oracle labels them) as a predictions file ``<out>/<view>.gold.jsonl`
 and scores it with :mod:`vlm_score`. It exits 0 only when, in **strict**
 parsing, every task row of every file has mean 1.0 and no parse failure; a
 pack whose scorer, oracle and records disagree anywhere exits 1 and names the
-rows.
+rows. The ``multi`` unit (the action tasks, every camera of a moment) is checked
+like any other file; its oracle must hold a state table for every side-view image
+too. An ``eval_v1`` path is refused (the subset before the 2026-11-03 redesign).
 
 Everything it imports lives in the pack's ``tools/`` (the vendored ``tda``
 subset): run it in a fresh virtual environment with nothing but PyYAML
@@ -89,6 +91,9 @@ def main(argv=None) -> int:
     ap.add_argument("--resamples", type=int, default=50)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args(argv)
+    from vlm_eval_set import refuse_old_eval
+
+    refuse_old_eval(args.out, *args.truth)
     results = [check(p, args.out, resamples=args.resamples, seed=args.seed)
                for p in args.truth]
     import tda

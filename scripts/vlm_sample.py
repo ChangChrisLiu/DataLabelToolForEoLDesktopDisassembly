@@ -152,6 +152,9 @@ def main(argv=None) -> int:
     ap.add_argument("--test-desktops", default=None)
     ap.add_argument("--max-share", type=float, default=0.2)
     args = ap.parse_args(argv)
+    from vlm_eval_set import refuse_old_eval
+
+    refuse_old_eval(args.export, args.out)
     from vlm_references import _parse_range
 
     records = list(IO.read_jsonl(args.export))
