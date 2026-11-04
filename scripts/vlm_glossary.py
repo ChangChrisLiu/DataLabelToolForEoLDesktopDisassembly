@@ -20,8 +20,8 @@ from __future__ import annotations
 
 from typing import Iterable, Optional
 
-__all__ = ["CLASS_NAME", "CLASS_TEXT", "MODEL_TEXT", "STATE_MEANINGS", "class_text",
-           "glossary_text"]
+__all__ = ["CLASS_NAME", "CLASS_TEXT", "MODEL_TEXT", "PRESENCE_MEANINGS", "STATE_MEANINGS",
+           "class_text", "glossary_text", "is_presence"]
 
 #: How the questions name a class (``vlm_tasks.class_label``: initialisms up, underscores out).
 CLASS_NAME: dict[str, str] = {
@@ -216,6 +216,24 @@ STATE_MEANINGS: dict[str, dict[str, str]] = {
 }
 
 
+#: The states of a question asked on presence alone (``answer_check.state_space ==
+#: "presence"``: a screw is asked present / removed, its tightness was never annotated --
+#: final review M3). Every other class keeps :data:`STATE_MEANINGS`.
+PRESENCE_MEANINGS: dict[str, dict[str, str]] = {
+    "screw": {
+        "present": "the screw is still in its hole (screwed in, or for a captive screw "
+                   "undone but held -- a photograph cannot tell these apart)",
+        "removed": "the screw has been taken out; its hole is empty",
+    },
+}
+
+
+def is_presence(record: Optional[dict]) -> bool:
+    """Is ``record`` a question on presence alone (``answer_check.state_space``)?"""
+    check = ((record or {}).get("label") or {}).get("answer_check") or {}
+    return check.get("state_space") == "presence"
+
+
 def _base(term) -> Optional[str]:
     """``"screw.cpu_cooler"`` (a refined match class) -> ``"screw"``; unknown -> ``None``."""
     cls = str(term or "").strip().split(".", 1)[0]
@@ -227,11 +245,14 @@ def class_text(cls: str) -> str:
     return MODEL_TEXT.get(cls) or CLASS_TEXT.get(cls, "")
 
 
-def glossary_text(terms: Optional[Iterable] = None, state_terms: Optional[Iterable] = None) -> str:
+def glossary_text(terms: Optional[Iterable] = None, state_terms: Optional[Iterable] = None,
+                  presence: bool = False) -> str:
     """The glossary block, or ``""`` when no known class is named.
 
     One bullet per class, in the order named (``terms`` first, then the ``state_terms`` not
     already there); a class in ``state_terms`` gets its states, one ``state = meaning`` each.
+    ``presence`` (the record asks present / removed, :func:`is_presence`) gives a class of
+    :data:`PRESENCE_MEANINGS` those two states instead of its tracked ones.
     """
     order: list[str] = []
     for term in list(terms or []) + list(state_terms or []):
@@ -245,8 +266,8 @@ def glossary_text(terms: Optional[Iterable] = None, state_terms: Optional[Iterab
     for cls in order:
         name = CLASS_NAME.get(cls, cls.replace("_", " "))
         line = f"- {name}: {class_text(cls)}".rstrip()
-        if cls in states and STATE_MEANINGS.get(cls):
-            line += " States: " + "; ".join(f"{s} = {m}" for s, m in STATE_MEANINGS[cls].items()) \
-                    + "."
+        meanings = (PRESENCE_MEANINGS.get(cls) if presence else None) or STATE_MEANINGS.get(cls)
+        if cls in states and meanings:
+            line += " States: " + "; ".join(f"{s} = {m}" for s, m in meanings.items()) + "."
         lines.append(line)
     return "\n".join(lines)

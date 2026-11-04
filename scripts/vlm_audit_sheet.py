@@ -46,7 +46,7 @@ from typing import Iterable, Optional, Sequence
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vlm_io as IO  # noqa: E402
-from vlm_glossary import glossary_text  # noqa: E402
+from vlm_glossary import glossary_text, is_presence  # noqa: E402
 from vlm_to_chat import (VIEW_NAMES, image_legend, legend_line, marks_line,  # noqa: E402
                          shown_marks)
 from tda.core.export.vlm_check import LETTERS, World, format_key, reference_option  # noqa: E402
@@ -575,7 +575,8 @@ def question_html(record: dict, *, gold_letter: Optional[str] = None) -> str:
             items.append(f'<li{cls}>{LETTERS[i]}. {esc(o.get("verb", ""))} '
                          f'{esc(o.get("target_label", ""))}</li>')
         parts.append('<ol class="options" type="none">' + "".join(items) + "</ol>")
-    glossary = glossary_text(prompt.get("terms"), prompt.get("state_terms"))
+    glossary = glossary_text(prompt.get("terms"), prompt.get("state_terms"),
+                             presence=is_presence(record))
     if glossary:
         parts.append(f'<details><summary>glossary the model reads</summary>'
                      f'<p class="prompt-line">{esc(glossary)}</p></details>')

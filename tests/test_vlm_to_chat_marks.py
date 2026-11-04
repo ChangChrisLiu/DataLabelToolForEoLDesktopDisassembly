@@ -311,6 +311,29 @@ def test_glossary_has_class_and_states():
     assert "Glossary:" not in C.user_text(_v2(["img_a"], []))
 
 
+def test_a_presence_question_glosses_presence_states():
+    """Final review M3: V14 / V2 / V15 ask a screw present / removed (its tightness was
+    never annotated), so the glossary gives those two states, not fastened / loosened."""
+    import vlm_glossary as G
+
+    record = _v2(["img_a"], [], terms=["screw.cpu_cooler"], state_terms=["screw.cpu_cooler"],
+                 task="V14", question="Can this view settle whether the CPU cooler screw is "
+                                       "still in place?")
+    record["label"]["answer_check"] = {"type": "exact", "state_space": "presence",
+                                       "fields": ["answerable", "state"]}
+    assert G.is_presence(record)
+    text = C.user_text(record)
+    gloss = text[text.index("Glossary:"):]
+    assert "present = " in gloss and "removed = " in gloss
+    for word in ("fastened", "loosened"):
+        assert f"{word} =" not in gloss
+    # a state question on every other record keeps the tracked states
+    plain = G.glossary_text(["screw"], ["screw"])
+    assert "fastened = " in plain and "present = " not in plain
+    latch = G.glossary_text(["ram_latch"], ["ram_latch"])
+    assert G.glossary_text(["ram_latch"], ["ram_latch"], presence=True) == latch
+
+
 def test_glossary_tables_follow_the_scanner_pack_and_the_taxonomy():
     """``vlm_glossary`` is self-contained (it ships without ``tda`` and the taxonomy); these keep it honest."""
     import yaml
