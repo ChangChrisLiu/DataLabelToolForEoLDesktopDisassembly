@@ -1259,7 +1259,11 @@ part it is about is outlined on the scanner image. `prompt.marks` lists
 `{{"image", "bbox": [x, y, w, h], "tag"}}` (the image's index in
 `prompt.images`, the box in that image's native pixels, the tag `A`, `B`, ...);
 the question says "the RAM module outlined in red" or "part A". The converter
-draws the boxes in red on a copy of the picture (scaled with it), written under
+draws each box as a thin **dashed** red outline at 60 % opacity, just outside the
+box, so the part under it stays visible; the tag sits in a small filled label
+**outside** the outline (above its top-left corner, or below it where there is no
+room), never on the part, one label per tag and image (a group's label beside its
+top-most outline). It draws on a copy of the picture (scaled with it), written under
 `--assets` (`tools/vlm_run/run_eval.sh` passes one) or, without it, under
 `<out dir>/<out stem>_marked/` beside the chat file; the files under `images/`
 are never changed. The box is the part's visible-mask box on
