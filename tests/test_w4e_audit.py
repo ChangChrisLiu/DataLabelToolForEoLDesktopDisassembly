@@ -154,10 +154,12 @@ def test_audit_sheet_draws_marks(tmp_path):
     # the evidence is a scanner-frame box: drawn on the two scanner images, not on the side views
     evidence = [[b for b in bs if b["kind"] == "evidence"] for bs in boxes]
     assert [bool(e) for e in evidence] == [True, False, False, False, True, False, False, False]
-    # the overlay fix holds for every figure; marks are red; the boxes switch does not hide them
+    # the overlay fix holds for every figure; marks are red on the model's layer, the
+    # reviewer's boxes on a layer of their own, hidden until asked (owner 2026-11-04)
     assert article.count('<span class="imgbox"><img ') == 8
-    assert "svg.boxes rect.mark { stroke: #ff1744;" in S.CSS
-    assert "rect:not(.mark)" in S.CSS
+    assert article.count('<svg class="boxes"') == article.count('<svg class="review"') == 8
+    assert "svg.boxes line.mark { stroke: #ff1744; }" in S.CSS
+    assert "body:not(.show-review) svg.review { display: none; }" in S.CSS
     # captions name the camera and the moment; the prompt lines the model reads are shown
     assert "image 1 of 8: top-down scanner, before (step 4" in article
     assert "image 8 of 8: RealSense, after (step 5" in article
@@ -174,6 +176,49 @@ def test_audit_sheet_draws_marks(tmp_path):
     one = S.item_html(2, single, manifest, None, tmp_path / "images", tmp_path / "out", 1)
     assert re.findall(r'<div class="frames ([a-z ]*)">', one) == ["single"]
     assert '&quot;kind&quot;:&quot;evidence&quot;' in one and "&quot;mark&quot;" not in one
+
+
+def test_the_page_opens_on_the_models_view(tmp_path):
+    """Owner 2026-11-04: the cyan / yellow reviewer boxes beside the red marks were taken for
+    marks the model sees. The picture shows the model's view; the reviewer boxes are a layer
+    of their own, off by default, behind a "show reviewer boxes / 显示审核框" switch, with a
+    one-line legend saying the model does not see them; the marks are drawn with the
+    converter's own mark-v2 parameters and rule."""
+    import vlm_to_chat as C
+
+    record, manifest = _multi_v3(tmp_path)
+    page = S.page("t", S.item_html(1, record, manifest, None, tmp_path / "images",
+                                   tmp_path / "out", 1),
+                  sheet="s", js=S.JS_AUDIT, columns=S.CSV_COLUMNS, guide=S.AUDIT_GUIDE)
+    assert '<input type="checkbox" id="toggle-review">' in page  # not checked
+    assert "show reviewer boxes / 显示审核框" in page
+    assert "not shown to the model" in page and "模型看不到" in page
+    assert 'id="toggle-boxes"' not in page
+    # the script draws marks into the model layer, evidence / answer into the review layer
+    for needle in ("function drawModel(", "function drawReview(", "function labelPlace(",
+                   "Math.max(2, Math.round(2 * W / 1600))", "Math.round(14 * W / 1600)",
+                   "Math.round(8 * W / 1600)", "Math.round(18 * W / 1600)",
+                   "classList.toggle('show-review', tr.checked)"):
+        assert needle in page, needle
+    assert f'"opacity": {C.MARK_OPACITY}' in page and C.MARK_STYLE_VERSION in page
+    assert C.mark_width(1600) == 2 and C.mark_dash(1600) == (14, 8) \
+        and C.label_font_size(1600) == 18  # the numbers the page transcribes
+    # no reviewer box label carries an ordinal, and the human form has no reviewer switch
+    article = H.item_html(1, record, manifest, tmp_path / "images", tmp_path / "out")
+    assert "toggle-review" not in article
+
+
+def test_v3_hint_is_on_the_models_layer(tmp_path):
+    record, manifest = _multi_v3(tmp_path)
+    record = dict(record, prompt=dict(record["prompt"], marks=[], hint_regions=[
+        {"image": 0, "bbox": [50, 40, 300, 300]}, {"image": 4, "bbox": [50, 40, 300, 300]}]),
+        label=dict(record["label"], v3_form="roi"))
+    assert [b["kind"] for b in S.marks_of(record, 0)] == ["hint"]
+    assert S.marks_of(record, 4)[0]["bbox"] == [50.0, 40.0, 300.0, 300.0]
+    assert S.marks_of(record, 1) == []
+    article = S.item_html(1, record, manifest, None, tmp_path / "images", tmp_path / "out", 1)
+    assert article.count("&quot;kind&quot;:&quot;hint&quot;") == 2
+    assert ("form", "roi (a yellow dashed hint box is drawn)") in S.gold_lines(record, None)
 
 
 def test_audit_sheet_never_marks_a_box_task(tmp_path):
@@ -262,12 +307,46 @@ def test_the_sheet_shows_the_gold_answer_evidence_and_rationale(scene, audit_she
         boxes = S.boxes_of(v8, world)
         assert boxes[0]["bbox"] == [float(v) for v in v8["label"]["answer"]["bbox"]]
         assert boxes[0]["kind"] == "answer"
-        assert boxes[0]["label"] == world.instances[v8["label"]["answer"]["instance"]]["label"]
-    # instance keys are spelled the way the oracle labels them
+        # a box label names the class, never an ordinal (owner 2026-11-04)
+        label = world.instances[v8["label"]["answer"]["instance"]]["label"]
+        assert boxes[0]["label"] == re.sub(r"\s+\d+$", "", label) != label
+    # parts are named without an ordinal: the oracle's name, never the key nor "X 1"
     v3 = next(r for r in scene["audit"] if r["prompt"]["task"] == "V3")
     lines = dict(S.gold_lines(v3, world))
     key = v3["label"]["answer"]["target_instance"]
-    assert world.instances[key]["label"] in lines["action"] and key not in lines["action"]
+    assert world.plain_name(key) in lines["action"] and key not in lines["action"]
+    assert world.instances[key]["label"] not in lines["action"]
+
+
+def test_no_ordinal_in_anything_the_sheet_says(scene, audit_sheet):
+    """Owner 2026-11-04 (#97 "CPU 1", "CPU socket lever 1", "connector 3", "motherboard 1"): the
+    gold lines, the rationale, the evidence line and the box labels of every item carry no
+    ordinal -- a part alone of its class is its class, a marked part "part A", a group its label."""
+    _, worlds = S.load_context(scene["exports"])
+    world = worlds[W.DESKTOP]
+    labels = {inst["label"] for inst in world.instances.values() if re.search(r"\d$", inst["label"])}
+    assert labels
+    for r in scene["audit"]:
+        texts = [v for _, v in S.gold_lines(r, world)] + S.rationale_lines(r, world)
+        texts += [b["label"] for b in S.boxes_of(r, world)]
+        for text in texts:
+            for lab in labels:
+                assert not re.search(rf"\b{re.escape(lab)}\b", text), (r["label"]["readable_id"], text)
+    # the three rules, one by one
+    unique = next(k for k, i in world.instances.items()
+                  if sum(1 for j in world.instances.values()
+                         if j.get("match_class") == i.get("match_class")) == 1)
+    assert world.plain_name(unique) == world.instances[unique]["name"]
+    assert not re.search(r"\d", world.plain_name(unique))
+    gid = next(iter(world.groups))
+    assert S.display_name(gid, world) == world.groups[gid]["label"]
+    marked = next(r for r in scene["audit"] if r["label"].get("mark_names")
+                  and any(len(e["parts"]) == 1 for e in r["label"]["mark_names"].values()))
+    tag, entry = next((t, e) for t, e in marked["label"]["mark_names"].items()
+                      if len(e["parts"]) == 1)
+    assert S.display_name(entry["parts"][0], world, marked) == f"part {tag}"
+    # no oracle at all: the key's words, without its ordinal
+    assert S.display_name("cpu_socket_lever.01", None) == "cpu socket lever"
 
 
 def test_the_sheet_is_static_fillable_and_deterministic(scene, audit_sheet, tmp_path):
@@ -563,7 +642,8 @@ def test_the_human_form_has_no_answer_in_it(scene, human):
         # (redesign 2026-11-03), each on its own image
         shipped = [json.loads(html_unescape(b)) for b in re.findall(r'data-boxes="([^"]*)"', article)]
         assert len(shipped) == len(r["prompt"]["images"])
-        assert all(b["kind"] == "mark" for bs in shipped for b in bs)
+        # (V3's roi form also shows its yellow hint box: the model sees it too)
+        assert all(b["kind"] in ("mark", "hint") for bs in shipped for b in bs)
         assert [len(bs) for bs in shipped] == [len(S.marks_of(r, i)) for i in range(len(shipped))]
     for page in human["pages"]:
         assert "<script src" not in page and "answered_at" in page and "started_at" in page
@@ -783,7 +863,8 @@ def test_the_card_has_the_author_audit_paragraph(pack):
     for needle in ("eval_v2/audit/audit.sheet.b01.html", "audit.sheet.csv",
                    "vlm_audit_summary.py", "--records eval_v2/audit/audit.jsonl",
                    "Wilson 95 % intervals", "0 of 300 -> [0, 1.3 %]", "vlm_audit_carry.py",
-                   "with the marks drawn", "do not show them to anyone answering the questions"):
+                   "exactly as the model gets", "show reviewer boxes / 显示审核框",
+                   "do not show them to anyone answering the questions"):
         assert needle in text, needle
     for gone in ("vlm_human_sheet.py build", "vlm_human_sheet.py convert",
                  "human-baseline participant", "eval_v1/"):

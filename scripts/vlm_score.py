@@ -59,7 +59,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vlm_io as IO  # noqa: E402
-from tda.core.export.vlm_check import CAPABILITY_LAYERS, grade  # noqa: E402
+from tda.core.export.vlm_check import CAPABILITY_LAYERS, count_score, grade  # noqa: E402
 
 LAYER_ORDER = ("L1", "L2", "L3", "change", "cross")
 #: V6's secondary record type, the multiple choice (W3b ruling): ``V6`` in the
@@ -68,15 +68,24 @@ V6_MC = "V6-mc"
 #: The V2 questions the class prior answers wrong (``prior_is_correct = false``);
 #: the ``V2`` row, the headline, is every V2 question.
 V2_PRIOR_WRONG = "V2-prior-wrong"
+#: V3's second form (owner 2026-11-04): the same step with a yellow hint box drawn around where
+#: the machine changed. ``V3`` in the tables is the free form, the headline.
+V3_ROI = "V3-roi"
+#: Secondary record types: the layers count each headline row once.
+SECONDARY_ROWS = frozenset({"V6-mc", V3_ROI})
 
 
 #: How the ``chance`` row is computed, per table row (printed under the table).
 CHANCE_RULES = {
     "V1": "0: the set of (class, box) pairs is open; a guess has F1 0",
     "V2": "state form 1/|allowed| (the class's state vocabulary; presence = 2); "
-          "count form 1/(n+1), n the desktop's screws of that role",
+          "count form (1 + 0.8 k)/(n+1), a uniform guess over 0..n (n the desktop's screws "
+          "of that role) scored exact 1.0 / off by one 0.8, k = the gold's neighbours in "
+          "0..n (the extra row exact: exact matches only)",
     V2_PRIOR_WRONG: "as V2, over the questions the class prior answers wrong",
-    "V3": "0: verb and target are open and the score needs both",
+    "V3": "0: verb and target are open and the score needs both (the region is the extra "
+          "rows region_iou / region_hit)",
+    V3_ROI: "0: verb and target are open and the score needs both (a hint box shows where)",
     "V4": "0.5: feasible yes / no (blockers are the extra row blockers_f1)",
     "V6": "0: the next action is open",
     V6_MC: "1/|options| per record",
@@ -92,11 +101,14 @@ CHANCE_RULES = {
 
 
 def task_key(record: dict) -> str:
-    """The table row of a record: its task, with V6's two forms apart."""
+    """The table row of a record: its task, with V6's two forms apart and V3's two forms apart."""
     task = record["prompt"]["task"]
     if task == "V6" and (record["label"].get("v6_form") == "mc"
                          or record["prompt"].get("options")):
         return V6_MC
+    if task == "V3" and (record["label"].get("v3_form") == "roi"
+                         or record["prompt"].get("hint_regions")):
+        return V3_ROI
     return task
 
 
@@ -152,7 +164,9 @@ def chance_of(record: dict, world, tax) -> Optional[float]:
                     and (inst.get("attrs") or {}).get("role") == role
                     and (captive is None
                          or bool((inst.get("attrs") or {}).get("captive")) == bool(captive)))
-            return 1.0 / (n + 1)
+            # a uniform guess over 0..n, graded exact 1.0 / off by one 0.8 (owner 2026-11-04)
+            gold = int(answer["count"])
+            return sum(count_score(guess, gold)[0] for guess in range(n + 1)) / (n + 1)
         states = _states_of(record, world, tax)
         return 1.0 / len(states) if states else None
     if task in ("V4", "V12", "V16"):
@@ -296,15 +310,26 @@ def score(truth_path, pred_path, chat_path=None, *, resamples: int = 1000,
                     failures[key] += 1
             for key in rows_of:
                 per_task[key].append(row)
-            if task != V6_MC:
-                # the multiple choice is a secondary record type: the layers
-                # count each headline row once
+            if task not in SECONDARY_ROWS:
+                # the multiple choice and V3's hinted form are secondary record types:
+                # the layers count each headline row once
                 per_layer[CAPABILITY_LAYERS.get(task, "other")].append(row)
-            if task != V6_MC:
+            if task not in SECONDARY_ROWS:
                 per_template[label.get("template_id", "?")].append(row)
             m = g.metrics
+            if task == "V3" and label["answer_check"].get("region"):
+                # where the machine changed (owner 2026-11-04): beside the action, not in it
+                extras[task]["region_iou"].append((desk, float(m.get("region_iou") or 0.0)))
+                extras[task]["region_hit"].append((desk, float(bool(m.get("region_hit")))))
             if not label.get("image_undecidable"):
                 extras[task]["decidable"].append(row)
+            if task == "V2":
+                # the count form scores an off-by-one 0.8 (owner 2026-11-04): `exact` is
+                # the exact matches alone, over every V2 question (and the prior-wrong row)
+                for key in rows_of:
+                    extras[key]["exact"].append((desk, float(bool(m.get("exact")))))
+                if "count" in label["answer"]:
+                    extras[task]["count_exact"].append((desk, float(bool(m.get("exact")))))
             if task in ("V6", V6_MC):
                 extras[task]["exact"].append((desk, float(bool(m.get("exact_match")))))
                 if m.get("blocked_rate_defined") and g.parsed:
@@ -355,6 +380,8 @@ def score(truth_path, pred_path, chat_path=None, *, resamples: int = 1000,
     # V6's headline is the open form; the multiple choice rides beside it
     out["headline"] = {"v6_open": out["strict"]["by_task"].get("V6"),
                        "v6_mc": out["strict"]["by_task"].get(V6_MC),
+                       "v3": out["strict"]["by_task"].get("V3"),
+                       "v3_roi": out["strict"]["by_task"].get(V3_ROI),
                        "v2": out["strict"]["by_task"].get("V2"),
                        "v2_prior_wrong": out["strict"]["by_task"].get(V2_PRIOR_WRONG)}
     if prior_path:
@@ -402,7 +429,9 @@ def markdown(result: dict, name: str) -> str:
              f"lenient {l['parse_failure_rate_all']:.1%}. "
              "Intervals: 95 %, cluster bootstrap over desktops. "
              "V6 is the open question, graded group-equivalently (the headline); "
-             f"{V6_MC} is the multiple choice (secondary). V2 is every V2 question "
+             f"{V6_MC} is the multiple choice (secondary). V3 is the action between two "
+             f"moments, no hint (the headline; its region is an extra row); {V3_ROI} is the "
+             "same step with a hint box drawn where it happened (secondary). V2 is every V2 question "
              f"(the headline); {V2_PRIOR_WRONG} is the questions the class prior "
              "answers wrong (secondary). Reference columns: *chance* is a uniform guess "
              "over the answer space (rules below); *frequency* is the most frequent "

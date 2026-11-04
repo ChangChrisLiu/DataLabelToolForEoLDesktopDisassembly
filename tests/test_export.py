@@ -434,7 +434,7 @@ def test_the_jsonl_is_split_into_what_the_model_sees_and_what_grades_it(
         assert set(rec) == {"id", "prompt", "label"}
         # (+ the redesign's marks and glossary terms, 2026-11-03: what the model is shown)
         assert set(rec["prompt"]) <= {"task", "images", "question", "options", "marks",
-                                      "terms", "state_terms", "image_legend"}
+                                      "terms", "state_terms", "image_legend", "hint_regions"}
         assert "answer" not in rec["prompt"] and "step" not in rec["prompt"]
         assert rec["label"]["answer"] is not None
 
@@ -496,19 +496,25 @@ def test_vlm_v3_reads_the_action_between_two_frames(db, tax, tmp_path: Path):
     records = _records(out)
     # the 8 x 8 screw (64 px before, removed after) is an action no picture shows: not
     # asked (redesign 2026-11-03, spec 3.6: V3_MIN_PX visible pixels or a big part)
-    assert [r["step"] for r in records] == [3]
+    assert [r["step"] for r in records] == [3, 3]
     assert summary["skip_reasons"][str(DESKTOP)]["V3"]["invisible_action"] >= 1
+    # two forms of the one step (owner 2026-11-04): free (asks the region too) and roi
+    assert [r["v3_form"] for r in records] == ["free", "roi"]
+    assert records[0]["v3_pair"] == records[1]["v3_pair"] == records[0]["id"]
 
     remove = records[0]
     from tda.core.export.vlm_tasks import opaque_image_id
 
     assert remove["images"] == [opaque_image_id(DESKTOP, VIEW, 2),
                                 opaque_image_id(DESKTOP, VIEW, 3)]
+    region = remove["answer"].pop("region")
     assert remove["answer"] == {
         "verb": "remove", "target_class": "psu",
         "target_instance": PSU, "tool": "hand",
     }
     assert PSU in remove["evidence"]["bboxes"]
+    assert region == remove["answer_check"]["region"] and region[2] > 0 and region[3] > 0
+    assert records[1]["answer"] == remove["answer"]  # the roi form: no region asked
 
 
 def test_vlm_output_is_reproducible(db, tax, tmp_path: Path):
@@ -521,8 +527,9 @@ def test_vlm_output_is_reproducible(db, tax, tmp_path: Path):
 def test_vlm_tasks_argument_selects_the_rows(db, tax, tmp_path: Path):
     out = tmp_path / "vlm.jsonl"
     summary = export_vlm(db, tax, [DESKTOP], VIEW, str(out), tasks=("V3",))
-    # (the screw's V3 is an invisible action since the redesign, spec 3.6)
-    assert summary["by_task"] == {"V3": 1}
+    # (the screw's V3 is an invisible action since the redesign, spec 3.6; the PSU's step is
+    # asked in its two forms, free and roi, owner 2026-11-04)
+    assert summary["by_task"] == {"V3": 2}
     assert {r["task"] for r in _records(out)} == {"V3"}
 
 
@@ -620,8 +627,8 @@ def test_unknown_action_target_produces_no_v3_record(db, tax, tmp_path: Path):
 
     out = tmp_path / "vlm.jsonl"
     export_vlm(db, tax, [DESKTOP], VIEW, str(out), tasks=("V3",))
-    # (step 2's screw is an invisible action since the redesign, spec 3.6)
-    assert [r["step"] for r in _records(out)] == [3]
+    # (step 2's screw is an invisible action since the redesign, spec 3.6; free + roi form)
+    assert [r["step"] for r in _records(out)] == [3, 3]
 
 
 def test_step_types_gate_both_exports(db, tax, tmp_path: Path):

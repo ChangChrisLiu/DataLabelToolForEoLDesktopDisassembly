@@ -171,7 +171,7 @@ def test_every_chat_format_carries_the_question_images_and_answer_format(export,
     for row in rows:
         src = records[row["id"]]
         meta = row["meta"]
-        assert meta["prompt_template_id"] == f"chat-v3:{src['label']['template_id']}"
+        assert meta["prompt_template_id"] == f"chat-v4:{src['label']['template_id']}"
         assert len(meta["images"]) == len(src["prompt"]["images"])
         if fmt == "internvl":
             text = row["conversations"][0]["value"]
