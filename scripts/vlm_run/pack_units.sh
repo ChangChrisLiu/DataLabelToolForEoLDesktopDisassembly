@@ -8,7 +8,13 @@
 # skips a unit that is not there.
 set -euo pipefail
 PACK_DIR="${1:-${PACK:?usage: pack_units.sh <pack>}}"
-PYTHON="${PYTHON:-python}"
+# PYTHON unset: python, else python3 (a login node may have only python3)
+if [[ -z "${PYTHON:-}" ]]; then
+  if command -v python >/dev/null 2>&1; then PYTHON=python
+  elif command -v python3 >/dev/null 2>&1; then PYTHON=python3
+  else echo "pack_units.sh: neither python nor python3 on PATH; set PYTHON" >&2; exit 2
+  fi
+fi
 "$PYTHON" - "$PACK_DIR/manifest.json" <<'PY'
 import json
 import sys

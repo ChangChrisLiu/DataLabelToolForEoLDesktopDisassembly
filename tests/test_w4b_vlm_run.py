@@ -642,3 +642,36 @@ def test_a_unit_missing_from_the_pack_is_skipped_and_the_matrix_lists_the_manife
     calls = log.read_text(encoding="utf-8").splitlines()
     assert calls and all(c.startswith("--array=0-3 ") for c in calls), calls
     assert all(c.endswith("VIEW_LIST=scan oak1 oak2 multi") for c in calls), calls
+
+
+def test_pack_units_falls_back_to_python3(tmp_path):
+    """A login node with only ``python3`` on its PATH: pack_units.sh (PYTHON unset) uses it;
+    with neither it stops with a message naming PYTHON (integration of the redesign)."""
+    bash = _bash()
+    if bash is None:
+        pytest.skip("no working bash on this machine")
+    pack = tmp_path / "pack"
+    pack.mkdir()
+    (pack / "manifest.json").write_text(json.dumps({"units": ["scan", "multi"]}), encoding="utf-8")
+    only3 = tmp_path / "only3"
+    only3.mkdir()
+    (only3 / "python3").write_bytes(
+        f'#!/bin/sh\nexec "{Path(sys.executable).as_posix()}" "$@"\n'.encode())
+    (only3 / "python3").chmod(0o755)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "PYTHON")}
+    script = (RUN_DIR / "pack_units.sh").as_posix()
+
+    def run(bindir: Path):
+        # (cd + pwd: the shell's own spelling of the folder; the PATH holds nothing else)
+        return subprocess.run(
+            [bash, "-c", f'export PATH="$(cd "{bindir.as_posix()}" && pwd)"; '
+                         f'source "{script}" "{pack.as_posix()}"'],
+            capture_output=True, text=True, env=env, timeout=120)
+
+    got = run(only3)
+    assert got.returncode == 0, got.stdout + got.stderr
+    assert got.stdout.split() == ["scan", "multi"]
+    none = run(empty)
+    assert none.returncode == 2 and "set PYTHON" in none.stderr
