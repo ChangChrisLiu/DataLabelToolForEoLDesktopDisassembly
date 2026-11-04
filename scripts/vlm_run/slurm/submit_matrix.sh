@@ -15,8 +15,11 @@ CLOSED_MODELS=(
   # "<api model name 1>"
   # "<api model name 2>"
 )
-# the export units: four camera views (perception) and multi (the action tasks, every camera at once)
-VIEWS=(scan oak1 oak2 rs multi)
+# the export units the pack holds (manifest.json "units"): the camera views with records
+# (perception) and multi (the action tasks, every camera at once); an empty unit is not there.
+# Without a manifest: VIEWS=(scan oak1 oak2 rs multi), and run_eval.sh skips what is missing.
+read -r -a VIEWS <<< "${VIEW_LIST:-$(bash "$HERE/../pack_units.sh" "$PACK")}"
+echo "[submit_matrix] units: ${VIEWS[*]}"
 ARRAY="--array=0-$(( ${#VIEWS[@]} - 1 ))"
 export VIEW_LIST="${VIEWS[*]}"
 VARIANTS=(image blind)          # overlay is meaningful for the scan view only (HANDOFF.md section 8.5)
