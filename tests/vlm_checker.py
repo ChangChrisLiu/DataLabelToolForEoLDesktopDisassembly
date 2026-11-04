@@ -1058,9 +1058,21 @@ class Checker:
             if sim[goal]["state"] != REMOVED:
                 _fail(record, f"{name} does not reach the goal")
             for req in spec["required_actions"]:
-                got = sim.get(req["target"], {}).get("state")
-                if got not in set(req["states"]) and got != REMOVED:
-                    _fail(record, f"{name} misses required {req['target']}")
+                if req["target"] in self.groups:
+                    # captive screws: one item, every member, while their part is in
+                    if sorted(req.get("members") or []) != sorted(self.groups[req["target"]]):
+                        _fail(record, f"group item {req['target']} lists other members")
+                    targets = self.groups[req["target"]]
+                else:
+                    targets = [req["target"]]
+                for target in targets:
+                    got = sim.get(target, {}).get("state")
+                    if got not in set(req["states"]) and got != REMOVED:
+                        _fail(record, f"{name} misses required {target}")
+            for item in spec["required_actions"]:
+                if self.captive(item["target"]) and self.group_of(item["target"]) \
+                        and self.present(frame, self.instances[item["target"]].fastens or ""):
+                    _fail(record, "a captive screw required on its own while its part is in")
         # the demonstrated remainder is the log after this step, up to the goal,
         # and it is the answer: the one plan known to work
         logged = [(a.verb, a.target) for s in self.log_steps()
