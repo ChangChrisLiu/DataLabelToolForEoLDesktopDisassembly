@@ -118,6 +118,16 @@ from tda.core.states import FrameState, InstState, gone_with_parent, initial_ove
 from tda.core.taxonomy import Taxonomy
 
 __all__ = [
+    "ACTION_TASKS",
+    "MULTI_VIEW",
+    "Namer",
+    "PERCEPTION_TASKS_SINGLE",
+    "PartGroup",
+    "UNMARKED_TASKS",
+    "V3_MIN_PX",
+    "mark_box",
+    "part_groups",
+    "question_label",
     "ALL_TASKS",
     "BIG_PARTS",
     "CHASSIS_CLASS",
@@ -2218,6 +2228,8 @@ def gen_v6(tc: TaskCtx, step: int) -> Iterator[dict]:
              # the part group of the redesign (gid, or None) and its members still to do
              "part_group": shown_id if shown_id != action.target else None,
              "part_group_members": shown_members,
+             # the asked group's members, as every group record says them
+             **({"members": list(shown_members)} if shown_id != action.target else {}),
              # `blocked_rate` is the share of answers the graph certainly
              # forbids; on a frame where it forbids nothing the rate is
              # undefined, not zero, and the scorer leaves the frame out of the
