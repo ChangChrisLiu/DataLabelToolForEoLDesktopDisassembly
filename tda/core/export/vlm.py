@@ -97,6 +97,7 @@ from tda.core.export.coco import (
     DesktopCtx,
     conflicted_steps,
     frame_file_name,
+    frame_hw,
     frame_is_verified,
     load_ctx,
     roi_of,
@@ -320,11 +321,15 @@ def _read_view(db: Db, ctx: DesktopCtx, desktop: int, view: str,
                     if box is not None:
                         x0, y0, x1, y1 = box
                         slim[inst]["amodal_box"] = [x0, y0, x1 - x0, y1 - y0]
+        try:
+            size = frame_hw(row, compiled, view)
+        except ValueError:  # a view with no nominal size and nothing recorded
+            size = None
         frames[step] = FrameData(
             step=step, image=frame_file_name(row, key),
             image_id=opaque_image_id(desktop, view, step), verified=verified,
             rows=slim, pointable=pointable_rows(ctx, slim, only_verified),
-            confirmed=labelled, ts=_seconds(row.get("ts")),
+            confirmed=labelled, ts=_seconds(row.get("ts")), hw=size,
         )
         order.append(step)
     return frames, order

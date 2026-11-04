@@ -521,8 +521,14 @@ class Checker:
             _fail(record, f"a record is id/prompt/label, not {sorted(record)}")
         prompt, label = record["prompt"], record["label"]
         if set(prompt) - {"task", "images", "question", "options", "marks", "terms",
-                          "state_terms", "image_legend"}:
+                          "state_terms", "image_legend", "hint_regions"}:
             _fail(record, f"the prompt side carries {sorted(prompt)}")
+        if prompt.get("hint_regions") and (prompt["task"] != "V3"
+                                           or label.get("v3_form") != "roi"):
+            _fail(record, "a hint region outside V3's roi form")
+        for hint in prompt.get("hint_regions") or []:
+            if not 0 <= int(hint["image"]) < len(prompt["images"]):
+                _fail(record, f"hint on image {hint['image']} of {len(prompt['images'])}")
         if prompt.get("marks") and prompt["task"] in ("V1", "V8", "V14"):
             _fail(record, "a mark on a task whose box is the answer")
         for mark in prompt.get("marks") or []:

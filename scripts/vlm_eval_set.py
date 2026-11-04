@@ -229,12 +229,18 @@ class Unit:
 
 
 def units_of(records: Iterable[dict], view: str) -> list[Unit]:
-    """Group an export's records into units; V6 pairs share ``label.v6_pair``."""
+    """Group an export's records into units; V6 pairs share ``label.v6_pair``.
+
+    V3's two forms (owner 2026-11-04) share ``label.v3_pair``, which **is** the free record's
+    id: the unit keeps the key -- and so the draw -- the free record had alone, and its
+    ``roi`` partner rides along with it into the subset."""
     pairs: dict[str, list[dict]] = {}
     order: list[str] = []
     for rec in records:
         if rec["prompt"]["task"] == "V6" and rec["label"].get("v6_pair"):
             key = "pair:" + str(rec["label"]["v6_pair"])
+        elif rec["prompt"]["task"] == "V3" and rec["label"].get("v3_pair"):
+            key = str(rec["label"]["v3_pair"])
         else:
             key = rec["id"]
         if key not in pairs:
@@ -415,7 +421,7 @@ def table_rows(chosen: dict[str, list[Unit]], pool: dict[str, list[Unit]],
             "task": task, "target": targets[task], "units": n_units, "records": len(records),
             "pool_units": len(pool[task]),
             "pool_records": sum(len(u.records) for u in pool[task]),
-            "unit": "pair" if task == "V6" else "record",
+            "unit": "pair" if task in ("V3", "V6") else "record",
             "by_view": dict(sorted(views.items(), key=lambda kv: VIEWS.index(kv[0])
                                    if kv[0] in VIEWS else 99)),
             "by_stratum": dict(sorted(by_stratum.items())),
@@ -429,7 +435,8 @@ def table_markdown(rows: list[dict], *, seed: int, max_share: float) -> str:
     lines = [f"# {EVAL_VERSION}: the evaluation subset", "",
              f"Seed {seed}; no desktop above {max_share:.0%} of a task; views in "
              "proportion to the export, strata equal, desktops round-robin. "
-             "`units` is what was drawn (V6: a pair = open + multiple choice); "
+             "`units` is what was drawn (V6: a pair = open + multiple choice; V3: the free "
+             "question + its roi partner where it has one); "
              "`records` is what the scorer sees.", "",
              "| task | target | units | records | pool (records) | by view | desktops | "
              "max desktop share |", "|---|---|---|---|---|---|---|---|"]
@@ -548,6 +555,10 @@ def _audit(records: list[dict], per_view: dict, out: Path, seed: int, size: int,
     import vlm_sample
 
     desks = {IO.desktop_of(r) for r in records}
+    # V3's roi partners (owner 2026-11-04) are not drawn: the audit keeps its ids, and a roi
+    # record's truth is its free partner's, audited with it
+    records = [r for r in records
+               if not (r["prompt"]["task"] == "V3" and r["label"].get("v3_form") == "roi")]
     rows = vlm_sample.draw(records, size=size, per_task=per_task, seed=seed, purpose="audit",
                            test_desktops=desks, max_share=max_share)
     out.mkdir(parents=True, exist_ok=True)
