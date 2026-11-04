@@ -15,8 +15,10 @@ of this docstring is about ``infer-relations``.
 
 ``import-logs`` runs :func:`~tda.core.graph_rules.infer_relational_fields` as
 part of each desktop's transaction, so every freshly imported machine already
-has its ``screw.fastens``, its captive ``parent``/``attached`` pair, its latch
-``of`` and a ``socket_host`` that names an *instance* rather than a class. This
+has its ``screw.fastens``, its captive ``parent``/``attached`` pair and a
+``socket_host`` that names an *instance* rather than a class (a RAM latch's
+``of`` is no longer guessed: it comes from the masks, as ``relation_fix`` rows,
+see :func:`tda.core.graph_infer._infer_ram_latches`). This
 command is for the database that was imported before that was wired in: it does
 the same thing in place, without re-reading a single sheet, so no manual edit to
 a step table is touched.
@@ -459,7 +461,7 @@ def cmd_infer_relations(args: argparse.Namespace) -> int:
 def _add_infer_relations(sub) -> None:
     p = sub.add_parser(
         "infer-relations",
-        help="fill empty screw.fastens / parent / latch.of / socket_host in place",
+        help="fill empty screw.fastens / parent / socket_host in place",
     )
     p.add_argument("--desktops", default=None, help="e.g. 13 or 1-66")
     p.add_argument("--dry-run", action="store_true",

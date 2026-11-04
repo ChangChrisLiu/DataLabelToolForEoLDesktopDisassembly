@@ -8,9 +8,10 @@ what the log importer could not.
   one instance key, or ``None`` when the desktop has no unique answer. Label
   Studio drafts (:data:`LS_PREFIX`) never count.
 * :func:`infer_relational_fields` -- fills the empty relational fields
-  (``screw.fastens``, a captive screw's ``parent``/``attached``, a RAM latch's
-  ``of``, a class-level ``socket_host``). Only ever writes into a blank, so it
-  is idempotent and a human correction survives a re-import.
+  (``screw.fastens``, a captive screw's ``parent``/``attached``, a class-level
+  ``socket_host``). Only ever writes into a blank, so it is idempotent and a
+  human correction survives a re-import. A RAM latch's ``of`` is **not** among
+  them any more (:func:`_infer_ram_latches`).
 * :func:`unresolved_relations` -- what it deliberately did **not** guess, split
   into :data:`NO_CANDIDATE` ("this desktop has no such part at all") and
   :data:`AMBIGUOUS` ("it has several and nothing says which").
@@ -269,14 +270,13 @@ def infer_relational_fields(
     * the ``parent`` of an instance whose class declares a ``host_class`` = that
       class's unique instance, with ``attached=True`` -- see
       :func:`_infer_host_mounted`;
-    * ``ram_latch.of`` by nearest ordinal -- the latches are split evenly over
-      the modules, so two latches per module pair up with module 1, 2, ...;
     * ``socket_host`` given as a class name -> that class's unique instance.
 
     ``actions`` is the desktop's recorded action list; leaving it out only
     costs the temporal tie-break, nothing else. Nothing already filled in is
     ever overwritten, so running this twice is a no-op and a human correction
-    survives a re-import. Provisional ``ls:*`` drafts are left alone entirely
+    survives a re-import. A RAM latch's ``of`` is never guessed
+    (:func:`_infer_ram_latches`). Provisional ``ls:*`` drafts are left alone entirely
     and never count towards "the one instance of class X"
     (:data:`LS_PREFIX`), and an ambiguous reference is *reported* by
     :func:`unresolved_relations` rather than guessed at. Returns one
@@ -372,30 +372,25 @@ def _infer_host_mounted(instances, rec: InstanceRec, tax: Taxonomy, put,
 
 
 def _infer_ram_latches(instances: dict[str, InstanceRec], filled: list[str]) -> None:
-    """Pair RAM latches with modules by ordinal: N latches spread over M modules.
+    """Retired (2026-11-04): a RAM latch's ``of`` is never guessed, so this fills nothing.
 
-    ``attrs["of"]`` is read through :func:`blank`, exactly like the relational
-    *columns*: clearing that cell in the S1 table leaves an empty string, and a
-    hand-edited sheet can leave a stray space. Both mean "not answered yet", and
-    a latch pointing at ``" "`` is a latch rule 7.1 can never fire on.
+    It used to pair latches with modules by key order -- N latches split evenly
+    over M modules, latch 1-2 to module 1 and so on. The keys say nothing about
+    where a latch sits: checked against the scanner masks, that order had 96 of
+    the 254 module latches on the wrong module and left 50 unpaired. The right
+    pair is a question of geometry -- the two latches at the two ends of a
+    module's long axis; with the slot empty, two rows at the slot ends, paired
+    across the rows in order -- and geometry only exists once the masks are
+    drawn, long after the log import this runs in.
 
-    A latch added in S1 (:func:`tda.core.model.is_extra`) is not paired: the
-    ones the log never names are, on D13, the clips of the two *empty* slots,
-    and pairing them would lock a module the operator never had to unclip.
+    So ``attrs["of"]`` is set from the masks once, after review, and recorded
+    as ``relation_fix`` op rows (:mod:`tda.core.relation_replay`): a forced
+    re-import replays them, and an empty-slot latch, which locks nothing,
+    stays blank instead of being handed a module by its number. Kept as a no-op
+    so the call in :func:`infer_relational_fields` keeps saying where the
+    answer went.
     """
-    latches = [
-        rec for key, rec in sorted(instances.items())
-        if rec.cls == "ram_latch" and blank(rec.attrs.get("of")) and not is_provisional(key)
-        and not is_extra(rec)
-    ]
-    modules = real_instances(instances, "ram_module")
-    if not latches or not modules:
-        return
-    per = max(1, len(latches) // len(modules))
-    for i, rec in enumerate(latches):
-        module = modules[min(i // per, len(modules) - 1)]
-        rec.attrs["of"] = module
-        filled.append(f"{rec.key}.attrs.of = {module}")
+    return None
 
 
 # --------------------------------------------------------------------------- #
