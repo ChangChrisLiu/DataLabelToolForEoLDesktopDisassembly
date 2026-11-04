@@ -477,15 +477,19 @@ def export_vlm(
     (:func:`tda.core.export.coco.conflicted_steps`), and with it the frames
     involved answer ``verified: false``, so ``only_verified`` drops them.
 
-    ``tasks`` defaults to the unit's own set (:func:`unit_tasks`, the redesign of
-    2026-11-03): ``view="multi"`` writes the action tasks
-    (:data:`~tda.core.export.vlm_tasks.ACTION_TASKS`) and a camera view
-    (scan / oak1 / oak2 / rs) single-view perception and V15
-    (:data:`~tda.core.export.vlm_tasks.PERCEPTION_TASKS_SINGLE`). On a camera view any
-    of :data:`~tda.core.export.vlm_tasks.ALL_TASKS` may still be asked for by name
-    (``tasks=["V5"]``, or a single-view action task for a diagnostic); the ``multi``
-    unit refuses a task that is not an action task (``ValueError``). ``balance``
-    thins V2 by its class prior (:func:`~tda.core.export.vlm_tasks.balance_v2`).
+    ``tasks``: a unit's own set is :func:`unit_tasks` (the redesign of 2026-11-03) --
+    ``view="multi"`` holds the action tasks
+    (:data:`~tda.core.export.vlm_tasks.ACTION_TASKS`), a camera view (scan / oak1 /
+    oak2 / rs) single-view perception and V15
+    (:data:`~tda.core.export.vlm_tasks.PERCEPTION_TASKS_SINGLE`); the pack
+    (``scripts/export_vlmpack.py``) passes exactly that. ``tasks=None`` is that set for
+    ``multi`` and, for a camera view, still :data:`~tda.core.export.vlm_tasks.TASKS`
+    (every default task, single-view: what the CLI and the generator tests read; a
+    single-view action record is a diagnostic, never shipped). Any of
+    :data:`~tda.core.export.vlm_tasks.ALL_TASKS` may be asked for by name on a camera
+    view (``tasks=["V5"]``); the ``multi`` unit refuses a task that is not an action
+    task (``ValueError``). ``balance`` thins V2 by its class prior
+    (:func:`~tda.core.export.vlm_tasks.balance_v2`).
 
     **The ``multi`` unit** reads the scanner (:data:`MULTI_PRIMARY`) as the primary
     view -- its frames are :attr:`TaskCtx.frames`, its confirmed rows the truth, the
@@ -511,7 +515,9 @@ def export_vlm(
     multi = view == MULTI_VIEW
     # the camera whose frames, rows and conflicts the records rest on
     primary = MULTI_PRIMARY if multi else view
-    asked = list(unit_tasks(view) if tasks is None else tasks)
+    if tasks is None:
+        tasks = unit_tasks(view) if multi else TASKS
+    asked = list(tasks)
     if multi:
         stray = [t for t in asked if t not in ACTION_TASKS]
         if stray:

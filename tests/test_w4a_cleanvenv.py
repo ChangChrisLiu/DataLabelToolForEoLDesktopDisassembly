@@ -33,7 +33,7 @@ def test_the_pack_self_checks_in_a_fresh_venv(tmp_path, capsys):
     assert "`import tda` fails in the venv" in out and "[cleanvenv] OK" in out
     report = json.loads((tmp_path / "check" / "cleanvenv_check.json").read_text(encoding="utf-8"))
     assert report["ok"] and Path(report["tda_module"]) == (tmp_path / "pack" / "tools" / "tda").resolve()
-    assert {f["file"] for f in report["files"]} == {"scan.jsonl", "oak1.jsonl"}
+    assert {f["file"] for f in report["files"]} == {"scan.jsonl", "multi.jsonl"}  # oak1: an empty unit, left out
     assert all(row["ok"] for f in report["files"] for row in f["rows"].values())
     # the venv never saw the repository: no tda, no yaml accelerator
     assert not list(venv.rglob("_yaml*"))

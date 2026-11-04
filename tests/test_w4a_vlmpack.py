@@ -101,13 +101,13 @@ def built(tmp_path_factory) -> dict:
 # --------------------------------------------------------------------------- #
 # the export units (redesign of 2026-11-03, lane D1)
 # --------------------------------------------------------------------------- #
-def _unit(tmp: Path, unit: str, **kw) -> tuple[dict, list[dict]]:
+def _unit(tmp: Path, unit: str, tasks=None, **kw) -> tuple[dict, list[dict]]:
     from tda.core.export.vlm import export_vlm
 
     db = Db(str(tmp / f"{unit}.sqlite"))
     tax = W.build(db, **kw)
     out = tmp / f"vlm_{unit}.jsonl"
-    summary = export_vlm(db, tax, [W.DESKTOP], unit, str(out))
+    summary = export_vlm(db, tax, [W.DESKTOP], unit, str(out), tasks=tasks)
     db.close()
     return summary, list(IO.read_jsonl(out))
 
@@ -143,11 +143,15 @@ def test_multi_unit_has_only_action_tasks(tmp_path):
 
 
 def test_view_units_have_only_perception_tasks(tmp_path):
+    """A camera unit (the pack's: tasks = unit_tasks(view)) holds single-view perception
+    and V15 only."""
+    from tda.core.export.vlm import unit_tasks
     from tda.core.export.vlm_tasks import PERCEPTION_TASKS_SINGLE
 
     found: dict[str, set[str]] = {}
     for view in VIEWS:
-        summary, records = _unit(tmp_path, view)
+        assert unit_tasks(view) == PERCEPTION_TASKS_SINGLE
+        summary, records = _unit(tmp_path, view, tasks=unit_tasks(view))
         found[view] = {r["prompt"]["task"] for r in records}
         assert found[view] <= set(PERCEPTION_TASKS_SINGLE), (view, found[view])
         assert summary["tasks"] == list(PERCEPTION_TASKS_SINGLE)
