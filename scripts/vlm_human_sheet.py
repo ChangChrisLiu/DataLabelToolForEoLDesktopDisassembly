@@ -55,7 +55,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vlm_audit_sheet as S  # noqa: E402
 import vlm_io as IO  # noqa: E402
 from tda.core.export.vlm_check import (  # noqa: E402
-    LETTERS, VERBS, World, format_instruction, format_key)
+    LETTERS, VERBS, World, format_instruction, format_key, reference_option)
 
 __all__ = ["CSV_COLUMNS", "FIELDS", "PROGRESS_BINS", "allowed_states", "build", "convert",
            "draw_subset", "gold_fields", "item_html", "main", "to_answer"]
@@ -561,9 +561,7 @@ def gold_fields(record: dict, world: Optional[World] = None) -> dict:
     if key == "V6.open":
         return {"verb": answer["verb"], "target": name(answer["target"])}
     if key == "V6.options":
-        ref = tuple(label["answer_check"]["reference"])
-        index = next(i for i, o in enumerate(label["options"]) if (o["verb"], o["target"]) == ref)
-        return {"choice": LETTERS[index]}
+        return {"choice": LETTERS[reference_option(label)]}
     if key == "V7":
         return {"plan": lines(answer["plan"])}
     if key == "V10":

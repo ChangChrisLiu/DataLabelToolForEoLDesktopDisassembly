@@ -56,7 +56,7 @@ from tda.core.taxonomy import Taxonomy
 
 __all__ = ["CAPABILITY_LAYERS", "RESPONSE_FORMATS", "VERBS", "Grade", "Grounder",
            "World", "format_instruction", "gold_reply", "grade", "grounder",
-           "parse_lenient", "parse_strict"]
+           "parse_lenient", "parse_strict", "reference_option"]
 
 #: The paper's capability layers (minutes 2026-10-31 §3; brief W3b §2.8). Not
 #: spec 8.2's L1-L4 of ``label.layer``: these group the tasks the way the
@@ -816,8 +816,11 @@ def _g_v6(record, answer, world, tax, transform) -> Grade:
                                      "blocked_rate_defined": False})
         option = options[LETTERS.index(choice)]
         pair = (option["verb"], option["target"])
-        exact = pair == reference
-        group = pair in equivalent
+        exact = LETTERS.index(choice) == reference_option(label)
+        # a group option (spec 3.1) is right when every member it lists is
+        # equivalent -- the demonstrated option of a group reference always is
+        group = pair in equivalent or exact or bool(option.get("members")) and all(
+            (option["verb"], m) in equivalent for m in option["members"])
         hit_blocked = option["kind"] in ("graph_blocked", "graph_blocked_pixels")
         return Grade(True, float(group), {
             "group_match": group, "exact_match": exact, "blocked": hit_blocked,
@@ -843,6 +846,28 @@ def _g_v6(record, answer, world, tax, transform) -> Grade:
     return Grade(True, float(group), {
         "group_match": group, "exact_match": exact, "blocked": hit_blocked,
         "blocked_rate_defined": bool(check.get("blocked_rate_defined"))})
+
+
+def reference_option(label: dict) -> Optional[int]:
+    """The index of the V6 option that is the reference action, or ``None``.
+
+    The option ``(verb, target)`` equal to ``answer_check.reference``; failing
+    that (a record whose reference is the member the log names while the option
+    lists its group), the option of that verb whose ``members`` hold it, then the
+    option of kind ``demonstrated``.
+    """
+    options = label.get("options") or []
+    ref = tuple(label["answer_check"].get("reference") or ())
+    for i, o in enumerate(options):
+        if (o.get("verb"), o.get("target")) == ref:
+            return i
+    for i, o in enumerate(options):
+        if len(ref) == 2 and o.get("verb") == ref[0] and ref[1] in (o.get("members") or ()):
+            return i
+    for i, o in enumerate(options):
+        if o.get("kind") == "demonstrated":
+            return i
+    return None
 
 
 def _in_actions(world: World, verb: str, target: Optional[str], actions: set) -> bool:
@@ -1148,9 +1173,9 @@ def gold_reply(record: dict, world: Optional[World] = None) -> str:
         out = {"actions": [{"verb": a["verb"], "target": name(a["target"])}
                            for a in answer["must_include"]]}
     elif key == "V6.options":
-        ref = tuple(label["answer_check"]["reference"])
-        index = next(i for i, o in enumerate(label["options"])
-                     if (o["verb"], o["target"]) == ref)
+        index = reference_option(label)
+        if index is None:
+            raise ValueError(f"{record.get('id')}: no option is the reference action")
         out = {"choice": LETTERS[index]}
     elif key == "V6.open":
         out = {"verb": answer["verb"], "target": name(answer["target"])}

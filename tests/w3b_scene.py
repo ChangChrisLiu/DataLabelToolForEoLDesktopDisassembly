@@ -127,14 +127,23 @@ def _instances() -> list[InstanceRec]:
     return out
 
 
+#: Cooler screws large enough to be outlined (``build(big_screws=True)``): 8 x 8 px each,
+#: drawn above the shroud, so V6's multiple choice can list "the CPU cooler screws".
+BIG_SCREW_RECTS = {SCREWS[0]: (12, 12, 20, 20), SCREWS[1]: (24, 12, 32, 20),
+                   SCREWS[2]: (12, 24, 20, 32), SCREWS[3]: (24, 24, 32, 32)}
+
+
 def build(db: Db, *, views=(VIEW, OTHER), confirm=(VIEW,), edges=EDGES,
-          group: bool = False, cooler_kind: str = "heatsink_fan") -> Taxonomy:
+          group: bool = False, cooler_kind: str = "heatsink_fan",
+          big_screws: bool = False) -> Taxonomy:
     """Seed ``db``; ``confirm`` lists the views whose frames are signed off.
 
     ``group=True`` puts the four cooler screws in one unordered ``group_id``;
     ``cooler_kind`` is the cooler's ``kind`` (``heatsink`` is what W3a's rule
-    makes the CPU's direct cover on a two-cooler desktop).
+    makes the CPU's direct cover on a two-cooler desktop); ``big_screws`` draws the
+    cooler screws large enough to be outlined (:data:`BIG_SCREW_RECTS`).
     """
+    rects = {**RECTS, **(BIG_SCREW_RECTS if big_screws else {})}
     tax = load_taxonomy()
     db.upsert_desktop(DESKTOP, {"brand": "Dell", "model_family": "OptiPlex 7020 MT",
                                 "chassis_type": "mt"})
@@ -160,7 +169,7 @@ def build(db: Db, *, views=(VIEW, OTHER), confirm=(VIEW,), edges=EDGES,
         db.set_pose_segment(DESKTOP, view, 1, 1, LAST_STEP, 1, None, None)
         if view not in confirm:
             continue  # a view nobody drew: frames and nothing else
-        for key, box in RECTS.items():
+        for key, box in rects.items():
             db.add_keyframe(ShapeKeyframe(
                 id=None, instance=key, desktop=DESKTOP, view=view, pose_segment=1,
                 anchor_step=LAST_STEP, placement="in_chassis", geom_type="mask",

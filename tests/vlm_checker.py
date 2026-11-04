@@ -878,8 +878,15 @@ class Checker:
             if action.target not in todo or len(todo) < 2 or any(
                     (action.verb, m) not in self.permitted(step) for m in todo):
                 _fail(record, "a group answer whose members are not all equivalent")
-        if tuple(spec["reference"]) != (action.verb, action.target):
+        # the reference is the answer (a group action where the answer is one); the
+        # instance the log names is `demonstrated`
+        if tuple(spec["reference"]) != (answer["verb"], answer["target"]):
             _fail(record, "the reference and the answer disagree")
+        if tuple(spec.get("demonstrated") or ()) != (action.verb, action.target):
+            _fail(record, "the demonstrated instance is not the log's")
+        equivalent = _pairs(spec["equivalent_actions"])
+        if (answer["verb"], answer["target"]) not in equivalent:
+            _fail(record, "the reference is not among the equivalent actions")
         if answer.get("tool") in UNGRADED_TOOLS and "tool" in spec.get("fields", ()):
             _fail(record, "an unknown tool must not be a graded field")
         blocked, permitted = self.blocked(step), self.permitted(step)
