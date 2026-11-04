@@ -493,3 +493,68 @@ def test_the_scorer_on_group_records(world, tax, tmp_path):
     assert result["strict"]["extra"]["V10"]["started_f1"]["mean"] == 1.0
     assert result["strict"]["extra"]["V10"]["started_f1"]["n"] == 2
     assert result["strict"]["extra"]["V4"]["blockers_f1"]["mean"] == 1.0
+
+
+# --------------------------------------------------------------------------- #
+# final review C2: an exact name spends its target; class phrases in gold order
+# --------------------------------------------------------------------------- #
+PSU_PLUGS = ("connector.01", "connector.02")
+SSD_PLUGS = ("connector.03", "connector.04")
+LONE = "connector.05"
+G_PSU, G_SSD = "connector@motherboard.01|cable:psu", "connector@storage_drive.01|cable:storage_drive"
+
+
+def _connector_world() -> World:
+    """Two connector groups of one class told apart by their anchors' words, a lone
+    connector of the same class, and the two RAM latch groups of the base world."""
+    line = oracle_line()
+    inst = line["instances"]
+    inst["storage_drive.01"] = _inst("storage_drive", "SSD storage drive 1")
+    for i, key in enumerate([*PSU_PLUGS, *SSD_PLUGS, LONE], 1):
+        group = G_PSU if key in PSU_PLUGS else G_SSD if key in SSD_PLUGS else None
+        inst[key] = _inst("connector", f"Connector {i}", group=group)
+    line["groups"][G_PSU] = {"members": list(PSU_PLUGS), "match_class": "connector",
+                             "anchor": "motherboard.01|cable:psu",
+                             "label": "PSU cable connectors"}
+    line["groups"][G_SSD] = {"members": list(SSD_PLUGS), "match_class": "connector",
+                             "anchor": "storage_drive.01|cable:storage_drive",
+                             "label": "storage drive cable connectors"}
+    return World.from_oracle(line)
+
+
+def test_an_exact_name_spends_its_target_before_a_class_phrase():
+    world = _connector_world()
+    # the gold: the lone connector by its name, then the two groups
+    r = _v10([("disconnect", LONE), ("disconnect", G_PSU), ("disconnect", G_SSD),
+              ("open", G_LATCH[RAMS[0]]), ("open", G_LATCH[RAMS[1]])])
+    g = grade(r, gold_reply(r, world), world)
+    assert g.score == 1.0, g.metrics
+    # "connectors" twice after "Connector 5": the two groups, never the lone one again
+    said = [{"verb": "disconnect", "target": t} for t in ("Connector 5", "connectors",
+                                                          "connectors")]
+    said += [{"verb": "open", "target": "RAM latches"}] * 2
+    assert grade(r, _reply(done=said, progress="0-25"), world).score == 1.0
+    # a member named exactly stands for its group and spends it
+    said[1] = {"verb": "disconnect", "target": "Connector 3"}
+    assert grade(r, _reply(done=said, progress="0-25"), world).score == 1.0
+
+
+def test_a_class_phrase_takes_the_group_its_words_fit():
+    world = _connector_world()
+    g = grounder(world)
+    assert g.ground_group("the storage drive cable connectors", [G_PSU, G_SSD]) == G_SSD
+    assert g.ground_group("PSU cable connectors", [G_SSD, G_PSU]) == G_PSU
+    assert g.ground_group("connectors", [G_SSD, G_PSU]) == G_SSD  # no word tells: first
+    # V4 blockers: an exact name claims its gold target, a phrase after it the other one
+    r = _v4("remove", "storage_drive.01", [G_SSD, G_PSU])
+    assert _blockers(r, world, "Connector 3", "connectors")[0] == 1.0
+    assert _blockers(r, world, "PSU cable connectors", "storage drive cable connectors")[0] == 1.0
+    assert _blockers(r, world, *[world.label_of(b) for b in (G_SSD, G_PSU)])[0] == 1.0
+
+
+def test_v10_grounds_in_the_gold_order():
+    world = _connector_world()
+    # the same label done and begun: the done list's phrase is the done group
+    r = _v10([("open", G_LATCH[RAMS[1]])], started=[("open", G_LATCH[RAMS[0]])])
+    g = grade(r, gold_reply(r, world), world)
+    assert g.score == 1.0 and g.metrics["started_f1"] == 1.0, g.metrics
