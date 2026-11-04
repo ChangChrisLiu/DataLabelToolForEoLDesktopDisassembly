@@ -2227,21 +2227,29 @@ def gen_v6(tc: TaskCtx, step: int) -> Iterator[dict]:
               "target_class": target_class(tc.ctx, action.target),
               "tool": graded_tool(action.tool)}
     fields = ["verb", "target"] + (["tool"] if answer["tool"] is not None else [])
-    check = {"type": "next_action", "reference": [action.verb, action.target],
+    # the reference is the answer: the group action where the answer is one (the
+    # multiple choice lists the group, not its member, so the grader and the gold
+    # reply must look for the group); the instance the log names stays in
+    # `demonstrated`, and the group action is equivalent to itself
+    grouped = shown_id != action.target
+    check = {"type": "next_action", "reference": [action.verb, shown_id],
+             "demonstrated": [action.verb, action.target],
              "reference_step": nxt, "fields": fields,
              "metric": "group_match_rate+blocked_rate",
              # primary: the answer is the demonstrated action or one of its
              # permitted siblings (same unordered group, or same verb + match
-             # class); secondary: the demonstrated instance exactly
+             # class); secondary: the reference exactly (a group reference: the
+             # group or any member of it still to do)
              "match": {"primary": "group_equivalent", "secondary": "instance_exact"},
-             "equivalent_actions": _actions_json(equivalent),
+             "equivalent_actions": _actions_json(
+                 [*equivalent, *([(action.verb, shown_id)] if grouped else [])]),
              "match_class": [action.verb, match_class(tc.ctx, action.target)],
              "group_id": unordered_group(tc.ctx, action.target),
              # the part group of the redesign (gid, or None) and its members still to do
-             "part_group": shown_id if shown_id != action.target else None,
+             "part_group": shown_id if grouped else None,
              "part_group_members": shown_members,
              # the asked group's members, as every group record says them
-             **({"members": list(shown_members)} if shown_id != action.target else {}),
+             **({"members": list(shown_members)} if grouped else {}),
              # `blocked_rate` is the share of answers the graph certainly
              # forbids; on a frame where it forbids nothing the rate is
              # undefined, not zero, and the scorer leaves the frame out of the

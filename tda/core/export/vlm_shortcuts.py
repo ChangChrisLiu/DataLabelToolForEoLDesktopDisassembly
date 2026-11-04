@@ -29,6 +29,8 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any, Callable, Iterable, Optional
 
+from tda.core.export.vlm_check import reference_option
+
 __all__ = ["KEYS", "LABELLED_TASKS", "option_verb_shortcut", "shortcut_report",
            "task_key", "task_label"]
 
@@ -151,11 +153,11 @@ def option_verb_shortcut(records: Iterable[dict]) -> dict:
         return {"records": 0, "shortcut": None, "match_rate_baseline": None}
     wins: Counter = Counter()
     seen: Counter = Counter()
+    right = {record["id"]: reference_option(record["label"]) for record in listed}
     for record in listed:
-        reference = tuple(record["label"]["answer_check"]["reference"])
-        for option in record["label"]["options"]:
+        for i, option in enumerate(record["label"]["options"]):
             seen[option["verb"]] += 1
-            if (option["verb"], option["target"]) == reference:
+            if i == right[record["id"]]:
                 wins[option["verb"]] += 1
     score: Callable[[str], float] = lambda verb: (
         wins[verb] / seen[verb] if seen[verb] else 0.0)
@@ -166,10 +168,10 @@ def option_verb_shortcut(records: Iterable[dict]) -> dict:
     # largest key among the unscrews" alone moved this number by 10 points
     correct = 0.0
     for record in listed:
-        reference = tuple(record["label"]["answer_check"]["reference"])
-        top = max(score(o["verb"]) for o in record["label"]["options"])
-        ties = [o for o in record["label"]["options"] if score(o["verb"]) == top]
-        correct += sum((o["verb"], o["target"]) == reference for o in ties) / len(ties)
+        options = record["label"]["options"]
+        top = max(score(o["verb"]) for o in options)
+        ties = [i for i, o in enumerate(options) if score(o["verb"]) == top]
+        correct += sum(i == right[record["id"]] for i in ties) / len(ties)
     sizes = Counter(len(r["label"]["options"]) for r in listed)
     random_rate = sum(n / size for size, n in sizes.items()) / len(listed)
     return {

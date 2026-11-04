@@ -73,8 +73,13 @@ def test_the_equivalent_set_is_the_demonstrated_action_and_its_permitted_sibling
     # fastened and permitted, so all four are equivalent
     [r] = _v6(records, step=3)
     check = r["label"]["answer_check"]
-    assert check["reference"] == ["unscrew", W.SCREWS[0]]
-    assert {a["target"] for a in check["equivalent_actions"]} == set(W.SCREWS)
+    # all four still to do and equivalent: the answer is the group action, and so is the
+    # reference (redesign 2026-11-03); the screw the log names is `demonstrated`
+    gid = r["label"]["answer"]["target"]
+    assert gid in _world(out).groups
+    assert check["reference"] == ["unscrew", gid]
+    assert check["demonstrated"] == ["unscrew", W.SCREWS[0]]
+    assert {a["target"] for a in check["equivalent_actions"]} == set(W.SCREWS) | {gid}
     assert check["match"] == {"primary": "group_equivalent", "secondary": "instance_exact"}
     assert check["match_class"] == ["unscrew", "screw.cpu_cooler"]
     assert check["group_id"] == ("cooler_screws" if grouped else None)
@@ -101,14 +106,20 @@ def test_no_distractor_is_a_sibling_and_no_two_options_are_the_same_kind(exporte
 def test_a_sibling_answer_matches_and_the_exact_instance_is_secondary(exported):
     db, tax, records, out, _ = exported
     world = _world(out)
-    [r] = _v6(records, step=3)
+    # step 4: screw 2 is next, screws 2-4 are its permitted siblings, no group action
+    [r] = _v6(records, step=4)
+    assert r["label"]["answer_check"]["reference"] == ["unscrew", W.SCREWS[1]]
     g = grade(r, json.dumps({"verb": "unscrew", "target": "CPU cooler screw 3"}), world, tax)
     assert g.score == 1.0 and g.metrics["group_match"] and not g.metrics["exact_match"]
     g = grade(r, json.dumps({"verb": "unscrew", "target": "a CPU cooler screw"}),
               world, tax)
     assert g.metrics["group_match"]
-    g = grade(r, json.dumps({"verb": "unscrew", "target": "CPU cooler screw 1"}), world, tax)
+    g = grade(r, json.dumps({"verb": "unscrew", "target": "CPU cooler screw 2"}), world, tax)
     assert g.metrics["group_match"] and g.metrics["exact_match"]
+    # step 3: the reference is the group action, which any member named exactly is
+    [r] = _v6(records, step=3)
+    g = grade(r, json.dumps({"verb": "unscrew", "target": "CPU cooler screw 3"}), world, tax)
+    assert g.score == 1.0 and g.metrics["group_match"] and g.metrics["exact_match"]
     # a different verb on the same part is no match
     g = grade(r, json.dumps({"verb": "remove", "target": "CPU cooler screw 3"}), world, tax)
     assert g.score == 0.0
@@ -187,3 +198,46 @@ def test_a_world_with_groups_grades_the_group_and_its_members(exported):
     assert g.score == 0.0 and g.metrics["blocked"] is True
     for r in _v6(records, form=None):
         assert grade(r, gold_reply(r, world), world, tax).score == 1.0
+
+
+def test_a_group_demonstrated_option_is_the_right_letter(tmp_path: Path):
+    """C1 (final review): with the cooler screws large enough to outline, step 3's
+    multiple choice lists "the CPU cooler screws" as one option; the reference is that
+    group action, the gold letter is its letter and scores 1.0, every other letter 0."""
+    from tda.core.export.vlm_check import LETTERS, reference_option
+    from tda.core.taxonomy import load_taxonomy
+
+    db = Db(str(tmp_path / "v6.sqlite"))
+    tax = W.build(db, big_screws=True)
+    out = tmp_path / "v.jsonl"
+    export_vlm(db, tax, [W.DESKTOP], W.VIEW, str(out))
+    records = _read(out)
+    world = _world(out)
+    [mc] = _v6(records, step=3, form="mc")
+    check, options = mc["label"]["answer_check"], mc["label"]["options"]
+    [shown] = [o for o in options if o["kind"] == "demonstrated"]
+    assert world.is_group(shown["target"]) and sorted(shown["members"]) == sorted(W.SCREWS)
+    assert tuple(check["reference"]) == (shown["verb"], shown["target"])
+    assert check["demonstrated"] == ["unscrew", W.SCREWS[0]]
+    assert {"verb": "unscrew", "target": shown["target"]} in check["equivalent_actions"]
+    right = options.index(shown)
+    assert reference_option(mc["label"]) == right
+    assert json.loads(gold_reply(mc, world)) == {"choice": LETTERS[right]}
+    tax = load_taxonomy()
+    for i in range(len(options)):
+        g = grade(mc, json.dumps({"choice": LETTERS[i]}), world, tax)
+        assert g.score == (1.0 if i == right else 0.0), (i, options[i], g.metrics)
+    assert grade(mc, json.dumps({"choice": LETTERS[right]}), world, tax).metrics["exact_match"]
+    # a record of the old shape (reference = the member, the option = its group) is
+    # graded the same: the option whose members hold the reference
+    old = json.loads(json.dumps(mc))
+    old["label"]["answer_check"]["reference"] = ["unscrew", W.SCREWS[0]]
+    old["label"]["answer_check"]["equivalent_actions"] = [
+        a for a in check["equivalent_actions"] if a["target"] != shown["target"]]
+    assert json.loads(gold_reply(old, world)) == {"choice": LETTERS[right]}
+    assert grade(old, gold_reply(old, world), world, tax).score == 1.0
+    # every gold reply of the export scores 1, and the independent checker agrees
+    for r in records:
+        assert grade(r, gold_reply(r, world), world, tax).score == 1.0, r["label"]["readable_id"]
+    assert Checker(db, tax, W.DESKTOP).check_all(records) == len(records)
+    db.close()

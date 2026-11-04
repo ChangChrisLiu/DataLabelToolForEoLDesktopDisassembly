@@ -49,7 +49,7 @@ import vlm_io as IO  # noqa: E402
 from vlm_glossary import glossary_text  # noqa: E402
 from vlm_to_chat import (VIEW_NAMES, image_legend, legend_line, marks_line,  # noqa: E402
                          shown_marks)
-from tda.core.export.vlm_check import LETTERS, World, format_key  # noqa: E402
+from tda.core.export.vlm_check import LETTERS, World, format_key, reference_option  # noqa: E402
 
 __all__ = ["CSV_COLUMNS", "VERDICTS", "boxes_of", "build", "csv_skeleton", "frames_html",
            "gold_lines", "item_html", "load_context", "main", "marks_of", "name_of", "page",
@@ -153,10 +153,8 @@ def gold_lines(record: dict, world: Optional[World] = None) -> list[tuple[str, s
             out.append(("reason", str(answer["reason"])))
         out.append(("truth source", str(label.get("truth_source"))))
     elif key == "V6.options":
-        ref = tuple(check.get("reference") or [])
         options = label.get("options") or []
-        index = next((i for i, o in enumerate(options)
-                      if (o.get("verb"), o.get("target")) == ref), None)
+        index = reference_option(label)
         letter = LETTERS[index] if index is not None else "?"
         out.append(("choice", f"{letter}: {_action(answer, world)}"))
         kinds = ", ".join(f"{LETTERS[i]} {o.get('kind', '?')}" for i, o in enumerate(options))
@@ -588,11 +586,8 @@ def _gold_letter(record: dict) -> Optional[str]:
     label = record["label"]
     if format_key(record) != "V6.options":
         return None
-    ref = tuple(label["answer_check"].get("reference") or [])
-    for i, o in enumerate(label.get("options") or []):
-        if (o.get("verb"), o.get("target")) == ref:
-            return LETTERS[i]
-    return None
+    index = reference_option(label)
+    return None if index is None else LETTERS[index]
 
 
 def csv_row(record: dict, batch: int) -> dict:
