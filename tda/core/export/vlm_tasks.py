@@ -1686,9 +1686,9 @@ def json_key(value: Any) -> str:
 # V3 -- what happened between two frames
 # --------------------------------------------------------------------------- #
 V3_QUESTIONS = (
-    "What action was just performed between these two images?",
-    "Compare the two images: which action was carried out?",
-    "What did the operator just do between the first image and the second?",
+    "What action was carried out between the pictures before and the pictures after?",
+    "Compare the machine before and after the action: which action was carried out?",
+    "What did the operator just do between the moment before and the moment after?",
 )
 
 
@@ -1951,13 +1951,21 @@ def gen_v4(tc: TaskCtx, step: int) -> Iterator[dict]:
         return
     # one certain "no" for each certain "yes", matched to the positive's verb
     # and class so the pair cannot be told apart without looking at the picture
-    candidates = [c for c in tc.certainly_wrong(step) if c.kind in GRAPH_KINDS]
-    if not frame.confirmed:
-        # a view without confirmed rows (W3b): the pair is asked only when the "no"
-        # shares the "yes"'s verb: an unpaired verb is a giveaway
-        if not any(c.verb == action.verb for c in candidates):
-            tc.skip("V4", "unconfirmed_view_no_same_verb_negative")
-            return
+    # ... and of the **same verb**, always (the controller's ruling, 2026-11-03): with only
+    # the graph's "no"s left, a verb no edge gates (`unscrew`, `disconnect`) would
+    # otherwise only ever be a "yes", and the verb would answer the question
+    candidates = [c for c in tc.certainly_wrong(step)
+                  if c.kind in GRAPH_KINDS and c.verb == action.verb]
+    yield from _v4_pair(tc, frame, step, action, candidates)
+    yield from _v4_failed(tc, frame, step, state)
+
+
+def _v4_pair(tc: TaskCtx, frame: FrameData, step: int, action: ActionRec,
+             candidates: Sequence[Candidate]) -> Iterator[dict]:
+    """The demonstrated "yes" and its same-verb graph "no", both or neither."""
+    if not candidates:
+        tc.skip("V4", "no_same_verb_negative")
+        return
     positive = _v4_record(tc, frame, action.verb, action.target, V4_QUESTIONS,
                           DEMONSTRATED)
     if positive is None:
@@ -1974,12 +1982,15 @@ def gen_v4(tc: TaskCtx, step: int) -> Iterator[dict]:
             break
         negative = None
     if negative is None:
-        tc.skip("V4", "no_graph_negative")
+        tc.skip("V4", "no_same_verb_negative")
     else:
         yield positive
         yield negative
 
-    # the attempt the operator actually made and could not finish
+
+def _v4_failed(tc: TaskCtx, frame: FrameData, step: int,
+               state: FrameState) -> Iterator[dict]:
+    """The attempt the operator actually made and could not finish."""
     for attempt in tc.failed_actions(step + 1):
         rec = tc.ctx.instances.get(attempt.target)
         if rec is None or attempt.target not in state:
@@ -2059,13 +2070,14 @@ def gen_v5(tc: TaskCtx, step: int) -> Iterator[dict]:
 # --------------------------------------------------------------------------- #
 V6_QUESTIONS = (
     "What is the next disassembly step? Answer with one verb and one target.",
-    "Looking at this frame, which action would you perform next?",
+    "Looking at the machine in these pictures, which action would you perform next?",
     "Name the single action to carry out next on this machine.",
 )
 #: The multiple-choice form (W3b): a secondary record beside the open one.
 V6_MC_QUESTIONS = (
     "Which of these is the next disassembly step?",
-    "Looking at this frame, which of the following actions would you perform next?",
+    "Looking at the machine in these pictures, which of the following actions would you "
+    "perform next?",
     "Pick the single action to carry out next on this machine.",
 )
 #: How many graph-permitted "unknown" distractors ride along, and how many
@@ -2354,7 +2366,7 @@ V8_QUESTIONS = (
 )
 #: The set form (redesign, spec 6.3): a class with several instances is asked as a whole.
 V8_SET_QUESTIONS = (
-    "Localise every visible {phrase} in this image: one bounding box each.",
+    "Localise all visible {phrase} in this image: one bounding box each.",
     "Find all the {phrase} you can see and give a bounding box for each.",
     "Where are the {phrase}? Give a bounding box for every one you can see.",
 )
@@ -2468,7 +2480,7 @@ def _v8_set(tc: TaskCtx, frame: FrameData, mc: str, instance: str) -> dict:
 # --------------------------------------------------------------------------- #
 V10_QUESTIONS = (
     "Which disassembly actions have already been carried out on this machine?",
-    "From this single frame, list the actions that have happened so far and say "
+    "From these pictures of one moment, list the actions that have happened so far and say "
     "how far the teardown has got.",
     "What has been done to this machine up to now, and what fraction of the "
     "teardown is finished?",
@@ -2552,9 +2564,9 @@ def gen_v10(tc: TaskCtx, step: int) -> Iterator[dict]:
 # V12 -- did anything change between these two frames
 # --------------------------------------------------------------------------- #
 V12_QUESTIONS = (
-    "Did anything change between these two images? If so, what?",
-    "Compare the two frames: is the machine in a different state?",
-    "Are these two photos of the same machine state, or did something change?",
+    "Did anything change between the moment before and the moment after? If so, what?",
+    "Compare the machine before and after: is it in a different state?",
+    "Do the pictures before and after show the same machine state, or did something change?",
 )
 
 
@@ -3538,8 +3550,7 @@ def _v7_record(tc: TaskCtx, frame: FrameData, goal: str,
          "metric": "violation_free+required_recall+goal_reached",
          "any_legal_plan_scores": True,
          "redundancy_penalty": False, "necessity": "required",
-         "required_actions": [dict(r.as_json(), group=_gid_of(tc, r.target))
-                              for r in required],
+         "required_actions": required_json(tc, state, required),
          "reference_shortest": shortest, "demonstrated_remainder": shown,
          "plan_groups": groups,
          "plan_length": len(shortest), "demonstrated_length": len(demonstrated),
@@ -3553,6 +3564,39 @@ def _v7_record(tc: TaskCtx, frame: FrameData, goal: str,
         view_confirmed=frame.confirmed, marks=namer.marks(), terms=[V7_GOAL_CLASS],
         moment=tc.legend((step, "now")),
     )
+
+
+def required_json(tc: TaskCtx, state: FrameState,
+                  required: Sequence[Requirement]) -> list[dict]:
+    """V7's required state changes, captive screws as **one** group item (spec 6.6).
+
+    :func:`required_actions` stops requiring a cooler screw once the log loosened it --
+    a fact no picture shows, and a list that shrinks screw by screw would say on the label
+    side which of them are loose. While the part they hold is in, the group's members are
+    one requirement, every member, whatever the log says: target the group id, ``members``
+    all of them, states ``loosened`` / ``removed``.
+    """
+    pending = {g.gid: g for g in pending_captive(tc, state)}
+    out: list[dict] = []
+    placed: set[str] = set()
+    for req in required:
+        group = tc.group_of(req.target)
+        if group is not None and group.gid in pending:
+            continue   # folded into the group item below
+        out.append(dict(req.as_json(), group=_gid_of(tc, req.target)))
+    by_target = {r.target: r for r in required}
+    for gid, group in sorted(pending.items()):
+        held = tc.ctx.instances[group.members[0]].fastens
+        if held not in by_target or gid in placed:
+            continue   # the plan never has to move the part they hold
+        placed.add(gid)
+        edges = [e for e in tc.by_target.get(held, ()) if e.blocker in group.members]
+        via = tuple(by_target[held].via) + tuple(edges[:1])
+        out.append({"target": gid, "states": ["loosened", REMOVED],
+                    "via": [e.label() for e in via],
+                    "pixel_only": any(is_pixel_edge(e) for e in via),
+                    "group": gid, "members": list(group.members)})
+    return out
 
 
 def _gid_of(tc: TaskCtx, key: str) -> Optional[str]:

@@ -288,7 +288,7 @@ def test_action_record_has_four_images_scan_first(four):
 
 def test_missing_side_view_shrinks_legend(four):
     db, tax, tc = four
-    step = 2
+    step = min(r["label"]["step"] for r in _gen(tc, "V4"))
     tc.side_frames["oak2"].pop(step)            # that camera has no picture of the step
     records = [r for r in _gen(tc, "V4") if r["label"]["step"] == step]
     assert records
@@ -388,6 +388,67 @@ def test_oracle_carries_groups(tmp_path):
                                      "anchor": W.COOLER, "label": "CPU cooler screws"}}
     for key, inst in world["instances"].items():
         assert inst["group"] == (GID if key in W.SCREWS else None), key
+    db.close()
+
+
+def test_v7_requires_the_captive_screws_as_one_group_while_the_cooler_is_in(tmp_path):
+    """Fix round 1: required_actions does not shrink screw by screw as the log loosens them."""
+    db = Db(str(tmp_path / "w.sqlite"))
+    tax = W.build(db)
+    records = _of(_export(db, tax, tmp_path / "v.jsonl", desktop=W.DESKTOP, view=W.VIEW),
+                  "V7")
+    by_step = {r["label"]["step"]: r for r in records}
+    for step in range(2, 9):                    # the cooler comes out at step 9
+        required = by_step[step]["label"]["answer_check"]["required_actions"]
+        targets = [r["target"] for r in required]
+        assert targets.count(GID) == 1, (step, targets)
+        assert not set(W.SCREWS) & set(targets), (step, targets)
+        item = next(r for r in required if r["target"] == GID)
+        assert item["members"] == list(W.SCREWS) and item["states"] == ["loosened", "removed"]
+    # identical from step 4 to 8, whatever the log loosened in between
+    shapes = {json.dumps(next(r for r in by_step[s]["label"]["answer_check"]["required_actions"]
+                              if r["target"] == GID), sort_keys=True) for s in range(4, 9)}
+    assert len(shapes) == 1
+    assert Checker(db, tax, W.DESKTOP).check_all(records) == len(records)
+    db.close()
+
+
+BANNED_WORDING = ("two images", "single frame", "this frame", "first image", "two frames",
+                  "these two", "two photos")
+
+
+def test_action_task_questions_fit_a_set_of_views(four):
+    """Fix round 1: an action-task record shows every camera of a moment (or two moments)."""
+    db, tax, tc = four
+    from tda.core.export import vlm_tasks as T
+
+    templates = [*T.V3_QUESTIONS, *T.V4_QUESTIONS, *T.V4_FAILED_QUESTIONS, *T.V6_QUESTIONS,
+                 *T.V6_MC_QUESTIONS, *T.V7_QUESTIONS, *T.V10_QUESTIONS, *T.V12_QUESTIONS,
+                 *T.V16_QUESTIONS]
+    for text in templates:
+        for banned in BANNED_WORDING:
+            assert banned not in text.lower(), (banned, text)
+    for task in ("V3", "V4", "V6", "V7", "V10", "V12", "V16"):
+        for r in _gen(tc, task):
+            low = r["prompt"]["question"].lower()
+            assert not any(b in low for b in BANNED_WORDING), (task, low)
+
+
+def test_v8_set_question_reads_with_a_plural(tmp_path):
+    from tda.core.export.vlm_tasks import V8_SET_QUESTIONS
+
+    # the phrase is a plural: never "every {phrase}" ("every visible motherboard screws")
+    assert not any(re.search(r"every\s+(visible\s+)?\{phrase\}", t) for t in V8_SET_QUESTIONS)
+    db = Db(str(tmp_path / "wide.sqlite"))
+    tax = S.build_wide(db, desktops=(21,), confirm_step=1)
+    records = _of(_export(db, tax, tmp_path / "v.jsonl", desktop=21), "V8")
+    sets = [r for r in records if r["label"]["answer_check"]["type"] == "components"]
+    assert sets
+    for r in sets:
+        question = r["prompt"]["question"]
+        assert not re.search(r"\bevery (visible )?[A-Za-z ]*(screws|connectors|modules|latches)\b",
+                             question), question
+        assert re.search(r"(screws|connectors|modules|latches)\b", question), question
     db.close()
 
 

@@ -409,13 +409,15 @@ def test_v4_negatives_match_their_positive_and_cannot_be_read_off_the_verb(
         yes = [r for r in group if r["answer"]["feasible"]]
         no = [r for r in group if not r["answer"]["feasible"]
               and r["truth_source"] != "failed_attempt"]
-        assert len(yes) == 1 and len(no) <= 1, step
+        # redesign 2026-11-03: a "yes" comes with its same-verb graph "no", or not at all
+        assert len(yes) == len(no) <= 1, step
         if not no:
-            assert not checker.certainly_wrong(step), step
             continue
         want_verb = yes[0]["answer_check"]["verb"]
         want_cls = yes[0]["answer_check"]["target_class"]
-        available = checker.certainly_wrong(step)
+        assert no[0]["answer_check"]["verb"] == want_verb, step
+        available = {p: k for p, k in checker.certainly_wrong(step).items()
+                     if k != "state_inapplicable" and p[0] == want_verb}
         chosen = (no[0]["answer_check"]["verb"], no[0]["answer_check"]["target"])
         assert chosen in available, (step, chosen)
 
@@ -1108,15 +1110,18 @@ def test_the_question_text_alone_does_not_answer_v4(tmp_path: Path):
     stats = export_vlm(db, tax, list(S.WIDE_DESKTOPS), S.VIEW,
                        str(tmp_path / "wide.jsonl"), only_verified=False)
     row = stats["shortcuts"]["V4"]
-    assert row["records"] >= 100
-    for key in ("majority", "template"):
+    # redesign 2026-11-03: same-verb pairs only, and on this corpus only `remove` is ever
+    # gated by an edge -- 24 records, not the 128 of before
+    assert row["records"] >= 20
+    # redesign 2026-11-03: every "yes" is paired with a graph "no" of the same verb
+    for key in ("majority", "verb", "template"):
         assert row[key] <= 0.65, (key, row[key], row["labels"])
-    # KNOWN REGRESSION (redesign 2026-11-03, spec 3.3): with the state-inapplicable
-    # negatives gone, a "no" only ever comes from an edge, and no edge gates `unscrew`
-    # or `disconnect` -- so the verb answers V4 again on this corpus (0.91). Recorded,
-    # not fixed: whether V4 keeps only same-verb pairs is the owner's call.
-    for key in ("verb", "class", "verb_class"):
-        assert row[key] <= 0.95, (key, row[key], row["labels"])
+    # OPEN (fix round 1, for the controller): on these 24 records the class predicts
+    # 16 (0.667) -- the last RAM module's only same-verb "no" is the motherboard, so
+    # `motherboard` is always a "no". Same verb + same class strictly would fix it and
+    # drop every unique part's pair; not decided here.
+    for key in ("class", "verb_class"):
+        assert row[key] <= 0.70, (key, row[key], row["labels"])
 
     records = _read(tmp_path / "wide.jsonl")
     assert not scan_prompt_leaks(records)
