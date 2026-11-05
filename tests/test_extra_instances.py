@@ -562,6 +562,8 @@ def test_the_vlm_export_asks_its_state_and_nothing_else_about_it(exported_scene,
     from tda.core.export.vlm import export_vlm
     from vlm_checker import Checker
 
+    from tda.core.export.vlm_check import answer_keys
+
     db, tax = exported_scene
     out = tmp_path / "v.jsonl"
     export_vlm(db, tax, [VS.DESKTOP], VS.VIEW, str(out), balance=False)
@@ -575,19 +577,27 @@ def test_the_vlm_export_asks_its_state_and_nothing_else_about_it(exported_scene,
               and r["label"]["answer_check"].get("instance") == EXTRA]
     assert states and all(r["label"]["answer"] == {"state": "closed"} for r in states)
     assert [r for r in records if r["prompt"]["task"] == "V1" and about(r)]
-    # no history task names it: nothing was ever done to it, and nothing about it
-    # is demonstrated or certainly blocked, so V4 never asks about it either
-    for task in ("V3", "V4", "V10", "V16"):
+    # no history task names it: nothing was ever done to it
+    for task in ("V3", "V10", "V16"):
         assert not [r for r in records if r["prompt"]["task"] == task and about(r)], task
-    # V6's answer is the logged next action, never it; the clip *can* be opened,
-    # so it is in the graph-permitted upper bound, exactly like the logged clip
+    # V4 asks about every visible part since the 2026-11-04 expansion; about it, only
+    # what the graph tells (it may be opened while the board is in), never a demonstration
+    v4 = [r for r in records if r["prompt"]["task"] == "V4" and about(r)]
+    assert v4 and {(r["label"].get("truth_source"), r["label"]["answer_check"].get("verb"))
+                   for r in v4} == {("permitted", "open")}
+    # V6 asks the frontier (round 1: every action possible now): the clip *can* be
+    # opened while the board is in, so it is there exactly like the logged clip, and
+    # never under any other verb
+    seen = []
     for record in (r for r in records if r["prompt"]["task"] == "V6"):
         check = record["label"]["answer_check"]
-        assert record["label"]["answer"]["target"] != EXTRA
         assert EXTRA not in json.dumps(check.get("blocked_actions"))
-        named = [a for a in check.get("permitted_upper_bound") or []
-                 if a["target"] == EXTRA]
+        keys = answer_keys(record)
+        named = [a for a in (keys.get("actions") or [keys]) if a.get("target") == EXTRA]
         assert named in ([], [{"verb": "open", "target": EXTRA}])
+        seen += named
+        assert EXTRA not in json.dumps(record["label"]["answer"])  # plain words only
+    assert seen
     # V5 likewise: never a must, only the permitted upper bound
     for record in (r for r in records if r["prompt"]["task"] == "V5"):
         answer = record["label"]["answer"]

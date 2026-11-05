@@ -68,8 +68,10 @@ CANNOT_TELL = "cannot_tell"
 FIELDS = {
     "V1": ("boxes",), "V2.state": ("state",), "V2.count": ("count",),
     "V3": ("verb", "target", "tool"), "V4": ("feasible", "blockers"),
-    "V6.open": ("verb", "target"), "V6.options": ("choice",), "V7": ("plan",),
-    "V8": ("boxes",), "V10": ("done", "progress"), "V12": ("changed",), "V14": ("state",),
+    # V3's free form also asks the model for a region; a person answers the action alone
+    "V3.region": ("verb", "target", "tool"),
+    "V6.open": ("actions",), "V3.span": ("actions",), "V6.options": ("choice",), "V7": ("plan",),
+    "V8": ("boxes",), "V10": ("done", "progress"), "V12": ("changed",),
     "V15.moment": ("same_moment",), "V15.cross": ("state", "best_view"),
     "V16": ("valid", "first_error_step"),
 }
@@ -108,7 +110,8 @@ def order_pairs(rows: list[dict]) -> list[dict]:
 
 
 def allowed_states(record: dict) -> list[str]:
-    """The state vocabulary a V2 / V14 question is answered in (what the model is told)."""
+    """The state vocabulary a V2 question is answered in (what the model is told; since V14
+    merged into V2 it ends with ``cannot_tell``)."""
     check = record["label"].get("answer_check") or {}
     allowed = list(check.get("allowed") or [])
     if not allowed and check.get("state_space") == "presence":
@@ -159,24 +162,25 @@ def fields_html(record: dict) -> str:
     elif key == "V2.count":
         rows.append('<div class="row">count: <input type="number" min="0" step="1" '
                     'data-field="count" style="width:6em"></div>')
-    elif key == "V3":
+    elif key in ("V3", "V3.region"):
         rows.append(f'<div class="row">{_verb_select("verb")} '
-                    f'{_text("target", "the part acted on, e.g. Motherboard screw 2")} '
+                    f'{_text("target", "the part acted on, e.g. a motherboard screw")} '
                     f'tool: {_text("tool", "tool, or leave empty", 14)}</div>')
     elif key == "V4":
         rows.append(f'<div class="row">feasible now? {_yes_no(rid, "feasible")}</div>'
                     f'<div class="row">blockers (if not; separate with ;): '
-                    f'{_text("blockers", "e.g. CPU cooler 1; Fan connector 1", 50)}</div>')
-    elif key == "V6.open":
-        rows.append(f'<div class="row">{_verb_select("verb")} '
-                    f'{_text("target", "the part, e.g. PSU 1")}</div>')
+                    f'{_text("blockers", "e.g. the CPU cooler; the fan connector", 50)}</div>')
+    elif key in ("V6.open", "V3.span"):
+        rows.append('<div class="row">every action that can be carried out now, one per line as '
+                    '"verb part" (e.g. <code>disconnect the connectors</code>):<br>'
+                    '<textarea data-field="actions" rows="6"></textarea></div>')
     elif key == "V6.options":
         n = len(record["prompt"].get("options") or [])
         rows.append('<div class="row">choice: ' + _radio(rid, "choice", [(L, L) for L in LETTERS[:n]])
                     + "</div>")
     elif key == "V7":
         rows.append('<div class="row">the remaining plan, one action per line as "verb part" '
-                    '(e.g. <code>unscrew Motherboard screw 2</code>), in order, ending with the '
+                    '(e.g. <code>unscrew the motherboard screws</code>), in order, ending with the '
                     'removal asked for:<br><textarea data-field="plan" rows="6"></textarea></div>')
     elif key == "V10":
         rows.append('<div class="row">actions already done, one per line as "verb part":<br>'
@@ -185,10 +189,6 @@ def fields_html(record: dict) -> str:
                     + _radio(rid, "progress", [(b, b + " %") for b in PROGRESS_BINS]) + "</div>")
     elif key == "V12":
         rows.append(f'<div class="row">did the state change? {_yes_no(rid, "changed")}</div>')
-    elif key == "V14":
-        allowed = allowed_states(record)
-        opts = [(s, s) for s in allowed] + [(CANNOT_TELL, "cannot tell from this view / 看不出")]
-        rows.append('<div class="row">state: ' + _radio(rid, "state", opts) + "</div>")
     elif key == "V15.moment":
         rows.append(f'<div class="row">same moment? {_yes_no(rid, "same_moment")}</div>')
     elif key == "V15.cross":
@@ -414,8 +414,8 @@ def build(records: Sequence[dict], exports: Sequence, image_root, out_dir, *,
                       guide=HUMAN_GUIDE)
         text = text.replace("<body ", "<body data-classes=\""
                             + S.esc(json.dumps(classes, separators=(",", ":"))) + "\" ", 1)
-        text = text.replace('<label><input type="checkbox" id="toggle-boxes" checked> '
-                            'boxes / 显示框</label>', "", 1)
+        # a participant sees the model's view and nothing else: no reviewer layer, no switch
+        text = text.replace(S.REVIEW_TOGGLE, "", 1)
         (out / f"{sheet}.html").write_text(text, encoding="utf-8", newline="\n")
         files.append(f"{sheet}.html")
     (out / f"{name}.ids.txt").write_text("".join(r["id"] + "\n" for r in records),
@@ -487,7 +487,7 @@ def to_answer(key: str, fields: dict) -> Optional[dict]:
             return {"count": int(float(str(f.get("count")).strip()))}
         except (TypeError, ValueError):
             return None
-    if key == "V3":
+    if key in ("V3", "V3.region"):
         tool = str(f.get("tool", "")).strip()
         return {"verb": str(f.get("verb", "")).strip().lower(), "target": str(f.get("target", "")).strip(),
                 "tool": tool or None}
@@ -497,8 +497,8 @@ def to_answer(key: str, fields: dict) -> Optional[dict]:
             return None
         blockers = [b.strip() for b in _SPLIT.split(str(f.get("blockers", ""))) if b.strip()]
         return {"feasible": feasible, "blockers": [] if feasible else blockers}
-    if key == "V6.open":
-        return {"verb": str(f.get("verb", "")).strip().lower(), "target": str(f.get("target", "")).strip()}
+    if key in ("V6.open", "V3.span"):
+        return {"actions": _actions(f.get("actions"))}
     if key == "V6.options":
         return {"choice": str(f.get("choice", "")).strip().upper()[:1]}
     if key == "V7":
@@ -508,11 +508,6 @@ def to_answer(key: str, fields: dict) -> Optional[dict]:
     if key == "V12":
         changed = _bool(f.get("changed"))
         return None if changed is None else {"changed": changed}
-    if key == "V14":
-        state = str(f.get("state", "")).strip()
-        if state == CANNOT_TELL:
-            return {"answerable": False, "state": None}
-        return {"answerable": True, "state": state}
     if key == "V15.moment":
         same = _bool(f.get("same_moment"))
         return None if same is None else {"same_moment": same}
@@ -552,14 +547,14 @@ def gold_fields(record: dict, world: Optional[World] = None) -> dict:
         return {"state": answer["state"]}
     if key == "V2.count":
         return {"count": str(answer["count"])}
-    if key == "V3":
+    if key in ("V3", "V3.region"):
         return {"verb": answer["verb"], "target": name(answer["target_instance"]),
                 "tool": answer.get("tool") or ""}
     if key == "V4":
         return {"feasible": "yes" if answer["feasible"] else "no",
                 "blockers": "; ".join(name(b) for b in answer.get("blockers") or [])}
-    if key == "V6.open":
-        return {"verb": answer["verb"], "target": name(answer["target"])}
+    if key in ("V6.open", "V3.span"):
+        return {"actions": lines(answer["actions"])}
     if key == "V6.options":
         return {"choice": LETTERS[reference_option(label)]}
     if key == "V7":
@@ -568,8 +563,6 @@ def gold_fields(record: dict, world: Optional[World] = None) -> dict:
         return {"done": lines(answer["done"]), "progress": answer["progress_bin"]}
     if key == "V12":
         return {"changed": "yes" if answer["changed"] else "no"}
-    if key == "V14":
-        return {"state": answer["state"] if answer["answerable"] else CANNOT_TELL}
     if key == "V15.moment":
         return {"same_moment": "yes" if answer["same_moment"] else "no"}
     if key == "V15.cross":

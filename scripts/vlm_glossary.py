@@ -87,10 +87,19 @@ MODEL_TEXT: dict[str, str] = {
 #: One plain line per state, from what the photograph shows. DRAFT -- the owner reviews it.
 #: Authored from ``configs/taxonomy.yaml`` (every class with two or more states; ``chassis``
 #: has one and is left out).
+#:
+#: ``displaced`` (owner decision (a), 2026-11-04): every class says what it concretely means for
+#: that part. Four classes use it in the 2026-11-02 pack -- gold ``displaced`` in V2 / V14 of
+#: ``vlm_scan`` and the ``displace`` verb or a ``displaced`` state anywhere in ``vlm_multi``:
+#: ``drive_cage`` (V2 128, V14 6; multi 619, almost all the optical drive in its hinged
+#: bracket), ``psu`` (V2 102; multi 511), ``storage_drive`` (V2 5; multi 44) and ``cpu_cooler``
+#: (V2 2, V14 1, the M91P's fan; multi 34). No other class has it as a gold state.
 STATE_MEANINGS: dict[str, dict[str, str]] = {
     "drive_cage": {
         "installed": "the cage sits in its place in the case",
-        "displaced": "the cage has been moved or swung out of its place but is still in the case",
+        "displaced": "the cage -- on most machines here the optical drive in its bracket -- "
+                     "has been swung up or tilted out of its seat on its hinge but is still "
+                     "attached to the case",
         "removed": "the cage is out of the case (it may lie on the bench beside it)",
     },
     "cover": {
@@ -100,45 +109,50 @@ STATE_MEANINGS: dict[str, dict[str, str]] = {
     },
     "cooler_bracket": {
         "installed": "the bracket sits in its place, holding the CPU cooler down",
-        "displaced": "the bracket has been lifted or moved off its seat but is still in the case",
+        "displaced": "the bracket has been lifted off its seat over the CPU cooler but is still "
+                     "in the case",
         "removed": "the bracket is out of the case",
     },
     "motherboard": {
         "installed": "the board is mounted in the case",
-        "displaced": "the board has been shifted or lifted from its mounting but is still in "
+        "displaced": "the board has been lifted or slid off its mounting posts but is still in "
                      "the case",
         "removed": "the board is out of the case",
     },
     "cpu": {
         "installed": "the processor sits in its socket",
-        "displaced": "the processor has been lifted out of its socket but is still in the machine",
+        "displaced": "the processor has been lifted out of its socket but still lies in the "
+                     "machine",
         "removed": "the processor is out of the machine; its socket is empty",
     },
     "cpu_cooler": {
         "installed": "the cooler sits on the CPU",
-        "displaced": "the cooler has been lifted or shifted off the CPU but is still in the case",
+        "displaced": "the cooler (on the machines that use this state, its fan) has been lifted "
+                     "or swung off the CPU but is still in the case, held by its cable or hinge",
         "removed": "the cooler is out of the case",
     },
     "ram_module": {
         "installed": "the stick is seated in its slot",
-        "displaced": "the stick is tilted or pulled partly out of its slot but still there",
+        "displaced": "the stick has been tilted or pulled partly out of its slot but is still "
+                     "in it",
         "removed": "the stick is out of the machine; its slot is empty",
     },
     "psu": {
         "installed": "the power supply sits in its bay",
-        "displaced": "the power supply has been moved out of its working position but is still "
-                     "in the case (e.g. swung or folded open)",
+        "displaced": "the power supply has been pulled or swung out of its bay (on many small "
+                     "cases it tips up on a hinge) but is still in the case",
         "removed": "the power supply is out of the case",
     },
     "storage_drive": {
         "installed": "the drive sits in its bay or cage",
-        "displaced": "the drive has been slid or pulled partly out of its bay but is still in "
-                     "the case",
+        "displaced": "the drive has been slid or pulled partly out of its bay or cage but is "
+                     "still in the case",
         "removed": "the drive is out of the case",
     },
     "optical_drive": {
         "installed": "the drive sits in its bay",
-        "displaced": "the drive has been pushed or slid out of its bay but is still in the case",
+        "displaced": "the drive has been pushed or slid partly out of its bay but is still in "
+                     "the case",
         "removed": "the drive is out of the case",
     },
     "expansion_card": {
@@ -148,12 +162,13 @@ STATE_MEANINGS: dict[str, dict[str, str]] = {
     },
     "case_fan": {
         "installed": "the fan is mounted in its place on the case",
-        "displaced": "the fan has been moved off its mount but is still in the case",
+        "displaced": "the fan has been taken off its mount but still hangs in the case (e.g. by "
+                     "its cable)",
         "removed": "the fan is out of the case",
     },
     "misc_part": {
         "installed": "the part is in its place",
-        "displaced": "the part has been moved from its place but is still in the machine",
+        "displaced": "the part has been moved off its place but is still in the machine",
         "removed": "the part is out of the machine",
     },
     "screw": {
@@ -195,7 +210,7 @@ STATE_MEANINGS: dict[str, dict[str, str]] = {
     },
     "cable_clip": {
         "closed": "the clip holds its cable in place",
-        "open": "the clip is released and holds no cable in place; the cable can be lifted out",
+        "open": "the clip is open and its cable has been taken out of it",
         "removed": "the clip has left the machine with the part it sits on",
     },
     "connector": {
@@ -270,4 +285,13 @@ def glossary_text(terms: Optional[Iterable] = None, state_terms: Optional[Iterab
         if cls in states and meanings:
             line += " States: " + "; ".join(f"{s} = {m}" for s, m in meanings.items()) + "."
         lines.append(line)
+    if states:
+        # V14 merged into V2 (owner 2026-11-04): a state question may be answered "cannot tell"
+        lines.append(f"- {CANNOT_TELL}: {CANNOT_TELL_MEANING}")
     return "\n".join(lines)
+
+
+#: The answer a V2 state question has beside the class's states (V14 merged into V2).
+CANNOT_TELL = "cannot_tell"
+CANNOT_TELL_MEANING = ("this image does not show the part well enough to tell its state "
+                       "(it is covered, too small, or outside the picture).")

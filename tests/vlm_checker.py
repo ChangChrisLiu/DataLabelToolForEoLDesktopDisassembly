@@ -77,12 +77,39 @@ BLOCKED_GATES = {
     "mounted": {"remove", "displace"},
     # a load the part carries (task W3g): a drive in the cage; the cage may move
     "contained": {"remove"},
+    # a part lying loose in the case (R16, the owner 2026-11-04): it comes out first --
+    # every verb on anything outside its own way out waits for it
+    "loose": set(GATED_VERBS),
 }
 
 #: ``blocked_by`` modes whose blocker must reach a narrower set of states
 #: (task W3d): a part mounted on the board has to be removed, not swung aside;
-#: a drive in the cage likewise (``contained``, task W3g).
-BLOCKED_REQUIRED = {"mounted": {"removed"}, "contained": {"removed"}}
+#: a drive in the cage likewise (``contained``, task W3g); a loose part has to be out.
+BLOCKED_REQUIRED = {"mounted": {"removed"}, "contained": {"removed"}, "loose": {"removed"}}
+
+#: The log's vocabulary per ``(class, state)`` (the graph audit of 2026-11-04), transcribed
+#: from the export's own table on purpose: V6's frontier offers nothing else.
+LOG_VOCAB = {
+    ("cable_clip", "closed"): {"release"}, ("card_latch", "closed"): {"open", "remove"},
+    ("case_fan", "installed"): {"remove"}, ("connector", "plugged"): {"disconnect"},
+    ("cooler_bracket", "installed"): {"remove"}, ("cooler_latch", "closed"): {"remove"},
+    ("cover", "closed"): {"open", "remove"}, ("cover", "open"): {"remove"},
+    ("cpu", "installed"): {"remove"}, ("cpu_cooler", "installed"): {"remove", "displace"},
+    ("cpu_cooler", "displaced"): {"remove"}, ("cpu_socket_lever", "closed"): {"open"},
+    ("drive_cage", "installed"): {"remove", "displace"}, ("drive_cage", "displaced"): {"remove"},
+    ("drive_latch", "closed"): {"open"}, ("expansion_card", "installed"): {"remove"},
+    ("misc_part", "installed"): {"remove"}, ("motherboard", "installed"): {"remove"},
+    ("optical_drive", "installed"): {"remove"}, ("psu", "installed"): {"remove", "displace"},
+    ("psu", "displaced"): {"remove"}, ("psu_latch", "closed"): {"remove"},
+    ("ram_latch", "closed"): {"open"}, ("ram_module", "installed"): {"remove"},
+    ("screw", "fastened"): {"unscrew"}, ("storage_drive", "installed"): {"remove", "displace"},
+    ("storage_drive", "displaced"): {"remove"},
+}
+#: Classes whose every action is one frontier group.
+ONE_GROUP = ("connector", "ram_latch", "ram_module")
+
+#: How many logged actions the export reads for a V16 plan (vlm_tasks.V16_PLAN_LEN).
+V16_PLAN_LEN = 5
 
 #: A rejected edge, and a decision about a rule that is no longer derived, gate
 #: nothing. Everything else -- proposed, accepted -- does.
@@ -146,9 +173,11 @@ class Checker:
         self.db = db
         self.tax = tax
         self.desktop = int(desktop)
+        # a part drawn for the components gallery only (``attrs.gallery_only``) is not a
+        # part of the teardown: the export leaves it out, and so does this file
         self.instances = {
             key: rec for key, rec in db.instances(desktop).items()
-            if not key.startswith(LS_PREFIX)
+            if not key.startswith(LS_PREFIX) and not rec.attrs.get("gallery_only")
         }
         self.actions = sorted(db.actions(desktop), key=_key)
         self.steps = {s.step: s for s in db.steps(desktop)}
@@ -171,7 +200,12 @@ class Checker:
 
         hit = self._rows.get((view, step))
         if hit is None:
-            hit = self.db.compiled(FrameKey(self.desktop, step, view))
+            key = FrameKey(self.desktop, step, view)
+            hit = {k: dict(v) for k, v in self.db.compiled(key).items()}
+            # what hides a part in its place (U15, 被线挡住) is the frame's override
+            for inst, fo in self.db.frame_overrides(key).items():
+                if fo.occluder and inst in hit:
+                    hit[inst]["occluder"] = fo.occluder
             self._rows[(view, step)] = hit
         return hit
 
@@ -293,11 +327,15 @@ class Checker:
         A blocker that is ``removed``, or that is not a node of this desktop at
         all, satisfies any edge: it is out of the way, whatever the edge asked
         for. A ``recommended`` edge is a preference and gates nothing.
+
+        The record's own moment edges (:meth:`moment_edges`: what covers a part in this
+        frame, the loose parts that come out first) and a constrained question's rule are
+        in :attr:`extra` while that record is checked.
         """
         if verb not in GATED_VERBS:
             return []
         out = []
-        for edge in self.edges:
+        for edge in [*self.edges, *getattr(self, "extra", [])]:
             if edge["target"] != target or edge["necessity"] != "required":
                 continue
             if verb not in gates(edge["type"], edge["mode"]):
@@ -471,10 +509,12 @@ class Checker:
             return gid
         return key
 
-    def grouped(self, frame: dict, pairs) -> list[tuple[str, str]]:
+    def grouped(self, frame: dict, pairs, keep=()) -> list[tuple[str, str]]:
         out, seen = [], set()
         for verb, key in pairs:
-            item = (verb, self.as_group(frame, verb, key))
+            rec = self.instances.get(key)
+            item = (verb, key if rec is not None and rec.cls in keep
+                    else self.as_group(frame, verb, key))
             if item not in seen:
                 seen.add(item)
                 out.append(item)
@@ -497,6 +537,46 @@ class Checker:
                 return (step, action) if self.changes_state(action) else None
         return None
 
+    # -- the moment's own rules (owner 2026-11-04), rebuilt from the record ------ #
+    def loose_parts(self, frame: dict) -> list[str]:
+        """Parts flagged ``attrs.loose`` (R16) still in the machine."""
+        return sorted(k for k, rec in self.instances.items()
+                      if rec.attrs.get("loose") and self.present(frame, k))
+
+    def moment_edges(self, record: dict, spec: dict) -> list[dict]:
+        """The record's ``answer_check.moment`` as edge rows: ``covered_by`` per occluder,
+        ``blocked_by`` (mode ``loose``) from every node outside the loose scope to each loose
+        part. The occlusion is the frame's geometry and is taken as given (it is checked
+        against the masks by ``tests/test_graph_owner_rulings.py``); the loose parts are
+        re-derived here and must agree."""
+        moment = spec.get("moment")
+        if moment is None:
+            return []
+        step = int(spec.get("state_after", spec.get("start_step", record["label"]["step"])))
+        frame = self.state_at(step)
+        loose = list(moment.get("loose") or [])
+        if loose != self.loose_parts(frame):
+            _fail(record, f"loose parts {loose} != {self.loose_parts(frame)}")
+        out = [{"type": "covered_by", "target": x, "blocker": y, "necessity": "required",
+                "mode": None, "source": "occlusion"}
+               for x, ys in sorted((moment.get("occluded") or {}).items()) for y in ys]
+        if loose:
+            scope = set(moment.get("loose_scope") or [])
+            nodes = {k for k, v in frame.items() if v["state"] != REMOVED}
+            nodes |= {e["blocker"] for e in self.edges if str(e["blocker"]).startswith(CABLE_PREFIX)}
+            for key in sorted(nodes - scope - set(loose)):
+                out.extend({"type": "blocked_by", "target": key, "blocker": part,
+                            "necessity": "required", "mode": "loose", "source": "loose"}
+                           for part in loose)
+        return out
+
+    @staticmethod
+    def constraint_edges(spec: dict) -> list[dict]:
+        rule = spec.get("constraint") or {}
+        return [{"type": e["type"], "target": e["target"], "blocker": e["blocker"],
+                 "necessity": e.get("necessity", "required"), "mode": e.get("mode"),
+                 "source": "constraint"} for e in rule.get("edges") or []]
+
     # -- dispatch ----------------------------------------------------------- #
     def check(self, record: dict) -> None:
         self._check_common(record)
@@ -506,7 +586,16 @@ class Checker:
         handler = getattr(self, f"_check_{spec['type']}", None)
         if handler is None:
             _fail(record, f"answer_check type {spec['type']!r} has no checker")
-        handler(record, spec)
+        self.extra = self.moment_edges(record, spec)
+        try:
+            handler(record, spec)
+        finally:
+            self.extra = []
+        text = (record["label"].get("rationale") or {}).get("text")
+        if not isinstance(text, str) or not text.strip():
+            _fail(record, "a record without its reasoning in words (rationale.text)")
+        if re.search(r"\b[a-z_]+\.\d{2}\b", text) or "violates" in text or "_by(" in text:
+            _fail(record, f"rationale {text[:80]!r} names a key or the graph's words")
         self.checked += 1
         self.by_type[spec["type"]] = self.by_type.get(spec["type"], 0) + 1
 
@@ -521,9 +610,15 @@ class Checker:
             _fail(record, f"a record is id/prompt/label, not {sorted(record)}")
         prompt, label = record["prompt"], record["label"]
         if set(prompt) - {"task", "images", "question", "options", "marks", "terms",
-                          "state_terms", "image_legend"}:
+                          "state_terms", "image_legend", "hint_regions"}:
             _fail(record, f"the prompt side carries {sorted(prompt)}")
-        if prompt.get("marks") and prompt["task"] in ("V1", "V8", "V14"):
+        if prompt.get("hint_regions") and (prompt["task"] != "V3"
+                                           or label.get("v3_form") != "roi"):
+            _fail(record, "a hint region outside V3's roi form")
+        for hint in prompt.get("hint_regions") or []:
+            if not 0 <= int(hint["image"]) < len(prompt["images"]):
+                _fail(record, f"hint on image {hint['image']} of {len(prompt['images'])}")
+        if prompt.get("marks") and prompt["task"] in ("V1", "V8"):
             _fail(record, "a mark on a task whose box is the answer")
         for mark in prompt.get("marks") or []:
             if not 0 <= int(mark["image"]) < len(prompt["images"]):
@@ -555,7 +650,10 @@ class Checker:
 
     @staticmethod
     def _answer(record: dict) -> dict:
-        return record["label"]["answer"]
+        """The answer with its keys (``answer_check.answer_keys`` since the plain-name round;
+        ``label.answer`` itself names every part plainly)."""
+        label = record["label"]
+        return (label.get("answer_check") or {}).get("answer_keys") or label["answer"]
 
     # V1, V8 -- a set of instances, each with a box
     def _check_boxes(self, record: dict, spec: dict) -> None:
@@ -579,7 +677,8 @@ class Checker:
             expect = {k for k, r in rows.items()
                       if r.get("visibility") in ANSWERABLE and _row_box(r) is not None
                       and k in self.instances
-                      and self.instances[k].cls not in dropped}
+                      and self.instances[k].cls not in dropped
+                      and self.instances[k].cls != "screw_hole"}
             if seen != expect:
                 _fail(record, f"component set {sorted(seen)} != {sorted(expect)}")
 
@@ -630,6 +729,21 @@ class Checker:
             keys = spec.get("members") or [spec["instance"]]
             if spec.get("members") and self.group_of(keys[0]) != spec["instance"]:
                 _fail(record, "members of a group asked under another id")
+            if "cannot_tell" not in (spec.get("allowed") or []):
+                _fail(record, "a V2 state question without the cannot_tell answer")
+            rows = self.rows(view, step)
+            hidden = [k for k in keys if (rows.get(k) or {}).get("visibility")
+                      in ("occluded_full", "too_small", "out_of_view")]
+            if spec.get("hidden"):
+                # V14 merged into V2 (owner 2026-11-04): a part in place this view cannot see
+                if len(hidden) != len(keys):
+                    _fail(record, "a cannot_tell question on a part this view can see")
+                for key in keys:
+                    if not self.present(self.state_at(step), key):
+                        _fail(record, f"{key} is gone, not hidden")
+                return {"state": "cannot_tell"}
+            if hidden:
+                _fail(record, f"a state asked of {hidden}, which this view cannot see")
             shown = set()
             for key in keys:
                 if presence and self.instances[key].attrs.get("captive"):
@@ -666,24 +780,33 @@ class Checker:
                 _fail(record, "an unknown tool must not be a graded field")
             return out
         if kind == "changed":
-            old, new = self.state_at(step - 1), self.state_at(step)
-            events = [{"target": key, "old": old[key]["state"], "new": new[key]["state"]}
-                      for key in sorted(old.keys() & new.keys())
-                      if old[key]["state"] != new[key]["state"]]
-            if spec.get("step_type") == "dupli" or (
-                    self.steps.get(step) is not None and self.steps[step].dupli):
-                if events:
-                    _fail(record, "a dupli step whose state actually moved")
-                return {"changed": False, "events": []}
-            if spec.get("reason") == "captive_screw_loosened":
-                # W3b: only captive screws moved, and a picture cannot show it
-                if not events or any(
-                        not (self.instances.get(e["target"]) is not None
-                             and self.instances[e["target"]].attrs.get("captive"))
-                        for e in events):
-                    _fail(record, "a captive no-change pair where something else moved")
-                return {"changed": False, "events": []}
-            return {"changed": bool(events), "events": events}
+            first = int(spec.get("from_step", step - 1))
+            old, new = self.state_at(first), self.state_at(step)
+            # fan screw holes are a detection category, never a part a question is about;
+            # a captive screw turned in place shows nothing (W3b): not a visible change
+            raw = [{"target": key, "old": old[key]["state"], "new": new[key]["state"]}
+                   for key in sorted(old.keys() & new.keys())
+                   if old[key]["state"] != new[key]["state"]
+                   and (key in self.instances or key.startswith(CABLE_PREFIX))
+                   and (self.instances.get(key) is None
+                        or (self.instances[key].cls != "screw_hole"
+                            and not self.instances[key].attrs.get("implied")))]
+            events = [e for e in raw if not (
+                self.captive(e["target"])
+                and self._shown(e["old"], True) == self._shown(e["new"], True))]
+            if events:
+                return {"changed": True, "events": events}
+            # no visible change: only where every step between is a repeat or a captive turn
+            for s in [s for s in self.steps if first < s <= step]:
+                rec = self.steps[s]
+                acts = [a for a in self.successful_actions(s)]
+                dupli = rec.step_type == "dupli" or rec.dupli
+                captive = acts and all(a.verb == "unscrew" and self.captive(a.target)
+                                       for a in acts)
+                if not (dupli or captive):
+                    _fail(record, f"a no-change answer across step {s}, which is neither "
+                                  f"a repeat nor a captive turn")
+            return {"changed": False, "events": []}
         if kind == "answerable":
             answers = set()
             for key in spec.get("members") or [spec["instance"]]:
@@ -753,9 +876,15 @@ class Checker:
         if sorted(answer.get("blockers") or []) != blockers:
             _fail(record, f"blockers {answer.get('blockers')} != {blockers}")
 
-        want_reason = None if source == "demonstrated" else "violates_edge"
-        if answer.get("reason") != want_reason:
-            _fail(record, f"reason {answer.get('reason')!r} != {want_reason!r}")
+        # the internal code is label side (answer_check.reason_code); answer.reason is the
+        # reason in what the picture shows (owner 2026-11-04): never a code, never graph words,
+        # and it speaks of every kind of blocker -- or ends on what can now be done
+        want_reason = None if source in ("demonstrated", "permitted") else {
+            "occlusion_blocked": "covered_now", "loose_first": "loose_part_first"}.get(
+                source, "violates_edge")
+        if spec.get("reason_code") != want_reason:
+            _fail(record, f"reason_code {spec.get('reason_code')!r} != {want_reason!r}")
+        self._check_reason_text(record, answer.get("reason"), verb, bad)
         if source == "demonstrated":
             # a "yes" is only ever the action the log went on to perform
             shown = self.demonstrated(step)
@@ -765,7 +894,19 @@ class Checker:
                 _fail(record, "a demonstrated action must be feasible")
             if bad:
                 _fail(record, "the graph forbids what the log demonstrates")
-        elif source in ("graph_blocked", "graph_blocked_pixels", "failed_attempt"):
+        elif source == "permitted":
+            # a "yes" the moment's rules allow (owner 2026-11-04): nothing holds it
+            if answer["feasible"] is not True or bad:
+                _fail(record, "a permitted action must be feasible and held by nothing")
+            shown = self.demonstrated(step)
+            if shown is not None and shown[1].verb == verb and shown[1].target in members:
+                _fail(record, "the demonstrated action filed as merely permitted")
+        elif source in ("graph_blocked", "graph_blocked_pixels", "failed_attempt",
+                        "occlusion_blocked", "loose_first"):
+            if source == "occlusion_blocked" and any(e.get("source") != "occlusion" for e in bad):
+                _fail(record, "an occlusion negative that something else blocks too")
+            if source == "loose_first" and any(e.get("source") != "loose" for e in bad):
+                _fail(record, "a loose-first negative that something else blocks too")
             if not bad:
                 _fail(record, "a negative whose blocker set is empty")
             if answer["feasible"] is not False:
@@ -778,6 +919,32 @@ class Checker:
                     _fail(record, "no failed attempt at the next step says this")
         else:
             _fail(record, f"unknown truth_source {source!r}")
+
+    #: "the CPU can be <taken out>" (transcribed from vlm_tasks.PARTICIPLES).
+    PARTICIPLES = {"remove": "taken out", "displace": "moved aside", "open": "opened",
+                   "unscrew": "unscrewed", "disconnect": "unplugged", "release": "released"}
+
+    def _check_reason_text(self, record: dict, text, verb: str, bad: list) -> None:
+        """A V4 reason a person reads (owner 2026-11-04): words, no code, no graph vocabulary, no
+        instance key; a "no" names the class of every blocker, a "yes" says what can be done."""
+        if not isinstance(text, str) or not text.strip():
+            _fail(record, f"reason {text!r} is no text")
+        low = text.lower()
+        for word in ("violates", "_by", "edge", "recall", "precondition", "already_",
+                     "not_present"):
+            if word in low:
+                _fail(record, f"reason {text!r} speaks the graph's words ({word})")
+        if re.search(r"\b[a-z_]+\.\d{2}\b", text) or "@" in text:
+            _fail(record, f"reason {text!r} names an instance key")
+        if bad:
+            for edge in bad:
+                blocker = edge["blocker"]
+                cls = ("cable" if blocker.startswith("cable:")
+                       else self.instances[blocker].cls)
+                if cls.replace("_", " ") not in low:
+                    _fail(record, f"reason {text!r} does not speak of the {cls}")
+        elif not low.endswith(f"can be {self.PARTICIPLES.get(verb, verb)}"):
+            _fail(record, f"reason {text!r} does not say what can now be done")
 
     def _check_inapplicable(self, record: dict, spec: dict, frame: dict,
                             step: int, verb: str, target: str) -> None:
@@ -857,7 +1024,106 @@ class Checker:
         if not must <= upper:
             _fail(record, "the demonstrated action is outside the upper bound")
 
-    # V6
+    # V6 (the owner's 2026-11-04 rulings): every action possible now
+    def _frontier_key(self, verb: str, key: str) -> str:
+        rec = self.instances[key]
+        if rec.cls in ONE_GROUP:
+            return f"all:{rec.cls}"
+        if rec.cls == "screw":
+            return f"screws:{rec.fastens or rec.attrs.get('role') or key}"
+        gid = self.group_of(key)
+        return f"part:{gid}" if gid is not None else f"part:{key}"
+
+    def _frontier(self, record: dict, step: int, extra: list) -> dict[str, set]:
+        """``group key -> {(verb, target)}``, re-derived: legal under the graph, the record's
+        moment edges and ``extra``; the log's vocabulary; a part a question may name, which
+        the scanner frame can point at (or that only a cable hides)."""
+        frame = self.state_at(step)
+        rows = self.rows("scan", step)
+        displaced = {a.target for a in self.actions if a.verb == "displace"}
+        saved = self.extra
+        self.extra = [*saved, *extra]
+        try:
+            legal = {(v, t) for v, t in self._candidates(frame)
+                     if not t.startswith(CABLE_PREFIX) and not self.unmet(v, t, frame)}
+        finally:
+            self.extra = saved
+        loose = self.loose_parts(frame)
+        out: dict[str, set] = {}
+        for verb, key in sorted(legal):
+            rec = self.instances.get(key)
+            if rec is None or rec.attrs.get("implied") or key.startswith(LS_PREFIX):
+                continue
+            if key in loose and verb != "remove":
+                continue  # a loose part only comes out
+            if verb not in LOG_VOCAB.get((rec.cls, frame[key]["state"]), set()):
+                continue
+            if verb == "displace" and key not in displaced:
+                continue
+            if rec.cls == "ram_latch":
+                of = rec.attrs.get("of")
+                if of and not self.present(frame, of):
+                    continue
+            row = rows.get(key) or {}
+            seen = row.get("visibility") in ANSWERABLE and _row_box(row) is not None
+            if not seen and row.get("occluder") != "cable":
+                continue
+            out.setdefault(self._frontier_key(verb, key), set()).add((verb, key))
+        return out
+
+    def _check_frontier(self, record: dict, spec: dict) -> None:
+        label = record["label"]
+        step = int(label["step"])
+        answer = self._answer(record)
+        base = self._frontier(record, step, [])
+        told = {g["key"]: {(a["verb"], a["target"]) for a in g["actions"]}
+                for g in spec["groups"]}
+        if told != base:
+            _fail(record, f"the frontier differs: missing "
+                          f"{sorted(set(base) - set(told))}, extra {sorted(set(told) - set(base))}")
+        form = spec.get("form")
+        if form == "mc":
+            options = label.get("options") or []
+            right = [o for o in options if o["kind"] == "frontier"]
+            if len(right) != 1:
+                _fail(record, "a multiple choice needs exactly one option inside the frontier")
+            if {(a[0], a[1]) for a in right[0]["actions"]} != base.get(right[0]["group"]):
+                _fail(record, "the frontier option is not one whole frontier group")
+            frame = self.state_at(step)
+            for o in options:
+                if o["kind"] == "frontier":
+                    continue
+                if o["group"] in base:
+                    _fail(record, f"a distractor {o['group']} inside the frontier")
+                for verb, target in o["actions"]:
+                    if not self.unmet(verb, target, frame):
+                        _fail(record, f"distractor {verb} {target} is not blocked")
+                    if not self.applies(target, verb, frame):
+                        _fail(record, f"distractor {verb} {target} is done or meaningless")
+            if len(options) - 1 < 2:
+                _fail(record, "a multiple choice needs at least two blocked distractors")
+            if (answer["verb"], answer["target"]) != (right[0]["verb"], right[0]["target"]):
+                _fail(record, "the answer is not the frontier option")
+            for shown in record["prompt"].get("options") or []:
+                if "kind" in shown or "target" in shown:
+                    _fail(record, "the prompt options give away which is which")
+            return
+        gold = base
+        if form == "constrained":
+            ruled = self._frontier(record, step, self.constraint_edges(spec))
+            forbidden = sorted(set(base) - set(ruled))
+            if not forbidden or sorted(spec.get("forbidden_groups") or []) != forbidden:
+                _fail(record, f"forbidden groups {spec.get('forbidden_groups')} != {forbidden}")
+            rule = (spec.get("constraint") or {}).get("rule") or ""
+            if rule not in record["prompt"]["question"] or re.search(r"\d", rule):
+                _fail(record, "the rule is not in the question in words")
+            gold = ruled
+        if sorted(spec["gold_groups"]) != sorted(gold):
+            _fail(record, f"gold groups {spec['gold_groups']} != {sorted(gold)}")
+        listed = [(a["verb"], a["target"]) for a in answer["actions"]]
+        if sorted(self._frontier_key(v, t) for v, t in listed) != sorted(gold):
+            _fail(record, "the answer does not list each gold group once")
+
     def _check_next_action(self, record: dict, spec: dict) -> None:
         label = record["label"]
         step = int(label["step"])
@@ -936,6 +1202,34 @@ class Checker:
                 _fail(record, "the prompt options give away which is which")
 
     # V10
+    # V3's multi-step form (owner 2026-11-04)
+    def _check_action_set(self, record: dict, spec: dict) -> None:
+        """The actions between two moments, re-derived from the log: every successful
+        action of the steps between, none a captive screw turned in place, grouped the
+        frontier's way; the answer one action per group."""
+        label = record["label"]
+        step, first = int(label["step"]), int(spec["from_step"])
+        if step - first not in (2, 3) or int(spec.get("span", 0)) != step - first:
+            _fail(record, "a multi-step V3 over another span")
+        groups: dict[str, set] = {}
+        for s in self.log_steps():
+            if not first < s <= step:
+                continue
+            for a in self.successful_actions(s):
+                if a.verb == "unscrew" and self.captive(a.target):
+                    _fail(record, "a span with a captive turn nobody can see")
+                if not self.changes_state(a):
+                    _fail(record, "a span with an action that changes nothing")
+                groups.setdefault(self._frontier_key(a.verb, a.target), set()).add(
+                    (a.verb, a.target))
+        told = {g["key"]: {(x["verb"], x["target"]) for x in g["actions"]}
+                for g in spec["groups"]}
+        if told != groups or sorted(spec["gold_groups"]) != sorted(groups):
+            _fail(record, f"the actions between differ: {sorted(told)} != {sorted(groups)}")
+        listed = [(x["verb"], x["target"]) for x in self._answer(record)["actions"]]
+        if sorted(self._frontier_key(v, t) for v, t in listed) != sorted(groups):
+            _fail(record, "the answer does not list each group once")
+
     def _check_history(self, record: dict, spec: dict) -> None:
         label = record["label"]
         step = int(label["step"])
@@ -1012,11 +1306,21 @@ class Checker:
         if answer.get("first_error_index") != first_bad:
             _fail(record, f"first error {answer.get('first_error_index')} != {first_bad}")
         if valid:
-            # a valid plan must be one the log actually performed (demonstrated)
-            logged = [(a.verb, a.target) for s in self.log_steps()
-                      if s > int(label["step"]) for a in self.planning_actions(s)]
+            # valid by the replay above, under the rules (owner 2026-11-04); the plan
+            # itself is the log's continuation, told in group actions
+            if spec.get("truth_source") != "simulated" or spec.get("validity") != "simulated":
+                _fail(record, "a valid plan whose validity is not the replay's")
             wanted = [(i["verb"], i["target"]) for i in spec["plan"]]
             start = self.state_at(int(label["step"]))
+            # the log read step by step until the grouped plan is long enough -- the export
+            # tells no more of it than that (a captive group further on is not its business)
+            logged: list = []
+            for s in self.log_steps():
+                if s <= int(label["step"]):
+                    continue
+                logged.extend((a.verb, a.target) for a in self.planning_actions(s))
+                if len(self.grouped(start, logged)) >= V16_PLAN_LEN:
+                    break
             told = self.with_captive(start, self.grouped(start, logged))
             if told[:len(wanted)] != wanted:
                 _fail(record, "a valid plan that the log never carried out")
@@ -1027,8 +1331,14 @@ class Checker:
             return
         if sorted(answer.get("violated_edges") or []) != violated:
             _fail(record, f"violated edges {answer.get('violated_edges')} != {violated}")
-        if answer.get("reason") != reason:
-            _fail(record, f"reason {answer.get('reason')!r} != {reason!r}")
+        # the code is label side (answer_check.reason_code); answer.reason is the words a person
+        # reads (owner 2026-11-04): about the first step that breaks, never a code
+        if spec.get("reason_code") != reason:
+            _fail(record, f"reason_code {spec.get('reason_code')!r} != {reason!r}")
+        text = answer.get("reason")
+        if not isinstance(text, str) or not text.startswith(f"step {first_bad + 1} (") \
+                or "_" in text or "violates" in text:
+            _fail(record, f"reason {text!r} is not the words of step {first_bad + 1}")
         if violated and answer.get("violated_edge") != violated[0]:
             _fail(record, "violated_edge is not the first of violated_edges")
         if not violated and answer.get("violated_edge") is not None:
@@ -1047,22 +1357,41 @@ class Checker:
         step = int(label["step"])
         goal = spec["goal"]
         frame = {k: dict(v) for k, v in self.state_at(step).items()}
-        if frame[goal]["state"] == REMOVED:
+        goal_members = list(spec.get("goal_members") or [goal])
+        if goal in self.groups and not set(goal_members) <= set(self.groups[goal]):
+            _fail(record, "goal members that are not the goal group's")
+        if all(frame[m]["state"] == REMOVED for m in goal_members):
             _fail(record, "a plan for a goal that is already out")
-        if {k: v["state"] for k, v in frame.items()} != {
-                k: v for k, v in spec["start_state"].items() if k in frame}:
+        # every part the export knows (fan screw holes are a detection category, not parts)
+        # (an implied part -- a cage's own latch -- moves by the implied rules' own events,
+        # which this file does not re-derive: it is no part a plan is about)
+        def kept(k):
+            rec = self.instances.get(k)
+            return rec is None or not rec.attrs.get("implied")
+        if {k: v["state"] for k, v in frame.items() if kept(k)
+            and (k in spec["start_state"] or (k in self.instances
+                                              and self.instances[k].cls != "screw_hole"))} != {
+                k: v for k, v in spec["start_state"].items() if k in frame and kept(k)}:
             _fail(record, "the start state is not the folded state of this step")
-        # both the graph's shortest plan and the demonstrated remainder replay
-        # without an unmet edge, take the goal out and contain every
-        # required state change
-        for name in ("reference_shortest", "demonstrated_remainder"):
+        # the rules' shortest plan and the answer (that plan in group actions) replay under
+        # the graph, the moment's own rules and the question's rule without an unmet edge,
+        # take the goal out and contain every required state change (owner 2026-11-04: the
+        # required steps are the rules', never the demonstrated sequence's)
+        self.extra = [*self.extra, *self.constraint_edges(spec)]
+        for name in ("reference_shortest", "answer"):
             sim = {k: dict(v) for k, v in frame.items()}
-            for item in spec[name]:
+            items = (spec[name] if name != "answer"
+                     else self._answer(record)["plan"])
+            for item in items:
                 verb, target = item["verb"], item["target"]
-                if self.unmet(verb, target, sim) or not self.applies(target, verb, sim):
-                    _fail(record, f"{name} breaks at {verb} {target}")
-                self._apply(sim, target, verb)
-            if sim[goal]["state"] != REMOVED:
+                for member in (self.todo(sim, verb, self.groups[target])
+                               if target in self.groups else [target]):
+                    if self.unmet(verb, member, sim) or (
+                            not self.applies(member, verb, sim) and not self.captive(member)):
+                        _fail(record, f"{name} breaks at {verb} {member}")
+                    if self.applies(member, verb, sim):
+                        self._apply(sim, member, verb)
+            if any(sim[m]["state"] != REMOVED for m in goal_members):
                 _fail(record, f"{name} does not reach the goal")
             for req in spec["required_actions"]:
                 if req["target"] in self.groups:
@@ -1080,16 +1409,30 @@ class Checker:
                 if self.captive(item["target"]) and self.group_of(item["target"]) \
                         and self.present(frame, self.instances[item["target"]].fastens or ""):
                     _fail(record, "a captive screw required on its own while its part is in")
-        # the demonstrated remainder is the log after this step, up to the goal,
-        # and it is the answer: the one plan known to work
+        # the demonstrated remainder is the log after this step, up to the goal: a
+        # reference only
         logged = [(a.verb, a.target) for s in self.log_steps()
                   if step < s <= int(spec["goal_removed_at"])
                   for a in self.planning_actions(s)]
         if [(i["verb"], i["target"]) for i in spec["demonstrated_remainder"]] != logged:
             _fail(record, "the demonstrated remainder is not the logged suffix")
-        told = self.with_captive(self.state_at(step), self.grouped(self.state_at(step), logged))
-        if [(i["verb"], i["target"]) for i in record["label"]["answer"]["plan"]] != told:
-            _fail(record, "V7's answer is not the demonstrated remainder in group actions")
+        start = self.state_at(step)
+        keep = {"connector"} if (spec.get("constraint") or {}).get("kind") == "until_connectors" \
+            else set()
+        shortest = [(i["verb"], i["target"]) for i in spec["reference_shortest"]]
+        told = self.with_captive(start, self.grouped(start, shortest, keep))
+        if [(i["verb"], i["target"]) for i in self._answer(record)["plan"]] != told:
+            _fail(record, "V7's answer is not the rules' shortest plan in group actions")
+        count = spec.get("count")
+        if count:
+            plugged = sorted(k for k, rec in self.instances.items() if rec.cls == "connector"
+                             and not rec.attrs.get("implied")
+                             and start.get(k, {}).get("state") == "plugged")
+            if sorted(count["members"]) != plugged or int(count["present"]) != len(plugged):
+                _fail(record, f"the plug count {count['present']} is not {len(plugged)}")
+            rule = (spec.get("constraint") or {}).get("rule") or ""
+            if re.search(r"\d", rule) or rule not in record["prompt"]["question"]:
+                _fail(record, "the rule is not in the question in words")
         if spec.get("redundancy_penalty") is not False or not spec.get("any_legal_plan_scores"):
             _fail(record, "V7 must score any legal plan and not penalise redundant steps")
         if int(spec["plan_length"]) != len(spec["reference_shortest"]):

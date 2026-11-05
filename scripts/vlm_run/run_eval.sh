@@ -13,11 +13,11 @@
 #   MODEL_TAG   directory name for the model             (default: MODEL with / -> _)
 #   VARIANT     image | blind | overlay                  (default image; blind = image-ablated;
 #                                                         overlay = GT masks painted on the frame, W4-C)
-#   OVERLAYS    where the painted frames live / go       (default $PACK/overlays; the pack ships eval_v2's,
+#   OVERLAYS    where the painted frames live / go       (default $PACK/overlays; the pack ships eval_v3's,
 #                                                         missing ones are painted from the .masks.jsonl sidecar)
 #   MASKS       a masks sidecar to paint from            (default: <truth>.masks.jsonl beside the subset)
-#   SUBSET      eval | all | <ids file>                  (default eval: $PACK/eval_v2/$VIEW.jsonl;
-#                                                         a path under eval_v1/ is refused)
+#   SUBSET      eval | all | <ids file>                  (default eval: $PACK/eval_v3/$VIEW.jsonl;
+#                                                         a path under eval_v1/ or eval_v2/ is refused)
 #   RUNS        where runs go                            (default $PACK/runs)
 #   TOOLS       the pack's tools directory               (default $PACK/tools)
 #   IMAGE_ROOT  what the manifest paths are relative to  (default $PACK/images; see the pack README)
@@ -42,11 +42,11 @@ case "$VIEW" in
   scan|oak1|oak2|rs|multi) ;;
   *) echo "VIEW must be scan, oak1, oak2, rs or multi (got $VIEW)" >&2; exit 2 ;;
 esac
-EVAL_VERSION=eval_v2
+EVAL_VERSION=eval_v3
 # the subset before the 2026-11-03 question redesign: its records are the old questions
 for p in "${SUBSET:-}" "${TRUTH:-}"; do
   case "/$p/" in
-    */eval_v1/*) echo "[run_eval] refused: $p is under eval_v1, the subset before the question redesign; use $EVAL_VERSION/" >&2; exit 2 ;;
+    */eval_v1/*|*/eval_v2/*) echo "[run_eval] refused: $p is under an old subset (eval_v1 / eval_v2), before the final round of 2026-11-04; use $EVAL_VERSION/" >&2; exit 2 ;;
   esac
 done
 BACKEND="${BACKEND:-vllm}"

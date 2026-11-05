@@ -56,14 +56,14 @@ from tda.core.states import InstState
 from tda.core.taxonomy import Taxonomy
 
 __all__ = ["CAPABILITY_LAYERS", "RESPONSE_FORMATS", "VERBS", "Grade", "Grounder",
-           "World", "format_instruction", "gold_reply", "grade", "grounder",
+           "World", "format_instruction", "gold_reply", "answer_keys", "grade", "grounder",
            "parse_lenient", "parse_strict", "reference_option"]
 
 #: The paper's capability layers (minutes 2026-10-31 §3; brief W3b §2.8). Not
 #: spec 8.2's L1-L4 of ``label.layer``: these group the tasks the way the
 #: results table does.
 CAPABILITY_LAYERS = {
-    "V1": "L1", "V2": "L1", "V8": "L1", "V14": "L1",
+    "V1": "L1", "V2": "L1", "V8": "L1",
     "V4": "L2", "V5": "L2",
     "V6": "L3", "V7": "L3", "V16": "L3",
     "V3": "change", "V12": "change", "V10": "change",
@@ -78,16 +78,28 @@ VERBS = ("unscrew", "disconnect", "open", "release", "remove", "displace", "reor
 RESPONSE_FORMATS = {
     "V1": 'Answer with JSON only: {"components": [{"class": "<part name>", '
           '"bbox": [x, y, width, height]}, ...]} in pixel coordinates of the image.',
-    "V2.state": 'Answer with JSON only: {"state": "<one of: {allowed}>"}.',
+    "V2.state": 'Answer with JSON only: {"state": "<one of: {allowed}>"} (cannot_tell: this '
+                'image does not show it well enough to tell).',
     "V2.count": 'Answer with JSON only: {"count": <integer>}.',
     "V3": 'Answer with JSON only: {"verb": "<one of: ' + ", ".join(VERBS) + '>", '
           '"target": "<the part acted on>", "tool": "<tool, or null>"}.',
+    # V3's free form (owner 2026-11-04): the action and where the machine changed
+    "V3.region": 'Answer with JSON only: {"verb": "<one of: ' + ", ".join(VERBS) + '>", '
+                 '"target": "<the part acted on>", "tool": "<tool, or null>", '
+                 '"region": [x, y, width, height]} (region: where the machine changed, in '
+                 'pixel coordinates of the top-down scanner image, {scanner}).',
+    # V3's multi-step form (owner 2026-11-04): every action between the two moments
+    "V3.span": 'Answer with JSON only: {"actions": [{"verb": "<one of: ' + ", ".join(VERBS)
+               + '>", "target": "<part>"}, ...]} (every action carried out between the two '
+               'moments).',
     "V4": 'Answer with JSON only: {"feasible": true or false, "blockers": '
           '["<part that has to be dealt with first>", ...]}.',
     "V5": 'Answer with JSON only: {"actions": [{"verb": "<verb>", "target": '
           '"<part>"}, ...]}.',
-    "V6.open": 'Answer with JSON only: {"verb": "<one of: ' + ", ".join(VERBS) + '>", '
-               '"target": "<part>"}.',
+    # V6 (owner 2026-11-04): every action possible now, one entry per action; the optional
+    # "why" is not graded
+    "V6.open": 'Answer with JSON only: {"actions": [{"verb": "<one of: ' + ", ".join(VERBS)
+               + '>", "target": "<part>"}, ...], "why": "<optional: one sentence>"}.',
     "V6.options": 'Answer with JSON only: {"choice": "<letter of the option>"}.',
     "V7": 'Answer with JSON only: {"plan": [{"verb": "<verb>", "target": "<part>"}, '
           '...]} in the order you would carry them out.',
@@ -102,8 +114,7 @@ RESPONSE_FORMATS = {
            'a set of parts begun but not finished; progress: percent of the teardown '
            'finished).',
     "V12": 'Answer with JSON only: {"changed": true or false}.',
-    "V14": 'Answer with JSON only: {"answerable": true or false, "state": '
-           '"<one of: {allowed}>, or null when it cannot be told"}.',
+
     "V15.cross": 'Answer with JSON only: {"state": "<state>", "best_view": '
                  '"<first or second>"}.',
     "V15.moment": 'Answer with JSON only: {"same_moment": true or false}.',
@@ -121,6 +132,10 @@ def format_key(record: dict) -> str:
     check = record["label"]["answer_check"]
     if task == "V2":
         return "V2.count" if check.get("derive") == "screw_count" else "V2.state"
+    if task == "V3" and check.get("type") == "action_set":
+        return "V3.span"
+    if task == "V3" and check.get("region"):
+        return "V3.region"
     if task == "V6":
         return "V6.options" if record["prompt"].get("options") else "V6.open"
     if task == "V15":
@@ -134,6 +149,14 @@ def format_instruction(record: dict) -> str:
     """The answer-format sentence a chat prompt appends to the question."""
     key = format_key(record)
     text = RESPONSE_FORMATS[key]
+    if "{scanner}" in text:
+        shown = [int(i) + 1 for i in record["label"]["answer_check"].get("region_images") or [0]]
+        if len(shown) == 1:
+            where = f"image {shown[0]}"
+        else:
+            where = "images " + ", ".join(str(i) for i in shown[:-1]) + f" and {shown[-1]}" \
+                + (": the same camera" if len(shown) == 2 else "")
+        text = text.replace("{scanner}", where)
     if "{allowed}" in text:
         allowed = record["label"]["answer_check"].get("allowed") or []
         if not allowed and record["label"]["answer_check"].get("state_space") == "presence":
@@ -322,6 +345,30 @@ def _gnorm(text: Any) -> str:
     return " ".join(_singular(w) for w in _norm(text).split())
 
 
+def _class_words(label: str) -> str:
+    """An instance label without its ordinal, lower case but for initialisms:
+    "Motherboard screw 7" -> "motherboard screw", "CPU 1" -> "CPU"."""
+    words = re.sub(r"\s+\d+$", "", str(label)).split(" ")
+    if words and words[0][1:2].islower():
+        words[0] = words[0][:1].lower() + words[0][1:]
+    return " ".join(words)
+
+
+def _plural(phrase: str) -> str:
+    """``"RAM latch"`` -> ``"RAM latches"`` (``vlm_groups.plural``, which is not vendored)."""
+    words = phrase.split(" ")
+    last, low = words[-1], words[-1].lower()
+    if last.isupper():
+        words[-1] = last + "s"
+    elif low.endswith(("s", "x", "ch", "sh")):
+        words[-1] = last + "es"
+    elif low.endswith("y") and len(low) > 1 and low[-2] not in "aeiou":
+        words[-1] = last[:-1] + "ies"
+    else:
+        words[-1] = last + "s"
+    return " ".join(words)
+
+
 @dataclass
 class World:
     """One desktop's oracle line: instances, active edges, log (W3b sidecar).
@@ -383,6 +430,30 @@ class World:
             return self.groups[target].get("label") or target
         inst = self.instances.get(target)
         return (inst.get("label") or target) if inst else target
+
+    def plain_name(self, target: Optional[str]) -> str:
+        """How a person reads a target **without an ordinal** (owner 2026-11-04): a group by its
+        label, a part alone of its class on the desktop by its class ("CPU socket lever"), a
+        part with an unordered locator by it (``instances[*].name``, written by the export:
+        "screw that fastens the PSU"), any other part as "one of the N <class>" -- never
+        "CPU 1". An old oracle line without ``name`` gets the class / "one of" reading."""
+        if target is None:
+            return "-"
+        if target in self.groups:
+            return self.groups[target].get("label") or target
+        if target.startswith(CABLE_PREFIX):
+            owner = ".".join(p for p in target[len(CABLE_PREFIX):].split(".") if not p.isdigit())
+            return f"{owner.replace('_', ' ')} cable".strip()
+        inst = self.instances.get(target)
+        if inst is None:
+            return target
+        if inst.get("name"):
+            return str(inst["name"])
+        base = _class_words(inst.get("label") or target)
+        mclass = inst.get("match_class") or inst.get("class")
+        peers = sum(1 for i in self.instances.values()
+                    if (i.get("match_class") or i.get("class")) == mclass)
+        return base if peers <= 1 else f"one of the {peers} {_plural(base)}"
 
     def rec(self, key: str) -> Optional[InstanceRec]:
         inst = self.instances.get(key)
@@ -447,6 +518,25 @@ class Grounder:
             self.by_label.setdefault(label, key)
             self.by_label.setdefault(self.norm(key), key)
             phrase_of(label, inst.get("match_class") or inst["class"])
+        # the plain name a person reads (no ordinal: "fan connector of the fan CPU cooler",
+        # "screw that fastens the PSU") names its part exactly where no other part has it
+        names: dict[str, list[str]] = {}
+        for key, inst in sorted(world.instances.items()):
+            if inst.get("name"):
+                names.setdefault(self.norm(inst["name"]), []).append(key)
+        # a group's plural label names the group ("PSU cable connectors"), even where its
+        # singular reads like a part of another kind ("PSU cable connector")
+        labels: dict[str, list[str]] = {}
+        for gid, group in sorted(world.groups.items()):
+            if group.get("label"):
+                labels.setdefault(self.norm(group["label"]), []).append(gid)
+        self.group_by_label = {k: v[0] for k, v in labels.items() if len(v) == 1}
+        bare = {phrase for phrase, _ in self.phrases}
+        for name, keys in names.items():
+            # a bare class phrase is a class, not a name ("fan connector")
+            if len(keys) == 1 and not name.startswith("one ") and name not in self.by_label \
+                    and name not in bare:
+                self.by_label[name] = keys[0]
         for gid in sorted(world.groups):
             mclass = world.match_class(gid)
             if mclass and world.groups[gid].get("label"):
@@ -461,6 +551,10 @@ class Grounder:
         if raw in self.world.instances or raw.startswith(CABLE_PREFIX) or raw in self.world.groups:
             return raw, self.world.match_class(raw)
         norm = self.norm(raw)
+        plain = _norm(raw)
+        if plain.endswith("s") and plain != norm and norm in getattr(self, "group_by_label", {}):
+            gid = self.group_by_label[norm]
+            return gid, self.world.match_class(gid)
         if norm in self.by_label:
             key = self.by_label[norm]
             return key, self.world.match_class(key)
@@ -495,6 +589,12 @@ class Grounder:
     def resolve(self, text: Any, eligible: Sequence[str]) -> tuple[Optional[str], Optional[str]]:
         """``(target, match class)`` -- :meth:`ground_group` with the class kept."""
         key, mclass = self.ground(text)
+        if key is not None and self.world.is_group(key) and key not in eligible \
+                and not any(m in eligible for m in self.world.members(key)):
+            key = None  # a group's label read as its class where the group is not asked
+        if key is not None and self.world.is_group(key) and key not in eligible:
+            first = next(m for m in self.world.members(key) if m in eligible)
+            return first, mclass
         if key is not None:
             if key in eligible:
                 return key, mclass
@@ -523,9 +623,20 @@ class Grounder:
             return set(re.sub(r"\b\d+\b", " ", self.norm(t)).split())
 
         said = words(text)
+        # "one of the PSU cable connectors" names one member of that group (a plain name,
+        # owner 2026-11-04): its parts by their group's words, the group itself left aside
+        one = self.norm(text).startswith("one ")
+        members = [c for c in candidates if not self.world.is_group(c)]
+        if one and members:
+            candidates = members
+
+        def wording(c: str) -> str:
+            gid = self.world.group_of(c) if one else None
+            return self.world.label_of(gid) if gid else self.world.label_of(c)
+
         best, best_n = candidates[0], -1
         for candidate in candidates:
-            n = len(said & words(self.world.label_of(candidate)))
+            n = len(said & words(wording(candidate)))
             if n > best_n:
                 best, best_n = candidate, n
         return best
@@ -570,6 +681,15 @@ class Grade:
     metrics: dict = field(default_factory=dict)
 
 
+def answer_keys(record: dict) -> dict:
+    """The answer a grader reads: with instance keys and group ids
+    (``answer_check.answer_keys``, the final round of 2026-11-04) where the record keeps
+    them apart from ``label.answer`` -- which names every part plainly, no ordinal, for the
+    people and the gold reply -- else ``label.answer`` itself (an older record)."""
+    label = record["label"]
+    return (label.get("answer_check") or {}).get("answer_keys") or label["answer"]
+
+
 def grade(record: dict, raw: Optional[str], world: Optional[World] = None,
           tax: Optional[Taxonomy] = None, *, mode: str = "strict",
           transform: Optional[dict] = None) -> Grade:
@@ -606,10 +726,45 @@ def _as_bool(value: Any) -> Optional[bool]:
     return None
 
 
-def _box(value: Any, transform: Optional[dict]) -> Optional[list[float]]:
+#: The IoU thresholds of the COCO-style average beside V1's and V8's IoU >= 0.5 headline
+#: (owner 2026-11-04, decisions "V1 / V8（框）"): 0.50:0.05:0.95.
+COCO_IOUS = tuple(round(0.5 + 0.05 * i, 2) for i in range(10))
+
+#: The frames a V1 / V8 answer is read in (the same decisions): the boxes as given, and every
+#: coordinate x 1.25 -- a model that answers in an internally resized 0.8 frame. The better
+#: grade is kept and ``metrics["frame"]`` says which won (a tie keeps 1.0).
+FRAME_SCALES = (1.0, 1.25)
+
+
+def _point(value: Any, transform: Optional[dict], frame: float = 1.0) -> Optional[list[float]]:
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return None
+    x, y = (float(v) * frame for v in value)
+    if transform:
+        scale = float(transform.get("scale") or 1.0)
+        x0, y0 = (transform.get("crop") or [0, 0])[:2]
+        x, y = x / scale + x0, y / scale + y0
+    return [x, y]
+
+
+def _best_frame(grade_in) -> Grade:
+    """``grade_in(frame) -> Grade`` in each of :data:`FRAME_SCALES`; the best by the score,
+    then by its 0.50:0.95 average, the first frame on a tie; ``metrics["frame"]`` names it."""
+    best = None
+    for frame in FRAME_SCALES:
+        g = grade_in(frame)
+        rank = (g.score, g.metrics.get("f1_50_95", g.metrics.get("hit_50_95", 0.0)))
+        if best is None or rank > best[0]:
+            best = (rank, frame, g)
+    _, frame, g = best
+    g.metrics["frame"] = frame
+    return g
+
+
+def _box(value: Any, transform: Optional[dict], frame: float = 1.0) -> Optional[list[float]]:
     if not isinstance(value, (list, tuple)) or len(value) != 4:
         return None
-    x, y, w, h = (float(v) for v in value)
+    x, y, w, h = (float(v) * frame for v in value)
     if transform:
         scale = float(transform.get("scale") or 1.0)
         x0, y0 = (transform.get("crop") or [0, 0])[:2]
@@ -658,29 +813,45 @@ def _class_of_text(text: Any, tax: Optional[Taxonomy], classes: Sequence[str]) -
 
 
 def _g_v1(record, answer, world, tax, transform) -> Grade:
-    truth = record["label"]["answer"]["components"]
+    truth = answer_keys(record)["components"]
     classes = sorted({c["class"] for c in truth})
-    preds = []
-    for item in answer.get("components") or []:
-        if not isinstance(item, dict):
-            continue
-        preds.append((_class_of_text(item.get("class"), tax, classes),
-                      _box(item.get("bbox"), transform)))
-    return _box_set_grade(truth, preds,
-                          float(record["label"]["answer_check"].get("iou_threshold", 0.5)))
+    items = [(_class_of_text(item.get("class"), tax, classes), item.get("bbox"))
+             for item in answer.get("components") or [] if isinstance(item, dict)]
+    thr = float(record["label"]["answer_check"].get("iou_threshold", 0.5))
+    return _best_frame(lambda frame: _box_set_grade(
+        truth, [(cls, _box(box, transform, frame)) for cls, box in items], thr))
+
+
+#: V2's count form (``derive == "screw_count"``, owner 2026-11-04): the score of an answer
+#: ``|answer - gold|`` away from the gold count; any other distance scores 0. The exact match
+#: is reported beside it (``exact``).
+COUNT_SCORES = {0: 1.0, 1: 0.8}
+
+
+def count_score(answered: Any, gold: int) -> tuple[float, Optional[int]]:
+    """``(score, |answered - gold|)`` of a V2 count answer (:data:`COUNT_SCORES`); an answer
+    that is no integer scores 0 at distance ``None``."""
+    try:
+        off = abs(int(answered) - int(gold))
+    except (TypeError, ValueError):
+        return 0.0, None
+    return COUNT_SCORES.get(off, 0.0), off
 
 
 def _g_v2(record, answer, world, tax, transform) -> Grade:
-    truth = record["label"]["answer"]
+    truth = answer_keys(record)
+    prior = record["label"].get("prior_is_correct")
     if "count" in truth:
-        try:
-            ok = int(answer.get("count")) == int(truth["count"])
-        except (TypeError, ValueError):
-            ok = False
-    else:
-        ok = _norm(answer.get("state")) == _norm(truth["state"])
-    return Grade(True, float(ok), {"correct": ok,
-                                   "prior_is_correct": record["label"].get("prior_is_correct")})
+        # exact 1.0, off by one 0.8, else 0 (owner 2026-11-04)
+        score, off = count_score(answer.get("count"), truth["count"])
+        exact = off == 0
+        return Grade(True, score, {"correct": exact, "exact": exact, "off_by": off,
+                                   "prior_is_correct": prior})
+    ok = _norm(answer.get("state")) == _norm(truth["state"])
+    # cannot_tell is graded like any other state (V14 merged into V2, owner 2026-11-04)
+    return Grade(True, float(ok), {"correct": ok, "exact": ok, "prior_is_correct": prior,
+                                   "cannot_tell": _norm(truth["state"]) == "cannot tell",
+                                   "abstained": _norm(answer.get("state")) == "cannot tell"})
 
 
 def _same_target(world: Optional[World], got: Optional[str], want: Optional[str]) -> bool:
@@ -720,6 +891,13 @@ def _v3_slots(answer, slots, check, world, group) -> tuple[float, dict]:
 
 
 def _g_v3(record, answer, world, tax, transform) -> Grade:
+    if record["label"]["answer_check"].get("type") == "action_set":
+        # the multi-step form: a set of actions, F1 over the same-kind groups
+        return _g_v6_frontier(record, answer, world, tax, transform)
+    return _g_v3_step(record, answer, world, tax, transform)
+
+
+def _g_v3_step(record, answer, world, tax, transform) -> Grade:
     """Any action of the step, read as the first one is, scores (controller 2026-11-03).
 
     A compound step (``answer.actions``: a PSU displaced and a connector pulled in
@@ -727,7 +905,7 @@ def _g_v3(record, answer, world, tax, transform) -> Grade:
     against each slot set and the best one counts; the top-level slots are the
     first action and grade alone where there is no list.
     """
-    truth = record["label"]["answer"]
+    truth = answer_keys(record)
     check = record["label"].get("answer_check") or {}
 
     def group_of(target: Optional[str], given: Optional[str] = None) -> Optional[str]:
@@ -753,11 +931,18 @@ def _g_v3(record, answer, world, tax, transform) -> Grade:
             best_rank, best, best_index = rank, metrics, i
     if len(sets) > 1:
         best = {**best, "matched_action": best_index}
+    if check.get("region"):
+        # the free form (owner 2026-11-04): where the machine changed, graded beside the
+        # action and never in its score -- IoU with the gold region, a hit at the threshold;
+        # a box on a cropped / scaled picture is mapped back like V1 / V8's
+        iou = _iou(_box(answer.get("region"), transform), check["region"])
+        best = {**best, "region_iou": iou,
+                "region_hit": iou >= float(check.get("region_iou_threshold", 0.5))}
     return Grade(True, best_rank[0], best)
 
 
 def _g_v4(record, answer, world, tax, transform) -> Grade:
-    truth = record["label"]["answer"]
+    truth = answer_keys(record)
     feasible = _as_bool(answer.get("feasible"))
     ok = feasible is not None and feasible == bool(truth["feasible"])
     metrics: dict = {"correct": ok, "truth_source": record["label"].get("truth_source")}
@@ -863,7 +1048,7 @@ def _pairs_grounded(items: Any, world: Optional[World], eligible: Sequence[tuple
 
 
 def _g_v5(record, answer, world, tax, transform) -> Grade:
-    truth = record["label"]["answer"]
+    truth = answer_keys(record)
     must = {(a["verb"], a["target"]) for a in truth["must_include"]}
     must_not = {(a["verb"], a["target"]) for a in truth["must_not_include"]}
     eligible = [(a["verb"], a["target"]) for a in truth["permitted_upper_bound"]]
@@ -874,9 +1059,76 @@ def _g_v5(record, answer, world, tax, transform) -> Grade:
     return Grade(True, recall, {"demonstrated_recall": recall, "blocked_rate": blocked})
 
 
+def _frontier_index(check: dict, world: World) -> tuple[dict, list[tuple[str, str]]]:
+    """``(verb, target) -> group key`` over the base frontier and the blocked groups, and the
+    eligible pairs a reply's wording is grounded on (part groups of a group's members
+    included, so "unscrew the PSU screws" grounds to the group)."""
+    index: dict[tuple[str, str], str] = {}
+    for group in [*(check.get("groups") or []), *(check.get("ruled_groups") or []),
+                  *(check.get("blocked_groups") or [])]:
+        for a in group.get("actions") or []:
+            index.setdefault((a["verb"], a["target"]), group["key"])
+            gid = world.group_of(a["target"]) if world is not None else None
+            if gid is not None:
+                index.setdefault((a["verb"], gid), group["key"])
+    return index, list(index)
+
+
+def _g_v6_frontier(record, answer, world, tax, transform) -> Grade:
+    """V6 since the owner's 2026-11-04 rulings: the gold is every action possible now, grouped.
+
+    **mc**: the chosen option is right when it is the one inside the frontier. **open** and
+    **constrained**: each answered action is grounded (class phrases to a target of their
+    class, a member to its group) and mapped to its group; precision = groups hit /
+    (groups hit + wrong answers), recall = groups hit / gold groups, F1 the score. An action
+    on a blocked, already-done or absent part is a wrong answer; repeats of a group already
+    hit cost nothing; ``why`` is not graded. **constrained** also reports whether an answer
+    named an action the rule forbids (``constraint_violated``, ``violations``)."""
+    label = record["label"]
+    check = label["answer_check"]
+    options = label.get("options")
+    if options:
+        choice = str(answer.get("choice") or "").strip().upper()[:1]
+        if choice not in LETTERS[:len(options)]:
+            return Grade(True, 0.0, {"invalid_choice": True, "blocked": None})
+        option = options[LETTERS.index(choice)]
+        right = option.get("kind") == "frontier"
+        return Grade(True, float(right), {"correct": right, "blocked": not right,
+                                          "group_match": right})
+    gold = set(check.get("gold_groups") or [])
+    forbidden = set(check.get("forbidden_groups") or [])
+    index, eligible = _frontier_index(check, world)
+    items = _pairs_grounded(answer.get("actions"), world, eligible) if world else []
+    hit: set = set()
+    wrong = violations = 0
+    for verb, key, mclass in items:
+        group = index.get((verb, key)) if key is not None else None
+        if group is None and key is not None and world is not None and world.is_group(key):
+            group = next((index[(verb, m)] for m in world.members(key)
+                          if (verb, m) in index), None)
+        if group in gold:
+            hit.add(group)
+            continue
+        wrong += 1
+        if group in forbidden:
+            violations += 1
+    n_pred = len(hit) + wrong
+    precision = len(hit) / n_pred if n_pred else 0.0
+    recall = len(hit) / len(gold) if gold else 1.0
+    f1 = _f1(len(hit), n_pred, len(gold))
+    metrics = {"precision": precision, "recall": recall, "f1": f1, "groups_hit": len(hit),
+               "gold_groups": len(gold), "wrong_actions": wrong,
+               "answered_actions": len(items)}
+    if check.get("form") == "constrained":
+        metrics.update(constraint_violated=violations > 0, violations=violations)
+    return Grade(True, f1, metrics)
+
+
 def _g_v6(record, answer, world, tax, transform) -> Grade:
     label = record["label"]
     check = label["answer_check"]
+    if check.get("type") == "frontier":
+        return _g_v6_frontier(record, answer, world, tax, transform)
     equivalent = {(a["verb"], a["target"]) for a in check.get("equivalent_actions")
                   or [{"verb": check["reference"][0], "target": check["reference"][1]}]}
     blocked = {(a["verb"], a["target"]) for a in check.get("blocked_actions") or []}
@@ -938,7 +1190,7 @@ def reference_option(label: dict) -> Optional[int]:
         if len(ref) == 2 and o.get("verb") == ref[0] and ref[1] in (o.get("members") or ()):
             return i
     for i, o in enumerate(options):
-        if o.get("kind") == "demonstrated":
+        if o.get("kind") in ("demonstrated", "frontier"):
             return i
     return None
 
@@ -1026,10 +1278,39 @@ def _v7_eligible(record: dict, world: World) -> list[tuple[str, str]]:
     told = [*(check.get("reference_shortest") or []), *(check.get("demonstrated_remainder") or [])]
     if not world.grouped:
         return [(i["verb"], i["target"]) for i in told]
-    pairs = [(i["verb"], i["target"]) for i in record["label"]["answer"].get("plan") or []]
+    pairs = [(i["verb"], i["target"]) for i in answer_keys(record).get("plan") or []]
     for item in told:
         pairs.append((item["verb"], world.group_of(item["target"]) or item["target"]))
     return pairs
+
+
+def moment_edges_of(check: dict, nodes) -> list[Edge]:
+    """The moment's own rules of a record (``answer_check.moment``) as edges: what covers a
+    part in this frame (``covered_by``) and the loose parts that come out first -- every
+    node of ``nodes`` outside ``loose_scope`` waits for each loose part (``blocked_by``,
+    mode ``loose``: every verb, only ``removed`` clears it). The twin of
+    :func:`tda.core.graph.moment_edges`, rebuilt from the label alone."""
+    moment = check.get("moment") or {}
+    out = [Edge(type="covered_by", target=x, blocker=y, source="occlusion", status="accepted")
+           for x, ys in sorted((moment.get("occluded") or {}).items()) for y in ys]
+    loose = list(moment.get("loose") or [])
+    if loose:
+        scope = set(moment.get("loose_scope") or [])
+        for key in sorted(set(nodes)):
+            if key in scope or key in loose:
+                continue
+            out.extend(Edge(type="blocked_by", target=key, blocker=part, mode="loose",
+                            source="loose", status="accepted") for part in loose)
+    return out
+
+
+def constraint_edges_of(check: dict) -> list[Edge]:
+    """A constrained question's rule as edges (``answer_check.constraint.edges``)."""
+    rule = check.get("constraint") or {}
+    return [Edge(type=e["type"], target=e["target"], blocker=e["blocker"],
+                 necessity=e.get("necessity", "required"), mode=e.get("mode"),
+                 source=e.get("source", "constraint"), status="accepted")
+            for e in rule.get("edges") or []]
 
 
 def _g_v7(record, answer, world, tax, transform) -> Grade:
@@ -1038,6 +1319,15 @@ def _g_v7(record, answer, world, tax, transform) -> Grade:
         raise ValueError("V7 needs the world and the taxonomy")
     sim: dict[str, InstState] = {k: InstState(state=v, placement="in_chassis")
                                  for k, v in check["start_state"].items()}
+    # the rules a plan is replayed under (owner 2026-11-04): the stored graph, this frame's
+    # occlusion, loose parts first -- and a constrained question's own rule
+    present = [k for k, v in check["start_state"].items() if v != "removed"]
+    rule_edges = constraint_edges_of(check)
+    edges = [*world.edges, *moment_edges_of(check, present), *rule_edges]
+    count = check.get("count") or None
+    counted = set((count or {}).get("members") or [])
+    disconnected: set = set()
+    rule_broken = False
     steps = _pairs_grounded(answer.get("plan"), world, _v7_eligible(record, world))
     violations, first_violation, unresolved, noop = 0, None, 0, 0
     for index, (verb, target, _) in enumerate(steps):
@@ -1061,9 +1351,13 @@ def _g_v7(record, answer, world, tax, transform) -> Grade:
                 # no redundancy penalty: an action already done (or one that
                 # changes nothing) is a no-op, not an error
                 continue
-            gating = applicable_preconditions(world.edges, (verb, key))
-            if unmet(gating, sim, "required"):
+            gating = applicable_preconditions(edges, (verb, key))
+            broken = unmet(gating, sim, "required")
+            if broken:
                 violated = True
+                rule_broken = rule_broken or any(e.source == "constraint" for e in broken)
+            if count and verb == count.get("verb") and key in counted:
+                disconnected.add(key)
             applied = True
             sim[key] = InstState(state=new, placement="in_chassis")
             if new == "removed" and cls != "connector":
@@ -1097,16 +1391,38 @@ def _g_v7(record, answer, world, tax, transform) -> Grade:
     reached = bool(goal_members) and all(
         sim.get(k) is not None and sim[k].state == goal_state for k in goal_members)
     success = reached and violations == 0 and recall == 1.0
-    return Grade(True, float(success), {
+    metrics = {
         "violation_free": violations == 0, "violations": violations,
         "first_violation": first_violation, "required_recall": recall,
         "goal_reached": reached, "unresolved_steps": unresolved, "noop_steps": noop,
-        "plan_length": len(steps), "reference_length": check.get("plan_length")})
+        "plan_length": len(steps), "reference_length": check.get("plan_length"),
+        "valid": reached and violations == 0}
+    if check.get("form") == "constrained":
+        metrics["constraint_kept"] = not rule_broken
+    if count:
+        # how many plugs the plan unplugs against how many are in (owner 2026-11-04)
+        planned, present_n = len(disconnected), int(count.get("present") or 0)
+        metrics.update(count_planned=planned, count_present=present_n,
+                       count_exact=planned == present_n,
+                       count_abs_error=abs(planned - present_n))
+    return Grade(True, float(success), metrics)
 
 
 def _box_set_grade(truth: Sequence[dict], preds: list[tuple[Optional[str], Optional[list]]],
                    thr: float) -> Grade:
-    """V1's set F1: each prediction claims the best unclaimed truth box of its class."""
+    """V1's set F1: each prediction claims the best unclaimed truth box of its class.
+    ``f1`` is at ``thr`` (the score); ``f1_50_95`` the F1 averaged over :data:`COCO_IOUS`,
+    each threshold matched afresh."""
+    tp = _box_set_tp(truth, preds, thr)
+    f1 = _f1(tp, len(preds), len(truth))
+    f1_50_95 = sum(_f1(_box_set_tp(truth, preds, t), len(preds), len(truth))
+                   for t in COCO_IOUS) / len(COCO_IOUS)
+    return Grade(True, f1, {"f1": f1, "f1_50_95": f1_50_95, "tp": tp, "pred": len(preds),
+                            "true": len(truth)})
+
+
+def _box_set_tp(truth: Sequence[dict], preds: list[tuple[Optional[str], Optional[list]]],
+                thr: float) -> int:
     used, tp = set(), 0
     for cls, box in preds:
         best, best_iou = None, thr
@@ -1119,8 +1435,7 @@ def _box_set_grade(truth: Sequence[dict], preds: list[tuple[Optional[str], Optio
         if best is not None:
             used.add(best)
             tp += 1
-    f1 = _f1(tp, len(preds), len(truth))
-    return Grade(True, f1, {"f1": f1, "tp": tp, "pred": len(preds), "true": len(truth)})
+    return tp
 
 
 def _g_v8_components(record, answer, world, tax, transform) -> Grade:
@@ -1133,16 +1448,18 @@ def _g_v8_components(record, answer, world, tax, transform) -> Grade:
     """
     check = record["label"]["answer_check"]
     truth = [{"class": "asked", "bbox": c["bbox"]} for c in _asked_components(record, world)]
-    preds = [("asked", _box(item.get("bbox"), transform))
-             for item in answer.get("components") or [] if isinstance(item, dict)]
-    return _box_set_grade(truth, preds, float(check.get("iou_threshold", 0.5)))
+    boxes = [item.get("bbox") for item in answer.get("components") or []
+             if isinstance(item, dict)]
+    thr = float(check.get("iou_threshold", 0.5))
+    return _best_frame(lambda frame: _box_set_grade(
+        truth, [("asked", _box(box, transform, frame)) for box in boxes], thr))
 
 
 def _asked_components(record: dict, world: Optional[World]) -> list[dict]:
     """A ``components`` V8's truth boxes of the class asked (``class_filter``)."""
     wanted = record["label"]["answer_check"].get("class_filter")
     out = []
-    for comp in record["label"]["answer"]["components"]:
+    for comp in answer_keys(record)["components"]:
         mclass = comp.get("match_class")
         if mclass is None and world is not None and comp.get("instance"):
             mclass = world.match_class(comp["instance"])
@@ -1156,22 +1473,26 @@ def _g_v8(record, answer, world, tax, transform) -> Grade:
     check = record["label"]["answer_check"]
     if check.get("type") == "components":
         return _g_v8_components(record, answer, world, tax, transform)
-    truth = record["label"]["answer"]["bbox"]
-    box = _box(answer.get("bbox"), transform)
-    if check.get("metric") == "point_in_box":
-        point = answer.get("point")
-        if point is None and box is not None:
-            point = [box[0] + box[2] / 2, box[1] + box[3] / 2]
-        elif point is not None and transform:
-            scale = float(transform.get("scale") or 1.0)
-            x0, y0 = (transform.get("crop") or [0, 0])[:2]
-            point = [float(point[0]) / scale + x0, float(point[1]) / scale + y0]
-        hit = bool(point) and truth[0] <= float(point[0]) <= truth[0] + truth[2] \
-            and truth[1] <= float(point[1]) <= truth[1] + truth[3]
-        return Grade(True, float(hit), {"hit": hit})
-    iou = _iou(box, truth)
-    ok = iou >= float(check.get("iou_threshold", 0.5))
-    return Grade(True, float(ok), {"iou": iou, "hit": ok})
+    truth = answer_keys(record)["bbox"]
+    thr = float(check.get("iou_threshold", 0.5))
+
+    def in_frame(frame: float) -> Grade:
+        box = _box(answer.get("bbox"), transform, frame)
+        if check.get("metric") == "point_in_box":
+            point = (_point(answer["point"], transform, frame)
+                     if answer.get("point") is not None else None)
+            if point is None and box is not None:
+                point = [box[0] + box[2] / 2, box[1] + box[3] / 2]
+            hit = bool(point) and truth[0] <= point[0] <= truth[0] + truth[2] \
+                and truth[1] <= point[1] <= truth[1] + truth[3]
+            return Grade(True, float(hit), {"hit": hit})
+        iou = _iou(box, truth)
+        ok = iou >= thr
+        # the COCO-style average: the hit at each of 0.50:0.05:0.95
+        hit_50_95 = sum(iou >= t for t in COCO_IOUS) / len(COCO_IOUS)
+        return Grade(True, float(ok), {"iou": iou, "hit": ok, "hit_50_95": hit_50_95})
+
+    return _best_frame(in_frame)
 
 
 def _g_v10(record, answer, world, tax, transform) -> Grade:
@@ -1182,7 +1503,7 @@ def _g_v10(record, answer, world, tax, transform) -> Grade:
     ``answer.started``). Each list is grounded on its own set first, then on
     the other one -- a begun group named as done is a false positive there.
     """
-    truth = record["label"]["answer"]
+    truth = answer_keys(record)
     # the gold lists in their own order: a class phrase grounds to the first
     # unclaimed target of its class, so the gold reply reads back exactly
     done = list(dict.fromkeys((a["verb"], a["target"]) for a in truth["done"]))
@@ -1204,27 +1525,16 @@ def _g_v10(record, answer, world, tax, transform) -> Grade:
 
 def _g_bool(field_name: str):
     def handler(record, answer, world, tax, transform) -> Grade:
-        truth = bool(record["label"]["answer"][field_name])
+        truth = bool(answer_keys(record)[field_name])
         got = _as_bool(answer.get(field_name))
         ok = got is not None and got == truth
         return Grade(True, float(ok), {"correct": ok})
     return handler
 
 
-def _g_v14(record, answer, world, tax, transform) -> Grade:
-    truth = record["label"]["answer"]
-    got = _as_bool(answer.get("answerable"))
-    ok = got is not None and got == bool(truth["answerable"])
-    state_ok = None
-    if truth["answerable"]:
-        state_ok = _norm(answer.get("state")) == _norm(truth["state"])
-    return Grade(True, float(ok and state_ok is not False),
-                 {"answerable_correct": ok, "state_correct": state_ok,
-                  "abstained": got is False})
-
 
 def _g_v15(record, answer, world, tax, transform) -> Grade:
-    truth = record["label"]["answer"]
+    truth = answer_keys(record)
     if "same_moment" in truth:
         return _g_bool("same_moment")(record, answer, world, tax, transform)
     state_ok = _norm(answer.get("state")) == _norm(truth["state"])
@@ -1234,7 +1544,7 @@ def _g_v15(record, answer, world, tax, transform) -> Grade:
 
 
 def _g_v16(record, answer, world, tax, transform) -> Grade:
-    truth = record["label"]["answer"]
+    truth = answer_keys(record)
     got = _as_bool(answer.get("valid"))
     ok = got is not None and got == bool(truth["valid"])
     located = None
@@ -1248,19 +1558,22 @@ def _g_v16(record, answer, world, tax, transform) -> Grade:
     return Grade(True, float(ok), {"correct": ok, "localised": located})
 
 
-def gold_reply(record: dict, world: Optional[World] = None) -> str:
+def gold_reply(record: dict, world: Optional[World] = None, *, plain: bool = False) -> str:
     """The reply a perfect model would give, in :data:`RESPONSE_FORMATS`.
 
     Instance keys become their wording when a ``world`` is given, the way a
     model would name them. A sanity check of the whole chain: every gold reply
-    must score 1 (``tests/test_w3b_scripts.py``).
+    must score 1 (``tests/test_w3b_scripts.py``). ``plain`` names every part the way a
+    person reads it, no ordinal (:meth:`World.plain_name`): the reasoning side product's
+    answer, never graded.
     """
     label, task = record["label"], record["prompt"]["task"]
     answer = label["answer"]
 
     def name(key):
-        if world is not None and (key in world.instances or world.is_group(key)):
-            return world.label_of(key)
+        if world is not None and (key in world.instances or world.is_group(key)
+                                  or (plain and str(key).startswith(CABLE_PREFIX))):
+            return world.plain_name(key) if plain else world.label_of(key)
         return key
 
     key = format_key(record)
@@ -1269,9 +1582,14 @@ def gold_reply(record: dict, world: Optional[World] = None) -> str:
                               for c in answer["components"]]}
     elif key.startswith("V2"):
         out = {"count": answer["count"]} if "count" in answer else {"state": answer["state"]}
+    elif key == "V3.span":
+        out = {"actions": [{"verb": a["verb"], "target": name(a["target"])}
+                           for a in answer["actions"]]}
     elif task == "V3":
         out = {"verb": answer["verb"], "target": name(answer["target_instance"]),
                "tool": answer.get("tool")}
+        if label["answer_check"].get("region"):
+            out["region"] = label["answer_check"]["region"]
     elif task == "V4":
         out = {"feasible": answer["feasible"], "blockers": [name(b) for b in answer["blockers"]]}
     elif task == "V5":
@@ -1282,7 +1600,10 @@ def gold_reply(record: dict, world: Optional[World] = None) -> str:
         if index is None:
             raise ValueError(f"{record.get('id')}: no option is the reference action")
         out = {"choice": LETTERS[index]}
-    elif key == "V6.open":
+    elif key == "V6.open" and "actions" in answer:
+        out = {"actions": [{"verb": a["verb"], "target": name(a["target"])}
+                           for a in answer["actions"]]}
+    elif key == "V6.open":  # a record from before the final round: one next action
         out = {"verb": answer["verb"], "target": name(answer["target"])}
     elif task == "V7":
         out = {"plan": [{"verb": a["verb"], "target": name(a["target"])}
@@ -1299,8 +1620,7 @@ def gold_reply(record: dict, world: Optional[World] = None) -> str:
                               for a in answer["started"]]
     elif task == "V12":
         out = {"changed": answer["changed"]}
-    elif task == "V14":
-        out = {"answerable": answer["answerable"], "state": answer["state"]}
+
     elif key == "V15.moment":
         out = {"same_moment": answer["same_moment"]}
     elif key == "V15.cross":
@@ -1317,5 +1637,5 @@ def gold_reply(record: dict, world: Optional[World] = None) -> str:
 _GRADERS = {
     "V1": _g_v1, "V2": _g_v2, "V3": _g_v3, "V4": _g_v4, "V5": _g_v5, "V6": _g_v6,
     "V7": _g_v7, "V8": _g_v8, "V10": _g_v10, "V12": _g_bool("changed"),
-    "V14": _g_v14, "V15": _g_v15, "V16": _g_v16,
+    "V15": _g_v15, "V16": _g_v16,
 }

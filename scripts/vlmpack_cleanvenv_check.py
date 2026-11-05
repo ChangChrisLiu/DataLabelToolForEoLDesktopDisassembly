@@ -15,7 +15,7 @@
    downloaded either way.
 2. In that venv, from a neutral working directory, ``import tda`` must **fail**
    (the venv has no annotation tool), then ``tools/vlm_selfcheck.py`` runs with
-   ``python -I`` on every ``eval_v2/<unit>.jsonl`` and must exit 0, and the
+   ``python -I`` on every ``eval_v3/<unit>.jsonl`` and must exit 0, and the
    ``tda`` it imported must be the pack's ``tools/tda``.
 
 Exit 0 when all of it holds; 1 otherwise, saying what failed. ``<out>``
@@ -105,10 +105,10 @@ def run_check(pack: Path, py: Path, out: Path, log=print) -> dict:
     if probe.returncode == 0:
         raise CheckFailed("the virtual environment can import tda on its own: not clean")
     log("[cleanvenv] `import tda` fails in the venv, as it must")
-    truth = sorted((pack / "eval_v2").glob("*.jsonl"))
+    truth = sorted((pack / "eval_v3").glob("*.jsonl"))
     truth = [p for p in truth if not p.name.endswith((".images_manifest.jsonl", ".oracle.jsonl", ".masks.jsonl"))]
     if not truth:
-        raise CheckFailed(f"no eval_v2/<unit>.jsonl under {pack}")
+        raise CheckFailed(f"no eval_v3/<unit>.jsonl under {pack}")
     cmd = [str(py), "-I", "-B", str(tools / "vlm_selfcheck.py"), "--truth", *map(str, truth),
            "--out", str(out / "selfcheck")]
     log(f"[cleanvenv] {' '.join(cmd[:4])} ... ({len(truth)} truth files)")

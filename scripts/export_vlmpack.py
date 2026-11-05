@@ -23,7 +23,10 @@ its database has to be present for::
     data/vlm_<unit>.masks.jsonl   (with --coco-root) the confirmed visible masks of every
                               confirmed frame, COCO RLE, from the scanner pack's COCO
     images/<view>/D<nn>/s<nn>.<ext>   the frames the manifests name, byte for byte
-    eval_v2/                  the frozen evaluation subset (``scripts/vlm_eval_set.py``):
+    reasoning/<unit>.jsonl    the reasoning side product: ``{id, task, question, answer,
+                              reasoning}`` per record of ``data/`` (the gold reply in plain
+                              names and the rationale text: what is seen, the rule, the answer)
+    eval_v3/                  the frozen evaluation subset (``scripts/vlm_eval_set.py``):
                               ids.txt, <unit>.jsonl + sidecars (+ .masks.jsonl), table.md,
                               table.json, audit/ (the author-audit sample, the fillable HTML
                               sheet and its CSV skeleton -- ``scripts/vlm_audit_sheet.py``),
@@ -132,7 +135,7 @@ TOOLS = ("vlm_io.py", "vlm_to_chat.py", "vlm_score.py", "vlm_references.py",
 #: Tools the redesign of 2026-11-03 added (the converter's glossary, the audit carry-over):
 #: a build without them stops with a message naming them; no pack ships without them.
 REDESIGN_TOOLS = ("vlm_glossary.py", "vlm_audit_carry.py")
-#: Items per page of the audit sheet the build writes into ``eval_v2/audit/``.
+#: Items per page of the audit sheet the build writes into ``eval_v3/audit/``.
 AUDIT_BATCH = 50
 #: The ``tda`` modules :mod:`tda.core.export.vlm_check` needs, copied verbatim
 #: under ``tools/tda``: the scorer's whole import closure, nothing of the tool.
@@ -156,17 +159,28 @@ Pillow>=10.0
 TASK_MEANINGS = {
     "V1": "which parts are visible, and where (class + box for every visible part)",
     "V2": "the state of a named part, or how many screws of a role are still in place",
-    "V3": "what the operator just did between two frames (verb, target, tool)",
-    "V4": "can this action be done to this part right now; if not, what blocks it",
+    "V3": "what the operator just did between two frames (verb, target, tool): free form "
+          "(headline, no hint; also asks the region where the machine changed) and roi form "
+          "(secondary, a yellow dashed hint box drawn there; same step, `v3_pair`); and the "
+          "span form: every action carried out between two moments 2-3 steps apart (F1 over "
+          "groups)",
+    "V4": "can this action be done to this part right now; if not, what blocks it -- asked of "
+          "every part the scanner frame can outline and every verb the teardowns use on it",
     "V5": "(not in the default set) every action that is legal now",
-    "V6": "the next action to carry out: open form (headline) and multiple choice (secondary, same frame, `v6_pair`)",
-    "V7": "the remaining plan to take the CPU out, from a frame where that work has started",
+    "V6": "every action that can be carried out now (the frontier, grouped): open form "
+          "(headline, F1 over groups), multiple choice (one option possible, the others "
+          "blocked; same frame, `v6_pair`) and constrained (one extra rule in words)",
+    "V7": "the plan to take a major part out (motherboard, CPU, the RAM modules, PSU, drives, "
+          "cards, coolers, cages, case fans) under the rules (free) or under one extra rule "
+          "in words (constrained: also counts the plugs to unplug), at every step",
     "V8": "localise a named part (box)",
     "V10": "which actions have already been carried out; progress bin",
-    "V12": "did the machine's state change between two frames",
-    "V14": "can this view settle the state of a named part; if so, the state",
+    "V12": "did the machine's state change between two moments (neighbours, and 2-3 steps "
+           "apart), and what changed",
+
     "V15": "two cameras, two pictures: the same moment of the teardown or not",
-    "V16": "is a candidate plan legal from this state; the first step that is not",
+    "V16": "is a candidate plan legal from this state; the first step that is not (several "
+           "valid and invalid plans per moment)",
 }
 LICENSE_NOTE = """\
 E3D: End-of-Life Desktop Disassembly Dataset -- pre-release.
@@ -342,7 +356,7 @@ def _summary_for_manifest(stats: dict) -> dict:
             "unlabelled_view_desktops", "records_without_confirmed_view", "v12_by_kind",
             "v15_moment_by_view", "v16_corruptions", "v6_options",
             "image_undecidable_by_task", "shortcuts", "v6_option_shortcut", "tasks",
-            "primary_view", "side_views")
+            "primary_view", "side_views", "by_form", "non_stepwise", "skip_reasons")
     return {k: stats.get(k) for k in keys if k in stats}
 
 
@@ -581,7 +595,7 @@ def run_selfcheck(out: Path, views: Sequence[str], work: Path,
 # --------------------------------------------------------------------------- #
 def masks_sidecars(data_dir: Path, eval_dir: Path, views: Sequence[str], coco_root: str,
                    log=print) -> dict:
-    """``data/vlm_<unit>.masks.jsonl`` and ``eval_v2/<unit>.masks.jsonl`` from the COCO.
+    """``data/vlm_<unit>.masks.jsonl`` and ``eval_v3/<unit>.masks.jsonl`` from the COCO.
 
     One pass over the scanner pack for all views (an image id is the same in
     every export file), then one sidecar per view with the rows its manifest
@@ -630,7 +644,7 @@ def masks_sidecars(data_dir: Path, eval_dir: Path, views: Sequence[str], coco_ro
 
 
 def render_overlays(out: Path, eval_dir: Path, views: Sequence[str], log=print) -> dict:
-    """The subset's ``mask_overlay`` variant per unit: ``eval_v2/mask_overlay/<unit>.jsonl``
+    """The subset's ``mask_overlay`` variant per unit: ``eval_v3/mask_overlay/<unit>.jsonl``
     and the painted frames under ``overlays/``; returns the painter's summary per view."""
     result: dict = {}
     for view in views:
@@ -652,6 +666,37 @@ def render_overlays(out: Path, eval_dir: Path, views: Sequence[str], log=print) 
 # --------------------------------------------------------------------------- #
 # 4. composition (for the card)
 # --------------------------------------------------------------------------- #
+def write_reasoning(data_dir: Path, out_dir: Path, units: Sequence[str]) -> dict:
+    """``reasoning/<unit>.jsonl``: the training side product of every record of ``data/``
+    (owner 2026-11-04) -- ``{id, task, question, answer, reasoning}``: the question as the
+    model reads it (the options lettered), the gold reply with every part in plain names
+    (no ordinal) and the record's ``rationale.text``. Returns ``{unit: rows}``."""
+    from tda.core.export.vlm_check import LETTERS, gold_reply
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    counts: dict[str, int] = {}
+    for unit in units:
+        src = data_dir / f"vlm_{unit}.jsonl"
+        if not src.exists():
+            continue
+        worlds, _ = IO.load_oracle(src)
+
+        def rows():
+            for r in IO.read_jsonl(src):
+                prompt = r["prompt"]
+                question = prompt["question"]
+                if prompt.get("options"):
+                    question += "\n" + "\n".join(
+                        f"{LETTERS[i]}. {o['verb']} {o['target_label']}"
+                        for i, o in enumerate(prompt["options"]))
+                answer = json.loads(gold_reply(r, worlds.get(IO.desktop_of(r)), plain=True))
+                yield {"id": r["id"], "task": prompt["task"], "question": question,
+                       "answer": answer,
+                       "reasoning": (r["label"].get("rationale") or {}).get("text") or ""}
+        counts[unit] = IO.write_jsonl(out_dir / f"{unit}.jsonl", rows())
+    return counts
+
+
 def composition(data_dir: Path, views: Sequence[str]) -> dict:
     """What the card says beyond ``summary.json``: V2 by class, the optical drive cages."""
     v2: Counter = Counter()
@@ -734,6 +779,9 @@ def build_pack(db_path: str, out_dir: str, *, cache_dir: Optional[str] = DEFAULT
         raise PackError("no unit wrote a record")
     empty_units = [u for u in units if u not in exports]
     units = [u for u in units if u in exports]
+    # the reasoning side product (owner 2026-11-04): question, gold reply, reasoning chain
+    reasoning = write_reasoning(data_dir, out / "reasoning", units)
+    log(f"[vlmpack] reasoning: " + " ".join(f"{u} {n}" for u, n in reasoning.items()))
 
     # the frozen subset and its audit sample
     eval_dir = out / vlm_eval_set.EVAL_VERSION
@@ -800,6 +848,8 @@ def build_pack(db_path: str, out_dir: str, *, cache_dir: Optional[str] = DEFAULT
         "exports": {v: _summary_for_manifest(s) for v, s in exports.items()},
         "eval": eval_result,
         "eval_shortcuts": eval_shortcuts,
+        "reasoning": {"files": {u: f"reasoning/{u}.jsonl" for u in reasoning},
+                      "rows": reasoning},
         "composition": comp,
         "references": references,
         "selfcheck": check,
@@ -910,7 +960,56 @@ def _formats() -> str:
                      if not key.startswith("V5"))
 
 
+def _rules_text(summary: dict) -> str:
+    """The card's paragraph on the rules the action questions are graded by, and on the
+    reasoning side product."""
+    non_step = sorted({int(d) for s in summary["exports"].values()
+                       for d, why in (s.get("skip_reasons") or {}).items()
+                       if isinstance(why, dict) and why.get("graph_tasks") == "not_stepwise"}
+                      | {int(d) for d in summary.get("non_stepwise") or []})
+    reasoning = (summary.get("reasoning") or {}).get("rows") or {}
+    text = (
+        "**The rules the action questions are graded by** (the owner's rulings of "
+        "2026-11-04). V4, V6, V7 and V16 rest on the stored constraint graph -- the "
+        "general rules R1-R17 and the per-machine rulings -- and on two rules of the moment, "
+        "computed from the scanner frame of the step and never stored: **dynamic "
+        "occlusion** (a part Y above part X that covers at least 20 % of X's whole shape "
+        "has to be taken out, moved aside or opened before X can be touched; cables never "
+        "count, a drive cage never counts over a plug, a bracket that never moves never "
+        "counts, owner exceptions in `configs/occlusion_exceptions.yaml`) and **loose parts "
+        "first** (a part lying loose in the case from the start comes out before anything "
+        "else is done). V6's gold is every action possible now under them (the frontier), "
+        "not the one the operator did; V7's required steps are the minimal prerequisites "
+        "under them, not the demonstrated sequence; V16's validity is a replay of the "
+        "sequence under them, never \"it was demonstrated\". "
+        + (f"D{', D'.join(f'{d:02d}' for d in non_step)} took several parts out at once "
+           f"(not stepwise): no V4 / V6 / V7 / V16 there. " if non_step else
+           "D66 took several parts out at once (not stepwise): no V4 / V6 / V7 / V16 there. "))
+    text += ("\n\n**Answers in plain names.** `label.answer` names every part the way a person "
+             "reads it -- its class, its group (\"the PSU screws\"), its anchor's words (\"fan "
+             "connector of the fan CPU cooler\") or \"one of the ...\" -- never an ordinal; the "
+             "instance keys the scorer reads stay label side in `answer_check.answer_keys`. "
+             "The gold reply built from those names scores 1.0, and the scorer still accepts "
+             "an exact instance label from a model.")
+    text += ("\n\n**Correctness.** Beside the self-check, the build is checked by an "
+             "independent re-derivation of every record from the database "
+             "(`tests/vlm_checker.py`) and by invariants (`tests/vlm_invariants.py`): every "
+             "demonstrated action feasible, no \"yes\" under a cover or a loose part, every "
+             "frontier target visible, every plan replaying, no \"changed\" without a state "
+             "event, no key, ordinal or graph word in any text.")
+    if reasoning:
+        text += ("\n\n**Reasoning side product.** `reasoning/<unit>.jsonl` holds one row per "
+                 "record of `data/` -- `{\"id\", \"task\", \"question\", \"answer\", "
+                 "\"reasoning\"}`: the question as the model reads it, the gold reply with "
+                 "every part named plainly (no ordinal) and the reasoning chain in words "
+                 "(what is seen, which rule applies, so the answer) -- for training only; "
+                 "nothing in it is shown to a model under evaluation. Rows: "
+                 + ", ".join(f"{u} {n}" for u, n in reasoning.items()) + ".")
+    return text
+
+
 def _known_issues(summary: dict) -> str:
+    ev = summary.get("eval_version") or vlm_eval_set.EVAL_VERSION
     items = []
     comp = summary["composition"]
     v2 = comp["v2_by_class"]
@@ -923,7 +1022,7 @@ def _known_issues(summary: dict) -> str:
             f"keeps none) the V2 pool is {comp['v2_records']} questions of which "
             f"`{top[0]}` is {top[1]} ({share:.0%}); classes whose state is the same in "
             f"every frame of a desktop (CPU, motherboard, RAM modules, expansion cards, "
-            f"most screws) have few or no state questions. `eval_v2` draws V2 **equally "
+            f"most screws) have few or no state questions. `{ev}` draws V2 **equally "
             f"over classes** (and half `prior_is_correct = false`), so its V2 is not the "
             f"pool's mix -- compare models on it, not on the pool's class frequencies. "
             f"Full pool by class: " + ", ".join(f"{k} {n}" for k, n in list(v2.items())[:12])
@@ -938,7 +1037,7 @@ def _known_issues(summary: dict) -> str:
         items.append(
             "**Unconfirmed views.** On OAK1, OAK2 and RealSense almost no frame has "
             "confirmed masks (the scanner is the annotated view). Their own files hold V15 "
-            "(it needs no mask) and V1 / V2 / V8 / V14 only where a frame is confirmed; such "
+            "(it needs no mask) and V1 / V2 / V8 only where a frame is confirmed; such "
             "records say `label.view_confirmed: false`, carry no evidence boxes and no "
             "visibility. The action tasks are not asked per side view any more: in "
             "`vlm_multi.jsonl` the side cameras' pictures are shown beside the scanner's, "
@@ -1007,9 +1106,9 @@ def _known_issues(summary: dict) -> str:
     items.append(
         "**Shortcut bounds are in-sample.** The `summary.json` `shortcuts` table (and the "
         "scorer's *text-only upper bound* column) is measured on the **full export** of a "
-        "unit, not on `eval_v2`; `eval_v2/<unit>.summary.json` is a copy of the same file. "
+        f"unit, not on `{ev}`; `{ev}/<unit>.summary.json` is a copy of the same file. "
         "The pack's `manifest.json` `eval_shortcuts` gives the same bounds measured on "
-        "`eval_v2` itself (V4: drawn balanced within each verb + class).")
+        f"`{ev}` itself (V4: drawn balanced within each verb + class).")
     items.append(
         "**Captive screws.** A truth that rests on a captive screw's tightness is marked "
         "`label.image_undecidable: true` (no 2D view shows it); the scorer reports every "
@@ -1030,10 +1129,11 @@ def _references_text(summary: dict) -> str:
         "Every model row is read against reference lines, none of which is a model "
         "(`tools/vlm_references.py`, `tools/vlm_overlay.py`, and two rows the scorer "
         "prints itself). **chance** is the expected score of a uniform guess over the "
-        "record's answer space (binary tasks 0.5, `V6-mc` 1/|options|, V2 1/|allowed|, V14 "
-        "0.5 x 1/|states| when answerable, open tasks 0; the rule per task is printed under "
-        "the score table). V14's |states| counts every state of the part's class, "
-        "`removed` included. **frequency** is the most frequent gold reply over the truth "
+        "record's answer space (binary tasks 0.5, `V6-mc` 1/|options|, V2 1/|allowed| -- its "
+        "count form (1 + 0.8 k)/(n+1) over the guesses 0..n, k the gold's neighbours --, "
+        "open tasks 0; the rule per task is printed under "
+        "the score table). |allowed| counts every state of the part's class and "
+        "`cannot_tell`. **frequency** is the most frequent gold reply over the truth "
         "file's `train` desktops (`label.split`; for `V6-mc` the most frequent letter) given "
         "as the answer to every record and graded like a model -- the floor a model has to "
         "clear to have read anything at all. **blind** is the record without its picture "
@@ -1049,7 +1149,7 @@ def _references_text(summary: dict) -> str:
         "the structured state table of each moment (perfect perception, screws shown "
         "present / removed only): one table per image in a camera view's file, one per "
         "moment in `multi` (the four cameras of one step share one table, the scanner's; "
-        "V3 / V12 have two); it has no V14 items, because V14 asks whether the view can "
+        "V3 / V12 have two); it has no V2 `cannot_tell` items, because those ask whether the view can "
         "settle a part's state and the table's visibility column is that answer. "
         "**mask_overlay** shows the frame with the confirmed visible masks painted in one "
         "fixed colour per class (the order of `configs/taxonomy.yaml`, alpha 0.45, a 2 px "
@@ -1084,7 +1184,7 @@ def _references_text(summary: dict) -> str:
                 skipped = ", ".join(f"{k} {n}" for k, n in sorted(s["skipped"].items())) or "none"
                 lines.append(f"{v} {s['records']} of {s['records_in']} records "
                              f"({s['overlays']} overlays; left out: {skipped})")
-            painted_text = ("The subset's overlay variant is pre-painted (`eval_v2/mask_overlay/`, "
+            painted_text = ("The subset's overlay variant is pre-painted (`eval_v3/mask_overlay/`, "
                             "`overlays/`): " + "; ".join(lines) + ".")
         else:
             painted_text = ("The overlays are **not** pre-painted in this copy "
@@ -1092,7 +1192,7 @@ def _references_text(summary: dict) -> str:
                             "`tools/vlm_overlay.py render` paints them from the sidecar.")
         status = (f"The masks come from the scanner pack `{masks.get('source')}` (confirmed "
                   f"rows, visibility checked against the oracle) as `data/vlm_<unit>.masks.jsonl` "
-                  f"and `eval_v2/<unit>.masks.jsonl`; confirmed frames with masks per unit: "
+                  f"and `eval_v3/<unit>.masks.jsonl`; confirmed frames with masks per unit: "
                   f"{per_view}" + (f"; {without} confirmed frames have no masks (OAK frames of "
                                    f"V15 pairs -- their records are left out of the variant)."
                                    if without else ".") + " " + painted_text)
@@ -1148,10 +1248,9 @@ def readme_text(summary: dict) -> str:
     unit_list = ", ".join(f"`{u}`" for u in units)
     truth_files = " ".join(f"{ev_name}/{u}.jsonl" for u in units)
     multi_tasks = list(summary.get("unit_tasks", {}).get(MULTI_VIEW) or [])
-    every_camera = [("V6 open" if t == "V6" else t) for t in multi_tasks
-                    if t not in MARKED_ACTION_TASKS]
-    scanner_only = [("V6 multiple choice" if t == "V6" else t) for t in multi_tasks
-                    if t in MARKED_ACTION_TASKS or t == "V6"]
+    every_camera = [t for t in multi_tasks if t not in MARKED_ACTION_TASKS]
+    scanner_only = [("V7 (when the CPU is in sight)" if t == "V7" else t) for t in multi_tasks
+                    if t in MARKED_ACTION_TASKS]
     multi_line = (
         f"`vlm_{MULTI_VIEW}.jsonl` holds the action tasks "
         f"({', '.join(multi_tasks)}): one record per step and question. "
@@ -1200,18 +1299,19 @@ overlays/<view>/D<nn>/s<nn>.png      (with masks) the subset's frames with the c
   table.md / table.json   the n table: target, drawn, by unit, strata, desktops
   audit/                  the author-audit sample: audit.ids.txt, audit.jsonl, audit.sheet.md,
                           the fillable pages audit.sheet.b01.html ... and the CSV skeleton audit.sheet.csv
+reasoning/<unit>.jsonl    the reasoning side product (training only): {{id, task, question, answer, reasoning}}
 tools/
   vlm_to_chat.py          records -> OpenAI / Qwen-VL / InternVL chat JSONL (images by path or base64;
                           draws the marks, writes the image legend and the glossary)
   vlm_glossary.py         the class descriptions and state meanings the converter appends
   vlm_score.py            {{id, raw_text}} replies -> scores per task / layer / template, 95 % CIs,
                           with the chance and frequency reference rows beside every task
-  vlm_references.py       the references: blind, protocol prior (bigram), state oracle (no V14), mask overlay
+  vlm_references.py       the references: blind, protocol prior (bigram), state oracle (no V2 cannot_tell item), mask overlay
   vlm_overlay.py          the confirmed-mask painter (masks sidecar from a scanner pack's COCO; overlays)
   vlm_sample.py           stratified seeded samples (audit / repeat)
   vlm_eval_set.py         the procedure that drew {ev_name} (re-runnable, byte-identical)
   vlm_selfcheck.py        gold replies must score 1.0 everywhere -- run it first
-  vlm_audit_sheet.py      the fillable audit pages (gold shown, marks drawn) + CSV skeleton
+  vlm_audit_sheet.py      the fillable audit pages (model view first, reviewer boxes on request) + CSV
   vlm_audit_summary.py    filled audit CSVs -> error rates with Wilson 95 % intervals, flagged items
   vlm_audit_carry.py      carries audit verdicts over to a re-drawn subset where the item is unchanged
   vlm_human_sheet.py      a timed answer form without answers (not part of the evaluation plan)
@@ -1223,8 +1323,10 @@ tools/
 ## Tasks
 
 Each record belongs to one task (`prompt.task`) and one unit (`label.view`).
-The four camera units hold **perception**: V1 V2 V8 V14 read the compiled masks,
-so they are asked only about frames a human confirmed in that view, and V15
+The four camera units hold **perception**: V1 V2 V8 read the compiled masks,
+so they are asked only about frames a human confirmed in that view (V14 is merged
+into V2: a V2 state question on a part this view cannot see -- wholly covered, too
+small, outside the picture -- is answered `cannot_tell`), and V15
 (two cameras, same moment or not) needs no mask at all. {multi_line} Its
 truth, rationale and evidence come from the step log, the state machine, the
 constraint graph and the **scanner** frame (the only confirmed view); the side
@@ -1232,18 +1334,21 @@ cameras are shown, not read. Counts are records in `data/` per unit:
 
 {_counts_table(summary)}
 
+{_rules_text(summary)}
+
 `layer` is the capability layer (`tools/tda/core/export/vlm_check.py`
 `CAPABILITY_LAYERS`): L1 perception, L2 affordance, L3 planning, change
 (V3 V12 V10), cross (V15). V5 (every legal action) is not exported.
 
 ### Multi-view records
 
-A multi-view `{MULTI_VIEW}` record (V3, V6 open, V10, V12: no part outlined) has as
+A multi-view `{MULTI_VIEW}` record (V3, V6 in all its forms, V10, V12, and V7 when the CPU is
+out of sight: no part outlined) has as
 `prompt.images` the frames of one step in the fixed order scanner, OAK 1, OAK 2,
 RealSense; a camera without a photo of that step is left out, so a record has 1
 to 4 images (V3 / V12: the cameras of the step before, then those of the step
 after, up to 8). A `{MULTI_VIEW}` record whose parts are outlined in red (V4,
-V6 multiple choice, V7, V16) shows the marked scanner image of its step alone:
+V16, and V7 when the CPU can be seen) shows the marked scanner image of its step alone:
 the outline says where to look, so no side camera is added (owner, 2026-11-03);
 `label.views` is then `["scan"]`. `label.views` lists the views present and
 `label.image_steps` the step of each image, in image order;
@@ -1259,14 +1364,21 @@ part it is about is outlined on the scanner image. `prompt.marks` lists
 `{{"image", "bbox": [x, y, w, h], "tag"}}` (the image's index in
 `prompt.images`, the box in that image's native pixels, the tag `A`, `B`, ...);
 the question says "the RAM module outlined in red" or "part A". The converter
-draws the boxes in red on a copy of the picture (scaled with it), written under
+draws each box as a thin **dashed** red outline at 60 % opacity, just outside the
+box, so the part under it stays visible; the tag sits in a small filled label
+**outside** the outline (above its top-left corner, or below it where there is no
+room), never on the part, one label per tag and image (a group's label beside its
+top-most outline). It draws on a copy of the picture (scaled with it), written under
 `--assets` (`tools/vlm_run/run_eval.sh` passes one) or, without it, under
 `<out dir>/<out stem>_marked/` beside the chat file; the files under `images/`
 are never changed. The box is the part's visible-mask box on
 the confirmed scanner frame, or its amodal box when the part is present but
-hidden; a part that cannot be outlined is not asked about. V1, V8 and V14 carry
-no mark (the box would be, or would give away, the answer). V2's screw counts
-are class questions without a mark.
+hidden; a part that cannot be outlined is not asked about -- except where the owner
+rulings name it in words: a V2 `cannot_tell` question on a part too small or outside the
+picture, a V7 goal out of sight ("the CPU"), and V6, whose answers and options name the
+actions directly ("unplug the connectors", "take out the PSU"), no mark, no tag. V1 and V8
+carry no mark (the box would be the answer). V2's screw counts are class questions without
+a mark.
 
 **Groups.** Interchangeable parts -- the screws of one fan, the latches of one
 RAM module, the connectors of one cable, the RAM modules -- are asked about as
@@ -1289,8 +1401,9 @@ One JSON object per line:
 ```
 {{"id": "rec_<16 hex>",
  "prompt": {{"task": "V4", "images": ["img_<16 hex>", ...], "question": "...",
-            "options": [{{"verb", "target_label"}}, ...],     # V6 multiple choice only
+            "options": [{{"verb", "target_label"}}, ...],     # V6 multiple choice only (words)
             "marks": [{{"image", "bbox", "tag"}}, ...],         # parts outlined in red
+            "hint_regions": [{{"image", "bbox"}}, ...],         # V3 roi form: yellow dashed box
             "image_legend": [{{"view", "moment"}}, ...],        # multi-view records only
             "terms": [...], "state_terms": [...]               # glossary entries
            }},
@@ -1313,10 +1426,26 @@ the glossary).
   here is shown to a model.
 * `label.evidence` / `label.rationale` -- boxes of the parts the answer rests
   on and the reasoning chain (`observe` / `recall_relation` /
-  `check_precondition` / ... steps); label side only.
+  `check_precondition` / ... steps); label side only. **Every** record also carries
+  `rationale.text`, the reasoning in words of what the picture shows -- what is seen,
+  which rule applies, so the answer ("No: the CPU socket lever still locks the CPU.";
+  V16 step by step) -- no graph vocabulary, no ordinal; `reasoning/<unit>.jsonl` collects
+  it with the question and the gold reply (in plain names) as a training side product.
+* V4's `answer.reason` is that reason in words -- the prerequisites now met ("both its RAM
+  latches are open, so the RAM module can be taken out") or what still holds the part --,
+  `answer.why` its machine-readable list (`{"part", "state", "relation"}`, a plain verb:
+  "locks", "covers", "fastens", "is plugged into", "is mounted on", ...), and
+  `answer_check.reason_code` the internal code (`violates_edge`, `covered_now` -- a part above
+  still covers it --, `loose_part_first`, or none on a "yes"). V16's
+  `answer.reason` is the first broken step in words, its code in `answer_check.reason_code`.
+  Parts are named without ordinals everywhere a person or a model reads them.
 * `label.truth_source` (V4, V7, V16) -- where an answer's "yes" or "no" comes
   from: `{'`, `'.join(TRUTH_SOURCES)}`. `demonstrated`: the operator did it
-  next. `graph_blocked`: a constraint edge forbids it. `graph_blocked_pixels`:
+  next (and the rules allow it). `simulated` (V16 valid): a replay of the whole sequence
+  under the rules is clean -- validity never rests on "it was demonstrated".
+  `occlusion_blocked`: a part above still covers it in this frame. `loose_first`: a part
+  lying loose in the case has to come out first.
+  `graph_blocked`: a constraint edge forbids it. `graph_blocked_pixels`:
   forbidden only by an edge that was imported from the pixels / a reviewer's
   occlusion ruling ("class rule x overlap in the annotation").
   `state_inapplicable`: the part is not in a state the verb starts from
@@ -1328,7 +1457,7 @@ the glossary).
   interchangeable with it, but nobody did them at that moment.
 * `label.negative` -- the kind of negative half, or absent on a positive: V4 the
   truth source; V12 `captive_screw_loosened` (the log moves, the picture does
-  not); V14 `unanswerable`; V15 `different_moment`; V16 the corruption
+  not); V2 `cannot_tell`; V15 `different_moment`; V16 the corruption
   (`substitute` / `move` / `swap`).
 * `label.tier` is the annotation standard of the view the truth rests on (scan
   and oak1 gold, oak2 silver, rs bronze; `{MULTI_VIEW}`: the scanner's);
@@ -1342,8 +1471,30 @@ the glossary).
   at the start of the teardown; for counts the starting number of screws)
   already gives the answer. The scorer's `V2` row (the headline) is every V2
   question; `V2-prior-wrong` is the `false` subset, a shortcut check.
-* `label.v6_form` / `label.v6_pair` (V6) -- `open` or `mc`; the two forms of
-  one step share the pair id.
+* `label.v6_form` / `label.v6_pair` (V6) -- `open`, `mc` or `constrained`; the open and
+  multiple-choice forms of one step share the pair id. `answer_check.groups` is the
+  frontier (every action possible now, grouped: all connectors one group, all RAM
+  latches, the RAM modules, screws by the part they fasten, else one group per part; a
+  target only a cable hides stays, `hidden_by_cable`), `gold_groups` the keys graded,
+  `blocked_groups` what cannot be done yet; the constrained form adds `constraint`
+  (`kind`, `rule` -- the words the prompt adds --, the parts held, the condition and the
+  edges a replay adds) and `forbidden_groups`.
+* `label.v7_form` (V7) -- `free` or `constrained`; `answer_check.moment` is the moment's own
+  rules (what covers a part in this frame, the loose parts still in), `constraint` the
+  rule of the constrained form and `count` the plugs it has to unplug.
+* `label.v3_form` / `label.v3_pair` (V3, owner 2026-11-04) -- two questions about one step,
+  scored as the rows `V3` and `V3-roi`. **`free`** is the question with no hint; it also asks
+  `"region": [x, y, width, height]`, where the machine changed, in pixels of the top-down
+  scanner image (its before and after pictures, `answer_check.region_images`). The gold
+  region (`answer.region` = `answer_check.region`) is the union of the changed part's scanner
+  boxes before and after (its group's where the part itself has none); the score stays verb +
+  target, and region IoU / region hit (IoU >= 0.5) are extra rows -- a box on a cropped or
+  scaled picture maps back like V1 / V8's. **`roi`** draws a yellow dashed box with no tag
+  (`prompt.hint_regions`, `answer_check.hint_region`) on both scanner pictures -- the gold
+  region grown 2.5 times about its centre, at least 300 px a side, kept inside and clipped to
+  the image -- says the change happened inside it, and asks the action as before (no region).
+  A step without a gold region (no confirmed scanner box) is asked free, without the region,
+  and has no roi partner. `v3_pair` is the free record's own id.
 * `label.image_undecidable` -- the truth rests on a captive screw's tightness.
 * `label.views` -- V15: the two views of the pair; `{MULTI_VIEW}`: the views
   shown, in `prompt.images` order.
@@ -1366,8 +1517,8 @@ and the converter implements both: none (`--roi none`, the default) or the
 view's **fixed chassis ROI** (`--roi view`: the manifest's `roi` `[x0, y0, x1, y1]`,
 one crop for every record of a desktop and view).
 **Never crop around a record's evidence**: the evidence boxes are label side,
-and a crop built from them puts the answer in the picture (every answerable V14
-item has a box and no unanswerable one does; V8's box is its answer). Box
+and a crop built from them puts the answer in the picture (every V2 state question
+on a visible part has a box and nearly no `cannot_tell` one does; V8's box is its answer). Box
 answers (V1, V8) and the marks are in pixel coordinates of the image shown;
 with `--roi view` or `--max-side` the converter scales the marks with the
 picture, writes the crop offset and scale to `meta.transforms`, and
@@ -1383,17 +1534,24 @@ Drawn once over all {n_desktops} desktops (zero-shot; the split is not used),
 seed {ev['seed']}, by `tools/vlm_eval_set.py`: per task at least {ev['targets']['binary']}
 records for the yes / no tasks ({', '.join(ev['targets']['binary_tasks'])}) and
 {ev['targets']['other']} for the others where the pool allows; V6 is drawn as pairs
-(300 pairs = 600 records). Perception is drawn from the camera units, the action
+(open + multiple choice of one frame), V6 constrained and V7 constrained as buckets of their
+own, and V3 as its free record with its roi partner (the unit is
+keyed by the free record's id, so the V3 ids drawn are the free form's alone; the audit
+sample draws free records only). Perception is drawn from the camera units, the action
 tasks from `{MULTI_VIEW}`; a task found in several units is allocated over them in
 proportion to the export, then equally over the task's strata (V4 feasible /
 infeasible then `truth_source`; V2 `prior_is_correct` then class; V12 changed /
-not then kind; V14 answerable / not; V15 same / different then view pair; V16
-valid / invalid then corruption; V3 by verb, V8 by class, V10 by progress bin),
+not then kind; V6 by frontier size, V6 / V7 constrained by kind of rule; V15 same /
+different then view pair; V16 valid / invalid then corruption; V3 by verb, V8 by class,
+V10 by progress bin; inside every stratum the ids of `eval_v2` first, wherever the
+record survives -- {ev.get('kept', {}).get('drawn_again', 0)} of them are drawn again),
 desktops take turns inside a stratum, and no desktop holds more than
 {ev['max_desktop_share']:.0%} of a task's target (a pool smaller than the target gives
-everything it has). Two runs are byte-identical. `{ev_name}` replaces `eval_v1`
-(the redesign of 2026-11-03: marks, groups, multi-view action tasks); the tools
-refuse an `eval_v1` path. Run every open model on the same `{ev_name}`; the closed
+everything it has). Two runs are byte-identical. `{ev_name}` replaces `eval_v2` (the final
+round of 2026-11-04: the corrected graph with dynamic occlusion and loose parts first, V6
+every action possible now, V7 free / constrained, V14 merged into V2; chat format
+`chat-v5`); the tools refuse an `eval_v1` or `eval_v2` path. Run every open model on the
+same `{ev_name}`; the closed
 model answers the items of `{ev_name}/audit/audit.ids.txt` once (the same items
 the author audits), and the open models are also scored on those ids for the
 comparison; intervals by cluster bootstrap over desktops (the scorer does this).
@@ -1407,9 +1565,12 @@ The strata counts are in `{ev_name}/table.md`. {audit_line}
 The error rate of the generated truth. Open `{ev_name}/audit/audit.sheet.b01.html`
 (and the following pages) in a browser from the pack directory -- plain HTML
 with inline script, no server, no network; the frames are loaded by relative
-path (`../../images/...`). Every item shows the picture(s) with the marks drawn,
-the question, the gold answer in words and as JSON, its evidence boxes drawn on
-the frame and the rationale chain; the reviewer marks 正确 / 错误 / 存疑
+path (`../../images/...`). Every item shows the picture(s) exactly as the model gets
+them -- the red dashed marks (and V3's yellow dashed hint box) drawn the converter's way,
+nothing else --, the question, the gold answer in words (no ordinals) and as JSON, and
+the rationale (the reason in what the picture shows); the evidence and answer boxes are a
+separate reviewer layer, hidden until **show reviewer boxes / 显示审核框** is ticked, and a
+legend line says the model never sees them. The reviewer marks 正确 / 错误 / 存疑
 (correct / wrong / doubtful) and may leave a note. Answers stay in the browser
 until **Export answers** downloads a CSV (`id, task, readable_id, desktop, view,
 step, batch, verdict, note, reviewer, answered_at`); `audit.sheet.csv` is the
@@ -1461,7 +1622,7 @@ python tools/vlm_to_chat.py --export {ev_name}/{MULTI_VIEW if multi else views[0
 python tools/vlm_score.py --truth {ev_name}/{MULTI_VIEW if multi else views[0]}.jsonl --pred runs/<model>.{MULTI_VIEW if multi else views[0]}.jsonl \\
     --chat runs/{MULTI_VIEW if multi else views[0]}.openai.jsonl --out runs/scores --name <model>-{MULTI_VIEW if multi else views[0]}
 
-# references: blind, protocol prior, state oracle (no V14) and, with --assets, the mask overlay
+# references: blind, protocol prior, state oracle (no V2 cannot_tell item) and, with --assets, the mask overlay
 # ({ref_unit}: {ref_why}; run the same on every unit)
 python tools/vlm_references.py --export {ev_name}/{ref_unit}.jsonl --out runs/refs/{ref_unit} \\
     --assets overlays --image-root images                     # overlays/ is pre-painted for {ev_name}
@@ -1478,9 +1639,21 @@ python tools/vlm_score.py --truth {ev_name}/{ref_unit}.jsonl --pred runs/refs/{r
 `vlm_score.py` writes `<name>.score.json` and `<name>.score.md`: per task, per
 layer and per question template, strict and lenient, 95 % cluster-bootstrap
 intervals over desktops, the text-only upper bound beside each task, V6 open
-(headline, group-equivalent; its `exact` metric is the reference itself -- on a group
-step, any member still to do) and `V6-mc`, V2 (headline: every V2 question) and `V2-prior-wrong`, V7's violation-free /
-required-recall / goal-reached, V4's blockers F1, V10's bin accuracy. Score the
+(headline: F1 over the frontier's groups, precision / recall beside it), `V6-mc` (one
+option possible) and `V6-constrained` (F1 plus `constraint_violation`), V7 and
+`V7-constrained` (valid = every step legal under the rules and the goal reached; plus
+`constraint_kept`, `count_exact` and `count_abs_error`: the plugs the plan unplugs against
+the plugs that are in), V2's `cannot_tell_accuracy`, V3 (headline: the free form; extra rows region_iou /
+region_hit) and `V3-roi` (the hinted form), V2 (headline: every V2 question) and `V2-prior-wrong`
+(V2's count form, `derive = screw_count`, scores the exact count 1.0, one off 0.8 and anything
+else 0; the extra row `exact` is the exact matches alone, `count_exact` those of the counts), V7's violation-free /
+required-recall / goal-reached, V4's blockers F1, V10's bin accuracy, and V1 / V8's boxes:
+the headline stays IoU >= 0.5 (V1 class-aware set F1, V8 hit; V8's several-box form a set
+F1), beside it the COCO-style average over IoU 0.50:0.05:0.95 (`f1_50_95`, `hit_50_95`).
+Every V1 / V8 answer is graded twice -- the boxes as given and every coordinate x 1.25 (a
+model that answers in an internally resized 0.8 frame) -- and the better grade is kept; the
+grade's `frame` says which won and the `frame` table (and the extra row `frame_1.25`) gives
+the share per model. Score the
 units separately (each truth file has its own oracle) and pool in your
 analysis; `{ev_name}/ids.txt` is the subset. The model driver (`tools/vlm_run/vlm_run.py`:
 OpenAI-compatible APIs, vLLM, transformers, and a `gold` pseudo backend), its Slurm

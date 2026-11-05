@@ -47,6 +47,7 @@ __all__ = [
     "CABLE_DEFAULT_STATE",
     "CABLE_PREFIX",
     "CONTAINED_MODE",
+    "LOOSE_MODE",
     "INACTIVE_STATUSES",
     "LOOSE_ATTR",
     "LS_PREFIX",
@@ -123,6 +124,11 @@ MOUNTED_MODE = "mounted"
 #: The ``blocked_by`` mode of "the blocker is a load the part carries" (task
 #: W3g): a drive in the drive cage, the optical drive on top of it.
 CONTAINED_MODE = "contained"
+#: The ``blocked_by`` mode of a **moment edge** (never stored): a part lying loose in the
+#: machine (R16, :data:`LOOSE_ATTR`) holds back every action outside its own way out until
+#: it is out (:func:`tda.core.graph.moment_edges`). It gates every verb and only
+#: ``removed`` clears it.
+LOOSE_MODE = "loose"
 #: ``blocked_by`` is the only type that carries a mode (spec 7.1).
 #: ``physical_path`` stays first: it is the Relations panel's default.
 BLOCKED_MODES = ("physical_path", "tool_access", "cable_tension", MOUNTED_MODE,
@@ -183,6 +189,7 @@ BLOCKED_GATES: dict[str, frozenset[str]] = {
     "tool_access": GATED_VERBS,
     "mounted": frozenset({"remove", "displace"}),
     "contained": frozenset({"remove"}),
+    LOOSE_MODE: GATED_VERBS,
 }
 
 #: ``blocked_by`` modes whose blocker must reach a narrower set of states than
@@ -195,6 +202,7 @@ BLOCKED_GATES: dict[str, frozenset[str]] = {
 BLOCKED_REQUIRED: dict[str, frozenset[str]] = {
     "mounted": frozenset({"removed"}),
     "contained": frozenset({"removed"}),
+    LOOSE_MODE: frozenset({"removed"}),
 }
 
 

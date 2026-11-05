@@ -48,17 +48,24 @@ def _v2(images, marks, **prompt) -> dict:
 
 
 def _is_red(px) -> bool:
+    """Opaque mark red: the tag label (mark-v2 draws the outline at 60 % opacity)."""
     return abs(px[0] - RED[0]) < 40 and px[1] < 80 and abs(px[2] - RED[2]) < 50
 
 
-def _red_box(img):
-    """The bounding box of the red pixels: ``(x0, y0, x1, y1)`` inclusive, or ``None``."""
+def _is_mark(px) -> bool:
+    """Red, opaque or blended over the grey frame (the 60 % outline: about (189, 50, 77))."""
+    return px[0] > 150 and px[1] < 90 and px[0] - px[1] > 90
+
+
+def _red_box(img, test=None):
+    """The bounding box of the mark pixels: ``(x0, y0, x1, y1)`` inclusive, or ``None``."""
+    test = test or _is_mark
     w, h = img.size
     px = img.convert("RGB").load()
     xs, ys = [], []
     for y in range(h):
         for x in range(w):
-            if _is_red(px[x, y]):
+            if test(px[x, y]):
                 xs.append(x)
                 ys.append(y)
     return (min(xs), min(ys), max(xs), max(ys)) if xs else None
@@ -81,14 +88,63 @@ def test_mark_drawn_at_scaled_box(tmp_path):
     assert shown.size == (800, 800)
     assert row["meta"]["transforms"] == [{"crop": [0, 0], "scale": 0.5}]
     px = shown.load()
-    # the outline runs just outside the scaled box: the part itself is not painted over
-    for x, y in ((48, 62), (77, 62), (62, 77)):
-        assert _is_red(px[x, y]), (x, y, px[x, y])
-    assert not _is_red(px[62, 62])  # inside the box
-    assert not _is_red(px[400, 400]) and not _is_red(px[62, 120])  # elsewhere
+    # mark-v2: the outline runs just outside the scaled box [50, 50, 25, 25] (2 px at 800 px:
+    # x and y 48..76), so the part itself is not painted over; it is dashed (14 / 8 at 1600 px,
+    # 7 / 4 here, each side starting with a dash at its corner) and 60 % opaque
+    for x, y in ((48, 50), (76, 50), (50, 48), (50, 76), (49, 60), (60, 49)):
+        assert _is_mark(px[x, y]), (x, y, px[x, y])
+    for x, y in ((48, 56), (56, 48), (76, 67), (67, 76)):  # the gaps of the dashes
+        assert not _is_mark(px[x, y]), (x, y, px[x, y])
+    assert not _is_red(px[48, 50]) and px[48, 50][0] < 230  # see-through, not opaque red
+    assert not _is_mark(px[62, 62]) and not _is_mark(px[51, 51])  # inside the box
+    assert not _is_mark(px[400, 400]) and not _is_mark(px[62, 120])  # elsewhere
     x0, y0, x1, y1 = _red_box(shown.crop((0, 0, 200, 200)))
-    # the outline (3 px) and, above it, the filled tag label at the box's top-left
-    assert 44 <= x0 <= 50 and 75 <= x1 <= 82 and y1 <= 82 and y0 < 47
+    assert x0 == 48 and x1 == 76 and y1 == 76 and y0 < 47
+    # the tag sits in a filled label outside the outline: above its top-left corner
+    lx0, ly0, lx1, ly1 = _red_box(shown.crop((0, 0, 200, 200)), _is_red)
+    assert lx0 == 48 and ly1 < 48 and ly0 >= 0
+
+
+def test_mark_label_never_sits_on_the_part(tmp_path):
+    """Owner 2026-11-04 (#77): the tag "A" over a CPU's printed "C" read as "APU". The label goes
+    outside the outline -- below it when the box touches the top of the picture -- and a group
+    of outlines under one tag carries one label, beside its top-most outline."""
+    from PIL import Image
+
+    img = Image.new("RGB", (320, 320), GREY)
+    top = C.draw_marks(img.copy(), [{"image": 0, "bbox": [40, 0, 60, 30], "tag": "A"}])
+    lx0, ly0, lx1, ly1 = _red_box(top, _is_red)
+    assert ly0 >= 30 + C.mark_width(320)  # below the outline (its last row is 31), not on the part
+    group = C.draw_marks(img.copy(), [{"image": 0, "bbox": [40, 100, 200, 12], "tag": "A"},
+                                      {"image": 0, "bbox": [40, 130, 200, 12], "tag": "A"},
+                                      {"image": 0, "bbox": [40, 160, 200, 12], "tag": "A"}])
+    lx0, ly0, lx1, ly1 = _red_box(group, _is_red)
+    assert ly1 < 100 - C.mark_width(320)  # one label, above the top-most outline only
+    px = group.load()  # no opaque label pixel inside any of the three boxes
+    for y0 in (100, 130, 160):
+        assert not any(_is_red(px[x, y]) for x in range(40, 240) for y in range(y0, y0 + 12))
+    # label_place: above, else below, else beside -- never inside
+    assert C.label_place((10, 50, 60, 90), (20, 16), (200, 200)) == (10, 33)
+    assert C.label_place((10, 0, 60, 90), (20, 16), (200, 200)) == (10, 91)
+    assert C.label_place((30, 0, 60, 199), (20, 16), (200, 200)) == (9, 0)
+
+
+def test_hint_region_is_a_dashed_box_without_tag(tmp_path):
+    """V3's ``roi`` hint (``style = "hint"``): the same dashed box in yellow, no label -- drawn
+    just inside its box (it outlines no part), so a hint clipped to the picture keeps its sides."""
+    from PIL import Image
+
+    img = Image.new("RGB", (320, 320), GREY)
+    shown = C.draw_marks(img.copy(), [{"image": 0, "bbox": [50, 50, 200, 200], "style": "hint"}])
+    px = shown.load()
+    yellow = lambda p: p[0] > 150 and p[1] > 130 and p[2] < 90  # noqa: E731
+    assert yellow(px[50, 52]) and yellow(px[51, 52]) and not yellow(px[48, 52])
+    assert not yellow(px[50, 57]) and not yellow(px[150, 150])  # a gap; the inside
+    assert _red_box(shown) is None  # nothing red: no tag, no red outline
+    assert C.HINT_RGB != C.MARK_RGB
+    whole = C.draw_marks(img.copy(), [{"image": 0, "bbox": [0, 0, 320, 320], "style": "hint"}])
+    px = whole.load()
+    assert yellow(px[0, 2]) and yellow(px[319, 2]) and yellow(px[2, 319])
 
 
 def test_pack_image_untouched(tmp_path):
@@ -162,7 +218,7 @@ def test_mark_follows_the_view_roi_crop(tmp_path):
     shown = Image.open(row["meta"]["images"][0]).convert("RGB")
     assert shown.size == (200, 300)
     px = shown.load()
-    assert _is_red(px[48, 120]) and not _is_red(px[70, 120])  # left edge of [50, 100, 40, 40]
+    assert _is_mark(px[48, 120]) and not _is_mark(px[70, 120])  # left edge of [50, 100, 40, 40]
 
 
 def test_marks_need_somewhere_to_go(tmp_path):
@@ -186,9 +242,9 @@ def test_marks_need_somewhere_to_go(tmp_path):
     assert Path(row["meta"]["images"][0]).parent == out.parent / "x.openai_marked"
 
 
-@pytest.mark.parametrize("task", ["V1", "V8", "V14"])
+@pytest.mark.parametrize("task", ["V1", "V8"])
 def test_box_tasks_never_show_marks(tmp_path, task):
-    """A mark on V1 / V8 / V14 would be the answer: none is drawn or named, whatever the record holds."""
+    """A mark on V1 / V8 would be the answer: none is drawn or named, whatever the record holds."""
     from PIL import Image
 
     root = tmp_path / "images"
@@ -218,7 +274,18 @@ def test_mark_style_is_in_the_cache_key(tmp_path, monkeypatch):
     restyled = C.convert(record, manifest, images, "openai")["meta"]["images"][0]
     assert restyled != first
     monkeypatch.setattr(C, "MARK_RGB", (0, 0, 255))
-    assert C.convert(record, manifest, images, "openai")["meta"]["images"][0] not in (first, restyled)
+    blue = C.convert(record, manifest, images, "openai")["meta"]["images"][0]
+    assert blue not in (first, restyled)
+    monkeypatch.setattr(C, "MARK_OPACITY", 1.0)
+    assert C.convert(record, manifest, images, "openai")["meta"]["images"][0] not in (
+        first, restyled, blue)
+    assert C.mark_style().startswith("mark-test|")
+
+
+def test_the_mark_style_version_was_bumped():
+    """mark-v2 (owner 2026-11-04): dashed, 60 % opaque, the tag outside the outline."""
+    assert C.MARK_STYLE_VERSION == "mark-v2" and C.MARK_OPACITY == pytest.approx(0.6)
+    assert C.mark_width(1600) == 2 and C.mark_dash(1600) == (14, 8)
 
 
 # --------------------------------------------------------------------------- #
@@ -280,7 +347,7 @@ def test_multiview_legend_lists_present_views():
     blind = _multi(VIEWS)
     blind["prompt"]["images"] = []
     assert "Image" not in C.user_text(blind).split("\n")[0] and "Outlined" not in C.user_text(blind)
-    assert C.CHAT_FORMAT_ID == "chat-v3"
+    assert C.CHAT_FORMAT_ID == "chat-v5"
 
 
 def test_glossary_has_class_and_states():
@@ -317,10 +384,11 @@ def test_a_presence_question_glosses_presence_states():
     import vlm_glossary as G
 
     record = _v2(["img_a"], [], terms=["screw.cpu_cooler"], state_terms=["screw.cpu_cooler"],
-                 task="V14", question="Can this view settle whether the CPU cooler screw is "
-                                       "still in place?")
+                 task="V2", question="Is the CPU cooler screw still in place, or has it "
+                                      "been removed?")
     record["label"]["answer_check"] = {"type": "exact", "state_space": "presence",
-                                       "fields": ["answerable", "state"]}
+                                       "derive": "instance_state", "fields": ["state"],
+                                       "allowed": ["present", "removed", "cannot_tell"]}
     assert G.is_presence(record)
     text = C.user_text(record)
     gloss = text[text.index("Glossary:"):]
@@ -332,6 +400,24 @@ def test_a_presence_question_glosses_presence_states():
     assert "fastened = " in plain and "present = " not in plain
     latch = G.glossary_text(["ram_latch"], ["ram_latch"])
     assert G.glossary_text(["ram_latch"], ["ram_latch"], presence=True) == latch
+
+
+def test_glossary_rulings_of_2026_11_04():
+    """Owner audit 2026-11-04: a cable clip ``open`` is open with its cable out; ``displaced``
+    means one concrete thing per class (decision (a)) -- no two classes share the line, and the
+    four classes that use it (drive cage, PSU, storage drive, CPU cooler) say how they move."""
+    import vlm_glossary as G
+
+    assert G.STATE_MEANINGS["cable_clip"]["open"] == \
+        "the clip is open and its cable has been taken out of it"
+    lines = {c: m["displaced"] for c, m in G.STATE_MEANINGS.items() if "displaced" in m}
+    assert len(set(lines.values())) == len(lines)
+    assert "swung out of its bay" in lines["psu"] and "still in the case" in lines["psu"]
+    assert "hinge" in lines["drive_cage"] and "optical drive" in lines["drive_cage"]
+    assert "partly out of its bay" in lines["storage_drive"]
+    assert "off the CPU" in lines["cpu_cooler"]
+    text = G.glossary_text(["psu"], ["psu"])
+    assert "displaced = the power supply has been pulled or swung out of its bay" in text
 
 
 def test_glossary_tables_follow_the_scanner_pack_and_the_taxonomy():

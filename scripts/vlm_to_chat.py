@@ -26,8 +26,8 @@ go to ``meta.transforms`` so ``scripts/vlm_score.py --chat`` can map boxes back.
 
 There is deliberately no crop around a record's own evidence (W3b review S2):
 the evidence boxes are label side, and a crop built from them is the answer
-leaking into the picture -- every decidable V14 item has a box and no
-undecidable one does, V12's changed pairs have boxes and its no-change pairs
+leaking into the picture -- every V2 state question on a visible part has a box and
+nearly no cannot_tell one does, V12's changed pairs have boxes and its no-change pairs
 none, and V8's box *is* its answer. A crop may depend on the desktop and the
 view, never on the record.
 A two-image question is two image parts, or with ``--composite`` one
@@ -40,10 +40,11 @@ Crops and composites are written under ``--assets`` (required for them); the
 source images are only read.
 
 **Marks** (spec 3.5): every ``prompt.marks`` box ``{"image", "bbox", "tag"}`` is
-drawn on its image -- red ``#ff1744``, ``max(3, round(3 * w / 1600))`` px just
-outside the box, the tag in a filled label at its top-left -- on an in-memory
-copy, after the same crop and scale as the picture (the pack's frame is never
-drawn on). The marked copy goes to ``--assets``, or without it to
+drawn on its image -- a thin **dashed** red ``#ff1744`` outline at 60 % opacity,
+``max(2, round(2 * w / 1600))`` px just outside the box, the tag in a small filled
+label **outside** the outline (above its top-left corner, or below it where there is
+no room; one label per tag and image) -- on an in-memory copy, after the same crop
+and scale as the picture (the pack's frame is never drawn on). The marked copy goes to ``--assets``, or without it to
 ``<out dir>/<out stem>_marked/``.
 """
 from __future__ import annotations
@@ -62,8 +63,12 @@ from vlm_glossary import glossary_text, is_presence  # noqa: E402
 from tda.core.export.vlm_check import LETTERS, format_instruction  # noqa: E402
 
 #: Bumped whenever the wording around the question changes (chat-v2: marks, image legend,
-#: glossary; chat-v3: the V6 multiple choice speaks of its one picture).
-CHAT_FORMAT_ID = "chat-v3"
+#: glossary; chat-v3: the V6 multiple choice speaks of its one picture; chat-v4: V3's two
+#: forms -- the free question also asks the region, the roi one shows a yellow hint box -- and
+#: the dashed mark-v2 outlines; chat-v5, the final round of 2026-11-04: V6 lists every action
+#: possible now (open / constrained, the options named in words), V7 plans under rules in
+#: words, V2 answers cannot_tell, V14 is gone).
+CHAT_FORMAT_ID = "chat-v5"
 SYSTEM = ("You are shown photographs of a desktop PC being disassembled on a bench. "
           "Answer exactly in the JSON format asked for.")
 #: The crops a run may use: none, or the view's fixed chassis ROI.
@@ -143,15 +148,25 @@ def legend_line(record: dict) -> str:
 
 #: Tasks whose answer is a box or a visibility: a mark there would give the answer away
 #: (spec 3.2), so marks are never drawn nor named on them, whatever the record holds.
-UNMARKED_TASKS = ("V1", "V8", "V14")
+UNMARKED_TASKS = ("V1", "V8")
 
 
 def shown_marks(record: dict) -> list[dict]:
-    """The ``prompt.marks`` the model may see: none on V1 / V8 / V14."""
+    """The ``prompt.marks`` the model may see: none on V1 / V8."""
     prompt = record["prompt"]
     if prompt.get("task") in UNMARKED_TASKS:
         return []
     return list(prompt.get("marks") or [])
+
+
+def shown_hints(record: dict) -> list[dict]:
+    """The ``prompt.hint_regions`` (V3's ``roi`` form), as marks of ``style = "hint"``: a dashed
+    box in :data:`HINT_RGB`, no tag (none on V1 / V8)."""
+    prompt = record["prompt"]
+    if prompt.get("task") in UNMARKED_TASKS:
+        return []
+    return [{"image": int(h.get("image", 0)), "bbox": list(h["bbox"]), "style": "hint"}
+            for h in prompt.get("hint_regions") or [] if h.get("bbox")]
 
 
 def marks_line(record: dict) -> str:
@@ -231,20 +246,83 @@ def user_text(record: dict) -> str:
 MARK_RGB = (0xFF, 0x17, 0x44)  # "#ff1744"
 #: The text on a mark's tag label.
 MARK_TEXT_RGB = (255, 255, 255)
+#: The colour of a hint region (``prompt.hint_regions``, V3's ``roi`` form): a dashed box in
+#: another colour than the marks, with no tag.
+HINT_RGB = (0xFF, 0xD6, 0x00)  # "#ffd600"
+#: How opaque an outline is (owner 2026-11-04): a RAM module under a thin outline stays visible.
+MARK_OPACITY = 0.6
 #: Bumped whenever the way a mark is drawn changes (outline, label, font): it is part of the
-#: cache key of a marked copy, so a new style never reuses a stale picture.
-MARK_STYLE_VERSION = "mark-v1"
+#: cache key of a marked copy, so a new style never reuses a stale picture. mark-v2 (owner
+#: 2026-11-04): a thin dashed outline at 60 % opacity, the tag in a label outside the outline.
+MARK_STYLE_VERSION = "mark-v2"
 
 
 def mark_style() -> str:
     """Everything about a mark's look that its cached picture depends on."""
-    return (f"{MARK_STYLE_VERSION}|{MARK_RGB}|{MARK_TEXT_RGB}|"
-            f"w=max(3,round(3*W/1600))|{CHAT_FORMAT_ID}")
+    return (f"{MARK_STYLE_VERSION}|{MARK_RGB}|{MARK_TEXT_RGB}|{HINT_RGB}|a={MARK_OPACITY}|"
+            f"w=max(2,round(2*W/1600))|dash={mark_dash(1600)}|{CHAT_FORMAT_ID}")
 
 
 def mark_width(width: int) -> int:
-    """Outline width of a mark on an image ``width`` px wide (3 px at 1600 px, never thinner)."""
-    return max(3, round(3 * width / 1600))
+    """Outline width of a mark on an image ``width`` px wide (2 px at 1600 px, never thinner)."""
+    return max(2, round(2 * width / 1600))
+
+
+def mark_dash(width: int) -> tuple[int, int]:
+    """``(dash, gap)`` of a mark's dashed outline on an image ``width`` px wide (14 / 8 at 1600 px)."""
+    return max(6, round(14 * width / 1600)), max(4, round(8 * width / 1600))
+
+
+def label_font_size(width: int) -> int:
+    """The tag label's font size on an image ``width`` px wide (18 px at 1600 px)."""
+    return max(12, round(18 * width / 1600))
+
+
+def label_place(outline: tuple, size: tuple, image: tuple) -> tuple[int, int]:
+    """Top-left of a tag label of ``size`` (w, h) for an ``outline`` (x0, y0, x1, y1 inclusive) on
+    an ``image`` (W, H): above the outline's top-left corner, else below its bottom, else left
+    of it, else right of it -- outside the outline, never on the part. Only an outline that
+    fills the picture leaves no room, and then the label goes in the picture's top-left corner.
+    """
+    x0, y0, x1, y1 = outline
+    tw, th = size
+    W, H = image
+    gap = 1
+    lx = min(max(0, x0), max(0, W - tw))
+    if y0 - gap - th >= 0:
+        return lx, y0 - gap - th
+    if y1 + gap + th <= H - 1:
+        return lx, y1 + gap
+    ly = min(max(0, y0), max(0, H - th))
+    if x0 - gap - tw >= 0:
+        return x0 - gap - tw, ly
+    if x1 + gap + tw <= W - 1:
+        return x1 + gap, ly
+    return 0, 0
+
+
+def _dashed_rect(draw, box: tuple, lw: int, dash: tuple[int, int], fill, size: tuple) -> None:
+    """A dashed outline whose outer edge is ``box`` (x0, y0, x1, y1 inclusive), ``lw`` thick and
+    drawn inwards from it; each side starts with a dash at its corner. Clipped to ``size``."""
+    x0, y0, x1, y1 = box
+    W, H = size
+    on, off = dash
+
+    def seg(ax, ay, bx, by):
+        ax, ay, bx, by = max(0, ax), max(0, ay), min(W - 1, bx), min(H - 1, by)
+        if ax <= bx and ay <= by:
+            draw.rectangle((ax, ay, bx, by), fill=fill)
+
+    x = x0
+    while x <= x1:  # top and bottom
+        seg(x, y0, min(x + on - 1, x1), y0 + lw - 1)
+        seg(x, y1 - lw + 1, min(x + on - 1, x1), y1)
+        x += on + off
+    y = y0
+    while y <= y1:  # left and right
+        seg(x0, y, x0 + lw - 1, min(y + on - 1, y1))
+        seg(x1 - lw + 1, y, x1, min(y + on - 1, y1))
+        y += on + off
 
 
 def _font(size: int):
@@ -256,45 +334,77 @@ def _font(size: int):
         return ImageFont.load_default()
 
 
-def draw_marks(img, marks, crop=(0, 0), scale: float = 1.0):
-    """Draw ``marks`` (native ``[x, y, w, h]`` boxes) on ``img`` -- already cropped by ``crop``
-    and scaled by ``scale``, so each box gets the same transform as the picture. ``img`` is
-    changed in place (the caller passes its in-memory copy, never the pack's file).
-
-    The outline runs just **outside** the box (the part itself is not painted over); the tag
-    sits in a filled label at the box's top-left, above the box where there is room.
-    """
-    from PIL import ImageDraw
-
-    if not marks:
-        return img
-    if img.mode != "RGB":
-        img = img.convert("RGB")
-    W, H = img.size
+def mark_outlines(marks, crop, scale: float, size: tuple) -> list[tuple[dict, tuple]]:
+    """``[(mark, (x0, y0, x1, y1))]``: each shown mark's outline (inclusive, in the pixels of
+    the shown picture of ``size`` (W, H)) -- :func:`mark_width` outside its box, so the part
+    itself is not painted over. A mark wholly outside the crop is left out."""
+    W, H = size
     lw = mark_width(W)
-    font = _font(max(14, round(24 * W / 1600)))
-    draw = ImageDraw.Draw(img)
+    out = []
     for m in marks:
         x, y, w, h = (float(v) for v in m["bbox"])
         x0, y0 = (x - crop[0]) * scale, (y - crop[1]) * scale
         x1, y1 = (x + w - crop[0]) * scale, (y + h - crop[1]) * scale
         if x1 <= 0 or y1 <= 0 or x0 >= W or y0 >= H:
             continue  # outside the crop: nothing of it is shown
-        ox0, oy0 = round(x0) - lw, round(y0) - lw
-        ox1, oy1 = round(x1) + lw - 1, round(y1) + lw - 1
-        draw.rectangle((max(0, ox0), max(0, oy0), min(W - 1, ox1), min(H - 1, oy1)),
-                       outline=MARK_RGB, width=lw)
-        tag = str(m.get("tag") or "")
-        if not tag:
+        if m.get("style") == "hint":
+            # a hint region outlines no part: drawn just inside its box, so one that reaches
+            # the picture's edge (it is clipped to the image) keeps every side visible
+            out.append((m, (max(0, round(x0)), max(0, round(y0)),
+                            min(W - 1, round(x1) - 1), min(H - 1, round(y1) - 1))))
             continue
+        out.append((m, (round(x0) - lw, round(y0) - lw, round(x1) + lw - 1, round(y1) + lw - 1)))
+    return out
+
+
+def label_anchor(outlines: list[tuple]) -> tuple:
+    """The outline a tag's one label goes beside: the top-most (then left-most) of the tag's
+    outlines -- a group's members share one label, so stacked RAM modules are not covered
+    by each other's tags."""
+    return min(outlines, key=lambda o: (o[1], o[0]))
+
+
+def draw_marks(img, marks, crop=(0, 0), scale: float = 1.0):
+    """Draw ``marks`` (native ``[x, y, w, h]`` boxes) on ``img`` -- already cropped by ``crop``
+    and scaled by ``scale``, so each box gets the same transform as the picture. Returns the
+    drawn copy (the caller passes its in-memory copy, never the pack's file).
+
+    mark-v2 (owner 2026-11-04): a **thin dashed** outline (:func:`mark_width`,
+    :func:`mark_dash`) at :data:`MARK_OPACITY`, just **outside** the box, so the part under it
+    stays visible; the tag sits in a small filled label **outside** the outline -- above the
+    top-left corner of the tag's top-most outline, or below it where there is no room
+    (:func:`label_place`) -- never on the part (the tag "A" over a CPU's printed "C" read as
+    "APU"). A mark of ``style == "hint"`` (V3's ``roi`` hint region) is the same dashed box in
+    :data:`HINT_RGB`, with no tag.
+    """
+    from PIL import Image, ImageDraw
+
+    if not marks:
+        return img
+    base = img.convert("RGBA")
+    W, H = base.size
+    lw = mark_width(W)
+    dash = mark_dash(W)
+    alpha = round(255 * MARK_OPACITY)
+    overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    tagged: dict[str, list[tuple]] = {}
+    for m, outline in mark_outlines(marks, crop, scale, (W, H)):
+        hint = m.get("style") == "hint"
+        rgb = HINT_RGB if hint else MARK_RGB
+        _dashed_rect(draw, outline, lw, dash, (*rgb, alpha), (W, H))
+        tag = "" if hint else str(m.get("tag") or "")
+        if tag:
+            tagged.setdefault(tag, []).append(outline)
+    font = _font(label_font_size(W))
+    for tag, outlines in tagged.items():
         left, top, right, bottom = draw.textbbox((0, 0), tag, font=font)
         pad = max(2, lw)
         tw, th = right - left + 2 * pad, bottom - top + 2 * pad
-        lx = min(max(0, ox0), max(0, W - tw))
-        ly = oy0 - th if oy0 - th >= 0 else max(0, oy0)
-        draw.rectangle((lx, ly, lx + tw - 1, ly + th - 1), fill=MARK_RGB)
-        draw.text((lx + pad - left, ly + pad - top), tag, fill=MARK_TEXT_RGB, font=font)
-    return img
+        lx, ly = label_place(label_anchor(outlines), (tw, th), (W, H))
+        draw.rectangle((lx, ly, lx + tw - 1, ly + th - 1), fill=(*MARK_RGB, 255))
+        draw.text((lx + pad - left, ly + pad - top), tag, fill=(*MARK_TEXT_RGB, 255), font=font)
+    return Image.alpha_composite(base, overlay).convert("RGB")
 
 
 class Images:
@@ -356,7 +466,8 @@ class Images:
                               max(1, round(img.size[1] * scale))))
         if marks:
             img = draw_marks(img.copy(), marks, (x0, y0), scale)
-            spec = [(m.get("tag"), [float(v) for v in m["bbox"]]) for m in marks]
+            spec = [(m.get("tag"), [float(v) for v in m["bbox"]], m.get("style") or "mark")
+                    for m in marks]
             tag = hashlib.sha256(f"{rel}|{box}|{self.max_side}|{spec}|{mark_style()}"
                                  .encode()).hexdigest()[:16]
             out = self._marks_out() / f"mark_{tag}.png"
@@ -408,7 +519,7 @@ def convert(record: dict, manifest: dict, images: Images, fmt: str, *,
                          f"from a record's evidence would show its answer")
     shown: list[Path] = []
     transforms: list[dict] = []
-    marks = shown_marks(record)
+    marks = shown_marks(record) + shown_hints(record)
     for index, image_id in enumerate(record["prompt"].get("images") or []):
         entry = manifest[image_id]
         box = tuple(entry["roi"]) if roi == "view" and entry.get("roi") else None

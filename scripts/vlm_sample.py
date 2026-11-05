@@ -42,10 +42,36 @@ def _key(seed: int, purpose: str, text: str) -> str:
     return hashlib.sha256(f"{seed}|{purpose}|{text}".encode("utf-8")).hexdigest()
 
 
+#: The forms a sample gives a share of their own (``by_form``): V3 free / roi, V6 open / mc /
+#: constrained, V7 free / constrained (owner 2026-11-04: every task and form its share).
+FORM_FIELDS = {"V3": "v3_form", "V6": "v6_form", "V7": "v7_form"}
+
+
+def bucket_of(record: dict) -> str:
+    """``"V6.mc"``, ``"V7.constrained"``, ``"V2"``: a record's task and, where it has forms, its
+    form."""
+    task = record["prompt"]["task"]
+    if task == "V12" and (record["label"].get("v12_span") or 1) > 1:
+        return "V12.span"
+    form = record["label"].get(FORM_FIELDS.get(task, ""))
+    return f"{task}.{form}" if form else task
+
+
+def _bucket_order(bucket: str) -> tuple:
+    task, _, form = bucket.partition(".")
+    return (int(task[1:]), form)
+
+
 def draw(records: list[dict], *, size: int = 300, per_task: int = 25, seed: int = 0,
          purpose: str = "audit", test_desktops: Optional[set[int]] = None,
-         max_share: float = 0.2) -> list[dict]:
-    """The sample, in task order then draw order."""
+         max_share: float = 0.2, keep: Optional[set] = None,
+         by_form: bool = False) -> list[dict]:
+    """The sample, in task order then draw order.
+
+    ``by_form``: every task **and form** is a bucket with its share (V6 open / mc /
+    constrained, V7 free / constrained ...), at most ``size // buckets`` each before the
+    leftover is spread; ``keep``: ids drawn first inside their stratum where they are in the
+    pool (the audit before, wherever its record survives)."""
     if test_desktops is None:
         flagged = {IO.desktop_of(r) for r in records if r["label"].get("split") == "test"}
         test_desktops = flagged or None
@@ -53,11 +79,13 @@ def draw(records: list[dict], *, size: int = 300, per_task: int = 25, seed: int 
             or IO.desktop_of(r) in test_desktops]
     by_task: dict[str, list[dict]] = defaultdict(list)
     for r in pool:
-        by_task[r["prompt"]["task"]].append(r)
-    tasks = sorted(by_task, key=lambda t: int(t[1:]))
+        by_task[bucket_of(r) if by_form else r["prompt"]["task"]].append(r)
+    tasks = sorted(by_task, key=_bucket_order)
     if not tasks:
         return []
     cap = max(1, int(max_share * size))
+    if by_form:
+        per_task = min(per_task, max(1, size // len(tasks)))
     quota = {t: min(per_task, len(by_task[t]), cap) for t in tasks}
     # what the small tasks cannot fill goes to the others, up to the cap
     while sum(quota.values()) < size:
@@ -71,7 +99,7 @@ def draw(records: list[dict], *, size: int = 300, per_task: int = 25, seed: int 
 
     picked: dict[str, list[dict]] = {}
     for task in tasks:
-        picked[task] = _stratified(by_task[task], quota[task], seed, purpose)
+        picked[task] = _stratified(by_task[task], quota[task], seed, purpose, keep or set())
 
     # every desktop at least once: swap into the largest task, same stratum first
     desks = sorted({IO.desktop_of(r) for r in pool})
@@ -81,7 +109,7 @@ def draw(records: list[dict], *, size: int = 300, per_task: int = 25, seed: int 
         candidates = sorted((r for r in pool if IO.desktop_of(r) == desk),
                             key=lambda r: _key(seed, purpose, r["id"]))
         for cand in candidates:
-            task = cand["prompt"]["task"]
+            task = bucket_of(cand) if by_form else cand["prompt"]["task"]
             rows = picked.get(task) or []
             counts = defaultdict(int)
             for r in rows:
@@ -94,10 +122,13 @@ def draw(records: list[dict], *, size: int = 300, per_task: int = 25, seed: int 
     return [r for task in tasks for r in picked[task]]
 
 
-def _stratified(rows: list[dict], n: int, seed: int, purpose: str) -> list[dict]:
-    """``n`` rows: strata (positive / negative) alternated, desktops round-robin."""
+def _stratified(rows: list[dict], n: int, seed: int, purpose: str,
+                keep: Optional[set] = None) -> list[dict]:
+    """``n`` rows: strata (positive / negative) alternated, desktops round-robin; a kept id
+    first in its desktop's queue."""
+    keep = keep or set()
     strata: dict[Optional[bool], dict[int, list[dict]]] = defaultdict(lambda: defaultdict(list))
-    for r in sorted(rows, key=lambda r: _key(seed, purpose, r["id"])):
+    for r in sorted(rows, key=lambda r: (r["id"] not in keep, _key(seed, purpose, r["id"]))):
         strata[IO.is_positive(r)][IO.desktop_of(r)].append(r)
     order = sorted(strata, key=lambda s: (s is None, s is False))
     queues = {}

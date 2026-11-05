@@ -89,6 +89,6 @@ def is_positive(record: dict) -> Optional[bool]:
     (V1 V2 V3 V7 V8 V10) answer ``None``.
     """
     task = record["prompt"]["task"]
-    if task in ("V4", "V12", "V14", "V15", "V16"):
+    if task in ("V4", "V12", "V15", "V16"):
         return not record["label"].get("negative")
     return None

@@ -42,6 +42,7 @@ from tda.core.graph_rules import (
     GATED_VERBS,
     GATES,
     HARD_TYPES,
+    LOOSE_MODE,
     MOUNTED_MODE,
     REMOVED,
     REQUIRED_STATES,
@@ -97,6 +98,10 @@ __all__ = [
     "is_provisional",
     "legal_actions",
     "loose_parts",
+    "LOOSE_MODE",
+    "LOOSE_SOURCE",
+    "OCCLUSION_SOURCE",
+    "moment_edges",
     "propose_edges",
     "remaining_plan",
     "required_states",
@@ -293,6 +298,65 @@ def legal_actions(
     if occluded:
         out = [(verb, target) for verb, target in out if not occluded.get(target)]
     return sorted(set(out))
+
+
+#: ``Edge.source`` of the two kinds of moment edge (:func:`moment_edges`): never stored.
+OCCLUSION_SOURCE = "occlusion"
+LOOSE_SOURCE = "loose"
+
+
+def moment_edges(
+    instances: dict[str, InstanceRec],
+    edges: list[Edge],
+    state: FrameState,
+    tax: Taxonomy,
+    *,
+    occluded: Optional[Mapping[str, Sequence[str]]] = None,
+    loose_first: bool = True,
+) -> list[Edge]:
+    """The two rules of one **moment** written as edges, so a replay can carry them on.
+
+    :func:`legal_actions` applies dynamic occlusion and loose-parts-first as filters on
+    one state; a plan (V7), a sequence check (V16) or a reason (V4) needs them as
+    constraints that clear themselves as the plan goes on. Both are exactly that:
+
+    * occlusion ``{X: [Y, ...]}`` (:func:`tda.core.occlusion.occlusion_blockers`) is
+      ``covered_by(X <- Y)`` -- Y has to be opened, moved aside or taken out first, the
+      ``covered_by`` states, which are the occlusion module's own clearing states;
+    * a loose part L (R16) is ``blocked_by(X <- L, mode="loose")`` for every part X
+      outside L's own way out (:func:`_loose_scope`, computed with the occlusion edges
+      so a loose part's own occluder is part of its way out): every verb gated, only
+      ``removed`` clears it.
+
+    ``source`` is :data:`OCCLUSION_SOURCE` / :data:`LOOSE_SOURCE`, status ``accepted``;
+    nothing here is ever written to the ``relation`` table. Sorted, free of duplicates.
+    """
+    out: list[Edge] = []
+    stored = {(e.type, e.target, e.blocker) for e in active_edges(edges)}
+    for target, blockers in sorted((occluded or {}).items()):
+        for blocker in sorted(set(blockers)):
+            if ("covered_by", target, blocker) in stored:
+                continue  # the graph already says it
+            out.append(Edge(type="covered_by", target=target, blocker=blocker,
+                            reason="covers it in this frame (dynamic occlusion, R17)",
+                            source=OCCLUSION_SOURCE, status="accepted"))
+    if loose_first:
+        loose = loose_parts(instances, state)
+        if loose:
+            active = [*active_edges(edges), *out]
+            scope = _loose_scope(instances, active, state, tax, loose)
+            nodes = [k for k, inst in state.items()
+                     if inst.state != REMOVED and (k in instances or k.startswith("cable:"))]
+            nodes += [k for k in cable_nodes(active, state) if k not in state]
+            for key in sorted(set(nodes)):
+                if key in scope:
+                    continue
+                for part in loose:
+                    out.append(Edge(type="blocked_by", target=key, blocker=part,
+                                    mode=LOOSE_MODE,
+                                    reason="a loose part comes out first (R16)",
+                                    source=LOOSE_SOURCE, status="accepted"))
+    return out
 
 
 # --------------------------------------------------------------------------- #
