@@ -61,8 +61,11 @@ def _pool() -> dict[str, list[dict]]:
                     n += 1
                     cls = ["ram_latch"] * 14 + ["cover", "psu", "cable_clip", "card_latch",
                                                 "drive_cage", "cpu_socket_lever"]
+                    # (states that vary within a class: the draw thins V2 per desktop and
+                    # class so no answer is the majority, and a class of one answer goes)
                     pool[view].append(_rec("V2", n, desktop, view,
                                            prior_is_correct=bool(k % 3),
+                                           answer={"state": "open" if k % 2 else "closed"},
                                            answer_check={"derive": "instance_state",
                                                          "class": cls[k]}))
                     pool[view].append(_rec("V1", n, desktop, view))
@@ -136,10 +139,10 @@ def test_the_draw_meets_targets_balances_strata_and_caps_desktops(units):
     # V2: half prior-wrong, classes equal rather than the pool's 70 % ram_latch
     prior = Counter(r["label"]["prior_is_correct"] for r in by_task["V2"])
     assert prior[False] == 150 and prior[True] == 150
-    # (the pool is 70 % ram_latch; prior-wrong has 3 classes -> 90 + 30 + 30,
-    # prior-right has 5 -> 30 each)
+    # the draw thins V2 per desktop and class first (2026-11-04: the export no longer does):
+    # the other classes have one question per desktop here, one answer, so they go
     classes = Counter(r["label"]["answer_check"]["class"] for r in by_task["V2"])
-    assert classes["ram_latch"] == 120 and len(classes) == 7
+    assert classes == {"ram_latch": 300}
     assert classes["psu"] == 30 and classes["cover"] == 30
     # views in proportion (scan has 3x the V4 records)
     views = Counter(r["label"]["view"] for r in by_task["V4"])
