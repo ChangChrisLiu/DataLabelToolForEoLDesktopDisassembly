@@ -547,7 +547,7 @@ def build(exports: Sequence, out_dir, *, seed: int = SEED, target_binary: int = 
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    keep = read_ids(keep_ids)
+    before = read_ids(keep_ids)
     units: list[Unit] = []
     per_view: dict[str, tuple] = {}
     for path in exports:
@@ -556,7 +556,7 @@ def build(exports: Sequence, out_dir, *, seed: int = SEED, target_binary: int = 
             raise ValueError(f"two exports of view {view!r}: {per_view[view][0]} and {path}")
         mine = units_of(IO.read_jsonl(path), view)
         for u in mine:
-            u.kept = any(r["id"] in keep for r in u.records)
+            u.kept = any(r["id"] in before for r in u.records)
         per_view[view] = (str(path), mine)
         units.extend(mine)
     chosen = draw(units, seed=seed, target_binary=target_binary, target_other=target_other,
@@ -585,7 +585,7 @@ def build(exports: Sequence, out_dir, *, seed: int = SEED, target_binary: int = 
     rows = table_rows(chosen, pool, targets)
     (out / "table.md").write_text(table_markdown(rows, seed=seed, max_share=max_share),
                                   encoding="utf-8", newline="\n")
-    survivors = keep & {r["id"] for u in units for r in u.records}
+    survivors = before & {r["id"] for u in units for r in u.records}
     result = {"version": EVAL_VERSION, "seed": seed,
               "targets": {"binary": target_binary, "other": target_other,
                           "binary_tasks": sorted(BINARY_TASKS, key=_task_order)},
@@ -593,7 +593,7 @@ def build(exports: Sequence, out_dir, *, seed: int = SEED, target_binary: int = 
               "desktops": len({IO.desktop_of(r) for r in all_records}),
               "by_view": by_view, "rows": rows,
               # the subset before: its ids, how many still exist, how many were drawn again
-              "kept": {"before": len(keep), "still_exist": len(survivors),
+              "kept": {"before": len(before), "still_exist": len(survivors),
                        "drawn_again": len(survivors & keep_set(ids))}}
     if audit:
         result["audit"] = _audit(all_records, per_view, out / "audit", seed, audit,

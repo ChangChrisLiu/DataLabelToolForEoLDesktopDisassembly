@@ -1261,10 +1261,17 @@ class Checker:
             # itself is the log's continuation, told in group actions
             if spec.get("truth_source") != "simulated" or spec.get("validity") != "simulated":
                 _fail(record, "a valid plan whose validity is not the replay's")
-            logged = [(a.verb, a.target) for s in self.log_steps()
-                      if s > int(label["step"]) for a in self.planning_actions(s)]
             wanted = [(i["verb"], i["target"]) for i in spec["plan"]]
             start = self.state_at(int(label["step"]))
+            # the log read step by step until the grouped plan is long enough -- the export
+            # tells no more of it than that (a captive group further on is not its business)
+            logged: list = []
+            for s in self.log_steps():
+                if s <= int(label["step"]):
+                    continue
+                logged.extend((a.verb, a.target) for a in self.planning_actions(s))
+                if len(self.grouped(start, logged)) >= len(wanted):
+                    break
             told = self.with_captive(start, self.grouped(start, logged))
             if told[:len(wanted)] != wanted:
                 _fail(record, "a valid plan that the log never carried out")

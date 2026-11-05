@@ -3210,6 +3210,25 @@ def constraint_json(c: dict) -> dict:
                       for e in c["edges"]]}
 
 
+def pick_mc(groups: Sequence[FrontierGroup], blocked: Sequence[FrontierGroup],
+            demo_group: Optional[str], seed: str
+            ) -> tuple[Optional[FrontierGroup], list[FrontierGroup]]:
+    """``(the possible option, the blocked ones)`` of V6's multiple choice, or ``(None, [])``.
+
+    Every option has the possible one's verb: "pick the option whose verb is usually
+    possible" (unplug, open a latch) scored 82 % against 26 % random when the distractors
+    were whatever was blocked -- mostly removals. The demonstrated group first, then a
+    seeded order; at least :data:`V6_MIN_WRONG` blocked groups of that verb."""
+    order = sorted(stable_order(list(groups), seed + "|right", lambda g: g.key),
+                   key=lambda g: g.key != demo_group)
+    for cand in order:
+        same = [b for b in stable_order(list(blocked), seed + "|wrong", lambda g: g.key)
+                if b.actions[0][0] == cand.actions[0][0]]
+        if len(same) >= V6_MIN_WRONG:
+            return cand, same[:V6_WRONG_OPTIONS]
+    return None, []
+
+
 def gen_v6(tc: TaskCtx, step: int) -> Iterator[dict]:
     """Every action possible now (owner 2026-11-04), in three forms.
 
@@ -3272,10 +3291,10 @@ def _gen_v6(tc: TaskCtx, frame: FrameData, step: int) -> Iterator[dict]:
     )
     # the multiple choice: one option inside the frontier, the rest certainly blocked
     if len(blocked) >= V6_MIN_WRONG:
-        right = next((g for g in groups if g.key == demo_group), None)
-        if right is None:
-            right = stable_order(list(groups), seed + "|right", lambda g: g.key)[0]
-        wrong = stable_order(list(blocked), seed + "|wrong", lambda g: g.key)[:V6_WRONG_OPTIONS]
+        # every option the same kind of verb as the possible one: "pick the option whose
+        # verb is usually possible" (unplug, open a latch) scored 82 % against 26 % random
+        # when the distractors were whatever was blocked -- mostly removals
+        right, wrong = pick_mc(groups, blocked, demo_group, seed)
         def option(g: FrontierGroup, kind: str) -> dict:
             say_verb, words = frontier_parts(tc, g.actions)
             # named directly, no mark, no tag, no ordinal: "unplug the connectors"
@@ -3284,11 +3303,14 @@ def _gen_v6(tc: TaskCtx, frame: FrameData, step: int) -> Iterator[dict]:
                     "actions": [list(a) for a in g.actions],
                     "say_verb": say_verb, "target_label": words}
 
-        listed = [option(right, "frontier")]
+        listed = [option(right, "frontier")] if right is not None else []
         listed += [option(g, graph_kind([e for v, t in g.actions
                                           for e in unmet_for(tc, v, t, state)]))
                    for g in wrong]
-        if len({(o["say_verb"], o["target_label"]) for o in listed}) == len(listed):
+        if right is None:
+            tc.skip("V6", "mc_no_same_verb_distractors")
+        if right is not None and \
+                len({(o["say_verb"], o["target_label"]) for o in listed}) == len(listed):
             options = stable_order(listed, seed + "|order", lambda o: o["group"])
             rec_id = stem + "-mc"
             index, question = pick(V6_MC_QUESTIONS, rec_id)
