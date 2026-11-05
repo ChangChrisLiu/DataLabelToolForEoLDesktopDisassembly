@@ -182,26 +182,43 @@ def test_v6_open_is_every_action_possible_now_graded_by_group_f1(scene):
     assert not KEY.search(first["prompt"]["question"])
 
 
-def test_v6_multiple_choice_has_one_possible_option_named_in_words(scene):
-    db, tax, tmp = scene
-    _, records, out = _export(db, tax, tmp, S.DESKTOP, ["V6"])
-    world = _world(out)
-    mcs = _form(records, "V6", "mc")
-    assert mcs
-    for r in mcs:
-        options = r["label"]["options"]
-        assert [o["kind"] for o in options].count("frontier") == 1
-        assert all(o["kind"] in T.GRAPH_KINDS for o in options if o["kind"] != "frontier")
-        assert not r["prompt"].get("marks")
-        for shown in r["prompt"]["options"]:
-            assert set(shown) == {"verb", "target_label"}
-            # no ordinal ("connector 3"); "24PIN" is a kind, not an ordinal
-            assert not KEY.search(shown["target_label"])
-            assert not re.search(r" \d+\b", shown["target_label"])
-        right = next(i for i, o in enumerate(options) if o["kind"] == "frontier")
-        assert grade(r, json.dumps({"choice": "ABCD"[right]}), world, tax).score == 1.0
-        wrong = (right + 1) % len(options)
-        assert grade(r, json.dumps({"choice": "ABCD"[wrong]}), world, tax).score == 0.0
+def test_v6_multiple_choice_has_one_possible_option_of_the_same_verb():
+    """The choice: one option inside the frontier, the others blocked, every one of the
+    possible option's verb (the option-verb shortcut was 82 % against 26 % random)."""
+    G = T.FrontierGroup
+    groups = [G("all:connector", [("disconnect", "connector.01")]),
+              G("part:psu.01", [("remove", "psu.01")])]
+    blocked = [G("part:cpu.01", [("remove", "cpu.01")]),
+               G("part:motherboard.01", [("remove", "motherboard.01")]),
+               G("all:ram_latch", [("open", "ram_latch.01")])]
+    right, wrong = T.pick_mc(groups, blocked, "all:connector", "seed")
+    # the demonstrated group (a plug) has no blocked twin of its verb: the PSU stands in
+    assert right.key == "part:psu.01"
+    assert {g.key for g in wrong} == {"part:cpu.01", "part:motherboard.01"}
+    assert T.pick_mc(groups, blocked[2:], None, "seed") == (None, [])
+
+
+def test_v6_multiple_choice_is_graded_by_the_frontier_option():
+    from tda.core.export.vlm_check import World
+
+    world = World(1, {"psu.01": {"class": "psu", "label": "PSU"},
+                      "cpu.01": {"class": "cpu", "label": "CPU"}}, [])
+    options = [{"verb": "remove", "target": "cpu.01", "kind": "graph_blocked",
+                "say_verb": "take out", "target_label": "the CPU"},
+               {"verb": "remove", "target": "psu.01", "kind": "frontier",
+                "say_verb": "take out", "target_label": "the PSU"}]
+    record = {"id": "rec_0000000000000001",
+              "prompt": {"task": "V6", "images": [], "question": "Which?",
+                         "options": [{"verb": o["say_verb"], "target_label": o["target_label"]}
+                                     for o in options]},
+              "label": {"answer": {"verb": "remove", "target": "psu.01"}, "options": options,
+                        "v6_form": "mc",
+                        "answer_check": {"type": "frontier", "form": "mc",
+                                         "reference": ["remove", "psu.01"]}}}
+    assert grade(record, gold_reply(record, world), world, None).score == 1.0
+    assert grade(record, json.dumps({"choice": "A"}), world, None).score == 0.0
+    for shown in record["prompt"]["options"]:
+        assert set(shown) == {"verb", "target_label"} and not KEY.search(shown["target_label"])
 
 
 def test_v6_constrained_removes_a_group_and_counts_violations(cpu_scene):
