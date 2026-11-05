@@ -163,3 +163,13 @@ def test_the_invariants_hold_on_the_scene(scene):
     bad["label"]["answer"]["events"] = [{"target": "psu.01", "old": "x", "new": "y"}]
     (data / "vlm_scan.jsonl").write_text(json.dumps(bad) + "\n", encoding="utf-8")
     assert vlm_invariants.check_unit(data / "vlm_scan.jsonl", tax)["violations"]
+
+
+def test_v2_never_asks_an_implied_part(scene):
+    """An implied part (the board nobody operated in this scene) moves by inference only: no
+    V2 state question is about it (the checker found one on D04's implied cage latch)."""
+    db, tax, tmp = scene
+    _, records, _ = _export(db, tax, tmp, S.DESKTOP, ["V2"])
+    for r in records:
+        check = r["label"]["answer_check"]
+        assert S.BOARD not in (check.get("members") or [check.get("instance")])

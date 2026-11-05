@@ -2022,8 +2022,9 @@ HIDDEN_VISIBILITY = ("occluded_full", "too_small", "out_of_view")
 #: Why a picture cannot tell, in words.
 HIDDEN_WORDS = {"occluded_full": "something covers it completely",
                 "too_small": "it is too small to make out", "out_of_view": "it is outside the picture"}
-#: A hidden-part question on about one frame in this many (a modest share of V2's states).
-V2_HIDDEN_EVERY = 3
+#: A hidden-part question on about one frame in this many (a modest share of V2's states:
+#: 1 since the 2026-11-04 expansion asks every visible part, which keeps it near 2 %).
+V2_HIDDEN_EVERY = 1
 
 
 def v2_allowed(tc: TaskCtx, cls: str) -> list[str]:
@@ -2115,7 +2116,9 @@ def _v2_hidden(tc: TaskCtx, frame: FrameData) -> Iterator[dict]:
     yield record(
         tc, "V2", rec_id, frame.step, [frame], template.format(label=words), index,
         {"state": CANNOT_TELL}, check,
-        evidence({}, tc, {k: seen_as(frame.rows[k]) for k in members}),
+        # the outline drawn: the amodal box of a part wholly covered in its place
+        evidence({k: mark_box(tc, frame, k) for k in members}, tc,
+                 {k: seen_as(frame.rows[k]) for k in members}),
         dict(R.rationale([R.propagate_state(k, None) for k in members],
                          R.abstain("; ".join(unseen_reason(k, frame.rows[k], tc.view)
                                              for k in members))), text=text),
@@ -2151,7 +2154,10 @@ def _v2_units(tc: TaskCtx, frame: FrameData) -> list[tuple[str, list[str]]]:
     askable: list[str] = []
     for instance in frame.pointable:
         cls = tc.ctx.cls_of(instance)
-        if cls is None or state.get(instance) is None or not state_is_askable(tc.tax, cls):
+        # an implied part (a cage's own latch nobody operated): its state is an inference of
+        # the implied rules, not something the log or a picture settles
+        if cls is None or state.get(instance) is None or not state_is_askable(tc.tax, cls) \
+                or not tc.askable(instance):
             continue
         if is_captive_screw(tc.ctx, instance):
             # it stays on its fan, tight or not, until the cooler leaves: there
