@@ -4480,8 +4480,10 @@ def _name_plan(tc: TaskCtx, frame: FrameData, plan: Sequence[tuple[str, str]]
 
 
 def cable_words(node: str) -> str:
-    """``cable:psu`` -> "the PSU cable": a virtual node has no outline, only a name."""
-    owner = node[len(CABLE_PREFIX):]
+    """``cable:psu`` -> "the PSU cable": a virtual node has no outline, only a name (an
+    ordinal in the node name is dropped, as :func:`vlm_groups._cable_words` does --
+    ``cable:isolated.01`` is "the isolated cable")."""
+    owner = ".".join(p for p in node[len(CABLE_PREFIX):].split(".") if not p.isdigit())
     return f"the {' '.join(_words(owner))} cable" if owner else "the cable"
 
 
