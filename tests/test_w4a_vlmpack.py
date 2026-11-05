@@ -593,7 +593,7 @@ def test_the_card_names_the_optical_bracket_when_a_desktop_has_one(built):
     text = P.readme_text(summary)
     issues = text.split("## Known limitations")[1]
     assert "optical drive cage" in issues and "D03, D08" in issues
-    assert "\"Optical drive cage N\"" in issues and "**not** accept" in issues
+    assert "\"the optical drive cage\"" in issues and "**not** accept" in issues
 
 
 # --------------------------------------------------------------------------- #

@@ -1061,7 +1061,7 @@ def _known_issues(summary: dict) -> str:
             "out -- installed to the end, or only opened / pushed out -- and it is annotated "
             "together with the bracket it sits in as class `drive_cage` with "
             "`attrs.of = \"optical\"` (the oracle's `instances[key].attrs.of`). The questions "
-            "call it **\"Optical drive cage N\"** (an HDD / SSD cage stays \"Drive cage N\"); "
+            "call it **\"the optical drive cage\"** (an HDD / SSD cage stays \"the drive cage\"), without ordinals; "
             "class `optical_drive` is only a drive that is taken out. The scorer grounds an "
             "answer by that wording (or the key) and does **not** accept \"optical drive\" "
             "for the cage (owner, 2026-11-03).")
@@ -1209,9 +1209,9 @@ def readme_text(summary: dict) -> str:
     ev = summary["eval"]
     images_line = {
         "all": (f"`images/` holds every frame the manifests name ({summary['images']} "
-                f"files, {summary['image_bytes'] / 2**30:.1f} GB)."),
+                f"files, {summary['image_bytes'] / 1e9:.1f} GB)."),
         "eval": (f"`images/` holds only the frames `{ev_name}` names ({summary['images']} "
-                 f"files, {summary['image_bytes'] / 2**30:.1f} GB); the full question set "
+                 f"files, {summary['image_bytes'] / 1e9:.1f} GB); the full question set "
                  f"in `data/` needs the dataset's frame cache for the rest."),
         "none": ("**This copy carries no images** (built with `--images none`, a dry run); "
                  "point `--image-root` at the dataset's frame cache."),
@@ -1226,8 +1226,8 @@ def readme_text(summary: dict) -> str:
         pages = (f", {which} and the CSV skeleton `audit.sheet.csv` "
                  f"(see *Author audit*)")
     audit_line = (f"`{ev_name}/audit/` is the {audit['size']}-item author-audit sample drawn "
-                  f"from inside the subset (`tools/vlm_sample.py --purpose audit`: about 25 per "
-                  f"task, positives and negatives balanced, every desktop represented, "
+                  f"from inside the subset (`tools/vlm_sample.py --purpose audit`: an equal share per "
+                  f"task and form, positives and negatives balanced, every desktop represented, "
                   f"{audit['desktops']} desktops): `audit.ids.txt`, `audit.jsonl`, the "
                   f"Markdown sheet `audit.sheet.md` (image path, question, answer, an empty "
                   f"`ok?` column){pages}." if audit else
@@ -1582,7 +1582,7 @@ python tools/vlm_audit_summary.py --csv runs/audit/*.csv --records {ev_name}/aud
 ```
 
 reports, per task and overall, the error rate (marked wrong) and the error-or-doubt
-rate with **Wilson 95 % intervals** (0 of 300 -> [0, 1.3 %]), the items marked wrong or
+rate with **Wilson 95 % intervals** (e.g. 0 of 262 -> [0, 1.4 %]), the items marked wrong or
 doubtful with their notes, and the disagreements where several reviewers marked one
 item (an item then takes its worst verdict). `tools/vlm_audit_carry.py` carries the
 verdicts of an earlier audit over to items that survive unchanged in substance. The
