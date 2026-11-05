@@ -165,6 +165,29 @@ def v4_verb(record: dict) -> str:
     return str((record["label"].get("answer_check") or {}).get("verb") or "?")
 
 
+def balance_v2_units(units: Sequence["Unit"], seed: int) -> list["Unit"]:
+    """V2's pool thinned for the draw, per desktop and class (a screw role for the counts):
+    no answer more often than all the others together, a class whose answer never changes
+    left out. The export no longer thins V2 (the owner's 2026-11-04 expansion asks every
+    visible part); the subset is balanced here instead, as before, so the class alone does
+    not answer it."""
+    cells: dict[tuple, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+    for u in units:
+        r = u.records[0]
+        check = r["label"].get("answer_check") or {}
+        keys = check.get("answer_keys") or r["label"].get("answer") or {}
+        value = json.dumps(keys.get("state", keys.get("count")), sort_keys=True)
+        cells[(u.desktop, v2_class(r))][value].append(u)
+    keep: set = set()
+    for by_value in cells.values():
+        total = sum(len(v) for v in by_value.values())
+        for value, rows in by_value.items():
+            room = total - len(rows)
+            ordered = sorted(rows, key=lambda u: _key(seed, "v2bal", u.key))
+            keep.update(u.key for u in ordered[:room])
+    return [u for u in units if u.key in keep]
+
+
 def balance_v4(units: Sequence["Unit"], seed: int,
                max_majority: float = V4_MAX_MAJORITY) -> list["Unit"]:
     """V4's pool with each (view, verb, class) cut to at most ``max_majority`` of one answer.
@@ -422,6 +445,8 @@ def draw(units: Sequence[Unit], *, seed: int = SEED, target_binary: int = TARGET
         pool = by_task[task]
         if task == "V4":
             pool = balance_v4(pool, seed)
+        if task == "V2":
+            pool = balance_v2_units(pool, seed)
         n = (targets or {}).get(task)
         if n is None:
             n = target_binary if task in BINARY_TASKS else target_other
