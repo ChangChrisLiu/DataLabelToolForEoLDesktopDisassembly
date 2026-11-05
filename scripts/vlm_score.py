@@ -9,23 +9,28 @@ of ``--truth`` is graded twice by :func:`tda.core.export.vlm_check.grade`:
 in it, else the prose); a record with no prediction counts as a parse failure.
 Both parse-failure rates are reported.
 
-Aggregated per task, per capability layer (L1 V1 V2 V8 V14 / L2 V4 / L3 V6 V7
+Aggregated per task, per capability layer (L1 V1 V2 V8 / L2 V4 / L3 V6 V7
 V16 / change V3 V12 V10 / cross V15) and per question template, each with a
 95 % interval from a **cluster bootstrap over desktops** (desktops resampled
 with replacement, ``--resamples`` times, seeded). Beside the primary score:
 
 * V2's headline row ``V2`` is every V2 question -- perceiving the part's
-  current state (owner 2026-11-03; ``eval_v2`` draws V2 equally over classes and
+  current state (owner 2026-11-03; ``eval_v3`` draws V2 equally over classes and
   half ``prior_is_correct = false``); ``V2-prior-wrong`` (the questions the
   class alone does not answer) is the secondary row, a shortcut check;
 * V6's headline (``headline.v6_open``, table row ``V6``) is the **open**
-  question graded group-equivalently; the multiple choice is the secondary row
-  ``V6-mc`` (``headline.v6_mc``), outside the layer and template rows, with
-  ``--prior``'s protocol-prior accuracy beside it (79.9 % on the day-1 copy);
-  ``blocked_rate`` is over the frames with ``blocked_rate_defined`` only, and
-  the exact-instance match rides along ("exact" on a group step = any member of
-  the group still to do; a member already done matches nothing);
-* V7 adds violation-free rate, required-action recall and goal-reached rate;
+  question "list every action that can be carried out now": F1 over the frontier's
+  groups (owner 2026-11-04), precision and recall beside it; the multiple choice
+  (one option inside the frontier) is the secondary row ``V6-mc``
+  (``headline.v6_mc``) and the constrained form (one rule in words) the row
+  ``V6-constrained``, graded like the open form plus ``constraint_violation`` (the
+  share of answers naming an action the rule forbids);
+* V7 adds violation-free rate, required-action recall and goal-reached rate; the
+  constrained form is the row ``V7-constrained``, with ``constraint_kept`` and the
+  plug count (``count_exact``, ``count_abs_error``: how many plugs the plan unplugs
+  against how many are in);
+* V2's state questions answer ``cannot_tell`` on a part the picture does not show
+  (V14 merged into V2): ``cannot_tell_accuracy`` is the row over those;
 * V10 adds the progress-bin accuracy and, on records that carry
   ``answer.started`` (groups partly done, spec 6.1), ``started_f1`` -- the set
   of group actions begun but not finished, graded apart from the done set;
@@ -59,7 +64,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vlm_io as IO  # noqa: E402
-from tda.core.export.vlm_check import CAPABILITY_LAYERS, grade  # noqa: E402
+from tda.core.export.vlm_check import CAPABILITY_LAYERS, count_score, grade  # noqa: E402
 
 LAYER_ORDER = ("L1", "L2", "L3", "change", "cross")
 #: V6's secondary record type, the multiple choice (W3b ruling): ``V6`` in the
@@ -68,35 +73,66 @@ V6_MC = "V6-mc"
 #: The V2 questions the class prior answers wrong (``prior_is_correct = false``);
 #: the ``V2`` row, the headline, is every V2 question.
 V2_PRIOR_WRONG = "V2-prior-wrong"
+#: V3's second form (owner 2026-11-04): the same step with a yellow hint box drawn around where
+#: the machine changed. ``V3`` in the tables is the free form, the headline.
+V3_ROI = "V3-roi"
+#: The constrained forms (owner 2026-11-04): one rule in words added to the question.
+V6_CONSTRAINED = "V6-constrained"
+V7_CONSTRAINED = "V7-constrained"
+#: V3's multi-step form and V12 across 2-3 steps (owner 2026-11-04 expansion).
+V3_SPAN = "V3-span"
+V12_SPAN = "V12-span"
+#: Secondary record types: the layers count each headline row once.
+SECONDARY_ROWS = frozenset({"V6-mc", V3_ROI, V6_CONSTRAINED, V7_CONSTRAINED, V3_SPAN,
+                            V12_SPAN})
 
 
 #: How the ``chance`` row is computed, per table row (printed under the table).
 CHANCE_RULES = {
     "V1": "0: the set of (class, box) pairs is open; a guess has F1 0",
     "V2": "state form 1/|allowed| (the class's state vocabulary; presence = 2); "
-          "count form 1/(n+1), n the desktop's screws of that role",
+          "count form (1 + 0.8 k)/(n+1), a uniform guess over 0..n (n the desktop's screws "
+          "of that role) scored exact 1.0 / off by one 0.8, k = the gold's neighbours in "
+          "0..n (the extra row exact: exact matches only)",
     V2_PRIOR_WRONG: "as V2, over the questions the class prior answers wrong",
-    "V3": "0: verb and target are open and the score needs both",
+    "V3": "0: verb and target are open and the score needs both (the region is the extra "
+          "rows region_iou / region_hit)",
+    V3_ROI: "0: verb and target are open and the score needs both (a hint box shows where)",
     "V4": "0.5: feasible yes / no (blockers are the extra row blockers_f1)",
-    "V6": "0: the next action is open",
+    "V6": "0: the set of actions possible now is open (F1 over groups)",
     V6_MC: "1/|options| per record",
+    V6_CONSTRAINED: "0: the set of actions possible under the rule is open",
     "V7": "0: the plan is open",
+    V7_CONSTRAINED: "0: the plan is open",
+    V3_SPAN: "0: the set of actions between two moments is open (F1 over groups)",
+    V12_SPAN: "0.5: changed yes / no, across 2-3 steps",
     "V8": "0: a box with IoU >= 0.5 by chance (the components form: a box set, F1 0)",
     "V10": "0: the set F1 over the done actions is open; the progress bin alone is "
            "1/|bins| (the extra row bin_accuracy)",
     "V12": "0.5: changed yes / no",
-    "V14": "unanswerable 0.5; answerable 0.5 x 1/|states| of the part's class (presence = 2)",
+
     "V15": "0.5: same moment yes / no",
     "V16": "0.5: valid yes / no (the error step is the extra row localised)",
 }
 
 
 def task_key(record: dict) -> str:
-    """The table row of a record: its task, with V6's two forms apart."""
+    """The table row of a record: its task, with V6's two forms apart and V3's two forms apart."""
     task = record["prompt"]["task"]
     if task == "V6" and (record["label"].get("v6_form") == "mc"
                          or record["prompt"].get("options")):
         return V6_MC
+    if task == "V6" and record["label"].get("v6_form") == "constrained":
+        return V6_CONSTRAINED
+    if task == "V3" and record["label"].get("v3_form") == "span":
+        return V3_SPAN
+    if task == "V12" and (record["label"].get("v12_span") or 1) > 1:
+        return V12_SPAN
+    if task == "V7" and record["label"].get("v7_form") == "constrained":
+        return V7_CONSTRAINED
+    if task == "V3" and (record["label"].get("v3_form") == "roi"
+                         or record["prompt"].get("hint_regions")):
+        return V3_ROI
     return task
 
 
@@ -152,18 +188,15 @@ def chance_of(record: dict, world, tax) -> Optional[float]:
                     and (inst.get("attrs") or {}).get("role") == role
                     and (captive is None
                          or bool((inst.get("attrs") or {}).get("captive")) == bool(captive)))
-            return 1.0 / (n + 1)
+            # a uniform guess over 0..n, graded exact 1.0 / off by one 0.8 (owner 2026-11-04)
+            gold = int(answer["count"])
+            return sum(count_score(guess, gold)[0] for guess in range(n + 1)) / (n + 1)
         states = _states_of(record, world, tax)
         return 1.0 / len(states) if states else None
     if task in ("V4", "V12", "V16"):
         return 0.5
     if task == "V15":
         return 0.5 if "same_moment" in answer else 0.0
-    if task == "V14":
-        if not answer.get("answerable"):
-            return 0.5
-        states = _states_of(record, world, tax)
-        return 0.5 / len(states) if states else None
     return None
 
 
@@ -266,6 +299,7 @@ def score(truth_path, pred_path, chat_path=None, *, resamples: int = 1000,
                                                            if r["id"] in preds)}
     chance_rows: dict[str, list[float]] = defaultdict(list)
     chance_unsized: dict[str, int] = defaultdict(int)
+    frames: dict = {m: defaultdict(lambda: defaultdict(int)) for m in ("strict", "lenient")}
     for mode in ("strict", "lenient"):
         per_task: dict[str, list] = defaultdict(list)
         per_layer: dict[str, list] = defaultdict(list)
@@ -296,23 +330,55 @@ def score(truth_path, pred_path, chat_path=None, *, resamples: int = 1000,
                     failures[key] += 1
             for key in rows_of:
                 per_task[key].append(row)
-            if task != V6_MC:
-                # the multiple choice is a secondary record type: the layers
-                # count each headline row once
+            if task not in SECONDARY_ROWS:
+                # the multiple choice and V3's hinted form are secondary record types:
+                # the layers count each headline row once
                 per_layer[CAPABILITY_LAYERS.get(task, "other")].append(row)
-            if task != V6_MC:
+            if task not in SECONDARY_ROWS:
                 per_template[label.get("template_id", "?")].append(row)
             m = g.metrics
+            if task == "V3" and label["answer_check"].get("region"):
+                # where the machine changed (owner 2026-11-04): beside the action, not in it
+                extras[task]["region_iou"].append((desk, float(m.get("region_iou") or 0.0)))
+                extras[task]["region_hit"].append((desk, float(bool(m.get("region_hit")))))
             if not label.get("image_undecidable"):
                 extras[task]["decidable"].append(row)
-            if task in ("V6", V6_MC):
-                extras[task]["exact"].append((desk, float(bool(m.get("exact_match")))))
-                if m.get("blocked_rate_defined") and g.parsed:
-                    extras[task]["blocked_rate"].append((desk, float(bool(m.get("blocked")))))
-            if task == "V7" and g.parsed and "violation_free" in m:
+            if task == "V2":
+                # the count form scores an off-by-one 0.8 (owner 2026-11-04): `exact` is
+                # the exact matches alone, over every V2 question (and the prior-wrong row)
+                for key in rows_of:
+                    extras[key]["exact"].append((desk, float(bool(m.get("exact")))))
+                if "count" in label["answer"]:
+                    extras[task]["count_exact"].append((desk, float(bool(m.get("exact")))))
+                if m.get("cannot_tell"):
+                    extras[task]["cannot_tell_accuracy"].append((desk, float(bool(m.get("exact")))))
+            if task in ("V6", V6_CONSTRAINED, V3_SPAN) and "f1" in m:
+                extras[task]["precision"].append((desk, float(m["precision"])))
+                extras[task]["recall"].append((desk, float(m["recall"])))
+                if task == V6_CONSTRAINED:
+                    extras[task]["constraint_violation"].append(
+                        (desk, float(bool(m.get("constraint_violated")))))
+            if task == V6_MC and g.parsed and m.get("blocked") is not None:
+                extras[task]["blocked_rate"].append((desk, float(bool(m.get("blocked")))))
+            if task in ("V7", V7_CONSTRAINED) and g.parsed and "violation_free" in m:
                 extras[task]["violation_free"].append((desk, float(m["violation_free"])))
                 extras[task]["required_recall"].append((desk, float(m["required_recall"])))
                 extras[task]["goal_reached"].append((desk, float(m["goal_reached"])))
+                if "constraint_kept" in m:
+                    extras[task]["constraint_kept"].append((desk, float(m["constraint_kept"])))
+                if "count_exact" in m:
+                    extras[task]["count_exact"].append((desk, float(m["count_exact"])))
+                    extras[task]["count_abs_error"].append((desk, float(m["count_abs_error"])))
+            if task in ("V1", "V8") and g.parsed:
+                # the boxes (owner 2026-11-04, "V1 / V8（框）"): the headline stays IoU >= 0.5;
+                # beside it the COCO-style average over 0.50:0.05:0.95, and which frame won
+                # (the boxes as given, or x 1.25 for a model answering in a 0.8 frame)
+                for name in ("f1_50_95", "hit_50_95"):
+                    if name in m:
+                        extras[task][name].append((desk, float(m[name])))
+                if "frame" in m:
+                    extras[task]["frame_1.25"].append((desk, float(m["frame"] != 1.0)))
+                    frames[mode][task][str(m["frame"])] += 1
             if task == "V16" and m.get("localised") is not None:
                 extras[task]["localised"].append((desk, float(m["localised"])))
             if task == "V4" and "blockers_f1" in m:
@@ -332,6 +398,11 @@ def score(truth_path, pred_path, chat_path=None, *, resamples: int = 1000,
                             for t, rows in sorted(per_template.items())},
             "extra": {t: {k: _cell(v, resamples, seed) for k, v in sorted(d.items())}
                       for t, d in sorted(extras.items())},
+            # V1 / V8: how many parsed answers each frame won (1.0 = as given, 1.25 = the
+            # boxes read x 1.25), and the 1.25 share -- this model's, one score run each
+            "frame": {t: {"1.0": c.get("1.0", 0), "1.25": c.get("1.25", 0),
+                          "share_1.25": _r(c.get("1.25", 0) / max(sum(c.values()), 1))}
+                      for t, c in sorted(frames[mode].items())},
         }
     # the in-sample text-only bound (the export's prompt-only classifiers)
     out["shortcut_upper_bound"] = _shortcuts(summary)
@@ -355,6 +426,11 @@ def score(truth_path, pred_path, chat_path=None, *, resamples: int = 1000,
     # V6's headline is the open form; the multiple choice rides beside it
     out["headline"] = {"v6_open": out["strict"]["by_task"].get("V6"),
                        "v6_mc": out["strict"]["by_task"].get(V6_MC),
+                       "v6_constrained": out["strict"]["by_task"].get(V6_CONSTRAINED),
+                       "v7": out["strict"]["by_task"].get("V7"),
+                       "v7_constrained": out["strict"]["by_task"].get(V7_CONSTRAINED),
+                       "v3": out["strict"]["by_task"].get("V3"),
+                       "v3_roi": out["strict"]["by_task"].get(V3_ROI),
                        "v2": out["strict"]["by_task"].get("V2"),
                        "v2_prior_wrong": out["strict"]["by_task"].get(V2_PRIOR_WRONG)}
     if prior_path:
@@ -402,7 +478,9 @@ def markdown(result: dict, name: str) -> str:
              f"lenient {l['parse_failure_rate_all']:.1%}. "
              "Intervals: 95 %, cluster bootstrap over desktops. "
              "V6 is the open question, graded group-equivalently (the headline); "
-             f"{V6_MC} is the multiple choice (secondary). V2 is every V2 question "
+             f"{V6_MC} is the multiple choice (secondary). V3 is the action between two "
+             f"moments, no hint (the headline; its region is an extra row); {V3_ROI} is the "
+             "same step with a hint box drawn where it happened (secondary). V2 is every V2 question "
              f"(the headline); {V2_PRIOR_WRONG} is the questions the class prior "
              "answers wrong (secondary). Reference columns: *chance* is a uniform guess "
              "over the answer space (rules below); *frequency* is the most frequent "
@@ -441,6 +519,12 @@ def markdown(result: dict, name: str) -> str:
         for key, cell in metrics.items():
             other = l["extra"].get(task, {}).get(key)
             lines.append(f"| {task} | {key} | {fmt(cell)} | {fmt(other)} |")
+    if s.get("frame"):
+        lines += ["", "V1 / V8 boxes are graded as given and x 1.25 (a model answering in a "
+                  "0.8 frame); the better grade is kept.", "",
+                  "| task | frame 1.0 won | frame 1.25 won | 1.25 share |", "|---|---|---|---|"]
+        for task, c in s["frame"].items():
+            lines.append(f"| {task} | {c['1.0']} | {c['1.25']} | {pct(c['share_1.25'])} |")
     lines += ["", "| template | n | strict |", "|---|---|---|"]
     for tid, cell in s["by_template"].items():
         lines.append(f"| {tid} | {cell['n']} | {fmt(cell)} |")

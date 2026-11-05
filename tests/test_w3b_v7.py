@@ -19,6 +19,22 @@ from tda.core.export.vlm_tasks import TASKS, V7_QUESTIONS
 from vlm_checker import Checker, scan_prompt_leaks
 
 
+def _keys(record: dict) -> dict:
+    """The answer with its keys (``answer_check.answer_keys``; ``label.answer`` names parts
+    plainly since the owner's 2026-11-04 round)."""
+    label = record["label"]
+    return (label.get("answer_check") or {}).get("answer_keys") or label["answer"]
+
+
+def _set_keys(record: dict, answer: dict) -> None:
+    label = record["label"]
+    if (label.get("answer_check") or {}).get("answer_keys"):
+        label["answer_check"]["answer_keys"] = answer
+    else:
+        label["answer"] = answer
+
+
+
 def _read(path: Path) -> list[dict]:
     return [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l]
 
@@ -46,7 +62,9 @@ def _world(out: Path) -> World:
 
 
 def _v7(records):
-    return [r for r in records if r["prompt"]["task"] == "V7"]
+    """The CPU's free plans (V7 asks every major part, free and constrained, since 2026-11-04)."""
+    return [r for r in records if r["prompt"]["task"] == "V7"
+            and r["label"]["answer_check"]["goal"] == W.CPU and r["label"]["v7_form"] == "free"]
 
 
 def test_v7_is_in_the_default_set_and_has_five_to_ten_templates():
@@ -58,9 +76,9 @@ def test_v7_is_asked_only_while_the_cpu_plan_is_visibly_under_way(scene):
     db, tax, tmp = scene
     _, records, _ = _export(db, tax, tmp)
     steps = sorted(r["label"]["step"] for r in _v7(records))
-    # step 1: nothing done; step 11: the CPU is out. Steps 2-10 have the
-    # shroud open (a visible change) and the CPU still in.
-    assert steps == list(range(2, 11))
+    # every step the CPU is still in (owner 2026-11-04: V7 at every step); step 11 it is out
+    # every step the CPU is still in and more than one action away (step 10: lever open)
+    assert steps == list(range(1, 10))
     assert Checker(db, tax, W.DESKTOP).check_all(records) == len(records)
     assert not scan_prompt_leaks(records)
     for r in _v7(records):
@@ -78,11 +96,14 @@ def test_the_answer_is_the_remaining_legal_plan_and_its_requirements(scene):
     plan = [(a["verb"], a["target"]) for a in check["reference_shortest"]]
     assert plan[-1] == ("remove", W.CPU)
     assert check["plan_length"] == len(plan)
-    # the answer is the demonstrated remainder; any legal plan scores
-    # ... told in group actions (redesign 2026-11-03): one "unscrew the CPU cooler screws"
+    # the answer is the rules' shortest plan (owner 2026-11-04: the required steps are the
+    # rules', not the demonstrated sequence), told in group actions -- one "unscrew the CPU
+    # cooler screws"; any legal plan scores
     gid = f"screw.cpu_cooler@{W.COOLER}"
-    assert [(a["verb"], a["target"]) for a in first["label"]["answer"]["plan"]] == [
-        W.LOG[3], ("unscrew", gid), *(W.LOG[s] for s in range(8, 12))]
+    answer = [(a["verb"], a["target"]) for a in _keys(first)["plan"]]
+    assert ("unscrew", gid) in answer and answer[-1] == ("remove", W.CPU)
+    assert ("remove", W.COOLER) in answer and ("open", W.LEVER) in answer
+    assert check["validity"] == "simulated"
     assert check["plan_groups"] == {gid: list(W.SCREWS)}
     assert check["any_legal_plan_scores"] is True
     required = {r["target"]: r for r in check["required_actions"]}
@@ -114,7 +135,10 @@ def test_both_pixel_sources_are_graph_blocked_pixels(tmp_path: Path, source):
     _, records, _ = _export(db, tax, tmp_path)
     v4 = [r for r in records if r["prompt"]["task"] == "V4"
           and r["label"]["answer_check"]["target"] == W.LEVER and r["label"].get("negative")]
-    assert v4 and all(r["label"]["truth_source"] == "graph_blocked_pixels" for r in v4)
+    # (where the cooler above it still covers the lever too, the moment's occlusion says so)
+    sources = {r["label"]["truth_source"] for r in v4}
+    assert v4 and "graph_blocked_pixels" in sources
+    assert sources <= {"graph_blocked_pixels", "occlusion_blocked"}
     assert {r["label"]["truth_source"] for r in _v7(records)
             if r["label"]["step"] < 8} == {"graph_blocked_pixels"}
     db.close()
@@ -211,7 +235,7 @@ def _grouped(world: World, record: dict) -> tuple[World, dict]:
     check = out["label"]["answer_check"]
     for name in ("reference_shortest", "demonstrated_remainder"):
         check[name] = collapse(check[name])
-    out["label"]["answer"]["plan"] = collapse(out["label"]["answer"]["plan"])
+    _keys(out)["plan"] = collapse(_keys(out)["plan"])
     check["required_actions"] = [r for r in check["required_actions"]
                                  if r["target"] not in W.SCREWS] + [
         {"target": GROUP, "states": ["loosened", "removed"], "via": [], "pixel_only": False}]
@@ -224,7 +248,7 @@ def test_v7_group_plan_on_the_scene(scene):
     world = _world(out)
     for step in (2, 5):
         grouped, r = _grouped(world, next(r for r in _v7(records) if r["label"]["step"] == step))
-        assert sum(a["target"] == GROUP for a in r["label"]["answer"]["plan"]) == 1
+        assert sum(a["target"] == GROUP for a in _keys(r)["plan"]) == 1
         g = grade(r, gold_reply(r, grouped), grouped, tax)
         assert g.score == 1.0 and g.metrics["violation_free"], (step, g.metrics)
         assert "CPU cooler screws" in gold_reply(r, grouped)

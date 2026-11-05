@@ -11,9 +11,11 @@ and the pack's own files, what a reviewer fills in:
 * ``<name>.sheet.b01.html``, ``b02`` ... -- one **static HTML page per batch**
   of ``--batch`` items (plain HTML + inline JS + inline CSS; no server, no
   network, no CDN script). Every item shows the frame (both frames of a
-  two-image question: V3, V12, V15), the question with its lettered options,
-  the gold answer in words and as the raw JSON, its evidence (boxes drawn over
-  the frame, switchable) and the rationale chain, then three radio buttons
+  two-image question: V3, V12, V15) **as the model gets it** -- only its red
+  dashed marks (and V3's yellow hint box), drawn the converter's way --, the
+  question with its lettered options, the gold answer in words and as the raw
+  JSON, its evidence (a separate reviewer layer, hidden until "show reviewer
+  boxes / 显示审核框" is ticked; the model never sees it) and the rationale, then three radio buttons
   正确 / 错误 / 存疑 (correct / wrong / doubtful) and a free-text note. The
   page keeps what is typed in the browser's ``localStorage`` (a reload loses
   nothing) and its **export button downloads a CSV** of the answers; a
@@ -22,9 +24,10 @@ and the pack's own files, what a reviewer fills in:
 
 Image paths are **relative to the page** (``../../images/<view>/D<nn>/s<nn>.png``
 for a page in ``eval_v1/audit/``), so the pack can be zipped and sent whole;
-the page itself opens from the file system. Instance keys are written the way
-the oracle labels them ("Motherboard screw 7", never ``screw.motherboard.07``
-alone). The sheet is deterministic: no clock, no machine path, so two pack
+the page itself opens from the file system. Parts are named without an ordinal
+(:func:`display_name`, owner 2026-11-04): "part A" for a part the question
+outlines, a group by its label, a part alone of its class by its class, any other
+"one of the N <class>" -- never ``screw.motherboard.07``, never "Motherboard screw 7". The sheet is deterministic: no clock, no machine path, so two pack
 builds are byte-identical. ``scripts/vlm_audit_summary.py`` reads the filled
 CSVs back.
 
@@ -39,6 +42,7 @@ import html
 import io
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
@@ -47,12 +51,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vlm_io as IO  # noqa: E402
 from vlm_glossary import glossary_text, is_presence  # noqa: E402
+import vlm_to_chat as CHAT  # noqa: E402
 from vlm_to_chat import (VIEW_NAMES, image_legend, legend_line, marks_line,  # noqa: E402
-                         shown_marks)
+                         shown_hints, shown_marks)
 from tda.core.export.vlm_check import LETTERS, World, format_key, reference_option  # noqa: E402
 
 __all__ = ["CSV_COLUMNS", "VERDICTS", "boxes_of", "build", "csv_skeleton", "frames_html",
-           "gold_lines", "item_html", "load_context", "main", "marks_of", "name_of", "page",
+           "display_name", "gold_lines", "item_html", "load_context", "main", "marks_of",
+           "name_of", "page",
            "rationale_lines", "rel_image"]
 
 #: Columns of the skeleton and of the page's export, in this order.
@@ -85,8 +91,45 @@ def load_context(exports: Sequence) -> tuple[dict[str, dict], dict[int, World]]:
     return manifest, worlds
 
 
+def display_name(key: Optional[str], world: Optional[World], record: Optional[dict] = None,
+                 *, short: bool = False) -> str:
+    """How the sheet names a part a person reads -- **no ordinal** (owner 2026-11-04).
+
+    A part a record outlines under a tag of its own is "part A"; a group is its group label
+    (with its tag where it is outlined, "CPU cooler screws (parts B)"); any other part is the
+    oracle's ordinal-free name (:meth:`World.plain_name`: its class when it is the only one,
+    "one of the 4 RAM modules" when it is not). ``short`` (a box label: the box already says
+    which one) is the class alone. Never an instance key, never "CPU 1".
+    """
+    if key is None:
+        return "-"
+    key = str(key)
+    tags = ((record or {}).get("label") or {}).get("mark_names") or {}
+    if world is not None and world.is_group(key):
+        label = world.plain_name(key)
+        members = set(world.members(key))
+        tag = next((t for t, e in sorted(tags.items())
+                    if len(e.get("parts") or []) > 1 and set(e["parts"]) <= members), None)
+        return f"{label} (parts {tag})" if tag and not short else label
+    if not short:
+        tag = next((t for t, e in sorted(tags.items()) if (e.get("parts") or []) == [key]), None)
+        if tag:
+            return f"part {tag}"
+    if world is None:
+        # no oracle: the key's words, its ordinal dropped ("cpu_cooler.01" -> "cpu cooler")
+        return " ".join(p.replace("_", " ") for p in key.replace(":", ".").split(".")
+                        if p and not p.isdigit()) or key
+    if short and key in world.instances:
+        inst = world.instances[key]
+        return re.sub(r"\s+\d+$", "", str(inst.get("label") or key)) if inst.get("label") \
+            else world.plain_name(key)
+    return world.plain_name(key)
+
+
 def name_of(key: Optional[str], world: Optional[World]) -> str:
-    """The oracle's label of an instance key (``Motherboard screw 7``), else the key."""
+    """The oracle's label of an instance key (``Motherboard screw 7``), else the key -- the
+    **grader's** wording (a reply naming it grounds back to the key), for the human-baseline
+    self-test; nothing a reviewer reads uses it (:func:`display_name`)."""
     if key is None:
         return "-"
     if world is not None:
@@ -108,8 +151,8 @@ def rel_image(image_root, rel_path: str, out_dir) -> str:
 # --------------------------------------------------------------------------- #
 # the gold answer in words
 # --------------------------------------------------------------------------- #
-def _action(item: dict, world) -> str:
-    return f"{item.get('verb', '?')} {name_of(item.get('target'), world)}"
+def _action(item: dict, world, record: Optional[dict] = None) -> str:
+    return f"{item.get('verb', '?')} {display_name(item.get('target'), world, record)}"
 
 
 def _yes(value) -> str:
@@ -122,6 +165,9 @@ def gold_lines(record: dict, world: Optional[World] = None) -> list[tuple[str, s
     answer = label["answer"]
     check = label.get("answer_check") or {}
     key = format_key(record)
+
+    def name(k):
+        return display_name(k, world, record)
     task = record["prompt"]["task"]
     out: list[tuple[str, str]] = []
     if key == "V1":
@@ -129,7 +175,7 @@ def gold_lines(record: dict, world: Optional[World] = None) -> list[tuple[str, s
         out.append(("visible parts", f"{len(comps)}"))
         for c in comps:
             out.append((c.get("class", "?"),
-                        f"{name_of(c.get('instance'), world)} box {c.get('bbox')}"))
+                        f"{name(c.get('instance'))} box {c.get('bbox')}"))
     elif key == "V2.count":
         out.append(("count", str(answer.get("count"))))
         out.append(("screws", f"{check.get('role', '?')} screws still {check.get('state', 'present')}"))
@@ -137,17 +183,24 @@ def gold_lines(record: dict, world: Optional[World] = None) -> list[tuple[str, s
         out.append(("state", str(answer.get("state"))))
         if check.get("allowed"):
             out.append(("allowed", ", ".join(check["allowed"])))
-    elif task == "V3":
-        out.append(("action", f"{answer.get('verb')} {name_of(answer.get('target_instance'), world)}"))
+    elif task == "V3" and check.get("type") != "action_set":
+        out.append(("action", f"{answer.get('verb')} {name(answer.get('target_instance'))}"))
         out.append(("class", str(answer.get("target_class"))))
         out.append(("tool", str(answer.get("tool"))))
+        if label.get("v3_form"):
+            out.append(("form", "free (no hint; also asks the region)" if label["v3_form"] == "free"
+                        else "roi (a yellow dashed hint box is drawn)"))
+        if check.get("region"):
+            out.append(("region (scanner)", str(check["region"])))
+        if check.get("hint_region"):
+            out.append(("hint box (scanner)", str(check["hint_region"])))
         # no "also accepted" line: the part acted on is the only answer (owner 2026-11-03),
         # whatever an older record's `accept_targets` lists beside it
     elif task == "V4":
         out.append(("feasible", _yes(answer.get("feasible"))))
-        out.append(("action", f"{check.get('verb')} {name_of(check.get('target'), world)}"))
+        out.append(("action", f"{check.get('verb')} {name(check.get('target'))}"))
         if answer.get("blockers"):
-            out.append(("blockers", "; ".join(name_of(b, world) for b in answer["blockers"])))
+            out.append(("blockers", "; ".join(name(b) for b in answer["blockers"])))
         if answer.get("reason"):
             out.append(("reason", str(answer["reason"])))
         out.append(("truth source", str(label.get("truth_source"))))
@@ -155,58 +208,74 @@ def gold_lines(record: dict, world: Optional[World] = None) -> list[tuple[str, s
         options = label.get("options") or []
         index = reference_option(label)
         letter = LETTERS[index] if index is not None else "?"
-        out.append(("choice", f"{letter}: {_action(answer, world)}"))
+        right = options[index] if index is not None else {}
+        out.append(("choice", f"{letter}: {right.get('say_verb', right.get('verb', '?'))} "
+                              f"{right.get('target_label', '?')}"))
         kinds = ", ".join(f"{LETTERS[i]} {o.get('kind', '?')}" for i, o in enumerate(options))
         if kinds:
             out.append(("option kinds", kinds))
+    elif key in ("V6.open", "V3.span") and check.get("type") in ("frontier", "action_set"):
+        # every action possible now, by group (owner 2026-11-04)
+        if check.get("form") == "constrained":
+            out.append(("rule", str((check.get("constraint") or {}).get("rule"))))
+        groups = {g["key"]: g for g in [*(check.get("ruled_groups") or []),
+                                        *(check.get("groups") or [])]}
+        for i, key_ in enumerate(check.get("gold_groups") or [], start=1):
+            g = groups.get(key_) or {}
+            hidden = " (a cable hides some)" if g.get("hidden_by_cable") else ""
+            out.append((f"possible {i}", f"{g.get('phrase', key_)}{hidden}"))
+        for key_ in check.get("forbidden_groups") or []:
+            out.append(("ruled out", str((groups.get(key_) or {}).get("phrase", key_))))
+        blocked = [g.get("phrase", g.get("key")) for g in check.get("blocked_groups") or []]
+        if blocked:
+            out.append(("not yet", "; ".join(blocked[:6]) + (" ..." if len(blocked) > 6 else "")))
     elif key == "V6.open":
-        out.append(("next action", _action(answer, world)))
+        out.append(("next action", _action(answer, world, record)))
         eq = check.get("equivalent_actions") or []
         if len(eq) > 1:
-            out.append(("equivalent", "; ".join(_action(a, world) for a in eq)))
+            out.append(("equivalent", "; ".join(_action(a, world, record) for a in eq)))
         if check.get("blocked_actions"):
-            out.append(("blocked", "; ".join(_action(a, world) for a in check["blocked_actions"][:8])
+            out.append(("blocked", "; ".join(_action(a, world, record) for a in check["blocked_actions"][:8])
                         + (" ..." if len(check["blocked_actions"]) > 8 else "")))
     elif task == "V7":
         plan = answer.get("plan") or []
-        out.append(("plan", f"{len(plan)} steps to remove {name_of(answer.get('goal'), world)}"))
+        if check.get("constraint"):
+            out.append(("rule", str(check["constraint"].get("rule"))))
+        if check.get("count"):
+            out.append(("connectors to unplug", str(check["count"].get("present"))))
+        out.append(("plan", f"{len(plan)} steps to remove {name(answer.get('goal'))}"))
         for i, a in enumerate(plan, start=1):
-            out.append((f"{i}", _action(a, world)))
+            out.append((f"{i}", _action(a, world, record)))
         if check.get("required_actions"):
             out.append(("required", "; ".join(
-                f"{name_of(r.get('target'), world)} -> {'/'.join(r.get('states') or [])}"
+                f"{name(r.get('target'))} -> {'/'.join(r.get('states') or [])}"
                 for r in check["required_actions"])))
     elif task == "V8" and "components" in answer:  # every visible part of one class / group
         comps = answer.get("components") or []
         out.append(("visible parts", f"{len(comps)} ({check.get('class_filter', '?')})"))
         for c in comps:
             out.append((c.get("class", "?"),
-                        f"{name_of(c.get('instance'), world)} box {c.get('bbox')}"))
+                        f"{name(c.get('instance'))} box {c.get('bbox')}"))
     elif task == "V8":
-        out.append(("part", name_of(answer.get("instance"), world)))
+        out.append(("part", name(answer.get("instance"))))
         out.append(("box", str(answer.get("bbox"))))
     elif task == "V10":
         done = answer.get("done") or []
         out.append(("progress", f"{_BIN_LABELS.get(str(answer.get('progress_bin')), answer.get('progress_bin'))} "
                                 f"({check.get('done_actions', len(done))} of {check.get('total_actions', '?')} actions done)"))
         for i, a in enumerate(done, start=1):
-            out.append((f"done {i}", _action(a, world)))
+            out.append((f"done {i}", _action(a, world, record)))
         for i, a in enumerate(answer.get("started") or [], start=1):
-            out.append((f"started {i}", _action(a, world)))
+            out.append((f"started {i}", _action(a, world, record)))
     elif task == "V12":
         out.append(("changed", _yes(answer.get("changed"))))
         for ev in answer.get("events") or []:
-            out.append(("event", f"{name_of(ev.get('target'), world)}: {ev.get('old')} -> {ev.get('new')}"))
+            out.append(("event", f"{name(ev.get('target'))}: {ev.get('old')} -> {ev.get('new')}"))
         for ev in check.get("hidden_events") or []:
             out.append(("hidden (no visible change)",
-                        f"{name_of(ev.get('target'), world)}: {ev.get('old')} -> {ev.get('new')}"))
+                        f"{name(ev.get('target'))}: {ev.get('old')} -> {ev.get('new')}"))
         if label.get("negative"):
             out.append(("negative kind", str(label["negative"])))
-    elif task == "V14":
-        out.append(("answerable", _yes(answer.get("answerable"))))
-        out.append(("part", name_of(check.get("instance"), world)))
-        if answer.get("answerable"):
-            out.append(("state", str(answer.get("state"))))
     elif key == "V15.moment":
         out.append(("same moment", _yes(answer.get("same_moment"))))
         views = label.get("views") or []
@@ -232,14 +301,19 @@ def gold_lines(record: dict, world: Optional[World] = None) -> list[tuple[str, s
 
 
 def rationale_lines(record: dict, world: Optional[World] = None) -> list[str]:
-    """The rationale chain, one line per step."""
-    steps = ((record["label"].get("rationale") or {}).get("steps")) or []
+    """The rationale, readable: ``rationale.text`` (the reason in what the picture shows, owner
+    2026-11-04 -- no graph vocabulary) where the record has one; else the chain, one line per
+    step, every part named without an ordinal."""
+    rationale = record["label"].get("rationale") or {}
+    if rationale.get("text"):
+        return [str(rationale["text"])]
+    steps = rationale.get("steps") or []
     out = []
     for s in steps:
         op = s.get("op", "?")
         bits = [op]
         if s.get("target"):
-            bits.append(name_of(s["target"], world))
+            bits.append(display_name(s["target"], world, record))
         if s.get("value") is not None:
             bits.append(f"= {s['value']}")
         if s.get("frames"):
@@ -257,10 +331,15 @@ def rationale_lines(record: dict, world: Optional[World] = None) -> list[str]:
 
 
 def boxes_of(record: dict, world: Optional[World] = None) -> list[dict]:
-    """The boxes to draw: ``[{"label", "bbox", "kind"}]`` -- evidence, V1 parts, V8 answer."""
+    """The reviewer's boxes: ``[{"label", "bbox", "kind"}]`` -- evidence, V1 parts, V8 answer.
+    Labelled by class (:func:`display_name` ``short``): never an ordinal, and the model never
+    sees them (the page draws them on their own layer, hidden by default)."""
     label = record["label"]
     out: list[dict] = []
     seen: set[tuple] = set()
+
+    def name(k):
+        return display_name(k, world, record, short=True)
 
     def add(text, bbox, kind):
         if not bbox or len(bbox) != 4:
@@ -273,24 +352,29 @@ def boxes_of(record: dict, world: Optional[World] = None) -> list[dict]:
 
     if record["prompt"]["task"] == "V1":
         for c in label["answer"].get("components") or []:
-            add(name_of(c.get("instance"), world), c.get("bbox"), "answer")
+            add(name(c.get("instance")), c.get("bbox"), "answer")
     if record["prompt"]["task"] == "V8":
         for c in label["answer"].get("components") or []:
-            add(name_of(c.get("instance"), world), c.get("bbox"), "answer")
-        add(name_of(label["answer"].get("instance"), world), label["answer"].get("bbox"), "answer")
+            add(name(c.get("instance")), c.get("bbox"), "answer")
+        add(name(label["answer"].get("instance")), label["answer"].get("bbox"), "answer")
     ev = label.get("evidence") or {}
     for key, bbox in (ev.get("bboxes") or {}).items():
-        add(name_of(key, world), bbox, "evidence")
+        add(name(key), bbox, "evidence")
     return out
 
 
 def marks_of(record: dict, index: int) -> list[dict]:
-    """The ``prompt.marks`` of image ``index`` as boxes (``kind = "mark"``, the tag as label):
-    what the model sees drawn in red on that image (none on V1 / V8 / V14)."""
-    return [{"label": str(m.get("tag") or ""), "bbox": [float(v) for v in m["bbox"]],
-             "kind": "mark"}
-            for m in shown_marks(record)
-            if int(m.get("image", 0)) == index and m.get("bbox") and len(m["bbox"]) == 4]
+    """What the model sees drawn on image ``index``: the ``prompt.marks`` (``kind = "mark"``,
+    the tag as label; red, dashed) and V3's ``prompt.hint_regions`` (``kind = "hint"``, no
+    label; yellow, dashed). None on V1 / V8."""
+    marks = [{"label": str(m.get("tag") or ""), "bbox": [float(v) for v in m["bbox"]],
+              "kind": "mark"}
+             for m in shown_marks(record)
+             if int(m.get("image", 0)) == index and m.get("bbox") and len(m["bbox"]) == 4]
+    hints = [{"label": "", "bbox": [float(v) for v in h["bbox"]], "kind": "hint"}
+             for h in shown_hints(record)
+             if int(h.get("image", 0)) == index and len(h["bbox"]) == 4]
+    return marks + hints
 
 
 def _image_views(record: dict, manifest: dict) -> list[Optional[str]]:
@@ -305,9 +389,11 @@ def frames_html(record: dict, manifest: dict, image_root, out_dir, *, evidence: 
                 marks: bool = True, where: bool = True) -> str:
     """The record's images: one row, or a before row and an after row (V3 / V12 multi-view).
 
-    Each figure carries its own marks (red, tagged; only on its image index) and, where the
-    picture shows it, the ``evidence`` boxes: every image of a single-view record, the scanner
-    images of a multi-view one (the evidence is read off the scanner frame). ``where=False``
+    **The model's view first** (owner 2026-11-04): each figure shows exactly what the model
+    gets -- the picture and its own marks (red dashed, tagged; V3's yellow dashed hint), drawn
+    the way the converter draws them. The ``evidence`` boxes -- every image of a single-view
+    record, the scanner images of a multi-view one (the evidence is read off the scanner
+    frame) -- go on a separate reviewer layer the page hides until asked. ``where=False``
     keeps the step and the desktop out of the captions (the human form).
     """
     label = record["label"]
@@ -390,19 +476,35 @@ figure.frame { margin: 0; position: relative; display: inline-block; max-width: 
                flex: 1 1 420px; }
 figure.frame .imgbox { position: relative; display: block; border: 1px solid var(--line); }
 figure.frame img { display: block; width: 100%; height: auto; background: #eee; }
-figure.frame svg.boxes { position: absolute; left: 0; top: 0; width: 100%; height: 100%;
-                         pointer-events: none; }
+figure.frame svg.boxes, figure.frame svg.review { position: absolute; left: 0; top: 0;
+                         width: 100%; height: 100%; pointer-events: none; }
 .frames.multi figure.frame { flex: 1 1 300px; }
 .frames .rowlabel { flex: 0 0 100%; font-size: 13px; color: var(--muted); font-weight: bold; }
-body.no-boxes svg.boxes rect:not(.mark), body.no-boxes svg.boxes text:not(.mark) { display: none; }
-svg.boxes rect { fill: none; stroke-width: 3; vector-effect: non-scaling-stroke; }
-svg.boxes rect.answer { stroke: #ffeb3b; }
-svg.boxes rect.evidence { stroke: #00e5ff; }
-svg.boxes rect.mark { stroke: #ff1744; }
-svg.boxes rect.draft { stroke: #ff4081; stroke-dasharray: 6 4; }
-svg.boxes text { fill: #fff; paint-order: stroke; stroke: #000; stroke-width: 3px;
-                 font-weight: bold; }
-svg.boxes text.mark { stroke: #ff1744; stroke-width: 4px; }
+/* the model's layer (svg.boxes): the marks exactly as the converter draws them (mark-v2) */
+svg.boxes line.mark { stroke: #ff1744; }
+svg.boxes line.hint { stroke: #ffd600; }
+svg.boxes rect.marktag { fill: #ff1744; stroke: none; }
+svg.boxes text.marktag { fill: #fff; font-family: sans-serif; }
+/* the reviewer's layer (svg.review): evidence and answer boxes, never shown to the model,
+   hidden until "show reviewer boxes" is ticked */
+body:not(.show-review) svg.review { display: none; }
+svg.review rect { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; }
+svg.review rect.answer { stroke: #00e676; }
+svg.review rect.evidence { stroke: #00e5ff; }
+svg.review text { fill: #fff; paint-order: stroke; stroke: #000; stroke-width: 3px;
+                  font-weight: bold; }
+/* the human form's own boxes, drawn on the picture by the participant */
+svg.boxes rect.human-box { fill: none; stroke: #00e676; stroke-width: 3;
+                           vector-effect: non-scaling-stroke; }
+svg.boxes text.human-box { fill: #fff; paint-order: stroke; stroke: #000; stroke-width: 3px;
+                           font-weight: bold; }
+svg.boxes rect.draft { fill: none; stroke: #ff4081; stroke-width: 3; stroke-dasharray: 6 4;
+                       vector-effect: non-scaling-stroke; }
+.legend-line { font-size: 13px; color: var(--muted); flex-basis: 100%; }
+.legend-line .red { color: #ff1744; font-weight: bold; }
+.legend-line .yel { color: #b8860b; font-weight: bold; }
+.legend-line .cyan { color: #00838f; font-weight: bold; }
+.legend-line .green { color: #2e7d32; font-weight: bold; }
 .prompt-line { color: var(--muted); margin: 4px 0; white-space: pre-wrap; }
 figure.frame figcaption { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .question { font-size: 16px; margin: 6px 0; white-space: pre-wrap; }
@@ -455,25 +557,82 @@ const REVIEWER_KEY = 'tda-sheet-reviewer';
 function reviewer() { return (document.getElementById('reviewer').value || '').trim(); }
 function nowIso() { return new Date().toISOString(); }
 function safeName(s) { return (s || 'anon').replace(/[^A-Za-z0-9_\-一-鿿]+/g, '_'); }
+const SVGNS = 'http://www.w3.org/2000/svg';
+function el(name, attrs, parent) {
+  const n = document.createElementNS(SVGNS, name);
+  Object.keys(attrs).forEach(k => n.setAttribute(k, attrs[k]));
+  if (parent) parent.appendChild(n);
+  return n;
+}
+/* the converter's mark-v2, transcribed (vlm_to_chat.draw_marks): a thin dashed outline just
+   outside the box at MARK.opacity, each side starting with a dash at its corner; one filled
+   label per tag outside the tag's top-most outline (label_place); a hint drawn inside its box */
+function markWidth(W) { return Math.max(2, Math.round(2 * W / 1600)); }
+function markDash(W) { return [Math.max(6, Math.round(14 * W / 1600)), Math.max(4, Math.round(8 * W / 1600))]; }
+function labelFont(W) { return Math.max(12, Math.round(18 * W / 1600)); }
+function labelPlace(o, tw, th, W, H) {
+  const gap = 1, lx = Math.min(Math.max(0, o[0]), Math.max(0, W - tw));
+  if (o[1] - gap - th >= 0) return [lx, o[1] - gap - th];
+  if (o[3] + gap + th <= H - 1) return [lx, o[3] + gap];
+  const ly = Math.min(Math.max(0, o[1]), Math.max(0, H - th));
+  if (o[0] - gap - tw >= 0) return [o[0] - gap - tw, ly];
+  if (o[2] + gap + tw <= W - 1) return [o[2] + gap, ly];
+  return [0, 0];
+}
+function drawModel(svg, boxes, W, H) {
+  const lw = markWidth(W), dash = markDash(W), tags = {}, order = [];
+  const g = el('g', {opacity: MARK.opacity, class: 'gold-box'}, svg);
+  boxes.forEach(b => {
+    const hint = b.kind === 'hint', x = b.bbox[0], y = b.bbox[1], w = b.bbox[2], h = b.bbox[3];
+    if (x + w <= 0 || y + h <= 0 || x >= W || y >= H) return;
+    const o = hint ? [Math.max(0, Math.round(x)), Math.max(0, Math.round(y)),
+                      Math.min(W - 1, Math.round(x + w) - 1), Math.min(H - 1, Math.round(y + h) - 1)]
+                   : [Math.round(x) - lw, Math.round(y) - lw, Math.round(x + w) + lw - 1,
+                      Math.round(y + h) + lw - 1];
+    const half = lw / 2, cls = hint ? 'hint' : 'mark';
+    [[o[0], o[1] + half, o[2] + 1, o[1] + half], [o[0], o[3] + 1 - half, o[2] + 1, o[3] + 1 - half],
+     [o[0] + half, o[1], o[0] + half, o[3] + 1], [o[2] + 1 - half, o[1], o[2] + 1 - half, o[3] + 1]]
+      .forEach(s => el('line', {x1: s[0], y1: s[1], x2: s[2], y2: s[3], class: cls,
+                                'stroke-width': lw, 'stroke-dasharray': dash[0] + ' ' + dash[1],
+                                'stroke-linecap': 'butt'}, g));
+    if (!hint && b.label) {
+      if (!tags[b.label]) { tags[b.label] = []; order.push(b.label); }
+      tags[b.label].push(o);
+    }
+  });
+  const fs = labelFont(W), pad = Math.max(2, lw);
+  order.forEach(tag => {
+    const o = tags[tag].reduce((a, c) => (c[1] < a[1] || (c[1] === a[1] && c[0] < a[0])) ? c : a);
+    const tw = Math.ceil(fs * 0.62 * tag.length) + 2 * pad, th = Math.ceil(fs * 0.8) + 2 * pad;
+    const p = labelPlace(o, tw, th, W, H);
+    el('rect', {x: p[0], y: p[1], width: tw, height: th, class: 'gold-box marktag'}, svg);
+    const t = el('text', {x: p[0] + pad, y: p[1] + th - pad, 'font-size': fs,
+                          class: 'gold-box marktag'}, svg);
+    t.textContent = tag;
+  });
+}
+function drawReview(svg, boxes, W) {
+  const fs = Math.max(12, Math.round(W / 70));
+  boxes.forEach(b => {
+    el('rect', {x: b.bbox[0], y: b.bbox[1], width: b.bbox[2], height: b.bbox[3],
+                class: 'gold-box ' + b.kind}, svg);
+    const t = el('text', {x: b.bbox[0] + 4, y: Math.max(fs, b.bbox[1] - 4), 'font-size': fs,
+                          class: 'gold-box ' + b.kind}, svg);
+    t.textContent = b.label;
+  });
+}
 function drawBoxes(fig) {
-  const img = fig.querySelector('img'), svg = fig.querySelector('svg.boxes');
+  const img = fig.querySelector('img'), svg = fig.querySelector('svg.boxes'),
+        review = fig.querySelector('svg.review');
   if (!img || !svg || !img.naturalWidth) return;
-  svg.setAttribute('viewBox', '0 0 ' + img.naturalWidth + ' ' + img.naturalHeight);
-  svg.setAttribute('preserveAspectRatio', 'none');
+  const W = img.naturalWidth, H = img.naturalHeight;
+  [svg, review].forEach(s => { if (!s) return;
+    s.setAttribute('viewBox', '0 0 ' + W + ' ' + H); s.setAttribute('preserveAspectRatio', 'none');
+    s.querySelectorAll('.gold-box').forEach(n => n.remove()); });
   let boxes = [];
   try { boxes = JSON.parse(img.dataset.boxes || '[]'); } catch (e) {}
-  const fs = Math.max(12, Math.round(img.naturalWidth / 70));
-  svg.querySelectorAll('.gold-box').forEach(n => n.remove());
-  boxes.forEach(b => {
-    const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    r.setAttribute('x', b.bbox[0]); r.setAttribute('y', b.bbox[1]);
-    r.setAttribute('width', b.bbox[2]); r.setAttribute('height', b.bbox[3]);
-    r.setAttribute('class', 'gold-box ' + b.kind); svg.appendChild(r);
-    const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    t.setAttribute('x', b.bbox[0] + 4); t.setAttribute('y', Math.max(fs, b.bbox[1] - 4));
-    t.setAttribute('font-size', fs); t.setAttribute('class', 'gold-box ' + b.kind);
-    t.textContent = b.label; svg.appendChild(t);
-  });
+  drawModel(svg, boxes.filter(b => b.kind === 'mark' || b.kind === 'hint'), W, H);
+  if (review) drawReview(review, boxes.filter(b => b.kind !== 'mark' && b.kind !== 'hint'), W);
 }
 document.addEventListener('DOMContentLoaded', () => {
   const rv = document.getElementById('reviewer');
@@ -486,10 +645,16 @@ document.addEventListener('DOMContentLoaded', () => {
     img.addEventListener('error', () => { const c = fig.querySelector('figcaption');
       if (c) c.textContent = 'image not found: ' + img.getAttribute('src') + ' -- ' + c.textContent; });
   });
-  const tb = document.getElementById('toggle-boxes');
-  if (tb) tb.addEventListener('change', () => document.body.classList.toggle('no-boxes', !tb.checked));
+  const tr = document.getElementById('toggle-review');
+  if (tr) { tr.checked = false;
+    tr.addEventListener('change', () => document.body.classList.toggle('show-review', tr.checked)); }
 });
 """
+#: The converter's mark style, handed to the page's script (the marks a reviewer sees are drawn
+#: with the model's parameters, not a look-alike).
+JS_COMMON = ("const MARK = " + json.dumps({"opacity": CHAT.MARK_OPACITY,
+                                           "style": CHAT.MARK_STYLE_VERSION}) + ";\n"
+             + JS_COMMON)
 
 JS_AUDIT = r"""
 const SHEET = document.body.dataset.sheet;
@@ -545,7 +710,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
 def figure_html(image_id: str, manifest: dict, image_root, out_dir, boxes: list[dict],
                 caption: str, *, index: int = 0) -> str:
-    """One frame: the ``<img>`` with its boxes as a data attribute and an SVG overlay."""
+    """One frame: the ``<img>`` with its boxes as a data attribute and two SVG overlays -- the
+    model's layer (``svg.boxes``: the marks, as the converter draws them) and the reviewer's
+    (``svg.review``: evidence and answer boxes, hidden until asked; owner 2026-11-04)."""
     entry = manifest.get(image_id) or {}
     rel = entry.get("path", image_id)
     src = rel_image(image_root, rel, out_dir)
@@ -554,7 +721,8 @@ def figure_html(image_id: str, manifest: dict, image_root, out_dir, boxes: list[
     # vertically and every box was drawn too low (owner, 2026-11-03)
     return (f'<figure class="frame" data-index="{index}"><span class="imgbox"><img src="{esc(src)}" '
             f'alt="{esc(rel)}" loading="lazy" data-boxes="{data}"><svg class="boxes" viewBox="0 0 1 1">'
-            f'</svg></span><figcaption>{esc(caption)}</figcaption></figure>')
+            f'</svg><svg class="review" viewBox="0 0 1 1"></svg></span>'
+            f'<figcaption>{esc(caption)}</figcaption></figure>')
 
 
 def question_html(record: dict, *, gold_letter: Optional[str] = None) -> str:
@@ -612,7 +780,7 @@ def item_html(index: int, record: dict, manifest: dict, world: Optional[World], 
                       + "</ul>") if rationale else ""
     ev = (label.get("evidence") or {}).get("instances") or []
     ev_html = (f'<div class="hint">evidence parts: '
-               f'{esc("; ".join(name_of(k, world) for k in ev))}</div>') if ev else ""
+               f'{esc("; ".join(display_name(k, world, record) for k in ev))}</div>') if ev else ""
     flags = [f"template {label.get('template_id', '?')}"]
     if label.get("negative"):
         flags.append(f"negative: {label['negative']}")
@@ -640,6 +808,19 @@ def item_html(index: int, record: dict, manifest: dict, world: Optional[World], 
 </article>"""
 
 
+#: The header's switch for the reviewer layer (unticked: the page opens on the model's view) and
+#: the one-line legend saying what is and is not shown to the model (owner 2026-11-04: the
+#: reviewer boxes, cyan and yellow beside the red marks, were taken for marks the model sees).
+REVIEW_TOGGLE = (
+    '<label><input type="checkbox" id="toggle-review"> show reviewer boxes / 显示审核框</label>'
+    '<span class="legend-line">The pictures show exactly what the model gets: '
+    '<span class="red">red dashed outlines</span> (tagged A, B, ...) and, on V3\'s hinted form, '
+    'a <span class="yel">yellow dashed box</span>. Reviewer boxes '
+    '(<span class="cyan">cyan</span> = evidence, <span class="green">green</span> = answer) are '
+    '<b>not shown to the model</b>. / 图上就是模型看到的：红色虚线框（字母标签）和 V3 提示题的黄色虚线框；'
+    '审核框（青色＝证据，绿色＝答案）<b>模型看不到</b>。</span>')
+
+
 def page(title: str, body: str, *, sheet: str, js: str, columns: Sequence[str],
          guide: str, extra_bar: str = "") -> str:
     """A complete static page: sticky bar (reviewer, progress, export), guide, items."""
@@ -653,7 +834,7 @@ def page(title: str, body: str, *, sheet: str, js: str, columns: Sequence[str],
 <body data-sheet="{esc(sheet)}" data-columns="{cols}">
 <header class="bar"><h1>{esc(title)}</h1>
 <label>reviewer / 审核人 <input type="text" id="reviewer" placeholder="your name"></label>
-<label><input type="checkbox" id="toggle-boxes" checked> boxes / 显示框</label>
+{REVIEW_TOGGLE}
 {extra_bar}
 <span class="spacer"></span>
 <span>answered <b id="progress">0 / 0</b></span>
@@ -673,15 +854,18 @@ Static page: no server, no network.</footer>
 
 
 AUDIT_GUIDE = """
-<b>What to do.</b> For every item look at the picture(s), read the question and the gold answer
-(the boxes drawn on the frame are its evidence: yellow = the answer's parts, cyan = the parts it
-rests on), then pick one verdict and, for anything but 正确, write why.<br>
+<b>What to do.</b> For every item look at the picture(s) -- they show exactly what the model is
+shown: the red dashed outlines the question names (part A, B, ...) and, on V3's hinted form, a
+yellow dashed box -- read the question and the gold answer, then pick one verdict and, for
+anything but 正确, write why. Tick <b>show reviewer boxes</b> to see the answer's evidence
+(cyan = the parts it rests on, green = the answer's parts); the model never sees those.<br>
 <b>正确 correct</b> -- the answer is right for this picture and this question.
 <b>错误 wrong</b> -- the answer is wrong, or the question cannot be asked of this picture (wrong
 frame, part not there, mislabelled).
 <b>存疑 doubtful</b> -- cannot be decided from the picture (hidden part, captive screw, blur), or
 only partly right.<br>
-Instance names are the dataset's ("Motherboard screw 7"); a two-image question shows both frames
+Parts are named without ordinals: "part A" is the part outlined with tag A, a part alone of its
+class is named by its class, "one of the 4 RAM modules" is one of several; a two-image question shows both frames
 in the order asked. Your answers are kept in this browser; press <b>Export answers</b> when the
 page is done and send the CSV. <code>tools/vlm_audit_summary.py</code> reads it.
 """

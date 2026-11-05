@@ -138,11 +138,14 @@ def test_the_protocol_prior_answers_from_the_previous_action_only(export, tmp_pa
         assert set(r["prompt"]) <= {"task", "images", "question", "previous_action", "options"}
     assert {p["id"] for p in preds} == {r["id"] for r in variant}
     # V6's two forms are reported apart: the open headline, the choice beside it
-    assert set(report["by_task"]) == tasks | {"V6-mc"}
+    mc = any(r["prompt"]["task"] == "V6" and r["prompt"].get("options") for r in variant)
+    assert set(report["by_task"]) == tasks | ({"V6-mc"} if mc else set())
     for row in report["by_task"].values():
         assert 0.0 <= row["accuracy"] <= 1.0
-    # fitted on the very log it is asked about, the next action is mostly right
-    assert report["by_task"]["V6"]["accuracy"] >= 0.5
+    # fitted on the very log it is asked about, the next action is mostly right; V6 itself
+    # asks every action possible now (owner 2026-11-04), and one guessed action scores the
+    # F1 of one group out of several -- above nothing, below one
+    assert 0.0 < report["by_task"]["V6"]["accuracy"] < 1.0
     assert report["v6_next_verb_class_coarse"] >= 0.5
 
 
@@ -171,7 +174,7 @@ def test_every_chat_format_carries_the_question_images_and_answer_format(export,
     for row in rows:
         src = records[row["id"]]
         meta = row["meta"]
-        assert meta["prompt_template_id"] == f"chat-v3:{src['label']['template_id']}"
+        assert meta["prompt_template_id"] == f"chat-v5:{src['label']['template_id']}"
         assert len(meta["images"]) == len(src["prompt"]["images"])
         if fmt == "internvl":
             text = row["conversations"][0]["value"]
@@ -305,8 +308,8 @@ def test_the_scorer_with_fake_outputs(export, tmp_path):
     assert "decidable" in strict["extra"]["V7"]
     md = (tmp_path / "fake.score.md").read_text(encoding="utf-8")
     assert "| V7 |" in md and "text-only upper bound" in md
-    mc_row = next(line for line in md.splitlines() if line.startswith("| V6-mc |"))
-    assert mc_row.rstrip().endswith("| 79.9% |")
+    mc_row = next((line for line in md.splitlines() if line.startswith("| V6-mc |")), None)
+    assert mc_row is None or mc_row.rstrip().endswith("| 79.9% |")
     assert result["headline"]["v6_open"] == strict["by_task"]["V6"]
     # V2's headline row is every V2 question, the prior-wrong subset secondary (owner 2026-11-03)
     v2 = [r for r in records if r["prompt"]["task"] == "V2"]
@@ -319,7 +322,7 @@ def test_the_scorer_with_fake_outputs(export, tmp_path):
     assert "| V2-prior-wrong |" in md
     # every V2 question counts once in its layer
     assert strict["by_layer"]["L1"]["n"] == sum(
-        1 for r in records if r["prompt"]["task"] in ("V1", "V2", "V8", "V14"))
+        1 for r in records if r["prompt"]["task"] in ("V1", "V2", "V8"))
     # seeded: the same inputs give the same intervals
     again = vlm_score.score(export, preds, resamples=200)
     assert again["strict"]["by_task"] == strict["by_task"]

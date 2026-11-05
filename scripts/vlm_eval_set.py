@@ -1,28 +1,32 @@
 """The frozen evaluation subset of the VLM pack (W4-A; paper plan 6.2).
 
 ``python scripts/vlm_eval_set.py --export <vlm_scan.jsonl> [<vlm_oak1.jsonl> ... <vlm_multi.jsonl>]
---out <dir>/eval_v2 [--seed 0] [--target-binary 400] [--target-other 300]
+--out <dir>/eval_v3 [--seed 0] [--target-binary 400] [--target-other 300]
 [--max-share 0.2] [--audit 300]``
 
 Every model is run on the same subset, drawn once from the export units over
-**all** desktops (zero-shot: no training split is spent). Since the redesign of
-2026-11-03 the subset is ``eval_v2``: perception (V1 V2 V8 V14 V15) comes from
-the four camera units, the action tasks (V3 V4 V6 V7 V10 V12 V16) from the
-``multi`` unit, with the same per-task targets as ``eval_v1``; the command line
-refuses an ``eval_v1`` path (:func:`refuse_old_eval`). Per task:
+**all** desktops (zero-shot: no training split is spent). Since the final round of
+2026-11-04 the subset is ``eval_v3``: perception (V1 V2 V8 V15; V14 merged into V2)
+comes from the four camera units, the action tasks (V3 V4 V6 V7 V10 V12 V16) from the
+``multi`` unit; the command line refuses an ``eval_v1`` / ``eval_v2`` path
+(:func:`refuse_old_eval`). The ids of ``eval_v2`` (``configs/vlm_keep/``) are drawn first
+inside every stratum, so a record that survives keeps its place. Per bucket (a task, and
+the constrained forms of V6 and V7 apart, :func:`bucket_of`):
 
 * at least ``--target-binary`` records for the yes / no tasks (V4 feasible or
-  not, V12 changed or not, V14 answerable or not, V15 same moment or not) and
+  not, V12 changed or not, V15 same moment or not) and
   at least ``--target-other`` for the rest; V6 is drawn as **pairs** (open +
-  multiple choice of one frame, ``label.v6_pair``), so its 300 units are 600
-  records;
+  multiple choice of one frame, ``label.v6_pair``), so its 300 units are up to 600
+  records; V6 constrained and V7 constrained are buckets of their own; V3's roi
+  partner rides with its free record;
 * the records are allocated **per unit in proportion to the export** (a task
   lives in one unit since the redesign, so this is the identity unless several
   units hold it), then **equally over the task's
   strata** (:func:`strata`), level by level: V4 feasible / infeasible, the
   infeasible half over ``truth_source``; V2 ``prior_is_correct`` false / true,
-  then class; V12 changed / unchanged, then the negative's kind; V14 answerable
-  / not; V15 same / different, then the view pair; V16 valid / invalid, then
+  then class; V12 changed / unchanged, then the negative's kind; V6 by frontier size,
+  V6 / V7 constrained by the kind of rule; V15 same / different, then the view pair;
+  V16 valid / invalid, then
   the corruption family; V3 by verb, V8 by the target's class, V10 by progress
   bin. A stratum that cannot fill its share hands the rest to its siblings;
 * inside a stratum the desktops take turns (round-robin in a seeded order),
@@ -63,19 +67,51 @@ __all__ = ["BINARY_TASKS", "EVAL_VERSION", "OLD_EVAL_VERSIONS", "TASK_ORDER",
            "strata", "table_markdown", "units_of"]
 
 #: The subset's name; bumped when the draw or its parameters change (eval_v2: the
-#: redesign of 2026-11-03 -- marks, part groups, multi-view action tasks).
-EVAL_VERSION = "eval_v2"
+#: redesign of 2026-11-03 -- marks, part groups, multi-view action tasks; eval_v3: the final
+#: round of 2026-11-04 -- the corrected graph, V6 every action possible now (open / mc /
+#: constrained), V7 free / constrained, V14 merged into V2).
+EVAL_VERSION = "eval_v3"
 #: Subsets the current records no longer match: a path through one is refused.
-OLD_EVAL_VERSIONS = ("eval_v1",)
+OLD_EVAL_VERSIONS = ("eval_v1", "eval_v2")
 #: Tasks whose answer is a yes / no: the larger target.
-BINARY_TASKS = frozenset({"V4", "V12", "V14", "V15"})
+BINARY_TASKS = frozenset({"V4", "V12", "V12.span", "V15"})
 TARGET_BINARY = 400
 TARGET_OTHER = 300
 MAX_SHARE = 0.2
 SEED = 0
-#: Table order (the spec's codes; V5 is not in the default export).
-TASK_ORDER = ("V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V10", "V12", "V14",
-              "V15", "V16")
+#: Table order (the spec's codes; V5 is not in the default export). The constrained forms
+#: of V6 and V7 are drawn as buckets of their own (:func:`bucket_of`).
+TASK_ORDER = ("V1", "V2", "V3", "V3.span", "V4", "V5", "V6", "V6.constrained", "V7",
+              "V7.constrained", "V8", "V10", "V12", "V12.span", "V15", "V16")
+#: The ids of the subset before (``eval_v2``) and of its audit sample, kept wherever the record
+#: still exists (the draw prefers them inside every stratum).
+KEEP_DIR = Path(__file__).resolve().parents[1] / "configs" / "vlm_keep"
+KEEP_IDS = KEEP_DIR / "eval_v2.ids.txt"
+KEEP_AUDIT_IDS = KEEP_DIR / "eval_v2.audit.ids.txt"
+
+
+def bucket_of(record: dict) -> str:
+    """The draw's bucket: the task, and the constrained form of V6 / V7 apart (each its own
+    target, owner 2026-11-04)."""
+    task = record["prompt"]["task"]
+    label = record["label"]
+    if task == "V6" and label.get("v6_form") == "constrained":
+        return "V6.constrained"
+    if task == "V7" and label.get("v7_form") == "constrained":
+        return "V7.constrained"
+    if task == "V3" and label.get("v3_form") == "span":
+        return "V3.span"
+    if task == "V12" and (label.get("v12_span") or 1) > 1:
+        return "V12.span"
+    return task
+
+
+def read_ids(path) -> set:
+    """The ids of an ``ids.txt`` (empty when the file is not there)."""
+    p = Path(path) if path else None
+    if p is None or not p.is_file():
+        return set()
+    return {line.strip() for line in p.read_text(encoding="utf-8").splitlines() if line.strip()}
 #: The export units a record can come from, in the export's order: the four camera views,
 #: then ``multi`` (the action tasks: every camera at once, or the marked scanner image
 #: alone for V4, V6 multiple choice, V7 and V16).
@@ -94,9 +130,9 @@ def refuse_old_eval(*paths) -> None:
         old = next((p for p in parts for v in OLD_EVAL_VERSIONS
                     if p == v or p.startswith(v + ".")), None)
         if old is not None:
-            raise SystemExit(f"[vlm] refused: {path} is under {old}, the subset before the "
-                             f"question redesign of 2026-11-03; use {EVAL_VERSION}/ (the same "
-                             f"layout, with a multi unit for the action tasks)")
+            raise SystemExit(f"[vlm] refused: {path} is under {old}, a subset before the "
+                             f"final round of 2026-11-04 (its records are the old questions); "
+                             f"use {EVAL_VERSION}/ (the same layout)")
 
 
 # --------------------------------------------------------------------------- #
@@ -127,6 +163,29 @@ def v4_class(record: dict) -> str:
 
 def v4_verb(record: dict) -> str:
     return str((record["label"].get("answer_check") or {}).get("verb") or "?")
+
+
+def balance_v2_units(units: Sequence["Unit"], seed: int) -> list["Unit"]:
+    """V2's pool thinned for the draw, per desktop and class (a screw role for the counts):
+    no answer more often than all the others together, a class whose answer never changes
+    left out. The export no longer thins V2 (the owner's 2026-11-04 expansion asks every
+    visible part); the subset is balanced here instead, as before, so the class alone does
+    not answer it."""
+    cells: dict[tuple, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+    for u in units:
+        r = u.records[0]
+        check = r["label"].get("answer_check") or {}
+        keys = check.get("answer_keys") or r["label"].get("answer") or {}
+        value = json.dumps(keys.get("state", keys.get("count")), sort_keys=True)
+        cells[(u.desktop, v2_class(r))][value].append(u)
+    keep: set = set()
+    for by_value in cells.values():
+        total = sum(len(v) for v in by_value.values())
+        for value, rows in by_value.items():
+            room = total - len(rows)
+            ordered = sorted(rows, key=lambda u: _key(seed, "v2bal", u.key))
+            keep.update(u.key for u in ordered[:room])
+    return [u for u in units if u.key in keep]
 
 
 def balance_v4(units: Sequence["Unit"], seed: int,
@@ -167,9 +226,12 @@ def strata(record: dict) -> tuple[str, ...]:
     """
     task = record["prompt"]["task"]
     label = record["label"]
-    answer = label.get("answer") or {}
+    # the keys (the answer a grader reads); label.answer names the parts plainly
+    answer = (label.get("answer_check") or {}).get("answer_keys") or label.get("answer") or {}
     if task == "V2":
         return (f"prior_correct={_bool(label.get('prior_is_correct'))}", v2_class(record))
+    if task == "V3" and label.get("v3_form") == "span":
+        return (f"span={label.get('v3_span')}",)
     if task == "V3":
         return (f"verb={answer.get('verb')}",)
     if task == "V4":
@@ -191,8 +253,15 @@ def strata(record: dict) -> tuple[str, ...]:
         changed = not label.get("negative")
         return ((f"changed={_bool(changed)}",)
                 + (() if changed else (f"kind={label.get('negative')}",)))
-    if task == "V14":
-        return (f"answerable={_bool(not label.get('negative'))}",)
+    if task == "V6":
+        form = label.get("v6_form")
+        if form == "constrained":
+            return (f"rule={(label.get('answer_check') or {}).get('constraint', {}).get('kind')}",)
+        n = len((label.get("answer_check") or {}).get("gold_groups") or [])
+        return (f"groups={'1-3' if n <= 3 else '4-5' if n <= 5 else '6+'}",)
+    if task == "V7":
+        rule = (label.get("answer_check") or {}).get("constraint")
+        return (f"rule={rule.get('kind')}",) if rule else ()
     if task == "V15":
         same = not label.get("negative")
         return (f"same_moment={_bool(same)}", "pair=" + "+".join(label.get("views") or []))
@@ -214,12 +283,13 @@ def _task_order(task: str) -> tuple:
 class Unit:
     """What the draw picks as one: a record, or V6's open + multiple-choice pair."""
 
-    __slots__ = ("key", "records", "task", "view", "desktop", "path")
+    __slots__ = ("key", "records", "task", "view", "desktop", "path", "kept")
 
     def __init__(self, key: str, records: list[dict], view: str):
         self.key = key
         self.records = records
-        self.task = records[0]["prompt"]["task"]
+        self.task = bucket_of(records[0])
+        self.kept = False
         self.view = view
         self.desktop = IO.desktop_of(records[0])
         self.path = strata(records[0])
@@ -229,12 +299,19 @@ class Unit:
 
 
 def units_of(records: Iterable[dict], view: str) -> list[Unit]:
-    """Group an export's records into units; V6 pairs share ``label.v6_pair``."""
+    """Group an export's records into units; V6 pairs share ``label.v6_pair``.
+
+    V3's two forms (owner 2026-11-04) share ``label.v3_pair``, which **is** the free record's
+    id: the unit keeps the key -- and so the draw -- the free record had alone, and its
+    ``roi`` partner rides along with it into the subset."""
     pairs: dict[str, list[dict]] = {}
     order: list[str] = []
     for rec in records:
-        if rec["prompt"]["task"] == "V6" and rec["label"].get("v6_pair"):
+        if rec["prompt"]["task"] == "V6" and rec["label"].get("v6_pair") \
+                and rec["label"].get("v6_form") != "constrained":
             key = "pair:" + str(rec["label"]["v6_pair"])
+        elif rec["prompt"]["task"] == "V3" and rec["label"].get("v3_pair"):
+            key = str(rec["label"]["v3_pair"])
         else:
             key = rec["id"]
         if key not in pairs:
@@ -310,7 +387,8 @@ def _draw_leaf(units: list[Unit], n: int, seed: int, counts: dict[int, int], cap
     if not units or n <= 0:
         return []
     by_desk: dict[int, list[Unit]] = defaultdict(list)
-    for u in sorted(units, key=lambda u: _key(seed, u.key)):
+    # a unit of the subset before (eval_v2) first, wherever it still exists
+    for u in sorted(units, key=lambda u: (not u.kept, _key(seed, u.key))):
         by_desk[u.desktop].append(u)
     first = units[0]
     tie = {d: _key(seed, first.task, first.view, "/".join(first.path), "desk", d)
@@ -367,6 +445,8 @@ def draw(units: Sequence[Unit], *, seed: int = SEED, target_binary: int = TARGET
         pool = by_task[task]
         if task == "V4":
             pool = balance_v4(pool, seed)
+        if task == "V2":
+            pool = balance_v2_units(pool, seed)
         n = (targets or {}).get(task)
         if n is None:
             n = target_binary if task in BINARY_TASKS else target_other
@@ -415,7 +495,7 @@ def table_rows(chosen: dict[str, list[Unit]], pool: dict[str, list[Unit]],
             "task": task, "target": targets[task], "units": n_units, "records": len(records),
             "pool_units": len(pool[task]),
             "pool_records": sum(len(u.records) for u in pool[task]),
-            "unit": "pair" if task == "V6" else "record",
+            "unit": "pair" if task in ("V3", "V6") else "record",
             "by_view": dict(sorted(views.items(), key=lambda kv: VIEWS.index(kv[0])
                                    if kv[0] in VIEWS else 99)),
             "by_stratum": dict(sorted(by_stratum.items())),
@@ -429,7 +509,8 @@ def table_markdown(rows: list[dict], *, seed: int, max_share: float) -> str:
     lines = [f"# {EVAL_VERSION}: the evaluation subset", "",
              f"Seed {seed}; no desktop above {max_share:.0%} of a task; views in "
              "proportion to the export, strata equal, desktops round-robin. "
-             "`units` is what was drawn (V6: a pair = open + multiple choice); "
+             "`units` is what was drawn (V6: a pair = open + multiple choice; V3: the free "
+             "question + its roi partner where it has one); "
              "`records` is what the scorer sees.", "",
              "| task | target | units | records | pool (records) | by view | desktops | "
              "max desktop share |", "|---|---|---|---|---|---|---|---|"]
@@ -484,14 +565,21 @@ def _write_sidecars(export_path, out_jsonl: Path, records: list[dict]) -> None:
 
 def build(exports: Sequence, out_dir, *, seed: int = SEED, target_binary: int = TARGET_BINARY,
           target_other: int = TARGET_OTHER, max_share: float = MAX_SHARE,
-          audit: int = 0, audit_per_task: int = 25) -> dict:
+          audit: int = 0, audit_per_task: int = 25, keep_ids=KEEP_IDS,
+          keep_audit_ids=KEEP_AUDIT_IDS) -> dict:
     """Draw the subset from ``exports`` and write it under ``out_dir``.
 
+    ``keep_ids`` / ``keep_audit_ids``: the ``ids.txt`` of the subset before and of its audit
+    sample (default: ``configs/vlm_keep/``, eval_v2's) -- inside every stratum a unit holding
+    one of those ids is drawn first, so a record that survives keeps its place; ``None``
+    keeps nothing.
+
     Returns ``{"version", "seed", "targets", "records", "ids", "rows", "by_view",
-    "audit"}``; ``rows`` is the n table.
+    "audit", "kept"}``; ``rows`` is the n table.
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+    before = read_ids(keep_ids)
     units: list[Unit] = []
     per_view: dict[str, tuple] = {}
     for path in exports:
@@ -499,6 +587,8 @@ def build(exports: Sequence, out_dir, *, seed: int = SEED, target_binary: int = 
         if view in per_view:
             raise ValueError(f"two exports of view {view!r}: {per_view[view][0]} and {path}")
         mine = units_of(IO.read_jsonl(path), view)
+        for u in mine:
+            u.kept = any(r["id"] in before for r in u.records)
         per_view[view] = (str(path), mine)
         units.extend(mine)
     chosen = draw(units, seed=seed, target_binary=target_binary, target_other=target_other,
@@ -527,29 +617,44 @@ def build(exports: Sequence, out_dir, *, seed: int = SEED, target_binary: int = 
     rows = table_rows(chosen, pool, targets)
     (out / "table.md").write_text(table_markdown(rows, seed=seed, max_share=max_share),
                                   encoding="utf-8", newline="\n")
+    survivors = before & {r["id"] for u in units for r in u.records}
     result = {"version": EVAL_VERSION, "seed": seed,
               "targets": {"binary": target_binary, "other": target_other,
                           "binary_tasks": sorted(BINARY_TASKS, key=_task_order)},
               "max_desktop_share": max_share, "records": len(ids),
               "desktops": len({IO.desktop_of(r) for r in all_records}),
-              "by_view": by_view, "rows": rows}
+              "by_view": by_view, "rows": rows,
+              # the subset before: its ids, how many still exist, how many were drawn again
+              "kept": {"before": len(before), "still_exist": len(survivors),
+                       "drawn_again": len(survivors & keep_set(ids))}}
     if audit:
         result["audit"] = _audit(all_records, per_view, out / "audit", seed, audit,
-                                 audit_per_task, max_share)
+                                 audit_per_task, max_share, read_ids(keep_audit_ids))
     (out / "table.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=1, sort_keys=True) + "\n",
         encoding="utf-8", newline="\n")
     return result
 
 
+def keep_set(ids: Iterable[str]) -> set:
+    return set(ids)
+
+
 def _audit(records: list[dict], per_view: dict, out: Path, seed: int, size: int,
-           per_task: int, max_share: float) -> dict:
-    """The human-audit sample, drawn from inside the subset (``vlm_sample``)."""
+           per_task: int, max_share: float, keep: Optional[set] = None) -> dict:
+    """The human-audit sample, drawn from inside the subset (``vlm_sample``): every task and
+    form its share (:func:`vlm_sample.bucket_of`), the old audit's ids first where the record
+    survives."""
     import vlm_sample
 
     desks = {IO.desktop_of(r) for r in records}
+    # V3's roi partners (owner 2026-11-04) are not drawn: the audit keeps its ids, and a roi
+    # record's truth is its free partner's, audited with it
+    records = [r for r in records
+               if not (r["prompt"]["task"] == "V3" and r["label"].get("v3_form") == "roi")]
     rows = vlm_sample.draw(records, size=size, per_task=per_task, seed=seed, purpose="audit",
-                           test_desktops=desks, max_share=max_share)
+                           test_desktops=desks, max_share=max_share, keep=keep or set(),
+                           by_form=True)
     out.mkdir(parents=True, exist_ok=True)
     (out / "audit.ids.txt").write_text("".join(r["id"] + "\n" for r in rows),
                                        encoding="utf-8", newline="\n")
@@ -560,10 +665,14 @@ def _audit(records: list[dict], per_view: dict, out: Path, seed: int, size: int,
     (out / "audit.sheet.md").write_text(vlm_sample.sheet(rows, manifest), encoding="utf-8",
                                         newline="\n")
     by_task: dict[str, int] = defaultdict(int)
+    by_form: dict[str, int] = defaultdict(int)
     for r in rows:
         by_task[r["prompt"]["task"]] += 1
+        by_form[vlm_sample.bucket_of(r)] += 1
     return {"size": len(rows), "desktops": len({IO.desktop_of(r) for r in rows}),
-            "by_task": dict(sorted(by_task.items(), key=lambda kv: _task_order(kv[0])))}
+            "by_task": dict(sorted(by_task.items(), key=lambda kv: _task_order(kv[0]))),
+            "by_form": dict(sorted(by_form.items())),
+            "kept_from_before": len(set(r["id"] for r in rows) & (keep or set()))}
 
 
 # --------------------------------------------------------------------------- #
