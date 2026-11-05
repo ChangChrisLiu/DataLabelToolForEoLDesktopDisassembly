@@ -244,6 +244,7 @@ CHECK_TYPES = frozenset({
     "history",       # V10: the done set, the remaining count and the bin
     "plan",          # V16: validity, the first bad index and the violated edge
     "goal_plan",     # V7: violations, required-action recall, goal reached
+    "action_set",    # V3 multi-step: the actions between two moments, set F1 over groups
     "frontier",      # V6 (final round): every action possible now, grouped -- set F1 / one option
     "components",    # V8 on a class with several instances: V1's grade on that class
 })
@@ -255,9 +256,11 @@ CHECK_TYPES = frozenset({
 #: observed constraint, so a sample has to say which kind it is.
 TRUTH_SOURCES = ("demonstrated", "graph_blocked", "state_inapplicable",
                  "failed_attempt", "graph_blocked_pixels", "occlusion_blocked",
-                 "loose_first", "simulated")
+                 "loose_first", "simulated", "permitted")
 (DEMONSTRATED, GRAPH_BLOCKED, STATE_INAPPLICABLE, FAILED_ATTEMPT,
- GRAPH_BLOCKED_PIXELS, OCCLUSION_BLOCKED, LOOSE_FIRST, SIMULATED) = TRUTH_SOURCES
+ GRAPH_BLOCKED_PIXELS, OCCLUSION_BLOCKED, LOOSE_FIRST, SIMULATED, PERMITTED) = TRUTH_SOURCES
+#: A V4 "yes": the operator did it next, or the moment's rules allow it (owner 2026-11-04).
+FEASIBLE_SOURCES = frozenset({DEMONSTRATED, PERMITTED})
 #: The kinds of rule-certain "no": the stored graph, and the two moment rules of the
 #: owner's 2026-11-04 rulings -- dynamic occlusion (a part above covers it) and loose parts
 #: first (R16) -- which :func:`graph_kind` names when they alone say no.
@@ -877,6 +880,13 @@ class TaskCtx:
                     zlib.crc32(f"{seed}|{c.verb}|{c.target}".encode("utf-8")),
                     c.verb, c.target)
         return sorted(candidates, key=rank)
+
+    @property
+    def distinct_names(self) -> dict[str, str]:
+        """:func:`singleton_names`, once per desktop."""
+        if getattr(self, "_distinct", None) is None:
+            self._distinct = singleton_names(self)
+        return self._distinct
 
     @property
     def displaced_in_log(self) -> frozenset[str]:
@@ -1526,7 +1536,8 @@ def record(tc: TaskCtx, task: str, rec_id: str, step: int,
            terms: Optional[Sequence[str]] = None,
            state_terms: Optional[Sequence[str]] = None,
            moment: Optional[Sequence[tuple[str, str, int]]] = None,
-           hints: Optional[Sequence[dict]] = None) -> dict:
+           hints: Optional[Sequence[dict]] = None,
+           shown: Optional[dict] = None) -> dict:
     """One JSONL record, split into what the model sees and what grades it.
 
     ``prompt`` is everything a model may be shown: the task id, the **opaque**
@@ -1550,6 +1561,11 @@ def record(tc: TaskCtx, task: str, rec_id: str, step: int,
         # every record carries a reasoning chain in words (owner 2026-11-04): what is seen,
         # which rule applies, so the answer -- the training side product
         rationale = dict(rationale, text=default_reasoning(tc, task, step, answer, check))
+    # every part in `label.answer` named plainly, no ordinal (owner 2026-11-04): the keys the
+    # graders read stay label side, in `answer_check.answer_keys`
+    display = shown if shown is not None else shown_answer(tc, answer)
+    if display != answer:
+        check = dict(check, answer_keys=answer)
     if truth_source is not None and truth_source not in TRUTH_SOURCES:
         raise ValueError(f"{rec_id}: truth_source {truth_source!r} is not one of "
                          f"{', '.join(TRUTH_SOURCES)}")
@@ -1582,7 +1598,7 @@ def record(tc: TaskCtx, task: str, rec_id: str, step: int,
         prompt["image_legend"] = [{"view": v, "moment": m} for v, m, _ in moment]
     label: dict[str, Any] = {
         "readable_id": rec_id,
-        "answer": answer,
+        "answer": display,
         "answer_check": check,
         "evidence": evid,
         "rationale": rationale,
@@ -1624,6 +1640,38 @@ def record(tc: TaskCtx, task: str, rec_id: str, step: int,
     if extra:
         label.update(extra)
     return {"id": opaque_record_id(rec_id), "prompt": prompt, "label": label}
+
+
+#: The ``label.answer`` fields that hold a part (an instance key, a group id, a cable node).
+ANSWER_PART_FIELDS = frozenset({"target", "target_instance", "instance", "goal"})
+
+
+def display_name(tc: TaskCtx, value: Any) -> Any:
+    """A part's plain name for ``label.answer`` (no ordinal): its group's label, its class
+    alone of its kind, its referring phrase, "one of the <group>"; anything else as it is."""
+    if not isinstance(value, str):
+        return value
+    if value in tc.ctx.instances or tc.group_by_id(value) is not None \
+            or value.startswith(CABLE_PREFIX):
+        return plain_name(tc, value)
+    return value
+
+
+#: Fields of the keyed answer that are the graph's own notation (``covered_by(x, y)``): they
+#: stay label side (``answer_check.answer_keys``), never in what a person reads.
+ANSWER_GRAPH_FIELDS = frozenset({"violated_edge", "violated_edges"})
+
+
+def shown_answer(tc: TaskCtx, answer: Any, field_name: Optional[str] = None) -> Any:
+    """``answer`` with every part named plainly (:func:`display_name`)."""
+    if isinstance(answer, dict):
+        return {k: (display_name(tc, v) if k in ANSWER_PART_FIELDS and isinstance(v, str)
+                    else shown_answer(tc, v, k)) for k, v in answer.items()
+                if k not in ANSWER_GRAPH_FIELDS}
+    if isinstance(answer, list):
+        return [display_name(tc, v) if field_name == "blockers" and isinstance(v, str)
+                else shown_answer(tc, v, field_name) for v in answer]
+    return answer
 
 
 def _say(tc: TaskCtx, key: str) -> str:
@@ -1825,9 +1873,51 @@ def plain_name(tc: TaskCtx, key: str) -> str:
     group = tc.group_of(key)
     if group is not None:
         return f"one of the {group.label}"
+    told = tc.distinct_names.get(key)
+    if told:
+        return told  # its anchor's words tell it from the others of its class
     mc = match_class(tc.ctx, key)
     peers = sum(1 for k in tc.ctx.instances if match_class(tc.ctx, k) == mc)
     return f"one of the {peers} {class_phrase(tc.ctx, key, many=True)}"
+
+
+def singleton_names(tc: TaskCtx) -> dict[str, str]:
+    """``key -> words`` for the parts of a class of several that are in no group of
+    interchangeable parts: the class phrase qualified by the anchor's words, as group labels
+    are ("fan connector of the fan CPU cooler" -- "fan CPU cooler cable fan connector on the
+    motherboard"), kept only where every part of the class reads differently. Never an
+    ordinal."""
+    from tda.core.export.vlm_groups import _anchor_phrases, _qualified, group_anchor
+
+    by_class: dict[str, list[str]] = {}
+    for key in sorted(tc.ctx.instances):
+        if not tc.askable(key):
+            continue
+        by_class.setdefault(str(match_class(tc.ctx, key)), []).append(key)
+    out: dict[str, str] = {}
+    for mc, keys in by_class.items():
+        if len(keys) < 2:
+            continue
+        units: dict[str, list[str]] = {}
+        for key in keys:
+            group = tc.group_of(key)
+            units.setdefault(group.gid if group is not None else key, []).append(key)
+        words: dict[str, str] = {}
+        bare = False
+        for unit, members in units.items():
+            first = members[0]
+            quals = _anchor_phrases(tc.ctx, mc, group_anchor(tc.ctx, first))
+            # singular for every unit: a group and a part must not read alike either
+            # ("PSU cable connectors" is the group, "PSU cable connector" would be its twin)
+            base = class_phrase(tc.ctx, first)
+            words[unit] = _qualified(base, quals) if quals else base
+            bare = bare or not quals
+        if bare or len(set(words.values())) != len(words):
+            continue  # words that read the same (or a bare class phrase) tell nothing apart
+        for unit, members in units.items():
+            if len(members) == 1 and unit == members[0]:
+                out[unit] = words[unit]
+    return out
 
 
 def state_is_askable(tax: Taxonomy, cls: str) -> bool:
@@ -1982,6 +2072,9 @@ def _v2_hidden(tc: TaskCtx, frame: FrameData) -> Iterator[dict]:
         if unique_on_desktop(tc, key):
             units.append((key, [key]))
             seen.add(key)
+    # only a part that can be outlined (its amodal box): a question about one that cannot
+    # would read differently from every other V2 question (owner 2026-11-04)
+    units = [u for u in units if all(mark_box(tc, frame, m) is not None for m in u[1])]
     if not units:
         return
     ident, members = stable_order(units, seed, lambda u: u[0])[0]
@@ -1989,12 +2082,14 @@ def _v2_hidden(tc: TaskCtx, frame: FrameData) -> Iterator[dict]:
     cls = tc.ctx.cls_of(first)
     screw = cls == "screw"
     # outlined where its whole shape is known (a part wholly covered in its place: its
-    # amodal box), as every V2 question is -- else named in words
+    # amodal box), as every V2 question is (owner 2026-11-04: a hidden part that cannot be
+    # outlined -- too small, outside the picture -- would read differently, so it is not asked)
     namer = Namer(tc, frame)
     ref = namer.group(ident, members) if ident != first else namer.part(first)
-    words = (namer.say(ref) if ref is not None else
-             f"the {tc.group_by_id(ident).label}" if tc.group_by_id(ident) is not None
-             else asked_words(tc, first)[0])
+    if ref is None:
+        tc.skip("V2", "hidden_unmarkable")
+        return
+    words = namer.say(ref)
     many = len(members) > 1
     rec_id = f"V2-{frame_id(tc.desktop, tc.view, frame.step)}-hidden-{ident}"
     templates = ((V2_PRESENCE_QUESTIONS_MANY if many else V2_PRESENCE_QUESTIONS) if screw
@@ -2196,7 +2291,9 @@ def _v2_counts(tc: TaskCtx, frame: FrameData) -> Iterator[dict]:
 #: The most one answer may make up of a class's V2 questions on one desktop
 #: after balancing (W3b). The day-1 export had 59 884 V2 records, 64 % of the
 #: file, and the class alone answered 80.6 % of them.
-V2_PRIOR_CAP = 0.5
+#: 1.0 since the owner's 2026-11-04 expansion: nothing is thinned (every visible part of every
+#: frame); ``prior_is_correct`` is still stamped and the eval subset is drawn half / half.
+V2_PRIOR_CAP = 1.0
 
 
 def v2_prior_key(record: dict) -> Optional[tuple[str, str]]:
@@ -2308,7 +2405,100 @@ def _seen_px(frame: FrameData, keys: Sequence[str]) -> int:
     return total
 
 
+#: The multi-step form of V3 (owner 2026-11-04): what was done between two moments 2-3 steps
+#: apart.
+V3_SPANS = (2, 3)
+V3_SPAN_QUESTIONS = (
+    "Which actions were carried out on the machine between the two moments? List them.",
+    "Compare the earlier and the later pictures: what was done to the machine in between? "
+    "List every action.",
+    "Between the first moment and the second, the operator carried out several actions. "
+    "Which ones?",
+)
+
+
 def gen_v3(tc: TaskCtx, step: int) -> Iterator[dict]:
+    """V3: the action of one step (free + roi), and the actions of a span of 2-3 steps."""
+    yield from _gen_v3_step(tc, step)
+    for span in V3_SPANS:
+        made = _v3_span(tc, step, span)
+        if made is not None:
+            yield made
+
+
+def _v3_span(tc: TaskCtx, step: int, span: int) -> Optional[dict]:
+    """"Which actions were carried out between these two moments" -- a set of actions,
+    same-kind actions one group (every plug, every RAM latch ...: :func:`frontier_key`),
+    graded by set F1 over the groups. Asked only when every action of the span is one a
+    pair of pictures can show (no captive screw turned, no reorient, nothing too small to
+    see) and the span holds at least two groups."""
+    frame, before = tc.frame(step), tc.frame(step - span)
+    if frame is None or before is None or not (frame.confirmed and before.confirmed):
+        return None
+    if tc.own_view != VIEWS[0]:
+        return None
+    steps = [s for s in tc.log_steps if step - span < s <= step]
+    if any(s in tc.illegal for s in steps):
+        return None
+    actions = []
+    for s in steps:
+        if tc.ctx.step_type(s) in NO_CHANGE_STEP_TYPES:
+            return None
+        for a in tc.ctx.actions_at(s):
+            if target_class(tc.ctx, a.target) is None or a.target.startswith(CABLE_PREFIX):
+                return None  # a step the log does not name fully: no exhaustive set
+            if not tc.changes_state(a):
+                return None
+            if invisible_action(tc.ctx, a):
+                return None
+            actions.append(a)
+    if not actions:
+        return None
+    for a in actions:
+        if tc.ctx.cls_of(a.target) in BIG_PARTS:
+            continue
+        group = tc.group_of(a.target)
+        keys = list(group.members) if group is not None else [a.target]
+        seen = max(_seen_px(before, [a.target]), _seen_px(frame, [a.target]),
+                   _seen_px(before, keys), _seen_px(frame, keys))
+        if seen < V3_MIN_PX:
+            return None
+    buckets: dict[str, FrontierGroup] = {}
+    for a in actions:
+        gk = frontier_key(tc, a.verb, a.target)
+        g = buckets.setdefault(gk, FrontierGroup(gk, []))
+        if (a.verb, a.target) not in g.actions:
+            g.actions.append((a.verb, a.target))
+    if len(buckets) < 2:
+        return None
+    groups = [buckets[k] for k in sorted(buckets)]
+    for g in groups:
+        g.actions = sorted(g.actions)
+        g.phrase = frontier_phrase(tc, g.actions)
+    rec_id = f"V3-{frame_id(tc.desktop, tc.view, step)}-span{span}"
+    index, question = pick(V3_SPAN_QUESTIONS, rec_id)
+    text = ("Comparing the two moments: " + "; ".join(
+        f"{g.phrase[:1].upper() + g.phrase[1:]} -- done in between"
+        for g in groups) + ". So the actions carried out were: "
+        + "; ".join(g.phrase for g in groups) + ".")
+    targets = sorted({t for g in groups for _, t in g.actions})
+    bboxes = {t: before.pointable[t][1] for t in targets if t in before.pointable}
+    return record(
+        tc, "V3", rec_id, step, [*tc.moment(step - span), *tc.moment(step)], question, index,
+        _frontier_answer(groups, text),
+        {"type": "action_set", "metric": "group_f1", "form": "span", "span": span,
+         "from_step": step - span, "groups": [g.as_json() for g in groups],
+         "gold_groups": [g.key for g in groups]},
+        evidence(bboxes, tc),
+        dict(R.rationale([R.compare_frames([step - span, step], tc.view)]), text=text),
+        before.verified and frame.verified,
+        view_confirmed=True, extra={"v3_form": "span", "v3_span": span},
+        moment=tc.legend((step - span, "before"), (step, "after")),
+        shown=_frontier_shown(tc, groups, text),
+    )
+
+
+def _gen_v3_step(tc: TaskCtx, step: int) -> Iterator[dict]:
     frame, before = tc.frame(step), tc.frame(step - 1)
     if frame is None or before is None:
         return
@@ -2569,9 +2759,9 @@ def _v4_record(tc: TaskCtx, frame: FrameData, verb: str, target: str,
     if captive_dependent(tc, verb, members, state):
         tc.skip("V4", "captive_tightness")
         return None
-    if truth_source == DEMONSTRATED and bad:
+    if truth_source in FEASIBLE_SOURCES and bad:
         return None  # the graph forbids what the log did: say nothing
-    if truth_source != DEMONSTRATED and not bad:
+    if truth_source not in FEASIBLE_SOURCES and not bad:
         return None
     if truth_source in GRAPH_KINDS:
         # what says "no" to the asked part or group as a whole: the graph, a part above, a
@@ -2595,7 +2785,7 @@ def _v4_record(tc: TaskCtx, frame: FrameData, verb: str, target: str,
         chain.append(R.check_precondition(edge.blocker,
                                           required_states(edge.type, edge.mode),
                                           current, False))
-    feasible = truth_source == DEMONSTRATED
+    feasible = truth_source in FEASIBLE_SOURCES
     # why this answer is what it is, in what the picture shows (owner 2026-11-04): the
     # prerequisites now met, or what still holds it -- never the graph's words. The internal
     # code (an edge said no, or nothing did) stays in answer_check.reason_code
@@ -2676,21 +2866,42 @@ def gen_v4(tc: TaskCtx, step: int) -> Iterator[dict]:
 
 
 def _gen_v4(tc: TaskCtx, frame: FrameData, step: int) -> Iterator[dict]:
-    shown = tc.demonstrated(step)
-    if shown is None:
-        return  # no demonstrated action here: nothing certain to be positive about
-    _, action = shown
+    """Every part this frame can outline, every verb the teardowns use on it from its
+    present state (owner 2026-11-04: V4 at every step for every part). The truth is the
+    moment's rules -- the stored graph, what a part above still covers, loose parts first:
+    feasible when nothing of them holds it (``demonstrated`` when it is the action the
+    operator took next, else ``permitted``), else what holds it, in words. The pool is not
+    balanced; the eval subset is, per verb and class."""
     state = tc.state(step)
-    if action.target not in state:
-        return
-    # one certain "no" for each certain "yes", matched to the positive's verb
-    # and class so the pair cannot be told apart without looking at the picture
-    # ... and of the **same verb**, always (the controller's ruling, 2026-11-03): with only
-    # the graph's "no"s left, a verb no edge gates (`unscrew`, `disconnect`) would
-    # otherwise only ever be a "yes", and the verb would answer the question
-    candidates = [c for c in tc.certainly_wrong(step)
-                  if c.kind in GRAPH_KINDS and c.verb == action.verb]
-    yield from _v4_pair(tc, frame, step, action, candidates)
+    shown = tc.demonstrated(step)
+    demo = (shown[1].verb, shown[1].target) if shown is not None else None
+    asked: set = set()
+    for key in sorted(frame.rows):
+        if not tc.askable(key) or mark_box(tc, frame, key) is None:
+            continue
+        rec, inst = tc.ctx.instances.get(key), state.get(key)
+        if rec is None or inst is None:
+            continue
+        for verb in sorted(LOG_VOCAB.get((rec.cls, inst.state), ())):
+            if not in_log_vocab(tc, verb, key, state):
+                continue
+            named = _v4_target(tc, state, verb, key)
+            if named is None:
+                tc.skip("V4", "mixed_group")
+                continue
+            ident, members, bad = named
+            if (verb, ident) in asked:
+                continue
+            asked.add((verb, ident))
+            is_demo = demo is not None and demo[0] == verb and demo[1] in members
+            if bad and is_demo:
+                # the log did it: a rule that says no is what is in doubt -- say nothing
+                tc.skip("V4", "demonstrated_but_blocked")
+                continue
+            source = (graph_kind(bad) if bad else DEMONSTRATED if is_demo else PERMITTED)
+            made = _v4_record(tc, frame, verb, key, V4_QUESTIONS, source)
+            if made is not None:
+                yield made
     yield from _v4_failed(tc, frame, step, state)
 
 
@@ -3114,8 +3325,8 @@ def frontier_text(tc: TaskCtx, step: int, groups: Sequence[FrontierGroup],
     for group in blocked[:3]:
         parts.append(f"Not yet {group.phrase}: {blocked_reason(tc, state, group)}. ")
     if rule:
-        parts.append(f"The rule ({rule.rstrip('.')}) rules out "
-                     + _and([g.phrase for g in forbidden]) + " for now. ")
+        parts.append(f"The rule ({rule.rstrip('.')}) means this cannot be done yet: "
+                     + _and([g.phrase for g in forbidden]) + ". ")
     if groups:
         parts.append("So the actions possible now are: " + "; ".join(g.phrase for g in groups)
                      + ".")
@@ -3128,6 +3339,36 @@ def _frontier_answer(groups: Sequence[FrontierGroup], why: str) -> dict:
     """One action per group (its first): the gold reply lists every group once."""
     return {"actions": [{"verb": g.actions[0][0], "target": g.actions[0][1]} for g in groups],
             "why": why}
+
+
+def _frontier_shown(tc: TaskCtx, groups: Sequence[FrontierGroup], why: str) -> dict:
+    """:func:`_frontier_answer` as ``label.answer`` shows it: each group by its name ("the
+    connectors", "the PSU screws"), never one member's ordinal."""
+    out = []
+    for g in groups:
+        verb = g.actions[0][0]
+        targets = sorted({t for v, t in g.actions if v == verb})
+        part = tc.group_of(targets[0])
+        if len(targets) == 1:
+            out.append({"verb": verb, "target": plain_name(tc, targets[0])})
+        elif part is not None and set(targets) <= set(part.members):
+            out.append({"verb": verb, "target": part.label})
+        else:
+            # one entry per kind of part in the group ("SATA data connectors", "fan
+            # connectors"): a name that covers several kinds grounds to none of them
+            by_mc: dict[str, list[str]] = {}
+            for t in targets:
+                by_mc.setdefault(str(match_class(tc.ctx, t)), []).append(t)
+            for mc, keys in sorted(by_mc.items()):
+                inner = tc.group_of(keys[0])
+                if len(keys) == 1:
+                    name = plain_name(tc, keys[0])
+                elif inner is not None and set(keys) <= set(inner.members):
+                    name = inner.label
+                else:
+                    name = class_phrase(tc.ctx, keys[0], many=True)
+                out.append({"verb": verb, "target": name})
+    return {"actions": out, "why": why}
 
 
 def v6_constraints(tc: TaskCtx, frame: FrameData, step: int,
@@ -3288,6 +3529,7 @@ def _gen_v6(tc: TaskCtx, frame: FrameData, step: int) -> Iterator[dict]:
         dict(common, form="open", gold_groups=[g.key for g in groups]),
         evid, rationale, frame.verified, extra={"v6_form": "open", "v6_pair": pair},
         view_confirmed=frame.confirmed, moment=tc.legend((step, "now")),
+        shown=_frontier_shown(tc, groups, text),
     )
     # the multiple choice: one option inside the frontier, the rest certainly blocked
     if len(blocked) >= V6_MIN_WRONG:
@@ -3319,8 +3561,7 @@ def _gen_v6(tc: TaskCtx, frame: FrameData, step: int) -> Iterator[dict]:
                        + f" So the one possible now is: {right.phrase}.")
             yield record(
                 tc, "V6", rec_id, step, tc.moment(step), question, index,
-                {"verb": right.actions[0][0], "target": right.actions[0][1],
-                 "group": right.key},
+                {"verb": right.actions[0][0], "target": right.actions[0][1]},
                 dict(common, form="mc", options_kind="listed",
                      reference=[right.actions[0][0], right.actions[0][1]],
                      gold_groups=[right.key]),
@@ -3352,7 +3593,7 @@ def _gen_v6(tc: TaskCtx, frame: FrameData, step: int) -> Iterator[dict]:
                      ruled_groups=[g.as_json() for g in ruled]),
                 evid, dict(R.rationale(chain), text=ctext), frame.verified,
                 extra={"v6_form": "constrained"}, view_confirmed=frame.confirmed,
-                moment=tc.legend((step, "now")),
+                moment=tc.legend((step, "now")), shown=_frontier_shown(tc, ruled, ctext),
             )
         break
     else:
@@ -3526,7 +3767,8 @@ def gen_v8(tc: TaskCtx, step: int) -> Iterator[dict]:
     candidates = [k for k in sorted(frame.pointable)
                   if tc.ctx.cls_of(k) != CHASSIS_CLASS]
     asked_sets: set[str] = set()
-    for instance in stable_order(candidates, seed)[:V8_BUDGET]:
+    # every part (owner 2026-11-04: no per-frame cap), each class once in the set form
+    for instance in stable_order(candidates, seed):
         phrase_family = _referring(tc, instance)
         if phrase_family is None:
             mc = match_class(tc.ctx, instance)
@@ -3680,80 +3922,136 @@ V12_QUESTIONS = (
 )
 
 
-def gen_v12(tc: TaskCtx, step: int) -> Iterator[dict]:
-    """Change / no-change over a consecutive pair, both frames confirmed.
+#: The moments V12 compares (owner 2026-11-04): neighbours, and two and three steps apart.
+V12_SPANS = (1, 2, 3)
+V12_SPAN_QUESTIONS = (
+    "What changed between the two moments of the teardown, if anything?",
+    "Compare the machine at the first moment with the machine at the second: did its state "
+    "change, and what changed?",
+    "Between the earlier and the later pictures, did anything about the machine change? If "
+    "so, what?",
+)
 
-    The "no change" half comes from ``dupli`` rows -- a genuine near-duplicate
-    the operator shot twice -- which is spec 8.2's own answer to how to build
-    that negative. A ``failed`` step is deliberately **not** used: no state
-    changed, but a hand or a tool usually did, and a question whose answer is
-    "nothing changed" about a picture where something visibly moved is a
-    question about the annotation, not about the machine.
+
+def visible_events(tc: TaskCtx, old: FrameState, new: FrameState) -> tuple[list, list]:
+    """``(events, hidden)`` between two states: every part whose state differs, the ones a
+    picture can show apart from the ones it cannot -- a captive screw loosened stays where
+    it was (W3b)."""
+    events, hidden = [], []
+    for key in sorted(old.keys() & new.keys()):
+        if old[key].state == new[key].state:
+            continue
+        if key not in tc.ctx.instances and not key.startswith(CABLE_PREFIX):
+            continue
+        if key in tc.ctx.instances and not tc.askable(key):
+            continue  # an implied part (a cage's own latch) is an inference, not a sight
+        row = {"target": key, "old": old[key].state, "new": new[key].state}
+        if is_captive_screw(tc.ctx, key) and \
+                visible_state(tc.ctx, key, old[key].state) == visible_state(tc.ctx, key,
+                                                                            new[key].state):
+            hidden.append(row)
+        else:
+            events.append(row)
+    return events, hidden
+
+
+def gen_v12(tc: TaskCtx, step: int) -> Iterator[dict]:
+    """Change / no-change between two moments (owner 2026-11-04: every pair of neighbours,
+    and the moments two and three steps apart).
+
+    The gold comes from the state machine and agrees with what a picture shows: a change no
+    picture shows (a captive screw loosened) is never "changed"; "no change" is asked only
+    where every step between is a duplicate capture or such an invisible change. A span
+    with a ``failed``, ``reorient`` or auxiliary step and no state change is neither answer
+    (a hand or the camera moved) and is not asked. On a view without confirmed rows a
+    "changed" needs a large part to have changed.
     """
-    frame, before = tc.frame(step), tc.frame(step - 1)
-    if frame is None or before is None:
+    frame = tc.frame(step)
+    if frame is None:
         return
+    for span in V12_SPANS:
+        before = tc.frame(step - span)
+        if before is None:
+            continue
+        made = _v12_record(tc, frame, before, span)
+        if made is not None:
+            yield made
+
+
+def _v12_record(tc: TaskCtx, frame: FrameData, before: FrameData, span: int) -> Optional[dict]:
+    step, first = frame.step, before.step
     confirmed = frame.confirmed and before.confirmed
     if confirmed and not (frame.verified and before.verified):
-        return
-    if step not in tc.v12_steps:
-        return
-    kind = tc.ctx.step_type(step)
-    rec = tc.ctx.steps.get(step)
-    hidden: list[dict] = []
+        return None
+    between = [s for s in tc.ctx.steps if first < s <= step]
+    if any(s in tc.illegal for s in between):
+        return None
+    old, new = tc.state(first), tc.state(step)
+    events, hidden = visible_events(tc, old, new)
+    kinds = {s: tc.ctx.step_type(s) for s in between}
     reason = None
-    if kind == StepType.DUPLI.value or (rec is not None and rec.dupli):
-        changed, events = False, []
-        reason = "dupli"
-    elif captive_only_step(tc, step):
-        # the log loosened the cooler's captive screws; the pictures cannot
-        # show it, so the honest answer is "no visible change" (W3b)
-        old, new = tc.state(step - 1), tc.state(step)
-        hidden = [{"target": key, "old": old[key].state, "new": new[key].state}
-                  for key in sorted(old.keys() & new.keys())
-                  if old[key].state != new[key].state]
-        changed, events = False, []
-        reason = CAPTIVE_LOOSENED
-    elif kind in NO_CHANGE_STEP_TYPES or kind == StepType.FAILED.value:
-        return
-    else:
-        old, new = tc.state(step - 1), tc.state(step)
-        events = [{"target": key, "old": old[key].state, "new": new[key].state}
-                  for key in sorted(old.keys() & new.keys())
-                  if old[key].state != new[key].state]
-        if not events:
-            # a `reorient` or an `auxiliary` step: the picture changed a great
-            # deal and the machine did not, which is neither answer
-            return
+    if events:
         changed = True
-    rec_id = f"V12-{frame_id(tc.desktop, tc.view, step)}"
-    index, question = pick(V12_QUESTIONS, rec_id)
+        if not confirmed and not big_changes(tc, first, step):
+            return None  # a lone screw is undecidable at RS / OAK resolution
+    else:
+        quiet = []
+        for s in between:
+            rec = tc.ctx.steps.get(s)
+            if kinds[s] == StepType.DUPLI.value or (rec is not None and rec.dupli):
+                quiet.append("dupli")
+            elif captive_only_step(tc, s):
+                quiet.append(CAPTIVE_LOOSENED)
+            else:
+                return None  # a picture moved and the machine did not: neither answer
+        if not quiet:
+            return None
+        changed = False
+        reason = (quiet[0] if len(set(quiet)) == 1 else "no_visible_change")
+    if span == 1:
+        rec_id = f"V12-{frame_id(tc.desktop, tc.view, step)}"
+        index, question = pick(V12_QUESTIONS, rec_id)
+    else:
+        rec_id = f"V12-{frame_id(tc.desktop, tc.view, step)}-span{span}"
+        index, question = pick(V12_SPAN_QUESTIONS, rec_id)
     touched = [e["target"] for e in events]
-    big = big_changes(tc, step - 1, step) if changed else []
+    big = big_changes(tc, first, step) if changed else []
     check = {"type": "exact", "derive": "changed",
              # on a view without confirmed rows only "did it change" is graded:
              # the small events riding along with the large one may not show
              "fields": ["changed", "events"] if confirmed else ["changed"],
-             "step_type": kind}
+             "step_type": kinds.get(step), "from_step": first, "span": span}
     if reason:
         check["reason"] = reason
     if hidden:
         check["hidden_events"] = hidden  # what the log did that no picture shows
-    yield record(
-        tc, "V12", rec_id, step, [*tc.moment(step - 1), *tc.moment(step)], question, index,
+    if changed:
+        what = _and([_say(tc, e["target"]) for e in events][:4])
+        text = (f"Comparing the two pictures, {what} changed between the two moments. So yes, "
+                f"the machine changed.")
+    else:
+        why = ("the same moment captured twice" if reason == "dupli" else
+               "only captive cooler screws were turned, and they stay where they are"
+               if reason == CAPTIVE_LOOSENED else
+               "a repeated capture and screws turned in place")
+        text = (f"Comparing the two pictures, every part is where and how it was ({why}); "
+                f"nothing a picture can show changed. So no, the machine did not change.")
+    return record(
+        tc, "V12", rec_id, step, [*tc.moment(first), *tc.moment(step)], question, index,
         {"changed": changed, "events": events}, check,
         evidence({k: before.pointable[k][1] for k in touched if k in before.pointable},
                  tc),
-        R.rationale([R.compare_frames([step - 1, step], tc.view),
-                     *(observed(k, "changed", tc, before.pointable, step=step - 1)
-                       for k in touched[:tc.budget])]),
+        dict(R.rationale([R.compare_frames([first, step], tc.view),
+                          *(observed(k, "changed", tc, before.pointable, step=first)
+                            for k in touched[:tc.budget])]), text=text),
         frame.verified and before.verified,
         negative=(None if changed else
-                  CAPTIVE_LOOSENED if reason == CAPTIVE_LOOSENED else "dupli_no_change"),
+                  CAPTIVE_LOOSENED if reason == CAPTIVE_LOOSENED else
+                  "dupli_no_change" if reason == "dupli" else "no_visible_change"),
         view_confirmed=confirmed,
-        extra={"big_change": big, "change_visible": changed,
+        extra={"big_change": big, "change_visible": changed, "v12_span": span,
                **({"reason": reason} if reason else {})},
-        moment=tc.legend((step - 1, "before"), (step, "after")),
+        moment=tc.legend((first, "before"), (step, "after")),
     )
 
 
@@ -3827,7 +4125,7 @@ def _v15_cross(tc: TaskCtx, step: int, frame: FrameData, other: str,
     named = [k for k in blind if unique_on_desktop(tc, k)]
     if len(named) < len(blind):
         tc.skip("V15", "ambiguous_name")
-    for instance in stable_order(named, seed)[:tc.budget]:
+    for instance in stable_order(named, seed):
         row, box = mate.pointable[instance]
         here = frame.rows[instance]
         rec_id = f"V15-{frame_id(tc.desktop, tc.view, step)}-{other}-{instance}"
@@ -3936,6 +4234,8 @@ V16_QUESTIONS = (
 #: blocked than it was, and the step that breaks is always one that has been
 #: pulled forward. The reachable range is therefore ``0 .. len(plan) - 2``.
 V16_PLAN_LEN = 5
+#: The shortest beginning of a valid plan also asked as a valid plan of its own.
+V16_MIN_PLAN = 3
 
 
 def _group_members(tc: TaskCtx, target: str) -> Optional[tuple[str, ...]]:
@@ -4342,8 +4642,13 @@ def _gen_v16(tc: TaskCtx, frame: FrameData, step: int) -> Iterator[dict]:
         return
 
     seed = tc.seed(step, "V16")
-    corruption = None
+    # as many certainly-wrong plans as can be made (owner 2026-11-04): one per corruption
+    # family, each with its own first error
+    corruptions = []
+    families: set[str] = set()
     for family, tag in _corruptions(plan, seed):
+        if family in families:
+            continue
         if family == "substitute":
             corrupted = _substituted(tc, frame, plan, int(tag[len("substitute"):]), seed)
             if corrupted is None:
@@ -4357,38 +4662,44 @@ def _gen_v16(tc: TaskCtx, frame: FrameData, step: int) -> Iterator[dict]:
             # a rearrangement that violates nothing is a different plan of
             # unknown validity, not a wrong one (spec 8.2 principle 6)
             continue
-        corruption = (family, tag, corrupted, bad_at, broken, reason)
-        break
-    if corruption is None:
+        families.add(family)
+        corruptions.append((family, tag, corrupted, bad_at, broken, reason))
+    if not corruptions:
         return  # nothing about this suffix is certainly wrong: say nothing
     # the plan the log suggests, valid because its replay under the rules is clean (the
-    # record kind says so: `valid`, not `true`)
+    # record kind says so: `valid`, not `true`) -- and its shorter beginnings, valid too
     true = _plan_record(tc, frame, plan, None, (), "valid")
     if true is None:
         return
-    family, tag, corrupted, bad_at, broken, reason = corruption
-    wrong = _plan_record(tc, frame, corrupted, bad_at, broken, tag, family, reason)
-    if wrong is None:
-        return
     yield true
-    yield wrong
+    for n in range(V16_MIN_PLAN, len(plan)):
+        head = plan[:n]
+        if _simulate(tc, step, head)[0] is None:
+            made = _plan_record(tc, frame, head, None, (), f"valid{n}")
+            if made is not None:
+                yield made
+    for family, tag, corrupted, bad_at, broken, reason in corruptions:
+        wrong = _plan_record(tc, frame, corrupted, bad_at, broken, tag, family, reason)
+        if wrong is not None:
+            yield wrong
 
 
 # --------------------------------------------------------------------------- #
 # V7 -- the rest of the CPU plan, asked half-way through it
 # --------------------------------------------------------------------------- #
+#: "Plan the steps to remove <the part>" (owner 2026-11-04), asked of every major part.
 V7_QUESTIONS = (
-    "The goal is to take {goal} out of this machine, and the work towards it has "
-    "already started. List, in order, the actions still needed to remove it.",
-    "Some of the steps towards removing {goal} have been done. What remains? "
-    "Give the remaining actions in order.",
+    "The goal is to take {goal} out of this machine. Starting from the machine as it is "
+    "now, list in order the actions needed.",
+    "Plan the steps to remove {goal} from this machine, starting from the machine as it is "
+    "now. Give the actions in order.",
     "Plan the rest of the job: starting from the machine as it is now, which "
     "actions, in which order, get {goal} out?",
-    "Removal of {goal} is under way. Write the sequence of actions that "
-    "finishes it from this state.",
+    "Write the sequence of disassembly actions that takes {goal} out of this machine from "
+    "this state.",
     "Looking at the machine as it stands, give the ordered list of disassembly "
-    "actions that still have to happen before {goal} can be lifted out.",
-    "Continue the teardown towards {goal}: list every remaining action, one per "
+    "actions that have to happen for {goal} to come out.",
+    "Continue the teardown towards {goal}: list every action still needed, one per "
     "step, ending with its removal.",
 )
 
@@ -4513,39 +4824,47 @@ def gen_v7(tc: TaskCtx, step: int) -> Iterator[dict]:
     yield from made
 
 
-def _gen_v7(tc: TaskCtx, frame: FrameData, step: int) -> Iterator[dict]:
-    goals = sorted(k for k, rec in tc.ctx.instances.items()
-                   if rec.cls == V7_GOAL_CLASS)
-    for goal in goals:
-        why = _v7_goal_ok(tc, goal)
-        if why:
-            tc.skip("V7", why)
+#: V7's goal classes (owner 2026-11-04): every major part still in the machine; the RAM
+#: modules are one goal, their group.
+V7_GOAL_CLASSES = ("motherboard", "cpu", "psu", "storage_drive", "optical_drive",
+                   "expansion_card", "cpu_cooler", "drive_cage", "case_fan")
+V7_GROUP_GOAL_CLASSES = ("ram_module",)
+
+
+def v7_goals(tc: TaskCtx, state: FrameState) -> list[tuple[str, list[str]]]:
+    """``(goal id, members)``: every major part still present, the RAM modules as their group."""
+    out: list[tuple[str, list[str]]] = []
+    seen: set[str] = set()
+    for key, rec in sorted(tc.ctx.instances.items()):
+        if not tc.askable(key) or not present(state, key) or key in seen:
             continue
-        here = tc.state(step)
-        inst = here.get(goal)
-        if inst is None or inst.state == REMOVED:
-            continue  # nothing left to plan
-        removal = next((s for s in tc.log_steps if s > step
-                        and tc.state(s).get(goal) is not None
-                        and tc.state(s)[goal].state == REMOVED), None)
-        if removal is None:
+        if rec.cls in V7_GOAL_CLASSES:
+            out.append((key, [key]))
+        elif rec.cls in V7_GROUP_GOAL_CLASSES:
+            group = tc.group_of(key)
+            members = ([m for m in group.members if present(state, m) and tc.askable(m)]
+                       if group is not None else [key])
+            seen.update(members)
+            out.append((group.gid if group is not None and len(members) > 1 else key, members))
+    return out
+
+
+def _gen_v7(tc: TaskCtx, frame: FrameData, step: int) -> Iterator[dict]:
+    here = tc.state(step)
+    for goal, members in v7_goals(tc, here):
+        if tc.ctx.cls_of(members[0]) == V7_GOAL_CLASS:
+            why = _v7_goal_ok(tc, goal)
+            if why:
+                tc.skip("V7", why)
+                continue
+        removals = [next((s for s in tc.log_steps if s > step
+                          and tc.state(s).get(m) is not None
+                          and tc.state(s)[m].state == REMOVED), None) for m in members]
+        if any(r is None for r in removals):
+            # a part the teardown never takes out is no goal of it (a cage that stays)
             tc.skip("V7", "goal_never_removed")
             continue
-        initial = tc.state(0)
-        if goal not in tc._v7_plan0:
-            tc._v7_plan0[goal] = remaining_plan(tc.ctx.instances, tc.edges, initial,
-                                                goal, tc.tax)
-        plan0 = tc._v7_plan0[goal]
-        if not plan0:
-            tc.skip("V7", "no_initial_plan")
-            continue
-        started = [t for _, t in plan0
-                   if blocker_state(here, t) != blocker_state(initial, t)]
-        # the progress has to be one a picture shows (W3b): a loosened captive
-        # cooler screw looks like a tight one
-        if not [t for t in started if not is_captive_screw(tc.ctx, t)]:
-            tc.skip("V7", "not_started_visibly" if started else "not_started")
-            continue
+        removal = max(removals)
         if any(s in tc.illegal for s in tc.log_steps if step < s <= removal):
             tc.skip("V7", "illegal_step_ahead")
             continue
@@ -4554,13 +4873,14 @@ def _gen_v7(tc: TaskCtx, frame: FrameData, step: int) -> Iterator[dict]:
                         if (a.target in tc.ctx.instances
                             or a.target.startswith(CABLE_PREFIX))
                         and tc.changes_state(a)]
-        made = _v7_form(tc, frame, goal, demonstrated, started, removal, None)
+        made = _v7_form(tc, frame, goal, members, demonstrated, removal, None)
         if made is None:
             continue
         yield made
-        for rule in v7_constraints(tc, step, goal, made["label"]["answer"]["plan"]):
+        keys = made["label"]["answer_check"].get("answer_keys") or made["label"]["answer"]
+        for rule in v7_constraints(tc, step, goal, members, keys["plan"]):
             with tc.at(step, rule["edges"]):
-                ruled = _v7_form(tc, frame, goal, demonstrated, started, removal, rule)
+                ruled = _v7_form(tc, frame, goal, members, demonstrated, removal, rule)
             if ruled is not None:
                 yield ruled
                 break
@@ -4581,7 +4901,7 @@ V7_CONSTRAINED_QUESTIONS = (
 EACH_CONNECTOR = " Give each connector you unplug a step of its own."
 
 
-def v7_constraints(tc: TaskCtx, step: int, goal: str,
+def v7_constraints(tc: TaskCtx, step: int, goal: str, members: Sequence[str],
                    free_plan: Sequence[dict]) -> list[dict]:
     """V7's candidate rules, in words and without a number, each changing the plan.
 
@@ -4593,36 +4913,43 @@ def v7_constraints(tc: TaskCtx, step: int, goal: str,
     state = tc.state(step)
     if tc.moment_at(step).loose:
         return []  # a loose part comes out first: a rule on top of that is not asked
-    goal_words = asked_words(tc, goal)[0]
+    goal_words, many = asked_words(tc, goal)
+    be = "are" if many else "is"
+    members = list(members)
     plugged = sorted(k for k, rec in tc.ctx.instances.items()
-                     if rec.cls == "connector" and tc.askable(k)
+                     if rec.cls == "connector" and tc.askable(k) and k not in members
                      and state.get(k) is not None and state[k].state == "plugged")
     planned = set()
     for item in free_plan:
-        members = _group_members(tc, item["target"])
-        planned.update(members or [item["target"]])
+        inside = _group_members(tc, item["target"])
+        planned.update(inside or [item["target"]])
     out: list[dict] = []
     if len(plugged) >= 2 and not set(plugged) <= planned:
-        edges = [Edge(type="connected_to", target=goal, blocker=c, source=CONSTRAINT_SOURCE,
-                      status="accepted", reason="the question's rule") for c in plugged]
+        edges = [Edge(type="connected_to", target=m, blocker=c, source=CONSTRAINT_SOURCE,
+                      status="accepted", reason="the question's rule")
+                 for m in members for c in plugged]
         out.append({"kind": "until_connectors",
-                    "rule": f"Every connector must be unplugged before {goal_words} is taken out.",
-                    "held": [goal], "until": plugged, "edges": edges, "count": len(plugged)})
+                    "rule": f"Every connector must be unplugged before {goal_words} {be} "
+                            f"taken out.",
+                    "held": members, "until": plugged, "edges": edges, "count": len(plugged)})
     bigs = sorted(k for k, rec in tc.ctx.instances.items()
                   if rec.cls in RULE_FIRST_CLASSES
                   and tc.askable(k) and present(state, k) and unique_on_desktop(tc, k)
-                  and k not in planned)
+                  and k not in planned and k not in members)
     for a in bigs:
         plan = remaining_plan(tc.ctx.instances, tc.cur_edges, state, a, tc.tax)
-        if not plan or any(t == goal for _, t in plan):
+        if not plan or any(t in members for _, t in plan):
+            continue
+        if tc.ctx.cls_of(a) == tc.ctx.cls_of(members[0]):
             continue
         words = asked_words(tc, a)[0]
-        edges = [Edge(type="blocked_by", target=goal, blocker=a, mode="contained",
-                      source=CONSTRAINT_SOURCE, status="accepted", reason="the question's rule")]
+        edges = [Edge(type="blocked_by", target=m, blocker=a, mode="contained",
+                      source=CONSTRAINT_SOURCE, status="accepted", reason="the question's rule")
+                 for m in members]
         out.append({"kind": "before",
                     "rule": f"{words[:1].upper() + words[1:]} has to come out before "
-                            f"{goal_words} is taken out.",
-                    "held": [goal], "until": [a], "edges": edges})
+                            f"{goal_words} {be} taken out.",
+                    "held": members, "until": [a], "edges": edges})
     return out
 
 
@@ -4653,6 +4980,24 @@ def rules_plan(tc: TaskCtx, state: FrameState, goal: str) -> Optional[list[tuple
     return None
 
 
+def rules_plan_all(tc: TaskCtx, state: FrameState, members: Sequence[str]
+                   ) -> Optional[list[tuple[str, str]]]:
+    """:func:`rules_plan` for every member of a goal in turn (the RAM modules), one plan."""
+    sim = _copy_state(state)
+    out: list[tuple[str, str]] = []
+    for member in members:
+        if not present(sim, member):
+            continue
+        part = rules_plan(tc, sim, member)
+        if part is None:
+            return None
+        for verb, target in part:
+            if (verb, target) not in out:
+                out.append((verb, target))
+                _apply_effect(tc.tax, tc.ctx.instances, sim, target, verb)
+    return out
+
+
 def plan_words(tc: TaskCtx, state: FrameState, plan: Sequence[tuple[str, str]]) -> list[str]:
     """Each step of a plan said in words, no ordinal: "unplug the connectors"."""
     sim = _copy_state(state)
@@ -4672,15 +5017,19 @@ def plan_words(tc: TaskCtx, state: FrameState, plan: Sequence[tuple[str, str]]) 
     return out
 
 
-def _v7_form(tc: TaskCtx, frame: FrameData, goal: str,
-             demonstrated: Sequence[tuple[str, str]], started: Sequence[str], removal: int,
+def _v7_form(tc: TaskCtx, frame: FrameData, goal: str, members: Sequence[str],
+             demonstrated: Sequence[tuple[str, str]], removal: int,
              rule: Optional[dict]) -> Optional[dict]:
     """One V7 record (free when ``rule`` is ``None``), under the active moment's rules."""
     step = frame.step
     state = tc.state(step)
-    plan = rules_plan(tc, state, goal)
+    members = list(members)
+    plan = rules_plan_all(tc, state, members)
     if not plan:
         tc.skip("V7", "no_plan")
+        return None
+    if rule is None and len(plan) <= 1:
+        tc.skip("V7", "directly_feasible")  # a one-step plan is V4's question
         return None
     keep = frozenset({"connector"}) if rule and rule["kind"] == "until_connectors" \
         else frozenset()
@@ -4692,9 +5041,17 @@ def _v7_form(tc: TaskCtx, frame: FrameData, goal: str,
     # the goal is outlined only where it can be seen (owner 2026-11-04); a CPU under its
     # cooler is named in words, and the question then shows every camera
     namer = Namer(tc, frame)
-    marked = goal in frame.pointable and namer.part(goal) is not None
+    seen = all(m in frame.pointable for m in members)
+    marked = seen and (namer.part(goal) if len(members) == 1
+                       else namer.group(goal, members)) is not None
     goal_words = namer.say(goal) if marked else asked_words(tc, goal)[0]
-    required = required_actions(tc, state, goal)
+    required, kept = [], set()
+    for member in members:
+        for req in required_actions(tc, state, member):
+            mark = (req.target, req.states)
+            if mark not in kept:
+                kept.add(mark)
+                required.append(req)
     form = "free" if rule is None else "constrained"
     rec_id = f"V7-{frame_id(tc.desktop, tc.view, step)}-{goal}" + ("" if rule is None
                                                                   else "-constrained")
@@ -4706,8 +5063,8 @@ def _v7_form(tc: TaskCtx, frame: FrameData, goal: str,
         question = template.format(goal=goal_words, rule=rule["rule"],
                                    each=EACH_CONNECTOR if rule["kind"] == "until_connectors"
                                    else "")
-    chain: list[dict] = [observed(goal, state[goal].state, tc, frame.pointable)]
-    for req in required[1:1 + tc.budget]:
+    chain: list[dict] = [observed(m, state[m].state, tc, frame.pointable) for m in members]
+    for req in [r for r in required if r.target not in members][:tc.budget]:
         edge = req.via[-1]
         current = blocker_state(state, req.target)
         chain.append(R.recall_relation(edge.type, edge.target, edge.blocker,
@@ -4715,9 +5072,10 @@ def _v7_form(tc: TaskCtx, frame: FrameData, goal: str,
         chain.append(observed(req.target, current, tc, frame.pointable))
         chain.append(R.check_precondition(req.target, sorted(req.states), current, False))
     pixel = any(r.pixel_only for r in required)
-    text = v7_text(tc, state, goal, required, gold, rule)
+    text = v7_text(tc, state, goal, members, required, gold, rule)
     groups = plan_groups(tc, gold)
-    check = {"type": "goal_plan", "form": form, "goal": goal, "goal_state": REMOVED,
+    check = {"type": "goal_plan", "form": form, "goal": goal, "goal_members": members,
+             "goal_state": REMOVED,
              "start_step": step, "goal_removed_at": removal,
              "metric": "violation_free+required_recall+goal_reached",
              "any_legal_plan_scores": True, "validity": "simulated",
@@ -4728,7 +5086,7 @@ def _v7_form(tc: TaskCtx, frame: FrameData, goal: str,
              "plan_groups": groups,
              "plan_length": len(plan), "gold_length": len(gold),
              "demonstrated_length": len(demonstrated),
-             "started": sorted(set(started)),
+
              "start_state": {k: v.state for k, v in sorted(state.items())},
              # the moment's own rules (occlusion, loose parts first), for the scorer's replay
              "moment": moment_json(tc),
@@ -4748,13 +5106,15 @@ def _v7_form(tc: TaskCtx, frame: FrameData, goal: str,
         truth_source=GRAPH_BLOCKED_PIXELS if pixel else GRAPH_BLOCKED,
         view_confirmed=frame.confirmed,
         marks=namer.marks() if marked else None,
-        mark_names=namer.names() if marked else None, terms=[V7_GOAL_CLASS],
+        mark_names=namer.names() if marked else None,
+        terms=[target_class(tc.ctx, members[0])],
         extra={"v7_form": form},
         moment=tc.legend((step, "now"), marked=marked),
     )
 
 
-def v7_text(tc: TaskCtx, state: FrameState, goal: str, required: Sequence[Requirement],
+def v7_text(tc: TaskCtx, state: FrameState, goal: str, members: Sequence[str],
+            required: Sequence[Requirement],
             gold: Sequence[tuple[str, str]], rule: Optional[dict]) -> str:
     """V7's reasoning chain: what still holds the goal (and what holds those), the rule if
     any, then the plan step by step -- in what the picture shows."""
@@ -4763,14 +5123,15 @@ def v7_text(tc: TaskCtx, state: FrameState, goal: str, required: Sequence[Requir
     via = [r.via[-1] for r in required
            if r.via and not is_captive_screw(tc.ctx, r.target)
            and r.via[-1].source != CONSTRAINT_SOURCE]
-    clauses = reason_clauses(tc, via, state, met=False, asked=(goal, [goal]))
+    clauses = reason_clauses(tc, via, state, met=False, asked=(goal, list(members)))
     for held, group in sorted(held_by_captive.items(), key=lambda kv: str(kv[0])):
         if any(r.target == held for r in required):
             clauses.append(f"the {group.label} still hold {asked_words(tc, held)[0]}")
-    goal_words = asked_words(tc, goal)[0]
+    goal_words, many = asked_words(tc, goal)
     parts = [loose_sentence(tc, tc._active.step if tc._active is not None else 0).strip()]
     parts.append(f"To take {goal_words} out: {_and(clauses)}." if clauses
-                 else f"To take {goal_words} out: nothing else holds it.")
+                 else f"To take {goal_words} out: nothing else holds "
+                      f"{'them' if many else 'it'}.")
     if rule is not None:
         parts.append(f"The rule says: {rule['rule']}")
         if rule["kind"] == "until_connectors":

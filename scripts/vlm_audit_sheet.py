@@ -183,7 +183,7 @@ def gold_lines(record: dict, world: Optional[World] = None) -> list[tuple[str, s
         out.append(("state", str(answer.get("state"))))
         if check.get("allowed"):
             out.append(("allowed", ", ".join(check["allowed"])))
-    elif task == "V3":
+    elif task == "V3" and check.get("type") != "action_set":
         out.append(("action", f"{answer.get('verb')} {name(answer.get('target_instance'))}"))
         out.append(("class", str(answer.get("target_class"))))
         out.append(("tool", str(answer.get("tool"))))
@@ -214,7 +214,7 @@ def gold_lines(record: dict, world: Optional[World] = None) -> list[tuple[str, s
         kinds = ", ".join(f"{LETTERS[i]} {o.get('kind', '?')}" for i, o in enumerate(options))
         if kinds:
             out.append(("option kinds", kinds))
-    elif key == "V6.open" and check.get("type") == "frontier":
+    elif key in ("V6.open", "V3.span") and check.get("type") in ("frontier", "action_set"):
         # every action possible now, by group (owner 2026-11-04)
         if check.get("form") == "constrained":
             out.append(("rule", str((check.get("constraint") or {}).get("rule"))))

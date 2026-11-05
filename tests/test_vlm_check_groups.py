@@ -24,6 +24,22 @@ import pytest
 from tda.core.export.vlm_check import World, gold_reply, grade, grounder
 from tda.core.taxonomy import load_taxonomy
 
+
+def _keys(record: dict) -> dict:
+    """The answer with its keys (``answer_check.answer_keys``; ``label.answer`` names parts
+    plainly since the owner's 2026-11-04 round)."""
+    label = record["label"]
+    return (label.get("answer_check") or {}).get("answer_keys") or label["answer"]
+
+
+def _set_keys(record: dict, answer: dict) -> None:
+    label = record["label"]
+    if (label.get("answer_check") or {}).get("answer_keys"):
+        label["answer_check"]["answer_keys"] = answer
+    else:
+        label["answer"] = answer
+
+
 DESKTOP = 7
 COOLER, SHROUD, FAN, CPU, LEVER, BOARD = ("cpu_cooler.01", "cover.01", "connector.fan.01",
                                           "cpu.01", "cpu_socket_lever.01", "motherboard.01")
@@ -318,7 +334,7 @@ def test_v10_started_set(world):
     assert g.score == 1.0 and g.metrics["started_f1"] == 1.0
     # an old record (no `started`) has no started metric
     old = _v10([("disconnect", FAN)])
-    del old["label"]["answer"]["started"]
+    del _keys(old)["started"]
     assert "started_f1" not in grade(old, _reply(done=done[1:], progress="0-25"),
                                      world).metrics
 
@@ -362,7 +378,7 @@ def test_v3_compound_step_any_action(world):
     third = {"verb": "open", "target_class": "ram_latch",
              "target_instance": G_LATCH[RAMS[0]], "tool": None}
     r = _v3("remove", COOLER, "cpu_cooler", accept=[COOLER])
-    r["label"]["answer"]["actions"] = [first, second, third]
+    _keys(r)["actions"] = [first, second, third]
     for verb, name, matched in (("remove", "the CPU cooler", 0),
                                 ("disconnect", "the fan connector", 1),
                                 ("disconnect", FAN, 1),
@@ -444,7 +460,7 @@ def test_v8_components_grade(world):
     assert grade(r, boxes(*half), world, transform={"scale": 0.5}).score == 1.0
     # truth outside the class filter is not asked for
     extra = _v8_components()
-    extra["label"]["answer"]["components"].append(
+    _keys(extra)["components"].append(
         {"class": "connector", "instance": FAN, "bbox": [40, 4, 6, 6]})
     assert grade(extra, boxes(*SCREW_BOXES), world).score == 1.0
     # the single-box V8 is unchanged

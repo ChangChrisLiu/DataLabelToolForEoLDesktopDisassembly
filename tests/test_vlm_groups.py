@@ -17,6 +17,22 @@ from tda.core.taxonomy import load_taxonomy
 from vlm_checker import Checker
 
 
+def _keys(record: dict) -> dict:
+    """The answer with its keys (``answer_check.answer_keys``; ``label.answer`` names parts
+    plainly since the owner's 2026-11-04 round)."""
+    label = record["label"]
+    return (label.get("answer_check") or {}).get("answer_keys") or label["answer"]
+
+
+def _set_keys(record: dict, answer: dict) -> None:
+    label = record["label"]
+    if (label.get("answer_check") or {}).get("answer_keys"):
+        label["answer_check"]["answer_keys"] = answer
+    else:
+        label["answer"] = answer
+
+
+
 def _ctx(instances) -> DesktopCtx:
     return DesktopCtx(desktop=1, tax=load_taxonomy(), instances={r.key: r for r in instances},
                       events=[], actions=[], steps={})
@@ -223,7 +239,7 @@ def test_v8_multi_instance_is_components(tmp_path):
     assert sets
     for r in sets:
         check = r["label"]["answer_check"]
-        comps = r["label"]["answer"]["components"]
+        comps = _keys(r)["components"]
         assert len(comps) >= 2 and check["exhaustive"] is True
         assert check["class_filter"] in ("screw.motherboard", "connector.front_panel",
                                          "ram_module", "ram_latch")
@@ -270,8 +286,8 @@ def test_v4_has_no_state_inapplicable(scene, tmp_path):
     records = _of(_export(db, tax, tmp_path / "v.jsonl"), "V4")
     assert records
     assert "state_inapplicable" not in {r["label"]["truth_source"] for r in records}
-    assert all(r["label"]["answer"]["blockers"] for r in records
-               if not r["label"]["answer"]["feasible"])
+    assert all(_keys(r)["blockers"] for r in records
+               if not _keys(r)["feasible"])
 
 
 def test_v4_fan_blockers_are_screw_group_and_connector(tmp_path):
@@ -286,7 +302,7 @@ def test_v4_fan_blockers_are_screw_group_and_connector(tmp_path):
     tc = S.task_ctx(db, tax, W.DESKTOP, W.VIEW)
     made = _v4_record(tc, tc.frames[2], "remove", W.COOLER, V4_QUESTIONS, GRAPH_BLOCKED)
     assert made is not None
-    assert made["label"]["answer"]["blockers"] == sorted([GID, W.FAN])
+    assert _keys(made)["blockers"] == sorted([GID, W.FAN])
     assert made["label"]["answer_check"]["blocker_members"][GID] == list(W.SCREWS)
     db.close()
 
@@ -355,7 +371,9 @@ def test_action_record_images_marked_scan_alone(four):
             assert r["label"]["views"] == list(ALL_VIEWS)
             assert r["label"]["image_steps"] == [step] * 4
     for task in ("V3", "V12"):
-        for r in _gen(tc, task):
+        # the neighbouring pair (the spans of 2-3 steps show the earlier moment instead)
+        for r in [r for r in _gen(tc, task) if r["label"].get("v3_form") != "span"
+                  and (r["label"].get("v12_span") or 1) == 1]:
             step = r["label"]["step"]
             assert len(r["prompt"]["images"]) == 8
             assert [e["moment"] for e in r["prompt"]["image_legend"]] == \
@@ -389,8 +407,9 @@ def test_v3_tiny_target_skipped(tmp_path, monkeypatch):
     out = tmp_path / "v.jsonl"
     summary = export_vlm(db, tax, [W.DESKTOP], W.VIEW, str(out), tasks=["V3"])
     records = [json.loads(x) for x in out.read_text(encoding="utf-8").splitlines() if x]
+    records = [r for r in records if r["label"].get("v3_form") != "span"]
     assert summary["skip_reasons"][str(W.DESKTOP)]["V3"]["invisible_action"] >= 1
-    targets = {r["label"]["answer"]["target_instance"] for r in records}
+    targets = {_keys(r)["target_instance"] for r in records}
     assert W.FAN not in targets                                       # a plug
     assert {W.OPTICAL, W.COOLER, W.SHROUD} <= targets                 # BIG_PARTS stay
     db.close()
@@ -405,15 +424,16 @@ def test_v3_accepts_only_the_part_acted_on(tmp_path):
     db = Db(str(tmp_path / "w.sqlite"))
     tax = W.build(db)
     out = tmp_path / "v.jsonl"
-    records = _of(_export(db, tax, out, desktop=W.DESKTOP, view=W.VIEW), "V3")
+    records = [r for r in _of(_export(db, tax, out, desktop=W.DESKTOP, view=W.VIEW), "V3")
+               if r["label"].get("v3_form") != "span"]
     db.close()
     cooler = next(r for r in records if r["label"]["step"] == 9)
-    assert cooler["label"]["answer"]["target_instance"] == W.COOLER
+    assert _keys(cooler)["target_instance"] == W.COOLER
     assert cooler["label"]["answer_check"]["accept_targets"] == [W.COOLER]
     # every V3 record accepts its target and nothing else
     for r in records:
         assert r["label"]["answer_check"]["accept_targets"] == [
-            r["label"]["answer"]["target_instance"]], r["label"]["readable_id"]
+            _keys(r)["target_instance"]], r["label"]["readable_id"]
     oracle = out.with_name(out.stem + ".oracle.jsonl")
     row = next(json.loads(x) for x in oracle.read_text(encoding="utf-8").splitlines()
                if json.loads(x).get("type") == "desktop")
@@ -444,13 +464,13 @@ def test_v7_plan_uses_screw_group(tmp_path):
                   "V7")
     by_step = {r["label"]["step"]: r for r in records}
     for step in (2, 5, 7, 8):
-        plan = [(a["verb"], a["target"]) for a in by_step[step]["label"]["answer"]["plan"]]
+        plan = [(a["verb"], a["target"]) for a in _keys(by_step[step])["plan"]]
         assert plan.count(("unscrew", GID)) == 1, (step, plan)
         assert not set(W.SCREWS) & {t for _, t in plan}
     # every cooler screw already loose by the log, the cooler still in: still one
     # required group action (spec 6.6), and first
-    assert by_step[7]["label"]["answer"]["plan"][0] == {"verb": "unscrew", "target": GID}
-    assert "unscrew" not in [a["verb"] for a in by_step[9]["label"]["answer"]["plan"]] \
+    assert _keys(by_step[7])["plan"][0] == {"verb": "unscrew", "target": GID}
+    assert "unscrew" not in [a["verb"] for a in _keys(by_step[9])["plan"]] \
         if 9 in by_step else True
     assert Checker(db, tax, W.DESKTOP).check_all(records) == len(records)
     db.close()
@@ -460,7 +480,7 @@ def test_v10_partial_group_is_started(tmp_path):
     db = Db(str(tmp_path / "wide.sqlite"))
     tax = S.build_wide(db, desktops=(21,))
     records = _of(_export(db, tax, tmp_path / "v.jsonl", desktop=21), "V10")
-    by_step = {r["label"]["step"]: r["label"]["answer"] for r in records}
+    by_step = {r["label"]["step"]: _keys(r) for r in records}
     screws = {"verb": "unscrew", "target": "screw.motherboard@motherboard.01"}
     assert screws in by_step[2]["started"] and screws not in by_step[2]["done"]
     last = max(by_step)
@@ -476,7 +496,7 @@ def test_v10_captive_screws_stay_to_do_until_the_cooler_is_out(tmp_path):
     tax = W.build(db)
     records = _of(_export(db, tax, tmp_path / "v.jsonl", desktop=W.DESKTOP, view=W.VIEW),
                   "V10")
-    by_step = {r["label"]["step"]: r["label"]["answer"] for r in records}
+    by_step = {r["label"]["step"]: _keys(r) for r in records}
     group = {"verb": "unscrew", "target": GID}
     assert group not in by_step[7]["done"] and group not in by_step[7]["started"]
     assert group in by_step[9]["done"]
@@ -508,7 +528,9 @@ def test_v7_requires_the_captive_screws_as_one_group_while_the_cooler_is_in(tmp_
     tax = W.build(db)
     records = _of(_export(db, tax, tmp_path / "v.jsonl", desktop=W.DESKTOP, view=W.VIEW),
                   "V7")
-    by_step = {r["label"]["step"]: r for r in records}
+    # the CPU's free plan (V7 asks every major part since 2026-11-04)
+    by_step = {r["label"]["step"]: r for r in records
+               if r["label"]["answer_check"]["goal"] == W.CPU and r["label"]["v7_form"] == "free"}
     for step in range(2, 9):                    # the cooler comes out at step 9
         required = by_step[step]["label"]["answer_check"]["required_actions"]
         targets = [r["target"] for r in required]

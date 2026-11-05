@@ -24,6 +24,22 @@ from tda.core.model import (
 )
 from tda.core.taxonomy import load_taxonomy
 
+
+def _keys(record: dict) -> dict:
+    """The answer with its keys (``answer_check.answer_keys``; ``label.answer`` names parts
+    plainly since the owner's 2026-11-04 round)."""
+    label = record["label"]
+    return (label.get("answer_check") or {}).get("answer_keys") or label["answer"]
+
+
+def _set_keys(record: dict, answer: dict) -> None:
+    label = record["label"]
+    if (label.get("answer_check") or {}).get("answer_keys"):
+        label["answer_check"]["answer_keys"] = answer
+    else:
+        label["answer"] = answer
+
+
 DESKTOP = 1
 VIEW = "scan"
 HW = (64, 64)
@@ -379,7 +395,7 @@ def _raw_records(path: Path) -> list[dict]:
 def _records(path: Path) -> list[dict]:
     """The same records flattened, for assertions the prompt/label split does not
     change. :func:`_raw_records` is what tests the split itself."""
-    return [{"id": r["id"], **r["prompt"], **r["label"]} for r in _raw_records(path)]
+    return [{"id": r["id"], **r["prompt"], **r["label"], "answer": _keys(r)} for r in _raw_records(path)]
 
 
 def _confirm(d: Db, tax, steps) -> None:
@@ -436,7 +452,7 @@ def test_the_jsonl_is_split_into_what_the_model_sees_and_what_grades_it(
         assert set(rec["prompt"]) <= {"task", "images", "question", "options", "marks",
                                       "terms", "state_terms", "image_legend", "hint_regions"}
         assert "answer" not in rec["prompt"] and "step" not in rec["prompt"]
-        assert rec["label"]["answer"] is not None
+        assert _keys(rec) is not None
 
     manifest = [json.loads(line) for line in
                 manifest_path(str(out)).read_text(encoding="utf-8").splitlines()]

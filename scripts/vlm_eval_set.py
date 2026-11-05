@@ -74,15 +74,15 @@ EVAL_VERSION = "eval_v3"
 #: Subsets the current records no longer match: a path through one is refused.
 OLD_EVAL_VERSIONS = ("eval_v1", "eval_v2")
 #: Tasks whose answer is a yes / no: the larger target.
-BINARY_TASKS = frozenset({"V4", "V12", "V15"})
+BINARY_TASKS = frozenset({"V4", "V12", "V12.span", "V15"})
 TARGET_BINARY = 400
 TARGET_OTHER = 300
 MAX_SHARE = 0.2
 SEED = 0
 #: Table order (the spec's codes; V5 is not in the default export). The constrained forms
 #: of V6 and V7 are drawn as buckets of their own (:func:`bucket_of`).
-TASK_ORDER = ("V1", "V2", "V3", "V4", "V5", "V6", "V6.constrained", "V7", "V7.constrained",
-              "V8", "V10", "V12", "V15", "V16")
+TASK_ORDER = ("V1", "V2", "V3", "V3.span", "V4", "V5", "V6", "V6.constrained", "V7",
+              "V7.constrained", "V8", "V10", "V12", "V12.span", "V15", "V16")
 #: The ids of the subset before (``eval_v2``) and of its audit sample, kept wherever the record
 #: still exists (the draw prefers them inside every stratum).
 KEEP_DIR = Path(__file__).resolve().parents[1] / "configs" / "vlm_keep"
@@ -99,6 +99,10 @@ def bucket_of(record: dict) -> str:
         return "V6.constrained"
     if task == "V7" and label.get("v7_form") == "constrained":
         return "V7.constrained"
+    if task == "V3" and label.get("v3_form") == "span":
+        return "V3.span"
+    if task == "V12" and (label.get("v12_span") or 1) > 1:
+        return "V12.span"
     return task
 
 
@@ -199,9 +203,12 @@ def strata(record: dict) -> tuple[str, ...]:
     """
     task = record["prompt"]["task"]
     label = record["label"]
-    answer = label.get("answer") or {}
+    # the keys (the answer a grader reads); label.answer names the parts plainly
+    answer = (label.get("answer_check") or {}).get("answer_keys") or label.get("answer") or {}
     if task == "V2":
         return (f"prior_correct={_bool(label.get('prior_is_correct'))}", v2_class(record))
+    if task == "V3" and label.get("v3_form") == "span":
+        return (f"span={label.get('v3_span')}",)
     if task == "V3":
         return (f"verb={answer.get('verb')}",)
     if task == "V4":

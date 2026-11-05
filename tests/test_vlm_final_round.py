@@ -45,6 +45,22 @@ from tda.core.states import initial_state
 from tda.core.taxonomy import load_taxonomy
 from vlm_checker import Checker
 
+
+def _keys(record: dict) -> dict:
+    """The answer with its keys (``answer_check.answer_keys``; ``label.answer`` names parts
+    plainly since the owner's 2026-11-04 round)."""
+    label = record["label"]
+    return (label.get("answer_check") or {}).get("answer_keys") or label["answer"]
+
+
+def _set_keys(record: dict, answer: dict) -> None:
+    label = record["label"]
+    if (label.get("answer_check") or {}).get("answer_keys"):
+        label["answer_check"]["answer_keys"] = answer
+    else:
+        label["answer"] = answer
+
+
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
@@ -177,7 +193,7 @@ def test_v6_open_is_every_action_possible_now_graded_by_group_f1(scene):
     # a group left out: recall drops
     short = {"actions": json.loads(gold)["actions"][:1]}
     assert grade(first, json.dumps(short), world, tax).metrics["recall"] < 1.0
-    assert "why" in first["label"]["answer"]
+    assert "why" in _keys(first)
     # the question names no part and no ordinal
     assert not KEY.search(first["prompt"]["question"])
 
@@ -273,7 +289,7 @@ def test_v7_free_is_the_rules_minimal_plan(cpu_scene):
     free = _form(records, "V7", "free")
     assert free and Checker(db, tax, W.DESKTOP).check_all(records) == len(records)
     late = next(r for r in free if r["label"]["step"] == 9)  # the cooler is off
-    assert [(a["verb"], a["target"]) for a in late["label"]["answer"]["plan"]] == \
+    assert [(a["verb"], a["target"]) for a in _keys(late)["plan"]] == \
         [("open", W.LEVER), ("remove", W.CPU)]
     for r in free:
         assert grade(r, gold_reply(r, world), world, tax).score == 1.0
@@ -294,7 +310,7 @@ def test_v7_constrained_keeps_the_rule_and_counts_the_plugs(cpu_scene):
     g = grade(r, gold_reply(r, world), world, tax)
     assert g.score == 1.0 and g.metrics["count_exact"] and g.metrics["constraint_kept"]
     # the free plan (no plug pulled) breaks the rule, and counts too few plugs
-    plain = [a for a in r["label"]["answer"]["plan"] if a["verb"] != "disconnect"]
+    plain = [a for a in _keys(r)["plan"] if a["verb"] != "disconnect"]
     reply = json.dumps({"plan": [{"verb": a["verb"], "target": world.label_of(a["target"])}
                                  for a in plain]})
     g = grade(r, reply, world, tax)
@@ -310,15 +326,15 @@ def test_v16_validity_is_a_replay_and_its_reasoning_goes_step_by_step(scene):
     _, records, _ = _export(db, tax, tmp, S.DESKTOP, ["V16"])
     v16 = [r for r in records if r["prompt"]["task"] == "V16"]
     assert v16 and Checker(db, tax, S.DESKTOP).check_all(records) == len(records)
-    valid = [r for r in v16 if r["label"]["answer"]["valid"]]
-    assert valid and all(r["label"]["readable_id"].endswith("-valid") for r in valid)
+    valid = [r for r in v16 if _keys(r)["valid"]]
+    assert valid and all(re.search(r"-valid\d?$", r["label"]["readable_id"]) for r in valid)
     assert not any(r["label"]["readable_id"].endswith("-true") for r in v16)
     assert {r["label"]["truth_source"] for r in valid} == {"simulated"}
     for r in v16:
         text = r["label"]["rationale"]["text"]
         assert text.startswith("Step 1 (")
-        if not r["label"]["answer"]["valid"]:
-            k = r["label"]["answer"]["first_error_index"] + 1
+        if not _keys(r)["valid"]:
+            k = _keys(r)["first_error_index"] + 1
             assert f"step {k} is the first that breaks" in text
 
 
@@ -344,7 +360,7 @@ def test_v4_reasons_speak_of_the_cover_and_of_the_loose_part(scene, monkeypatch)
     # the reason clause a loose part and an occluder produce, in words
     from tda.core.export.vlm_tasks import reason_clauses  # noqa: F401
     sources = {r["label"].get("truth_source") for r in records if r["prompt"]["task"] == "V4"}
-    assert sources <= {"demonstrated", *T.GRAPH_KINDS, "failed_attempt"}
+    assert sources <= {"demonstrated", "permitted", *T.GRAPH_KINDS, "failed_attempt"}
 
 
 def test_reason_clauses_word_the_moment_edges(scene):
@@ -379,7 +395,7 @@ def test_v2_answers_cannot_tell_on_a_hidden_part(scene, monkeypatch):
     states = [r for r in records if r["label"]["answer_check"].get("derive") == "instance_state"]
     assert states and all("cannot_tell" in r["label"]["answer_check"]["allowed"] for r in states)
     hidden = [r for r in states if r["label"]["answer_check"].get("hidden")]
-    assert hidden and {r["label"]["answer"]["state"] for r in hidden} == {"cannot_tell"}
+    assert hidden and {_keys(r)["state"] for r in hidden} == {"cannot_tell"}
     assert Checker(db, tax, S.DESKTOP).check_all(records) == len(records)
     for r in hidden:
         assert grade(r, json.dumps({"state": "cannot tell"}), world, tax).score == 1.0

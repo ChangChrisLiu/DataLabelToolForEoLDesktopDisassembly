@@ -25,6 +25,22 @@ from tda.core.export.vlm_tasks import BIG_PARTS, TASKS, balance_v2
 from vlm_checker import Checker, scan_prompt_leaks
 
 
+def _keys(record: dict) -> dict:
+    """The answer with its keys (``answer_check.answer_keys``; ``label.answer`` names parts
+    plainly since the owner's 2026-11-04 round)."""
+    label = record["label"]
+    return (label.get("answer_check") or {}).get("answer_keys") or label["answer"]
+
+
+def _set_keys(record: dict, answer: dict) -> None:
+    label = record["label"]
+    if (label.get("answer_check") or {}).get("answer_keys"):
+        label["answer_check"]["answer_keys"] = answer
+    else:
+        label["answer"] = answer
+
+
+
 def _read(path: Path) -> list[dict]:
     return [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l]
 
@@ -73,7 +89,7 @@ def test_v3_and_v12_on_an_unlabelled_view_are_about_large_parts(scene):
     ctx = load_ctx(db, tax, W.DESKTOP, W.OTHER)
     records = _read(out)
     v3 = _of(records, "V3")
-    assert v3 and all(ctx.cls_of(r["label"]["answer"]["target_instance"]) in BIG_PARTS
+    assert v3 and all(ctx.cls_of(_keys(r)["target_instance"]) in BIG_PARTS
                       for r in v3)
     # the shroud (a cover), the optical drive, the cooler -- not the fan lead,
     # not the screws, and not the CPU: step 11 is the last frame, but its pair
@@ -81,7 +97,7 @@ def test_v3_and_v12_on_an_unlabelled_view_are_about_large_parts(scene):
     assert {r["label"]["step"] for r in v3} >= {2, 8, 9}
     assert not {3, 4, 5, 6, 7, 10} & {r["label"]["step"] for r in v3}
     for r in _of(records, "V12"):
-        if r["label"]["answer"]["changed"]:
+        if _keys(r)["changed"]:
             assert r["label"]["big_change"]
             assert r["label"]["answer_check"]["fields"] == ["changed"]
         else:
@@ -95,7 +111,7 @@ def test_v6_v10_v16_take_the_image_from_any_view(scene):
     export_vlm(db, tax, [W.DESKTOP], W.OTHER, str(b))
     def keyed(path, task):
         return {r["label"]["readable_id"].replace(f"-{r['label']['view']}-", "-"):
-                r["label"]["answer"] for r in _of(_read(path), task)}
+                _keys(r) for r in _of(_read(path), task)}
 
     # V16 names its parts by marks, which only a confirmed frame carries (redesign)
     for task in ("V10",):
@@ -117,21 +133,22 @@ def test_captive_screws_rules(scene):
     assert summary["skip_reasons"][str(W.DESKTOP)]["V3"]["captive_screw_loosened"] == 4
     # V12: those pairs are "no change", a kind of its own, never a "yes"
     captive = [r for r in _of(records, "V12")
-               if r["label"].get("negative") == "captive_screw_loosened"]
+               if r["label"].get("negative") == "captive_screw_loosened"
+               and r["label"]["v12_span"] == 1]
     assert {r["label"]["step"] for r in captive} == {4, 5, 6, 7}
     for r in captive:
-        assert r["label"]["answer"]["changed"] is False
+        assert _keys(r)["changed"] is False
         assert r["label"]["change_visible"] is False
         assert r["label"]["answer_check"]["reason"] == "captive_screw_loosened"
         assert {e["target"] for e in r["label"]["answer_check"]["hidden_events"]} <= set(W.SCREWS)
-    assert summary["v12_by_kind"]["captive_screw_loosened"] == 4
+    assert summary["v12_by_kind"]["captive_screw_loosened"] >= 4  # spans of them too
     # V2 never asks a captive screw anything
     for r in _of(records, "V2"):
         assert not set(r["label"]["evidence"]["instances"]) & set(W.SCREWS)
     # the motherboard screw is asked present / removed, never fastened
     screw = [r for r in _of(records, "V2")
              if r["label"]["answer_check"].get("instance") == W.BOARD_SCREW]
-    assert screw and all(r["label"]["answer"]["state"] == "present" for r in screw)
+    assert screw and all(_keys(r)["state"] == "present" for r in screw)
     assert all(r["label"]["answer_check"]["allowed"] == ["present", "removed", "cannot_tell"]
                for r in screw)
     assert Checker(db, tax, W.DESKTOP).check_all(records) == len(records)
@@ -182,11 +199,11 @@ def _pool(desktop):
 
 
 def test_v2_is_thinned_per_desktop_so_no_answer_is_the_majority():
-    kept, stats = balance_v2(_pool(1))
+    kept, stats = balance_v2(_pool(1), cap=0.5)
 
     def of(cls, state):
         return sum(1 for r in kept if r["label"]["answer_check"]["class"] == cls
-                   and r["label"]["answer"]["state"] == state)
+                   and _keys(r)["state"] == state)
 
     assert of("ram_latch", "closed") == 10 and of("ram_latch", "open") == 10
     # a class whose every answer is the same keeps none: it would only measure it
@@ -194,18 +211,18 @@ def test_v2_is_thinned_per_desktop_so_no_answer_is_the_majority():
     # neither value may be the majority -- the non-prior one is capped as well
     assert of("cpu_socket_lever", "open") == 4 and of("cpu_socket_lever", "closed") == 4
     for r in kept:
-        prior_right = r["label"]["answer"]["state"] == r["label"]["class_prior_answer"]
+        prior_right = _keys(r)["state"] == r["label"]["class_prior_answer"]
         assert r["label"]["prior_is_correct"] is prior_right
     assert stats["state:ram_latch"] == {"before": 40, "after": 20,
                                         "prior_correct_before": 30}
-    again, _ = balance_v2(_pool(1))
+    again, _ = balance_v2(_pool(1), cap=0.5)
     assert [r["id"] for r in again] == [r["id"] for r in kept]
 
 
 def test_v2_thinning_does_not_depend_on_the_other_desktops():
     """D1 alone and D1 inside 1-66 keep exactly the same D1 questions (review M)."""
-    alone, _ = balance_v2(_pool(1))
-    together, _ = balance_v2(_pool(2) + _pool(1) + _pool(3))
+    alone, _ = balance_v2(_pool(1), cap=0.5)
+    together, _ = balance_v2(_pool(2) + _pool(1) + _pool(3), cap=0.5)
     mine = [r["id"] for r in together if r["label"]["desktop"] == 1]
     assert mine == [r["id"] for r in alone]
 
@@ -222,7 +239,7 @@ def test_v2_records_carry_the_desktops_own_prior(scene):
         if check["derive"] == "screw_count":
             assert r["label"]["class_prior_answer"] == 1  # one board screw
         assert r["label"]["prior_is_correct"] is (
-            json.dumps(r["label"]["answer"].get("state", r["label"]["answer"].get("count")))
+            json.dumps(_keys(r).get("state", _keys(r).get("count")))
             == json.dumps(r["label"]["class_prior_answer"]))
 
 

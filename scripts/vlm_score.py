@@ -79,8 +79,12 @@ V3_ROI = "V3-roi"
 #: The constrained forms (owner 2026-11-04): one rule in words added to the question.
 V6_CONSTRAINED = "V6-constrained"
 V7_CONSTRAINED = "V7-constrained"
+#: V3's multi-step form and V12 across 2-3 steps (owner 2026-11-04 expansion).
+V3_SPAN = "V3-span"
+V12_SPAN = "V12-span"
 #: Secondary record types: the layers count each headline row once.
-SECONDARY_ROWS = frozenset({"V6-mc", V3_ROI, V6_CONSTRAINED, V7_CONSTRAINED})
+SECONDARY_ROWS = frozenset({"V6-mc", V3_ROI, V6_CONSTRAINED, V7_CONSTRAINED, V3_SPAN,
+                            V12_SPAN})
 
 
 #: How the ``chance`` row is computed, per table row (printed under the table).
@@ -100,6 +104,8 @@ CHANCE_RULES = {
     V6_CONSTRAINED: "0: the set of actions possible under the rule is open",
     "V7": "0: the plan is open",
     V7_CONSTRAINED: "0: the plan is open",
+    V3_SPAN: "0: the set of actions between two moments is open (F1 over groups)",
+    V12_SPAN: "0.5: changed yes / no, across 2-3 steps",
     "V8": "0: a box with IoU >= 0.5 by chance (the components form: a box set, F1 0)",
     "V10": "0: the set F1 over the done actions is open; the progress bin alone is "
            "1/|bins| (the extra row bin_accuracy)",
@@ -118,6 +124,10 @@ def task_key(record: dict) -> str:
         return V6_MC
     if task == "V6" and record["label"].get("v6_form") == "constrained":
         return V6_CONSTRAINED
+    if task == "V3" and record["label"].get("v3_form") == "span":
+        return V3_SPAN
+    if task == "V12" and (record["label"].get("v12_span") or 1) > 1:
+        return V12_SPAN
     if task == "V7" and record["label"].get("v7_form") == "constrained":
         return V7_CONSTRAINED
     if task == "V3" and (record["label"].get("v3_form") == "roi"
@@ -341,7 +351,7 @@ def score(truth_path, pred_path, chat_path=None, *, resamples: int = 1000,
                     extras[task]["count_exact"].append((desk, float(bool(m.get("exact")))))
                 if m.get("cannot_tell"):
                     extras[task]["cannot_tell_accuracy"].append((desk, float(bool(m.get("exact")))))
-            if task in ("V6", V6_CONSTRAINED) and "f1" in m:
+            if task in ("V6", V6_CONSTRAINED, V3_SPAN) and "f1" in m:
                 extras[task]["precision"].append((desk, float(m["precision"])))
                 extras[task]["recall"].append((desk, float(m["recall"])))
                 if task == V6_CONSTRAINED:
