@@ -299,6 +299,7 @@ def score(truth_path, pred_path, chat_path=None, *, resamples: int = 1000,
                                                            if r["id"] in preds)}
     chance_rows: dict[str, list[float]] = defaultdict(list)
     chance_unsized: dict[str, int] = defaultdict(int)
+    frames: dict = {m: defaultdict(lambda: defaultdict(int)) for m in ("strict", "lenient")}
     for mode in ("strict", "lenient"):
         per_task: dict[str, list] = defaultdict(list)
         per_layer: dict[str, list] = defaultdict(list)
@@ -368,6 +369,16 @@ def score(truth_path, pred_path, chat_path=None, *, resamples: int = 1000,
                 if "count_exact" in m:
                     extras[task]["count_exact"].append((desk, float(m["count_exact"])))
                     extras[task]["count_abs_error"].append((desk, float(m["count_abs_error"])))
+            if task in ("V1", "V8") and g.parsed:
+                # the boxes (owner 2026-11-04, "V1 / V8（框）"): the headline stays IoU >= 0.5;
+                # beside it the COCO-style average over 0.50:0.05:0.95, and which frame won
+                # (the boxes as given, or x 1.25 for a model answering in a 0.8 frame)
+                for name in ("f1_50_95", "hit_50_95"):
+                    if name in m:
+                        extras[task][name].append((desk, float(m[name])))
+                if "frame" in m:
+                    extras[task]["frame_1.25"].append((desk, float(m["frame"] != 1.0)))
+                    frames[mode][task][str(m["frame"])] += 1
             if task == "V16" and m.get("localised") is not None:
                 extras[task]["localised"].append((desk, float(m["localised"])))
             if task == "V4" and "blockers_f1" in m:
@@ -387,6 +398,11 @@ def score(truth_path, pred_path, chat_path=None, *, resamples: int = 1000,
                             for t, rows in sorted(per_template.items())},
             "extra": {t: {k: _cell(v, resamples, seed) for k, v in sorted(d.items())}
                       for t, d in sorted(extras.items())},
+            # V1 / V8: how many parsed answers each frame won (1.0 = as given, 1.25 = the
+            # boxes read x 1.25), and the 1.25 share -- this model's, one score run each
+            "frame": {t: {"1.0": c.get("1.0", 0), "1.25": c.get("1.25", 0),
+                          "share_1.25": _r(c.get("1.25", 0) / max(sum(c.values()), 1))}
+                      for t, c in sorted(frames[mode].items())},
         }
     # the in-sample text-only bound (the export's prompt-only classifiers)
     out["shortcut_upper_bound"] = _shortcuts(summary)
@@ -503,6 +519,12 @@ def markdown(result: dict, name: str) -> str:
         for key, cell in metrics.items():
             other = l["extra"].get(task, {}).get(key)
             lines.append(f"| {task} | {key} | {fmt(cell)} | {fmt(other)} |")
+    if s.get("frame"):
+        lines += ["", "V1 / V8 boxes are graded as given and x 1.25 (a model answering in a "
+                  "0.8 frame); the better grade is kept.", "",
+                  "| task | frame 1.0 won | frame 1.25 won | 1.25 share |", "|---|---|---|---|"]
+        for task, c in s["frame"].items():
+            lines.append(f"| {task} | {c['1.0']} | {c['1.25']} | {pct(c['share_1.25'])} |")
     lines += ["", "| template | n | strict |", "|---|---|---|"]
     for tid, cell in s["by_template"].items():
         lines.append(f"| {tid} | {cell['n']} | {fmt(cell)} |")

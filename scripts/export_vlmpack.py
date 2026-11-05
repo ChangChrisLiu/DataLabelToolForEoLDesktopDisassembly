@@ -1647,7 +1647,13 @@ the plugs that are in), V2's `cannot_tell_accuracy`, V3 (headline: the free form
 region_hit) and `V3-roi` (the hinted form), V2 (headline: every V2 question) and `V2-prior-wrong`
 (V2's count form, `derive = screw_count`, scores the exact count 1.0, one off 0.8 and anything
 else 0; the extra row `exact` is the exact matches alone, `count_exact` those of the counts), V7's violation-free /
-required-recall / goal-reached, V4's blockers F1, V10's bin accuracy. Score the
+required-recall / goal-reached, V4's blockers F1, V10's bin accuracy, and V1 / V8's boxes:
+the headline stays IoU >= 0.5 (V1 class-aware set F1, V8 hit; V8's several-box form a set
+F1), beside it the COCO-style average over IoU 0.50:0.05:0.95 (`f1_50_95`, `hit_50_95`).
+Every V1 / V8 answer is graded twice -- the boxes as given and every coordinate x 1.25 (a
+model that answers in an internally resized 0.8 frame) -- and the better grade is kept; the
+grade's `frame` says which won and the `frame` table (and the extra row `frame_1.25`) gives
+the share per model. Score the
 units separately (each truth file has its own oracle) and pool in your
 analysis; `{ev_name}/ids.txt` is the subset. The model driver (`tools/vlm_run/vlm_run.py`:
 OpenAI-compatible APIs, vLLM, transformers, and a `gold` pseudo backend), its Slurm
