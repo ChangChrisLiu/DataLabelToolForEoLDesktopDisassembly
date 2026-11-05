@@ -726,10 +726,45 @@ def _as_bool(value: Any) -> Optional[bool]:
     return None
 
 
-def _box(value: Any, transform: Optional[dict]) -> Optional[list[float]]:
+#: The IoU thresholds of the COCO-style average beside V1's and V8's IoU >= 0.5 headline
+#: (owner 2026-11-04, decisions "V1 / V8（框）"): 0.50:0.05:0.95.
+COCO_IOUS = tuple(round(0.5 + 0.05 * i, 2) for i in range(10))
+
+#: The frames a V1 / V8 answer is read in (the same decisions): the boxes as given, and every
+#: coordinate x 1.25 -- a model that answers in an internally resized 0.8 frame. The better
+#: grade is kept and ``metrics["frame"]`` says which won (a tie keeps 1.0).
+FRAME_SCALES = (1.0, 1.25)
+
+
+def _point(value: Any, transform: Optional[dict], frame: float = 1.0) -> Optional[list[float]]:
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return None
+    x, y = (float(v) * frame for v in value)
+    if transform:
+        scale = float(transform.get("scale") or 1.0)
+        x0, y0 = (transform.get("crop") or [0, 0])[:2]
+        x, y = x / scale + x0, y / scale + y0
+    return [x, y]
+
+
+def _best_frame(grade_in) -> Grade:
+    """``grade_in(frame) -> Grade`` in each of :data:`FRAME_SCALES`; the best by the score,
+    then by its 0.50:0.95 average, the first frame on a tie; ``metrics["frame"]`` names it."""
+    best = None
+    for frame in FRAME_SCALES:
+        g = grade_in(frame)
+        rank = (g.score, g.metrics.get("f1_50_95", g.metrics.get("hit_50_95", 0.0)))
+        if best is None or rank > best[0]:
+            best = (rank, frame, g)
+    _, frame, g = best
+    g.metrics["frame"] = frame
+    return g
+
+
+def _box(value: Any, transform: Optional[dict], frame: float = 1.0) -> Optional[list[float]]:
     if not isinstance(value, (list, tuple)) or len(value) != 4:
         return None
-    x, y, w, h = (float(v) for v in value)
+    x, y, w, h = (float(v) * frame for v in value)
     if transform:
         scale = float(transform.get("scale") or 1.0)
         x0, y0 = (transform.get("crop") or [0, 0])[:2]
@@ -780,14 +815,11 @@ def _class_of_text(text: Any, tax: Optional[Taxonomy], classes: Sequence[str]) -
 def _g_v1(record, answer, world, tax, transform) -> Grade:
     truth = answer_keys(record)["components"]
     classes = sorted({c["class"] for c in truth})
-    preds = []
-    for item in answer.get("components") or []:
-        if not isinstance(item, dict):
-            continue
-        preds.append((_class_of_text(item.get("class"), tax, classes),
-                      _box(item.get("bbox"), transform)))
-    return _box_set_grade(truth, preds,
-                          float(record["label"]["answer_check"].get("iou_threshold", 0.5)))
+    items = [(_class_of_text(item.get("class"), tax, classes), item.get("bbox"))
+             for item in answer.get("components") or [] if isinstance(item, dict)]
+    thr = float(record["label"]["answer_check"].get("iou_threshold", 0.5))
+    return _best_frame(lambda frame: _box_set_grade(
+        truth, [(cls, _box(box, transform, frame)) for cls, box in items], thr))
 
 
 #: V2's count form (``derive == "screw_count"``, owner 2026-11-04): the score of an answer
@@ -1378,7 +1410,19 @@ def _g_v7(record, answer, world, tax, transform) -> Grade:
 
 def _box_set_grade(truth: Sequence[dict], preds: list[tuple[Optional[str], Optional[list]]],
                    thr: float) -> Grade:
-    """V1's set F1: each prediction claims the best unclaimed truth box of its class."""
+    """V1's set F1: each prediction claims the best unclaimed truth box of its class.
+    ``f1`` is at ``thr`` (the score); ``f1_50_95`` the F1 averaged over :data:`COCO_IOUS`,
+    each threshold matched afresh."""
+    tp = _box_set_tp(truth, preds, thr)
+    f1 = _f1(tp, len(preds), len(truth))
+    f1_50_95 = sum(_f1(_box_set_tp(truth, preds, t), len(preds), len(truth))
+                   for t in COCO_IOUS) / len(COCO_IOUS)
+    return Grade(True, f1, {"f1": f1, "f1_50_95": f1_50_95, "tp": tp, "pred": len(preds),
+                            "true": len(truth)})
+
+
+def _box_set_tp(truth: Sequence[dict], preds: list[tuple[Optional[str], Optional[list]]],
+                thr: float) -> int:
     used, tp = set(), 0
     for cls, box in preds:
         best, best_iou = None, thr
@@ -1391,8 +1435,7 @@ def _box_set_grade(truth: Sequence[dict], preds: list[tuple[Optional[str], Optio
         if best is not None:
             used.add(best)
             tp += 1
-    f1 = _f1(tp, len(preds), len(truth))
-    return Grade(True, f1, {"f1": f1, "tp": tp, "pred": len(preds), "true": len(truth)})
+    return tp
 
 
 def _g_v8_components(record, answer, world, tax, transform) -> Grade:
@@ -1405,9 +1448,11 @@ def _g_v8_components(record, answer, world, tax, transform) -> Grade:
     """
     check = record["label"]["answer_check"]
     truth = [{"class": "asked", "bbox": c["bbox"]} for c in _asked_components(record, world)]
-    preds = [("asked", _box(item.get("bbox"), transform))
-             for item in answer.get("components") or [] if isinstance(item, dict)]
-    return _box_set_grade(truth, preds, float(check.get("iou_threshold", 0.5)))
+    boxes = [item.get("bbox") for item in answer.get("components") or []
+             if isinstance(item, dict)]
+    thr = float(check.get("iou_threshold", 0.5))
+    return _best_frame(lambda frame: _box_set_grade(
+        truth, [("asked", _box(box, transform, frame)) for box in boxes], thr))
 
 
 def _asked_components(record: dict, world: Optional[World]) -> list[dict]:
@@ -1429,21 +1474,25 @@ def _g_v8(record, answer, world, tax, transform) -> Grade:
     if check.get("type") == "components":
         return _g_v8_components(record, answer, world, tax, transform)
     truth = answer_keys(record)["bbox"]
-    box = _box(answer.get("bbox"), transform)
-    if check.get("metric") == "point_in_box":
-        point = answer.get("point")
-        if point is None and box is not None:
-            point = [box[0] + box[2] / 2, box[1] + box[3] / 2]
-        elif point is not None and transform:
-            scale = float(transform.get("scale") or 1.0)
-            x0, y0 = (transform.get("crop") or [0, 0])[:2]
-            point = [float(point[0]) / scale + x0, float(point[1]) / scale + y0]
-        hit = bool(point) and truth[0] <= float(point[0]) <= truth[0] + truth[2] \
-            and truth[1] <= float(point[1]) <= truth[1] + truth[3]
-        return Grade(True, float(hit), {"hit": hit})
-    iou = _iou(box, truth)
-    ok = iou >= float(check.get("iou_threshold", 0.5))
-    return Grade(True, float(ok), {"iou": iou, "hit": ok})
+    thr = float(check.get("iou_threshold", 0.5))
+
+    def in_frame(frame: float) -> Grade:
+        box = _box(answer.get("bbox"), transform, frame)
+        if check.get("metric") == "point_in_box":
+            point = (_point(answer["point"], transform, frame)
+                     if answer.get("point") is not None else None)
+            if point is None and box is not None:
+                point = [box[0] + box[2] / 2, box[1] + box[3] / 2]
+            hit = bool(point) and truth[0] <= point[0] <= truth[0] + truth[2] \
+                and truth[1] <= point[1] <= truth[1] + truth[3]
+            return Grade(True, float(hit), {"hit": hit})
+        iou = _iou(box, truth)
+        ok = iou >= thr
+        # the COCO-style average: the hit at each of 0.50:0.05:0.95
+        hit_50_95 = sum(iou >= t for t in COCO_IOUS) / len(COCO_IOUS)
+        return Grade(True, float(ok), {"iou": iou, "hit": ok, "hit_50_95": hit_50_95})
+
+    return _best_frame(in_frame)
 
 
 def _g_v10(record, answer, world, tax, transform) -> Grade:
