@@ -69,7 +69,7 @@ def part_of(record: dict) -> Optional[tuple]:
 
 def _answer(record: dict) -> tuple:
     label = record["label"]
-    answer = label.get("answer") or {}
+    answer = (label.get("answer_check") or {}).get("answer_keys") or label.get("answer") or {}
     fields = (label.get("answer_check") or {}).get("fields") or sorted(answer)
     return tuple((f, repr(answer.get(f))) for f in fields)
 

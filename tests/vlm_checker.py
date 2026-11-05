@@ -108,6 +108,9 @@ LOG_VOCAB = {
 #: Classes whose every action is one frontier group.
 ONE_GROUP = ("connector", "ram_latch", "ram_module")
 
+#: How many logged actions the export reads for a V16 plan (vlm_tasks.V16_PLAN_LEN).
+V16_PLAN_LEN = 5
+
 #: A rejected edge, and a decision about a rule that is no longer derived, gate
 #: nothing. Everything else -- proposed, accepted -- does.
 INACTIVE_STATUSES = {"rejected", "accepted_orphan", "rejected_orphan"}
@@ -170,9 +173,11 @@ class Checker:
         self.db = db
         self.tax = tax
         self.desktop = int(desktop)
+        # a part drawn for the components gallery only (``attrs.gallery_only``) is not a
+        # part of the teardown: the export leaves it out, and so does this file
         self.instances = {
             key: rec for key, rec in db.instances(desktop).items()
-            if not key.startswith(LS_PREFIX)
+            if not key.startswith(LS_PREFIX) and not rec.attrs.get("gallery_only")
         }
         self.actions = sorted(db.actions(desktop), key=_key)
         self.steps = {s.step: s for s in db.steps(desktop)}
@@ -645,7 +650,10 @@ class Checker:
 
     @staticmethod
     def _answer(record: dict) -> dict:
-        return record["label"]["answer"]
+        """The answer with its keys (``answer_check.answer_keys`` since the plain-name round;
+        ``label.answer`` itself names every part plainly)."""
+        label = record["label"]
+        return (label.get("answer_check") or {}).get("answer_keys") or label["answer"]
 
     # V1, V8 -- a set of instances, each with a box
     def _check_boxes(self, record: dict, spec: dict) -> None:
@@ -772,27 +780,33 @@ class Checker:
                 _fail(record, "an unknown tool must not be a graded field")
             return out
         if kind == "changed":
-            old, new = self.state_at(step - 1), self.state_at(step)
-            # fan screw holes are a detection category, never a part a question is about
-            events = [{"target": key, "old": old[key]["state"], "new": new[key]["state"]}
-                      for key in sorted(old.keys() & new.keys())
-                      if old[key]["state"] != new[key]["state"]
-                      and (self.instances.get(key) is None
-                           or self.instances[key].cls != "screw_hole")]
-            if spec.get("step_type") == "dupli" or (
-                    self.steps.get(step) is not None and self.steps[step].dupli):
-                if events:
-                    _fail(record, "a dupli step whose state actually moved")
-                return {"changed": False, "events": []}
-            if spec.get("reason") == "captive_screw_loosened":
-                # W3b: only captive screws moved, and a picture cannot show it
-                if not events or any(
-                        not (self.instances.get(e["target"]) is not None
-                             and self.instances[e["target"]].attrs.get("captive"))
-                        for e in events):
-                    _fail(record, "a captive no-change pair where something else moved")
-                return {"changed": False, "events": []}
-            return {"changed": bool(events), "events": events}
+            first = int(spec.get("from_step", step - 1))
+            old, new = self.state_at(first), self.state_at(step)
+            # fan screw holes are a detection category, never a part a question is about;
+            # a captive screw turned in place shows nothing (W3b): not a visible change
+            raw = [{"target": key, "old": old[key]["state"], "new": new[key]["state"]}
+                   for key in sorted(old.keys() & new.keys())
+                   if old[key]["state"] != new[key]["state"]
+                   and (key in self.instances or key.startswith(CABLE_PREFIX))
+                   and (self.instances.get(key) is None
+                        or (self.instances[key].cls != "screw_hole"
+                            and not self.instances[key].attrs.get("implied")))]
+            events = [e for e in raw if not (
+                self.captive(e["target"])
+                and self._shown(e["old"], True) == self._shown(e["new"], True))]
+            if events:
+                return {"changed": True, "events": events}
+            # no visible change: only where every step between is a repeat or a captive turn
+            for s in [s for s in self.steps if first < s <= step]:
+                rec = self.steps[s]
+                acts = [a for a in self.successful_actions(s)]
+                dupli = rec.step_type == "dupli" or rec.dupli
+                captive = acts and all(a.verb == "unscrew" and self.captive(a.target)
+                                       for a in acts)
+                if not (dupli or captive):
+                    _fail(record, f"a no-change answer across step {s}, which is neither "
+                                  f"a repeat nor a captive turn")
+            return {"changed": False, "events": []}
         if kind == "answerable":
             answers = set()
             for key in spec.get("members") or [spec["instance"]]:
@@ -865,7 +879,7 @@ class Checker:
         # the internal code is label side (answer_check.reason_code); answer.reason is the
         # reason in what the picture shows (owner 2026-11-04): never a code, never graph words,
         # and it speaks of every kind of blocker -- or ends on what can now be done
-        want_reason = None if source == "demonstrated" else {
+        want_reason = None if source in ("demonstrated", "permitted") else {
             "occlusion_blocked": "covered_now", "loose_first": "loose_part_first"}.get(
                 source, "violates_edge")
         if spec.get("reason_code") != want_reason:
@@ -880,6 +894,13 @@ class Checker:
                 _fail(record, "a demonstrated action must be feasible")
             if bad:
                 _fail(record, "the graph forbids what the log demonstrates")
+        elif source == "permitted":
+            # a "yes" the moment's rules allow (owner 2026-11-04): nothing holds it
+            if answer["feasible"] is not True or bad:
+                _fail(record, "a permitted action must be feasible and held by nothing")
+            shown = self.demonstrated(step)
+            if shown is not None and shown[1].verb == verb and shown[1].target in members:
+                _fail(record, "the demonstrated action filed as merely permitted")
         elif source in ("graph_blocked", "graph_blocked_pixels", "failed_attempt",
                         "occlusion_blocked", "loose_first"):
             if source == "occlusion_blocked" and any(e.get("source") != "occlusion" for e in bad):
@@ -1181,6 +1202,34 @@ class Checker:
                 _fail(record, "the prompt options give away which is which")
 
     # V10
+    # V3's multi-step form (owner 2026-11-04)
+    def _check_action_set(self, record: dict, spec: dict) -> None:
+        """The actions between two moments, re-derived from the log: every successful
+        action of the steps between, none a captive screw turned in place, grouped the
+        frontier's way; the answer one action per group."""
+        label = record["label"]
+        step, first = int(label["step"]), int(spec["from_step"])
+        if step - first not in (2, 3) or int(spec.get("span", 0)) != step - first:
+            _fail(record, "a multi-step V3 over another span")
+        groups: dict[str, set] = {}
+        for s in self.log_steps():
+            if not first < s <= step:
+                continue
+            for a in self.successful_actions(s):
+                if a.verb == "unscrew" and self.captive(a.target):
+                    _fail(record, "a span with a captive turn nobody can see")
+                if not self.changes_state(a):
+                    _fail(record, "a span with an action that changes nothing")
+                groups.setdefault(self._frontier_key(a.verb, a.target), set()).add(
+                    (a.verb, a.target))
+        told = {g["key"]: {(x["verb"], x["target"]) for x in g["actions"]}
+                for g in spec["groups"]}
+        if told != groups or sorted(spec["gold_groups"]) != sorted(groups):
+            _fail(record, f"the actions between differ: {sorted(told)} != {sorted(groups)}")
+        listed = [(x["verb"], x["target"]) for x in self._answer(record)["actions"]]
+        if sorted(self._frontier_key(v, t) for v, t in listed) != sorted(groups):
+            _fail(record, "the answer does not list each group once")
+
     def _check_history(self, record: dict, spec: dict) -> None:
         label = record["label"]
         step = int(label["step"])
@@ -1270,7 +1319,7 @@ class Checker:
                 if s <= int(label["step"]):
                     continue
                 logged.extend((a.verb, a.target) for a in self.planning_actions(s))
-                if len(self.grouped(start, logged)) >= len(wanted):
+                if len(self.grouped(start, logged)) >= V16_PLAN_LEN:
                     break
             told = self.with_captive(start, self.grouped(start, logged))
             if told[:len(wanted)] != wanted:
@@ -1308,13 +1357,21 @@ class Checker:
         step = int(label["step"])
         goal = spec["goal"]
         frame = {k: dict(v) for k, v in self.state_at(step).items()}
-        if frame[goal]["state"] == REMOVED:
+        goal_members = list(spec.get("goal_members") or [goal])
+        if goal in self.groups and not set(goal_members) <= set(self.groups[goal]):
+            _fail(record, "goal members that are not the goal group's")
+        if all(frame[m]["state"] == REMOVED for m in goal_members):
             _fail(record, "a plan for a goal that is already out")
         # every part the export knows (fan screw holes are a detection category, not parts)
-        if {k: v["state"] for k, v in frame.items()
-            if k in spec["start_state"] or self.instances.get(k) is None
-            or self.instances[k].cls != "screw_hole"} != {
-                k: v for k, v in spec["start_state"].items() if k in frame}:
+        # (an implied part -- a cage's own latch -- moves by the implied rules' own events,
+        # which this file does not re-derive: it is no part a plan is about)
+        def kept(k):
+            rec = self.instances.get(k)
+            return rec is None or not rec.attrs.get("implied")
+        if {k: v["state"] for k, v in frame.items() if kept(k)
+            and (k in spec["start_state"] or (k in self.instances
+                                              and self.instances[k].cls != "screw_hole"))} != {
+                k: v for k, v in spec["start_state"].items() if k in frame and kept(k)}:
             _fail(record, "the start state is not the folded state of this step")
         # the rules' shortest plan and the answer (that plan in group actions) replay under
         # the graph, the moment's own rules and the question's rule without an unmet edge,
@@ -1324,7 +1381,7 @@ class Checker:
         for name in ("reference_shortest", "answer"):
             sim = {k: dict(v) for k, v in frame.items()}
             items = (spec[name] if name != "answer"
-                     else record["label"]["answer"]["plan"])
+                     else self._answer(record)["plan"])
             for item in items:
                 verb, target = item["verb"], item["target"]
                 for member in (self.todo(sim, verb, self.groups[target])
@@ -1334,7 +1391,7 @@ class Checker:
                         _fail(record, f"{name} breaks at {verb} {member}")
                     if self.applies(member, verb, sim):
                         self._apply(sim, member, verb)
-            if sim[goal]["state"] != REMOVED:
+            if any(sim[m]["state"] != REMOVED for m in goal_members):
                 _fail(record, f"{name} does not reach the goal")
             for req in spec["required_actions"]:
                 if req["target"] in self.groups:
@@ -1364,7 +1421,7 @@ class Checker:
             else set()
         shortest = [(i["verb"], i["target"]) for i in spec["reference_shortest"]]
         told = self.with_captive(start, self.grouped(start, shortest, keep))
-        if [(i["verb"], i["target"]) for i in record["label"]["answer"]["plan"]] != told:
+        if [(i["verb"], i["target"]) for i in self._answer(record)["plan"]] != told:
             _fail(record, "V7's answer is not the rules' shortest plan in group actions")
         count = spec.get("count")
         if count:

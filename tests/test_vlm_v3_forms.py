@@ -31,6 +31,22 @@ import vlm_score  # noqa: E402
 import vlm_to_chat as C  # noqa: E402
 
 
+def _keys(record: dict) -> dict:
+    """The answer with its keys (``answer_check.answer_keys``; ``label.answer`` names parts
+    plainly since the owner's 2026-11-04 round)."""
+    label = record["label"]
+    return (label.get("answer_check") or {}).get("answer_keys") or label["answer"]
+
+
+def _set_keys(record: dict, answer: dict) -> None:
+    label = record["label"]
+    if (label.get("answer_check") or {}).get("answer_keys"):
+        label["answer_check"]["answer_keys"] = answer
+    else:
+        label["answer"] = answer
+
+
+
 @pytest.fixture(scope="module")
 def multi(tmp_path_factory) -> dict:
     tmp = tmp_path_factory.mktemp("v3forms")
@@ -65,7 +81,7 @@ def test_every_v3_step_is_asked_free_and_with_a_hint(multi):
         assert r["label"]["step"] == partner["label"]["step"]
         assert r["prompt"]["images"] == partner["prompt"]["images"]
         # gold = the same verb / target / tool, no region asked
-        assert r["label"]["answer"] == {k: v for k, v in partner["label"]["answer"].items()
+        assert _keys(r) == {k: v for k, v in _keys(partner).items()
                                         if k != "region"}
         assert r["label"]["template_id"].startswith("V3-roi.")
 
@@ -75,7 +91,7 @@ def test_the_free_form_asks_the_region_of_the_change(multi):
     asked = [r for r in free if r["label"]["answer_check"].get("region")]
     assert asked
     for r in asked:
-        check, answer = r["label"]["answer_check"], r["label"]["answer"]
+        check, answer = r["label"]["answer_check"], _keys(r)
         assert answer["region"] == check["region"]
         assert "where the machine changed" in r["prompt"]["question"]
         assert format_key(r) == "V3.region"
@@ -160,7 +176,8 @@ def test_the_scorer_rows_v3_and_v3_roi(multi, tmp_path):
     # the hinted form is secondary: the "change" layer counts the free form only
     free, _ = _v3(multi)
     change = [r for r in multi["records"] if r["prompt"]["task"] in ("V3", "V10", "V12")
-              and r["label"].get("v3_form") != "roi"]
+              and r["label"].get("v3_form") not in ("roi", "span")
+              and (r["label"].get("v12_span") or 1) == 1]
     assert result["strict"]["by_layer"]["change"]["n"] == len(change)
     assert vlm_score.task_key(free[0]) == "V3"
 

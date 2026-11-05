@@ -51,6 +51,8 @@ def bucket_of(record: dict) -> str:
     """``"V6.mc"``, ``"V7.constrained"``, ``"V2"``: a record's task and, where it has forms, its
     form."""
     task = record["prompt"]["task"]
+    if task == "V12" and (record["label"].get("v12_span") or 1) > 1:
+        return "V12.span"
     form = record["label"].get(FORM_FIELDS.get(task, ""))
     return f"{task}.{form}" if form else task
 

@@ -32,6 +32,22 @@ import vlm_human_sheet as H  # noqa: E402
 import vlm_io as IO  # noqa: E402
 import vlm_score  # noqa: E402
 
+
+def _keys(record: dict) -> dict:
+    """The answer with its keys (``answer_check.answer_keys``; ``label.answer`` names parts
+    plainly since the owner's 2026-11-04 round)."""
+    label = record["label"]
+    return (label.get("answer_check") or {}).get("answer_keys") or label["answer"]
+
+
+def _set_keys(record: dict, answer: dict) -> None:
+    label = record["label"]
+    if (label.get("answer_check") or {}).get("answer_keys"):
+        label["answer_check"]["answer_keys"] = answer
+    else:
+        label["answer"] = answer
+
+
 VIEWS = (W.VIEW, W.OTHER)
 
 
@@ -305,15 +321,14 @@ def test_the_sheet_shows_the_gold_answer_evidence_and_rationale(scene, audit_she
     v8 = next((r for r in scene["audit"] if r["prompt"]["task"] == "V8"), None)
     if v8 is not None:
         boxes = S.boxes_of(v8, world)
-        assert boxes[0]["bbox"] == [float(v) for v in v8["label"]["answer"]["bbox"]]
+        assert boxes[0]["bbox"] == [float(v) for v in _keys(v8)["bbox"]]
         assert boxes[0]["kind"] == "answer"
         # a box label names the class, never an ordinal (owner 2026-11-04)
-        label = world.instances[v8["label"]["answer"]["instance"]]["label"]
-        assert boxes[0]["label"] == re.sub(r"\s+\d+$", "", label) != label
+        assert not re.search(r"\s\d+$", boxes[0]["label"]), boxes[0]["label"]
     # parts are named without an ordinal: the oracle's name, never the key nor "X 1"
     v3 = next(r for r in scene["audit"] if r["prompt"]["task"] == "V3")
     lines = dict(S.gold_lines(v3, world))
-    key = v3["label"]["answer"]["target_instance"]
+    key = _keys(v3)["target_instance"]
     assert world.plain_name(key) in lines["action"] and key not in lines["action"]
     assert world.instances[key]["label"] not in lines["action"]
 

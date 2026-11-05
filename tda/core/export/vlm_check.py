@@ -56,7 +56,7 @@ from tda.core.states import InstState
 from tda.core.taxonomy import Taxonomy
 
 __all__ = ["CAPABILITY_LAYERS", "RESPONSE_FORMATS", "VERBS", "Grade", "Grounder",
-           "World", "format_instruction", "gold_reply", "grade", "grounder",
+           "World", "format_instruction", "gold_reply", "answer_keys", "grade", "grounder",
            "parse_lenient", "parse_strict", "reference_option"]
 
 #: The paper's capability layers (minutes 2026-10-31 §3; brief W3b §2.8). Not
@@ -88,6 +88,10 @@ RESPONSE_FORMATS = {
                  '"target": "<the part acted on>", "tool": "<tool, or null>", '
                  '"region": [x, y, width, height]} (region: where the machine changed, in '
                  'pixel coordinates of the top-down scanner image, {scanner}).',
+    # V3's multi-step form (owner 2026-11-04): every action between the two moments
+    "V3.span": 'Answer with JSON only: {"actions": [{"verb": "<one of: ' + ", ".join(VERBS)
+               + '>", "target": "<part>"}, ...]} (every action carried out between the two '
+               'moments).',
     "V4": 'Answer with JSON only: {"feasible": true or false, "blockers": '
           '["<part that has to be dealt with first>", ...]}.',
     "V5": 'Answer with JSON only: {"actions": [{"verb": "<verb>", "target": '
@@ -128,6 +132,8 @@ def format_key(record: dict) -> str:
     check = record["label"]["answer_check"]
     if task == "V2":
         return "V2.count" if check.get("derive") == "screw_count" else "V2.state"
+    if task == "V3" and check.get("type") == "action_set":
+        return "V3.span"
     if task == "V3" and check.get("region"):
         return "V3.region"
     if task == "V6":
@@ -512,6 +518,25 @@ class Grounder:
             self.by_label.setdefault(label, key)
             self.by_label.setdefault(self.norm(key), key)
             phrase_of(label, inst.get("match_class") or inst["class"])
+        # the plain name a person reads (no ordinal: "fan connector of the fan CPU cooler",
+        # "screw that fastens the PSU") names its part exactly where no other part has it
+        names: dict[str, list[str]] = {}
+        for key, inst in sorted(world.instances.items()):
+            if inst.get("name"):
+                names.setdefault(self.norm(inst["name"]), []).append(key)
+        # a group's plural label names the group ("PSU cable connectors"), even where its
+        # singular reads like a part of another kind ("PSU cable connector")
+        labels: dict[str, list[str]] = {}
+        for gid, group in sorted(world.groups.items()):
+            if group.get("label"):
+                labels.setdefault(self.norm(group["label"]), []).append(gid)
+        self.group_by_label = {k: v[0] for k, v in labels.items() if len(v) == 1}
+        bare = {phrase for phrase, _ in self.phrases}
+        for name, keys in names.items():
+            # a bare class phrase is a class, not a name ("fan connector")
+            if len(keys) == 1 and not name.startswith("one ") and name not in self.by_label \
+                    and name not in bare:
+                self.by_label[name] = keys[0]
         for gid in sorted(world.groups):
             mclass = world.match_class(gid)
             if mclass and world.groups[gid].get("label"):
@@ -526,6 +551,10 @@ class Grounder:
         if raw in self.world.instances or raw.startswith(CABLE_PREFIX) or raw in self.world.groups:
             return raw, self.world.match_class(raw)
         norm = self.norm(raw)
+        plain = _norm(raw)
+        if plain.endswith("s") and plain != norm and norm in getattr(self, "group_by_label", {}):
+            gid = self.group_by_label[norm]
+            return gid, self.world.match_class(gid)
         if norm in self.by_label:
             key = self.by_label[norm]
             return key, self.world.match_class(key)
@@ -560,6 +589,12 @@ class Grounder:
     def resolve(self, text: Any, eligible: Sequence[str]) -> tuple[Optional[str], Optional[str]]:
         """``(target, match class)`` -- :meth:`ground_group` with the class kept."""
         key, mclass = self.ground(text)
+        if key is not None and self.world.is_group(key) and key not in eligible \
+                and not any(m in eligible for m in self.world.members(key)):
+            key = None  # a group's label read as its class where the group is not asked
+        if key is not None and self.world.is_group(key) and key not in eligible:
+            first = next(m for m in self.world.members(key) if m in eligible)
+            return first, mclass
         if key is not None:
             if key in eligible:
                 return key, mclass
@@ -588,9 +623,20 @@ class Grounder:
             return set(re.sub(r"\b\d+\b", " ", self.norm(t)).split())
 
         said = words(text)
+        # "one of the PSU cable connectors" names one member of that group (a plain name,
+        # owner 2026-11-04): its parts by their group's words, the group itself left aside
+        one = self.norm(text).startswith("one ")
+        members = [c for c in candidates if not self.world.is_group(c)]
+        if one and members:
+            candidates = members
+
+        def wording(c: str) -> str:
+            gid = self.world.group_of(c) if one else None
+            return self.world.label_of(gid) if gid else self.world.label_of(c)
+
         best, best_n = candidates[0], -1
         for candidate in candidates:
-            n = len(said & words(self.world.label_of(candidate)))
+            n = len(said & words(wording(candidate)))
             if n > best_n:
                 best, best_n = candidate, n
         return best
@@ -633,6 +679,15 @@ class Grade:
     parsed: bool
     score: float
     metrics: dict = field(default_factory=dict)
+
+
+def answer_keys(record: dict) -> dict:
+    """The answer a grader reads: with instance keys and group ids
+    (``answer_check.answer_keys``, the final round of 2026-11-04) where the record keeps
+    them apart from ``label.answer`` -- which names every part plainly, no ordinal, for the
+    people and the gold reply -- else ``label.answer`` itself (an older record)."""
+    label = record["label"]
+    return (label.get("answer_check") or {}).get("answer_keys") or label["answer"]
 
 
 def grade(record: dict, raw: Optional[str], world: Optional[World] = None,
@@ -723,7 +778,7 @@ def _class_of_text(text: Any, tax: Optional[Taxonomy], classes: Sequence[str]) -
 
 
 def _g_v1(record, answer, world, tax, transform) -> Grade:
-    truth = record["label"]["answer"]["components"]
+    truth = answer_keys(record)["components"]
     classes = sorted({c["class"] for c in truth})
     preds = []
     for item in answer.get("components") or []:
@@ -752,7 +807,7 @@ def count_score(answered: Any, gold: int) -> tuple[float, Optional[int]]:
 
 
 def _g_v2(record, answer, world, tax, transform) -> Grade:
-    truth = record["label"]["answer"]
+    truth = answer_keys(record)
     prior = record["label"].get("prior_is_correct")
     if "count" in truth:
         # exact 1.0, off by one 0.8, else 0 (owner 2026-11-04)
@@ -804,6 +859,13 @@ def _v3_slots(answer, slots, check, world, group) -> tuple[float, dict]:
 
 
 def _g_v3(record, answer, world, tax, transform) -> Grade:
+    if record["label"]["answer_check"].get("type") == "action_set":
+        # the multi-step form: a set of actions, F1 over the same-kind groups
+        return _g_v6_frontier(record, answer, world, tax, transform)
+    return _g_v3_step(record, answer, world, tax, transform)
+
+
+def _g_v3_step(record, answer, world, tax, transform) -> Grade:
     """Any action of the step, read as the first one is, scores (controller 2026-11-03).
 
     A compound step (``answer.actions``: a PSU displaced and a connector pulled in
@@ -811,7 +873,7 @@ def _g_v3(record, answer, world, tax, transform) -> Grade:
     against each slot set and the best one counts; the top-level slots are the
     first action and grade alone where there is no list.
     """
-    truth = record["label"]["answer"]
+    truth = answer_keys(record)
     check = record["label"].get("answer_check") or {}
 
     def group_of(target: Optional[str], given: Optional[str] = None) -> Optional[str]:
@@ -848,7 +910,7 @@ def _g_v3(record, answer, world, tax, transform) -> Grade:
 
 
 def _g_v4(record, answer, world, tax, transform) -> Grade:
-    truth = record["label"]["answer"]
+    truth = answer_keys(record)
     feasible = _as_bool(answer.get("feasible"))
     ok = feasible is not None and feasible == bool(truth["feasible"])
     metrics: dict = {"correct": ok, "truth_source": record["label"].get("truth_source")}
@@ -954,7 +1016,7 @@ def _pairs_grounded(items: Any, world: Optional[World], eligible: Sequence[tuple
 
 
 def _g_v5(record, answer, world, tax, transform) -> Grade:
-    truth = record["label"]["answer"]
+    truth = answer_keys(record)
     must = {(a["verb"], a["target"]) for a in truth["must_include"]}
     must_not = {(a["verb"], a["target"]) for a in truth["must_not_include"]}
     eligible = [(a["verb"], a["target"]) for a in truth["permitted_upper_bound"]]
@@ -1184,7 +1246,7 @@ def _v7_eligible(record: dict, world: World) -> list[tuple[str, str]]:
     told = [*(check.get("reference_shortest") or []), *(check.get("demonstrated_remainder") or [])]
     if not world.grouped:
         return [(i["verb"], i["target"]) for i in told]
-    pairs = [(i["verb"], i["target"]) for i in record["label"]["answer"].get("plan") or []]
+    pairs = [(i["verb"], i["target"]) for i in answer_keys(record).get("plan") or []]
     for item in told:
         pairs.append((item["verb"], world.group_of(item["target"]) or item["target"]))
     return pairs
@@ -1352,7 +1414,7 @@ def _asked_components(record: dict, world: Optional[World]) -> list[dict]:
     """A ``components`` V8's truth boxes of the class asked (``class_filter``)."""
     wanted = record["label"]["answer_check"].get("class_filter")
     out = []
-    for comp in record["label"]["answer"]["components"]:
+    for comp in answer_keys(record)["components"]:
         mclass = comp.get("match_class")
         if mclass is None and world is not None and comp.get("instance"):
             mclass = world.match_class(comp["instance"])
@@ -1366,7 +1428,7 @@ def _g_v8(record, answer, world, tax, transform) -> Grade:
     check = record["label"]["answer_check"]
     if check.get("type") == "components":
         return _g_v8_components(record, answer, world, tax, transform)
-    truth = record["label"]["answer"]["bbox"]
+    truth = answer_keys(record)["bbox"]
     box = _box(answer.get("bbox"), transform)
     if check.get("metric") == "point_in_box":
         point = answer.get("point")
@@ -1392,7 +1454,7 @@ def _g_v10(record, answer, world, tax, transform) -> Grade:
     ``answer.started``). Each list is grounded on its own set first, then on
     the other one -- a begun group named as done is a false positive there.
     """
-    truth = record["label"]["answer"]
+    truth = answer_keys(record)
     # the gold lists in their own order: a class phrase grounds to the first
     # unclaimed target of its class, so the gold reply reads back exactly
     done = list(dict.fromkeys((a["verb"], a["target"]) for a in truth["done"]))
@@ -1414,7 +1476,7 @@ def _g_v10(record, answer, world, tax, transform) -> Grade:
 
 def _g_bool(field_name: str):
     def handler(record, answer, world, tax, transform) -> Grade:
-        truth = bool(record["label"]["answer"][field_name])
+        truth = bool(answer_keys(record)[field_name])
         got = _as_bool(answer.get(field_name))
         ok = got is not None and got == truth
         return Grade(True, float(ok), {"correct": ok})
@@ -1423,7 +1485,7 @@ def _g_bool(field_name: str):
 
 
 def _g_v15(record, answer, world, tax, transform) -> Grade:
-    truth = record["label"]["answer"]
+    truth = answer_keys(record)
     if "same_moment" in truth:
         return _g_bool("same_moment")(record, answer, world, tax, transform)
     state_ok = _norm(answer.get("state")) == _norm(truth["state"])
@@ -1433,7 +1495,7 @@ def _g_v15(record, answer, world, tax, transform) -> Grade:
 
 
 def _g_v16(record, answer, world, tax, transform) -> Grade:
-    truth = record["label"]["answer"]
+    truth = answer_keys(record)
     got = _as_bool(answer.get("valid"))
     ok = got is not None and got == bool(truth["valid"])
     located = None
@@ -1471,6 +1533,9 @@ def gold_reply(record: dict, world: Optional[World] = None, *, plain: bool = Fal
                               for c in answer["components"]]}
     elif key.startswith("V2"):
         out = {"count": answer["count"]} if "count" in answer else {"state": answer["state"]}
+    elif key == "V3.span":
+        out = {"actions": [{"verb": a["verb"], "target": name(a["target"])}
+                           for a in answer["actions"]]}
     elif task == "V3":
         out = {"verb": answer["verb"], "target": name(answer["target_instance"]),
                "tool": answer.get("tool")}

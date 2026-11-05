@@ -70,7 +70,7 @@ FIELDS = {
     "V3": ("verb", "target", "tool"), "V4": ("feasible", "blockers"),
     # V3's free form also asks the model for a region; a person answers the action alone
     "V3.region": ("verb", "target", "tool"),
-    "V6.open": ("actions",), "V6.options": ("choice",), "V7": ("plan",),
+    "V6.open": ("actions",), "V3.span": ("actions",), "V6.options": ("choice",), "V7": ("plan",),
     "V8": ("boxes",), "V10": ("done", "progress"), "V12": ("changed",),
     "V15.moment": ("same_moment",), "V15.cross": ("state", "best_view"),
     "V16": ("valid", "first_error_step"),
@@ -170,7 +170,7 @@ def fields_html(record: dict) -> str:
         rows.append(f'<div class="row">feasible now? {_yes_no(rid, "feasible")}</div>'
                     f'<div class="row">blockers (if not; separate with ;): '
                     f'{_text("blockers", "e.g. the CPU cooler; the fan connector", 50)}</div>')
-    elif key == "V6.open":
+    elif key in ("V6.open", "V3.span"):
         rows.append('<div class="row">every action that can be carried out now, one per line as '
                     '"verb part" (e.g. <code>disconnect the connectors</code>):<br>'
                     '<textarea data-field="actions" rows="6"></textarea></div>')
@@ -497,7 +497,7 @@ def to_answer(key: str, fields: dict) -> Optional[dict]:
             return None
         blockers = [b.strip() for b in _SPLIT.split(str(f.get("blockers", ""))) if b.strip()]
         return {"feasible": feasible, "blockers": [] if feasible else blockers}
-    if key == "V6.open":
+    if key in ("V6.open", "V3.span"):
         return {"actions": _actions(f.get("actions"))}
     if key == "V6.options":
         return {"choice": str(f.get("choice", "")).strip().upper()[:1]}
@@ -553,7 +553,7 @@ def gold_fields(record: dict, world: Optional[World] = None) -> dict:
     if key == "V4":
         return {"feasible": "yes" if answer["feasible"] else "no",
                 "blockers": "; ".join(name(b) for b in answer.get("blockers") or [])}
-    if key == "V6.open":
+    if key in ("V6.open", "V3.span"):
         return {"actions": lines(answer["actions"])}
     if key == "V6.options":
         return {"choice": LETTERS[reference_option(label)]}

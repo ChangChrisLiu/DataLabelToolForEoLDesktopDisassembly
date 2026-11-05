@@ -25,6 +25,22 @@ sys.path.insert(0, str(SCRIPTS))
 import export_vlmpack as P  # noqa: E402
 import vlm_io as IO  # noqa: E402
 
+
+def _keys(record: dict) -> dict:
+    """The answer with its keys (``answer_check.answer_keys``; ``label.answer`` names parts
+    plainly since the owner's 2026-11-04 round)."""
+    label = record["label"]
+    return (label.get("answer_check") or {}).get("answer_keys") or label["answer"]
+
+
+def _set_keys(record: dict, answer: dict) -> None:
+    label = record["label"]
+    if (label.get("answer_check") or {}).get("answer_keys"):
+        label["answer_check"]["answer_keys"] = answer
+    else:
+        label["answer"] = answer
+
+
 VIEWS = (W.VIEW, W.OTHER)
 #: The pack's export units for those views: the camera views, then the multi unit -- less
 #: OAK1, which has nothing confirmed and no V15 pair of its own, so its unit is empty and
@@ -264,7 +280,9 @@ def test_marked_action_records_show_the_scanner_image_alone(tmp_path):
             assert len(re.findall(r"<figure ", article)) == 1, rid
             assert "image 1 of 1: top-down scanner" in article, rid
     for form in EVERY_CAMERA:
-        for r in by_form[form]:
+        # (the spans of V3 / V12 show an earlier moment, 2-3 steps back)
+        for r in [r for r in by_form.get(form, []) if r["label"].get("v3_form") != "span"
+                  and (r["label"].get("v12_span") or 1) == 1]:
             prompt, label, step = r["prompt"], r["label"], r["label"]["step"]
             rid = label["readable_id"]
             assert not prompt.get("marks"), rid
@@ -312,7 +330,7 @@ def test_no_rendered_prompt_has_an_unfilled_placeholder(built):
                 seen_v14 += 1
                 assert check["allowed"][-1] == "cannot_tell", rid
                 assert f"<one of: {', '.join(check['allowed'])}>" in text, rid
-                assert r["label"]["answer"]["state"] in check["allowed"], rid
+                assert _keys(r)["state"] in check["allowed"], rid
     assert seen_v14
 
 

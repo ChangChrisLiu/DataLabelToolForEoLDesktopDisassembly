@@ -161,21 +161,26 @@ TASK_MEANINGS = {
     "V2": "the state of a named part, or how many screws of a role are still in place",
     "V3": "what the operator just did between two frames (verb, target, tool): free form "
           "(headline, no hint; also asks the region where the machine changed) and roi form "
-          "(secondary, a yellow dashed hint box drawn there; same step, `v3_pair`)",
-    "V4": "can this action be done to this part right now; if not, what blocks it",
+          "(secondary, a yellow dashed hint box drawn there; same step, `v3_pair`); and the "
+          "span form: every action carried out between two moments 2-3 steps apart (F1 over "
+          "groups)",
+    "V4": "can this action be done to this part right now; if not, what blocks it -- asked of "
+          "every part the scanner frame can outline and every verb the teardowns use on it",
     "V5": "(not in the default set) every action that is legal now",
     "V6": "every action that can be carried out now (the frontier, grouped): open form "
           "(headline, F1 over groups), multiple choice (one option possible, the others "
           "blocked; same frame, `v6_pair`) and constrained (one extra rule in words)",
-    "V7": "the plan to take the CPU out under the rules (free) or under one extra rule in "
-          "words (constrained: also counts the plugs to unplug), from a frame where that "
-          "work has started",
+    "V7": "the plan to take a major part out (motherboard, CPU, the RAM modules, PSU, drives, "
+          "cards, coolers, cages, case fans) under the rules (free) or under one extra rule "
+          "in words (constrained: also counts the plugs to unplug), at every step",
     "V8": "localise a named part (box)",
     "V10": "which actions have already been carried out; progress bin",
-    "V12": "did the machine's state change between two frames",
+    "V12": "did the machine's state change between two moments (neighbours, and 2-3 steps "
+           "apart), and what changed",
 
     "V15": "two cameras, two pictures: the same moment of the teardown or not",
-    "V16": "is a candidate plan legal from this state; the first step that is not",
+    "V16": "is a candidate plan legal from this state; the first step that is not (several "
+           "valid and invalid plans per moment)",
 }
 LICENSE_NOTE = """\
 E3D: End-of-Life Desktop Disassembly Dataset -- pre-release.
@@ -980,6 +985,18 @@ def _rules_text(summary: dict) -> str:
         + (f"D{', D'.join(f'{d:02d}' for d in non_step)} took several parts out at once "
            f"(not stepwise): no V4 / V6 / V7 / V16 there. " if non_step else
            "D66 took several parts out at once (not stepwise): no V4 / V6 / V7 / V16 there. "))
+    text += ("\n\n**Answers in plain names.** `label.answer` names every part the way a person "
+             "reads it -- its class, its group (\"the PSU screws\"), its anchor's words (\"fan "
+             "connector of the fan CPU cooler\") or \"one of the ...\" -- never an ordinal; the "
+             "instance keys the scorer reads stay label side in `answer_check.answer_keys`. "
+             "The gold reply built from those names scores 1.0, and the scorer still accepts "
+             "an exact instance label from a model.")
+    text += ("\n\n**Correctness.** Beside the self-check, the build is checked by an "
+             "independent re-derivation of every record from the database "
+             "(`tests/vlm_checker.py`) and by invariants (`tests/vlm_invariants.py`): every "
+             "demonstrated action feasible, no \"yes\" under a cover or a loose part, every "
+             "frontier target visible, every plan replaying, no \"changed\" without a state "
+             "event, no key, ordinal or graph word in any text.")
     if reasoning:
         text += ("\n\n**Reasoning side product.** `reasoning/<unit>.jsonl` holds one row per "
                  "record of `data/` -- `{\"id\", \"task\", \"question\", \"answer\", "
