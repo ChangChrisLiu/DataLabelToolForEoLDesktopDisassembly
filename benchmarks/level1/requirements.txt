@@ -1,0 +1,15 @@
+# Level-1 benchmark kit -- the versions the kit was tested with (Python 3.11.16, Windows 11 + RTX 5090, CUDA 12.8).
+# Install torch / torchvision for your CUDA first, then the rest, e.g.:
+#   pip install torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128
+#   pip install -r requirements.txt
+torch==2.11.0
+torchvision==0.26.0
+ultralytics==8.4.155
+pycocotools==2.0.11
+numpy==2.4.6
+pillow==12.3.0
+opencv-python==5.0.0.93
+PyYAML==6.0.3
+scipy==1.17.1
+matplotlib==3.11.2
+huggingface_hub==1.32.0
