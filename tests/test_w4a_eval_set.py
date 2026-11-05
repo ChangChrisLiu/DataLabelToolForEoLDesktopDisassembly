@@ -143,7 +143,6 @@ def test_the_draw_meets_targets_balances_strata_and_caps_desktops(units):
     # the other classes have one question per desktop here, one answer, so they go
     classes = Counter(r["label"]["answer_check"]["class"] for r in by_task["V2"])
     assert classes == {"ram_latch": 300}
-    assert classes["psu"] == 30 and classes["cover"] == 30
     # views in proportion (scan has 3x the V4 records)
     views = Counter(r["label"]["view"] for r in by_task["V4"])
     assert views == {"scan": 300, "oak1": 100}
