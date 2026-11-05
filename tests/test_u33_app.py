@@ -242,8 +242,11 @@ def test_the_vlm_tasks_take_it_as_a_step_and_the_checker_agrees(scene, tmp_path)
     # ... while the history and the plans past step 4 carry it where the log put it
     done = [r for r in records if r["prompt"]["task"] == "V10"
             and r["label"]["step"] >= LOOSE.step]
-    assert done and all({"verb": "remove", "target": NODE} in r["label"]["answer"]["done"]
+    # (label.answer names it in plain words, "isolated cable"; the keys are answer_keys)
+    from tda.core.export.vlm_check import answer_keys
+    assert done and all({"verb": "remove", "target": NODE} in answer_keys(r)["done"]
                         for r in done)
+    assert all("isolated.01" not in json.dumps(r["label"]["answer"]) for r in records)
     plans = [r for r in records if r["prompt"]["task"] == "V16"
              and r["label"]["answer"]["valid"] and r["label"]["step"] < LOOSE.step]
     assert plans and all(
